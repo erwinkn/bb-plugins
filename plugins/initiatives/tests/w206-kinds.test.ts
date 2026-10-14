@@ -132,7 +132,8 @@ describe("W206 spawn by role", () => {
     const [impl] = await tool(f, "initiative_spawn", spawnInput("impl", { kind: "fast" }));
     await f.service.report(impl.threadId, report());
     f.idle(impl.threadId);
-    await tool(f, "initiative_spawn", { label: "Review", purpose: "review", text: "Review W1.", role: "review", reviews: "W1", permissionMode: "full" });
+    // v9: leads no longer spawn reviewers; the service keeps the path for work given out before.
+    await f.service.delegate(project.id, { route: "fresh", label: "Review", area: "review", note: "Review W1.", role: "review", reviews: "W1", permissionMode: "full" });
     expect(spawned(f)).toMatchObject(sol);
     expect(f.store.worker(project.id, 2)).toMatchObject({ role: "review", kind: null });
   });

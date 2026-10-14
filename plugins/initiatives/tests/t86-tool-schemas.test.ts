@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { projectFixture } from "./fake-native";
-import { manageToolSchema, taskToolSchema, workerToolSchema } from "../lib/agent-tools";
+import { manageToolSchema, taskToolSchema, taskToolAdvertised, workerToolSchema } from "../lib/agent-tools";
 
 // BB's Claude Code bridge advertises only object roots; anything else becomes {type:"object"}.
 const INSTALLED_BRIDGE = join(homedir(), ".npm-global/lib/node_modules/bb-app/server/dist/builtin-plugins/provider-claude-code/dist/host.js");
@@ -16,7 +16,8 @@ function claudeNormalize(): (schema: unknown) => any {
 }
 type Fixture = Awaited<ReturnType<typeof projectFixture>>["f"];
 const schemaOf = (f: Fixture, name: string) => (f.harness.registrations.agentTools.find(t => t.name === name) as { inputSchema: any } | undefined)?.inputSchema;
-const COMMAND_TOOLS = { task: taskToolSchema, manage: manageToolSchema, worker: workerToolSchema } as const;
+// v9: initiative_task advertises create, update and status; close and reopen stay parseable for older sessions.
+const COMMAND_TOOLS = { task: taskToolAdvertised, manage: manageToolSchema, worker: workerToolSchema } as const;
 
 describe("T86 every Initiative tool keeps its arguments through Claude normalization", () => {
   it("publishes object roots with visible fields for all registered tools and legacy aliases", async () => {
@@ -42,7 +43,8 @@ describe("T86 every Initiative tool keeps its arguments through Claude normaliza
       expect(published.properties.action.enum, name).toEqual(schema.shape.action.options);
       for (const field of Object.keys(schema.shape)) expect(published.properties, `${name}.${field}`).toHaveProperty(field);
     }
-    expect(schemaOf(f, "initiative_task").properties.outcome.enum).toEqual(["done", "cancelled"]);
+    expect(schemaOf(f, "initiative_task").properties.status.enum).toEqual(["planned", "cancelled", "done", "auto"]);
+    expect(schemaOf(f, "initiative_task").properties).not.toHaveProperty("outcome");
     expect(schemaOf(f, "initiative_worker").properties.role.enum).toEqual(["work", "review"]);
     expect(schemaOf(f, "initiative_spawn").required).toEqual(["label", "purpose", "text"]);
   });
@@ -71,7 +73,7 @@ describe("T86 registered tools still validate strictly per action", () => {
     await expect(call(f, "initiative_worker", { action: "retire", worker: "W1", reason: "Done.", tasks: [] })).rejects.toThrow(/tasks/);
     await expect(call(f, "initiative_worker", { action: "adopt", threadId: "thr_x", role: "boss", label: "X" })).rejects.toThrow(/role/);
     // Removed actions answer with what replaces them.
-    await expect(call(f, "initiative_task", { action: "task-accept", task: created.ref })).rejects.toThrow(/close the task/);
+    await expect(call(f, "initiative_task", { action: "task-accept", task: created.ref })).rejects.toThrow(/follows its work/);
   });
 
   it("guards are unchanged: workers cannot coordinate and running workers cannot be retired", async () => {

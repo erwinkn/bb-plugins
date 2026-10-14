@@ -39,6 +39,8 @@ import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-sc
 import { PR_STAGE_IDS, type PrRecord, type PrStage, type PrStageChange } from "./pr-stages";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
 import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
+import { ownBriefText } from "./brief";
+import { computeTaskStatus, reportPrs, type HandStatus, type PrState } from "./task-status";
 
 
 // The plugin server is the only writer. Every multi-row change runs in one
@@ -470,6 +472,33 @@ export const MIGRATIONS = [
   `ALTER TABLE project_threads ADD COLUMN discussion INTEGER NOT NULL DEFAULT 0`,
   // T149 (D448): no per-PR "Discuss" thread; nothing ever wrote this column.
   `ALTER TABLE pr_records DROP COLUMN discussion_thread_id`,
+  // v9 (worker-owned reviews). Additive only: the previous build ignores every column and table
+  // below, and its own inserts leave reply_to NULL, which is what marks work it gave out.
+  // reply_to: the lead tab that gave the work out (the coordinator tab for anything else).
+  `ALTER TABLE assignments ADD COLUMN reply_to TEXT`,
+  // status_set_at: when someone set the task's status by hand; NULL means it is computed.
+  `ALTER TABLE tasks ADD COLUMN status_set_at INTEGER`,
+  // Standing rules (D523). A removed rule keeps its row (removed_at), so its number is never reused.
+  `CREATE TABLE rules (
+    project_id TEXT NOT NULL,
+    num INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    sources TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    removed_at INTEGER,
+    PRIMARY KEY (project_id, num)
+  )`,
+  // The last known GitHub state of each tracked PR (canonical URL); MERGED is final.
+  `CREATE TABLE pr_states (
+    url TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    merged_at INTEGER,
+    closed_at INTEGER,
+    checked_at INTEGER NOT NULL,
+    error TEXT
+  )`,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
@@ -508,7 +537,15 @@ export interface TaskRecord {
   title: string;
   summary: string;
   brief: Brief | null;
+  /**
+   * v9: the status shown and acted on: the hand-set one, else computed from the task's work and
+   * its PRs (task-status.ts). The stored column holds only hand-set statuses (and planned).
+   */
   status: TaskStatus;
+  /** Why it has that status: "set by hand", "W1420 on A1641", "#2631 merged". */
+  statusReason: string;
+  /** When someone set the status by hand; null when it is computed. */
+  statusSetAt: number | null;
   priority: number;
   dependsOn: number[];
   workKind: WorkKind;
@@ -637,6 +674,11 @@ export interface AssignmentRecord {
   pendingIdentity: { label?: string; area?: string } | null;
   /** The label this assignment's brief named, fixed at creation; null on rows from before T143. */
   label: string | null;
+  /**
+   * v9: the lead tab that gave this work out (the coordinator tab for anything else). The
+   * previous build never writes it, so NULL marks work given out under the old protocol.
+   */
+  replyTo: string | null;
   /**
    * Declared write paths in bbProjectId, snapshotted when the assignment was
    * dispatched or checkpointed; later brief edits never change it. null for
@@ -896,11 +938,41 @@ export interface LeaseRecord {
 }
 
 export const taskRef = (num: number) => `T${num}`;
+export const ruleRef = (num: number) => `R${num}`;
+
+/** A standing rule (D523): one or two sentences every lead and worker follows. */
+export interface RuleRecord {
+  projectId: string;
+  num: number;
+  ref: string;
+  text: string;
+  position: number;
+  /** Where it came from, e.g. the decisions it replaces (D12). */
+  sources: string[];
+  createdAt: number;
+  updatedAt: number;
+  removedAt: number | null;
+}
+
+/** A tracked PR's last known GitHub state. */
+export interface PrStateRecord {
+  url: string;
+  state: Exclude<PrState, null>;
+  mergedAt: number | null;
+  closedAt: number | null;
+  checkedAt: number;
+  error: string | null;
+}
 export const workerRef = (num: number) =>
   num === 0 ? "coordinator" : `W${num}`;
 export const assignmentRef = (num: number) => `A${num}`;
 export const decisionRef = (num: number) => `D${num}`;
 export const updateRef = (num: number) => `U${num}`;
+
+/** Stored JSON for a best-effort scan; malformed text reads as nothing. */
+function parseStored(value: string): unknown {
+  try { return JSON.parse(value); } catch { return null; }
+}
 
 /** Parse a user- or model-supplied ref such as "T12", "t12", or "12". */
 export function parseRef(
@@ -1076,6 +1148,21 @@ function toProjectThread(row: Row): ProjectThreadRecord {
   };
 }
 
+function toRule(row: Row): RuleRecord {
+  const num = Number(row.num);
+  return {
+    projectId: String(row.project_id),
+    num,
+    ref: ruleRef(num),
+    text: String(row.text),
+    position: Number(row.position),
+    sources: decode("rules", row, "sources", z.array(z.string())),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+    removedAt: row.removed_at == null ? null : Number(row.removed_at),
+  };
+}
+
 function toTask(row: Row): TaskRecord {
   const num = Number(row.num);
   return {
@@ -1086,6 +1173,8 @@ function toTask(row: Row): TaskRecord {
     summary: String(row.summary),
     brief: decodeNullable("tasks", row, "brief", briefSchema),
     status: row.status as TaskStatus,
+    statusReason: row.status_set_at == null ? "" : "set by hand",
+    statusSetAt: row.status_set_at == null ? null : Number(row.status_set_at),
     priority: Number(row.priority),
     dependsOn: decode("tasks", row, "depends_on", numsSchema),
     workKind: row.work_kind as WorkKind,
@@ -1178,6 +1267,7 @@ function toAssignment(row: Row): AssignmentRecord {
       pendingIdentitySchema,
     ),
     label: (row.label as string | null) ?? null,
+    replyTo: (row.reply_to as string | null) ?? null,
     writeScope: decodeNullable("assignments", row, "write_scope", z.array(z.string())),
     scopeRelease: decodeNullable("assignments", row, "scope_release", scopeReleaseSchema),
     handoffSources: decodeNullable("assignments", row, "handoff_sources", handoffSourcesSchema),
@@ -1795,6 +1885,17 @@ export class Store {
     this.db.prepare("INSERT OR IGNORE INTO plugin_flags(key, set_at) VALUES(?, ?)").run(key, Date.now());
   }
 
+  /** When a flag was set; null when it is absent. */
+  flagSetAt(key: string): number | null {
+    const row = this.db.prepare("SELECT set_at FROM plugin_flags WHERE key=?").get(key) as { set_at: number } | undefined;
+    return row ? Number(row.set_at) : null;
+  }
+
+  /** Sets a flag's time, also when it already exists (v9's loops-v5 marker moves on each cutover). */
+  upsertFlag(key: string, at: number) {
+    this.db.prepare("INSERT INTO plugin_flags(key, set_at) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET set_at = excluded.set_at").run(key, at);
+  }
+
   /** Clears every flag starting with `prefix`, but those starting with `keep`. */
   clearFlags(prefix: string, keep: string | null = null) {
     this.db
@@ -2110,17 +2211,76 @@ export class Store {
     const row = this.db
       .prepare(`SELECT * FROM tasks WHERE project_id = ? AND num = ?`)
       .get(projectId, num) as Row | undefined;
-    return row ? toTask(row) : null;
+    return row ? this.withStatus(projectId, [toTask(row)], num)[0]! : null;
   }
 
   tasks(projectId: string): TaskRecord[] {
-    return (
+    return this.withStatus(projectId, (
       this.db
         .prepare(
           `SELECT * FROM tasks WHERE project_id = ? ORDER BY priority, num`,
         )
         .all(projectId) as Row[]
-    ).map(toTask);
+    ).map(toTask));
+  }
+
+  /**
+   * v9: each task's shown status, computed from the work assignments naming it and the PRs that
+   * work names (its PR records, and the PRs its report names), unless it was set by hand.
+   */
+  private withStatus(projectId: string, tasks: TaskRecord[], only?: number): TaskRecord[] {
+    const computed = tasks.filter((t) => t.statusSetAt === null);
+    if (!computed.length) return tasks;
+    const rows = (only === undefined
+      ? this.db.prepare(`SELECT * FROM assignments WHERE project_id = ? AND role = 'work' AND task_nums <> '[]'`).all(projectId)
+      : this.db.prepare(`SELECT * FROM assignments WHERE project_id = ? AND role = 'work' AND EXISTS (SELECT 1 FROM json_each(task_nums) WHERE value = ?)`).all(projectId, only)) as Row[];
+    if (!rows.length) return tasks.map((t) => (t.statusSetAt === null ? { ...t, status: "planned" as const, statusReason: "no worker yet" } : t));
+    const work = rows.map(toAssignment);
+    const records = this.prRecords(projectId);
+    const named = new Map<string, string[]>();
+    for (const [url, record] of records) if (record.assignment) named.set(record.assignment, [...(named.get(record.assignment) ?? []), url]);
+    const linkOf = (a: AssignmentRecord) => {
+      const urls = [...new Set([...(named.get(a.ref) ?? []), ...reportPrs(a.report)])];
+      return { num: a.num, workerNum: a.workerNum, state: a.state, stopReason: a.stopReason, threadFailed: closedOnThreadFailure(a),
+        report: a.report ? { outcome: a.report.outcome, summary: a.report.summary } : null,
+        prs: urls.map((url) => ({ url, state: this.prState(url)?.state ?? null, stage: records.get(url)?.stage ?? null })) };
+    };
+    return tasks.map((task) => {
+      if (task.statusSetAt !== null) return task;
+      const { status, reason } = computeTaskStatus(task, work.filter((a) => a.taskNums.includes(task.num)).map(linkOf));
+      return { ...task, status, statusReason: reason };
+    });
+  }
+
+  /**
+   * Set a task's status by hand, or (null) let it follow its work again. Following the work stores
+   * planned, so a computed task never stores done or cancelled: a stored done or cancelled with
+   * no status_set_at can only be a close the previous build made (reconcileTaskOverrides).
+   */
+  setTaskStatus(projectId: string, num: number, status: HandStatus | null): TaskRecord {
+    const now = this.now();
+    this.db
+      .prepare(`UPDATE tasks SET status = ?, status_set_at = ?, updated_at = ? WHERE project_id = ? AND num = ?`)
+      .run(status ?? "planned", status === null ? null : now, now, projectId, num);
+    this.touchProject(projectId);
+    return this.task(projectId, num)!;
+  }
+
+  /**
+   * v9, on every load after migrations: a done or cancelled the previous build stored becomes
+   * hand-set, dated by its own write; a hand-set task the previous build moved to a status a hand
+   * never sets follows the work again. Returns the tasks the first statement changed. An ordinary
+   * reload changes nothing.
+   */
+  reconcileTaskOverrides(): { projectId: string; num: number; status: string }[] {
+    return this.tx(() => {
+      const closed = this.db
+        .prepare(`SELECT project_id, num, status FROM tasks WHERE status IN ('done','cancelled') AND status_set_at IS NULL`)
+        .all() as { project_id: string; num: number; status: string }[];
+      this.db.prepare(`UPDATE tasks SET status_set_at = updated_at WHERE status IN ('done','cancelled') AND status_set_at IS NULL`).run();
+      this.db.prepare(`UPDATE tasks SET status_set_at = NULL WHERE status_set_at IS NOT NULL AND status NOT IN ('planned','cancelled','done')`).run();
+      return closed.map((row) => ({ projectId: row.project_id, num: row.num, status: row.status }));
+    });
   }
 
   updateTask(
@@ -2132,7 +2292,6 @@ export class Store {
         | "title"
         | "summary"
         | "brief"
-        | "status"
         | "priority"
         | "dependsOn"
         | "workKind"
@@ -2145,19 +2304,19 @@ export class Store {
       >
     >,
   ): TaskRecord {
+    // v9: the status is computed, or set by hand through setTaskStatus; nothing else writes it.
     const current = this.task(projectId, num);
     if (!current) throw new Error(`Unknown task ${taskRef(num)}`);
     const next = { ...current, ...patch };
     this.db
       .prepare(
-        `UPDATE tasks SET title = ?, summary = ?, brief = ?, status = ?, priority = ?, depends_on = ?, work_kind = ?, profile_override = ?, profile_source = ?, progress = ?, next_checkpoint = ?, result = ?, accepted_assignment = ?, updated_at = ?
+        `UPDATE tasks SET title = ?, summary = ?, brief = ?, priority = ?, depends_on = ?, work_kind = ?, profile_override = ?, profile_source = ?, progress = ?, next_checkpoint = ?, result = ?, accepted_assignment = ?, updated_at = ?
          WHERE project_id = ? AND num = ?`,
       )
       .run(
         next.title,
         next.summary,
         json(next.brief),
-        next.status,
         next.priority,
         JSON.stringify(next.dependsOn),
         next.workKind,
@@ -2173,6 +2332,114 @@ export class Store {
       );
     this.touchProject(projectId);
     return this.task(projectId, num)!;
+  }
+
+  // Rules ------------------------------------------------------------------
+
+  rules(projectId: string, includeRemoved = false): RuleRecord[] {
+    return (this.db
+      .prepare(`SELECT * FROM rules WHERE project_id = ? AND (? OR removed_at IS NULL) ORDER BY removed_at IS NOT NULL, position, num`)
+      .all(projectId, Number(includeRemoved)) as Row[]).map(toRule);
+  }
+
+  rule(projectId: string, num: number): RuleRecord | null {
+    const row = this.db.prepare(`SELECT * FROM rules WHERE project_id = ? AND num = ?`).get(projectId, num) as Row | undefined;
+    return row ? toRule(row) : null;
+  }
+
+  /** Appends a rule; numbers are never reused, removed rules included. */
+  addRule(projectId: string, text: string, sources: string[] = []): RuleRecord {
+    const num = this.nextNum("rules", projectId);
+    const position = (this.db.prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS p FROM rules WHERE project_id = ? AND removed_at IS NULL`).get(projectId) as { p: number }).p;
+    const now = this.now();
+    this.db
+      .prepare(`INSERT INTO rules (project_id, num, text, position, sources, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(projectId, num, text, position, JSON.stringify(sources), now, now);
+    return this.rule(projectId, num)!;
+  }
+
+  updateRule(projectId: string, num: number, patch: { text?: string; sources?: string[]; removed?: boolean }): RuleRecord {
+    const current = this.rule(projectId, num);
+    if (!current) throw new Error(`Unknown rule ${ruleRef(num)}`);
+    const now = this.now();
+    this.db
+      .prepare(`UPDATE rules SET text = ?, sources = ?, removed_at = ?, updated_at = ? WHERE project_id = ? AND num = ?`)
+      .run(patch.text ?? current.text, JSON.stringify(patch.sources ?? current.sources),
+        patch.removed === undefined ? current.removedAt : patch.removed ? now : null, now, projectId, num);
+    return this.rule(projectId, num)!;
+  }
+
+  /** Writes the live rules' order: `order` lists every live rule number once. */
+  orderRules(projectId: string, order: number[]) {
+    const update = this.db.prepare(`UPDATE rules SET position = ?, updated_at = ? WHERE project_id = ? AND num = ?`);
+    const now = this.now();
+    order.forEach((num, index) => update.run(index + 1, now, projectId, num));
+  }
+
+  /** The live rules become exactly `rules`, numbers, order, text and sources (an import). */
+  replaceRules(projectId: string, rules: { num: number; text: string; sources: string[] }[]) {
+    const now = this.now();
+    const keep = new Set(rules.map((r) => r.num));
+    for (const live of this.rules(projectId))
+      if (!keep.has(live.num)) this.db.prepare(`UPDATE rules SET removed_at = ?, updated_at = ? WHERE project_id = ? AND num = ?`).run(now, now, projectId, live.num);
+    const upsert = this.db.prepare(`INSERT INTO rules (project_id, num, text, position, sources, created_at, updated_at, removed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(project_id, num) DO UPDATE SET text = excluded.text, position = excluded.position,
+      sources = excluded.sources, updated_at = excluded.updated_at, removed_at = NULL`);
+    rules.forEach((r, index) => upsert.run(projectId, r.num, r.text, index + 1, JSON.stringify(r.sources), now, now));
+  }
+
+  /** How many live rules there are and when the list last changed (null: never). */
+  rulesStamp(projectId: string): { count: number; changedAt: number | null } {
+    const row = this.db
+      .prepare(`SELECT SUM(removed_at IS NULL) AS count, MAX(updated_at) AS changed FROM rules WHERE project_id = ?`)
+      .get(projectId) as { count: number | null; changed: number | null };
+    return { count: Number(row.count ?? 0), changedAt: row.changed === null ? null : Number(row.changed) };
+  }
+
+  // PR states ----------------------------------------------------------------
+
+  prState(url: string): PrStateRecord | null {
+    const row = this.db.prepare(`SELECT * FROM pr_states WHERE url = ?`).get(url) as Row | undefined;
+    return row
+      ? { url: String(row.url), state: row.state as PrStateRecord["state"], mergedAt: (row.merged_at as number | null) ?? null,
+          closedAt: (row.closed_at as number | null) ?? null, checkedAt: Number(row.checked_at), error: (row.error as string | null) ?? null }
+      : null;
+  }
+
+  /** The open-PR list names these: they are open. MERGED is final and never reopens. */
+  markPrsOpen(urls: Iterable<string>, at: number) {
+    const upsert = this.db.prepare(`INSERT INTO pr_states (url, state, checked_at) VALUES (?, 'OPEN', ?)
+      ON CONFLICT(url) DO UPDATE SET state = 'OPEN', closed_at = NULL, error = NULL, checked_at = excluded.checked_at WHERE pr_states.state <> 'MERGED'`);
+    this.tx(() => { for (const url of urls) upsert.run(url, at); });
+  }
+
+  /** One lookup's answer; a failed lookup stamps checked_at with its error and keeps the state. */
+  savePrLookup(url: string, at: number, result: { state: PrStateRecord["state"]; mergedAt: number | null; closedAt: number | null } | { error: string }) {
+    if ("error" in result)
+      this.db.prepare(`INSERT INTO pr_states (url, state, checked_at, error) VALUES (?, 'OPEN', ?, ?)
+        ON CONFLICT(url) DO UPDATE SET checked_at = excluded.checked_at, error = excluded.error`).run(url, at, result.error);
+    else
+      this.db.prepare(`INSERT INTO pr_states (url, state, merged_at, closed_at, checked_at, error) VALUES (?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(url) DO UPDATE SET state = excluded.state, merged_at = excluded.merged_at, closed_at = excluded.closed_at,
+        checked_at = excluded.checked_at, error = NULL WHERE pr_states.state <> 'MERGED'`).run(url, result.state, result.mergedAt, result.closedAt, at);
+  }
+
+  /**
+   * The tracked PRs a lookup pass may check: every PR record and every PR a task's work reports
+   * name, except those in the open list just fetched, MERGED ones and those checked within
+   * `freshMs`; oldest check first, never checked first of all.
+   */
+  prsToLookUp(listed: ReadonlySet<string>, now: number, limit: number, freshMs = 60 * 60_000): string[] {
+    const tracked = new Set((this.db.prepare(`SELECT DISTINCT url FROM pr_records`).all() as { url: string }[]).map((r) => r.url));
+    for (const row of this.db.prepare(`SELECT report FROM assignments WHERE role = 'work' AND task_nums <> '[]' AND report IS NOT NULL`).all() as { report: string }[])
+      for (const url of reportPrs(parseStored(row.report))) tracked.add(url);
+    return [...tracked]
+      .filter((url) => !listed.has(url))
+      .map((url) => ({ url, state: this.prState(url) }))
+      .filter(({ state }) => state?.state !== "MERGED" && (!state || now - state.checkedAt >= freshMs))
+      .sort((a, b) => (a.state?.checkedAt ?? -Infinity) - (b.state?.checkedAt ?? -Infinity))
+      .slice(0, limit)
+      .map(({ url }) => url);
   }
 
   // Workers ----------------------------------------------------------------
@@ -2310,7 +2577,9 @@ export class Store {
       | "writeScope"
       | "scopeRelease"
       | "handoffSources"
+      | "replyTo"
     > & {
+      replyTo?: string | null;
       writeScope?: string[] | null;
       handoffSources?: HandoffSource[] | null;
       access?: AssignmentAccess;
@@ -2322,8 +2591,8 @@ export class Store {
     const now = this.now();
     this.db
       .prepare(
-        `INSERT INTO assignments (project_id, num, worker_num, task_nums, route, role, work_kind, thread_id, generation, profile, bb_project_id, environment_id, state, op_id, op_state, brief_text, review_of, rationale, review_key, pending_identity, label, access, write_scope, handoff_sources, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO assignments (project_id, num, worker_num, task_nums, route, role, work_kind, thread_id, generation, profile, bb_project_id, environment_id, state, op_id, op_state, brief_text, review_of, rationale, review_key, pending_identity, label, access, write_scope, handoff_sources, reply_to, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.projectId,
@@ -2350,6 +2619,7 @@ export class Store {
         input.role === "review" ? "read-only" : input.access ?? "write",
         json(input.writeScope ?? null),
         json(input.handoffSources?.length ? input.handoffSources : null),
+        input.replyTo ?? null,
         now,
         now,
       );
@@ -3047,13 +3317,16 @@ export class Store {
     return `${row.n}:${row.at}:${row.seq}`;
   }
 
-  /** W224: the assignments whose brief or report names a GitHub PR, oldest first; the report as stored JSON. */
+  /**
+   * W224: the assignments whose brief or report names a GitHub PR, oldest first; the report as
+   * stored JSON, the brief without its shared appendix (ownBriefText).
+   */
   prMentions(projectId: string): { num: number; workerNum: number; role: string; brief: string; report: string | null }[] {
     const rows = this.db.prepare(`SELECT num, worker_num, role, brief_text, report FROM assignments
       WHERE project_id = ? AND (brief_text LIKE '%github.com/%/pull/%' OR report LIKE '%github.com/%/pull/%') ORDER BY num`)
       .all(projectId) as Row[];
     return rows.map((row) => ({ num: row.num as number, workerNum: row.worker_num as number, role: row.role as string,
-      brief: (row.brief_text as string | null) ?? "", report: (row.report as string | null) ?? null }));
+      brief: ownBriefText((row.brief_text as string | null) ?? ""), report: (row.report as string | null) ?? null }));
   }
 
   /**
@@ -3073,7 +3346,7 @@ export class Store {
     return {
       assignments: read("SELECT num, worker_num, brief_text, report FROM assignments WHERE project_id = ? AND $match",
         ["brief_text", "report"], named, assignmentNums)
-        .map((row) => ({ num: Number(row.num), workerNum: Number(row.worker_num), brief: String(row.brief_text ?? ""), report: String(row.report ?? "") })),
+        .map((row) => ({ num: Number(row.num), workerNum: Number(row.worker_num), brief: ownBriefText(String(row.brief_text ?? "")), report: String(row.report ?? "") })),
       decisions: read("SELECT num, title || ' ' || body AS text FROM knowledge WHERE project_id = ? AND kind = 'decision' AND $match", ["title", "body"])
         .map((row) => ({ num: Number(row.num), text: String(row.text) })),
       updates: read("SELECT num, summary, body, created_at FROM updates WHERE project_id = ? AND $match ORDER BY num DESC", ["summary", "body"])

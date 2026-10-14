@@ -10,7 +10,7 @@ afterEach(() => { for (const slot of slots.splice(0)) slot.unmount(); cleanup();
 const recorder = { author: "coordinator" as const, threadId: "coordinator", assignment: null };
 
 describe("T112 dashboard tiers (A264)", () => {
-  it("a newer summary keeps a new agent decision in the Inbox while history is older or failing", async () => {
+  it("a newer summary keeps the Archive's record while history is older or failing", async () => {
     const { f, project } = await projectFixture();
     f.service.recordDecision(project.id, { decision: { description: "Settled user choice", madeBy: "user" } }, recorder);
     let summary: unknown = await f.harness.callRpc("overview", { projectId: project.id, detail: "summary" });
@@ -22,18 +22,21 @@ describe("T112 dashboard tiers (A264)", () => {
       return oldHistory;
     });
     const slot = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview } }); slots.push(slot);
-    fireEvent.click(await slot.findByRole("tab", { name: "Decisions" }));
+    fireEvent.click(await slot.findByRole("button", { name: "More views" }));
+    fireEvent.click(slot.getByRole("button", { name: "Archive" }));
     await slot.findByText("Settled user choice");
     fireEvent.click(slot.getByRole("tab", { name: /^Inbox/ }));
-    f.service.recordDecision(project.id, { decision: { description: "New pending agent choice", madeBy: "agent" } }, recorder);
+    f.service.recordDecision(project.id, { decision: { description: "New agent choice", madeBy: "agent" } }, recorder);
     summary = await f.harness.callRpc("overview", { projectId: project.id, detail: "summary" });
     historyFailed = true;
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: project.id });
     await slot.findByText("History unavailable");
-    await waitFor(() => expect(slot.getAllByText("New pending agent choice").length).toBeGreaterThan(0));
-    expect(slot.queryByText("You’re up to date.")).toBeNull();
+    // v9: agent decisions are not reviewed, so the Inbox stays clear.
+    expect(slot.getByText("You’re up to date.")).toBeTruthy();
     // The record still lists the settled choice from history.
-    fireEvent.click(slot.getByRole("tab", { name: "Decisions" }));
+    fireEvent.click(slot.getByRole("button", { name: "More views" }));
+    fireEvent.click(slot.getByRole("button", { name: "Archive" }));
     expect(slot.getByText("Settled user choice")).toBeTruthy();
   });
+
 });

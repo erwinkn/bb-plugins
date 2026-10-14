@@ -31,30 +31,31 @@ function header(threadId: string, options: { discussions: string[]; listed?: Ret
   slots.push(slot);
   return slot;
 }
-const ids = (group: Group) => group?.tabs.map((t) => (t.pinned ? `${t.threadId} (${t.label}, pinned)` : t.threadId));
+const ids = (group: Group) => group?.tabs.map((t) => (t.pinned ? `${t.threadId} (${t.label ?? "title"}, pinned)` : t.threadId));
 
+// v9 §9: tab labels are thread titles; the plugin sets no label, so BB shows each thread's title.
 describe("T149 the tabs of an Initiative's coordinator and discussions", () => {
   it("pins the coordinator first, then the discussions oldest first, then +", async () => {
     header("d1", { discussions: ["d1", "d2"], listed: [sidebarThread("c"), sidebarThread("d1"), sidebarThread("d2")] });
-    await waitFor(() => expect(ids(last)).toEqual(["c (Coordinator, pinned)", "d1", "d2"]));
+    await waitFor(() => expect(ids(last)).toEqual(["c (title, pinned)", "d1", "d2"]));
     expect(last!.create!.label).toBe("New discussion");
   });
 
   it("hides archived and deleted discussions, except in their own header (D483)", async () => {
     const listed = [sidebarThread("c"), sidebarThread("a1", true), sidebarThread("a2")];
     header("a2", { discussions: ["a1", "a2", "a3"], listed });
-    await waitFor(() => expect(ids(last)).toEqual(["c (Coordinator, pinned)", "a2"]));
+    await waitFor(() => expect(ids(last)).toEqual(["c (title, pinned)", "a2"]));
     cleanup();
     header("a1", { discussions: ["a1", "a2", "a3"], listed });
-    await waitFor(() => expect(ids(last)).toEqual(["c (Coordinator, pinned)", "a1", "a2"]));
+    await waitFor(() => expect(ids(last)).toEqual(["c (title, pinned)", "a1", "a2"]));
   });
 
   it("shows only its own tab until BB's list is ready, and every tab when that list failed", async () => {
     header("l1", { discussions: ["l1", "l2"], status: "loading" });
-    await waitFor(() => expect(ids(last)).toEqual(["c (Coordinator, pinned)", "l1"]));
+    await waitFor(() => expect(ids(last)).toEqual(["c (title, pinned)", "l1"]));
     cleanup();
     header("e1", { discussions: ["e1", "e2"], status: "error" });
-    await waitFor(() => expect(ids(last)).toEqual(["c (Coordinator, pinned)", "e1", "e2"]));
+    await waitFor(() => expect(ids(last)).toEqual(["c (title, pinned)", "e1", "e2"]));
   });
 
   it("+ opens the new discussion, and fails visibly when BB did not confirm it (D458)", async () => {

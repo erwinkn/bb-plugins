@@ -73,11 +73,13 @@ describe("A96 lightweight decisions and safe history", () => {
   it("new configurations advertise only initiative tools and current guidance", async () => {
     const { f, project } = await projectFixture();
     const c = await config(f);
-    expect(c.tools.map(tool => tool.name)).toContain("initiative_decision");
+    // v9: the decision log is retired; questions and rules replace it, and initiative_decision is a hidden alias.
+    expect(c.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["initiative_question", "initiative_rule"]));
+    expect(c.tools.map(tool => tool.name)).not.toContain("initiative_decision");
     expect(c.tools.every(tool => tool.name.startsWith("initiative_"))).toBe(true);
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     const w = await config(f, worker.threadId!);
-    expect(w.tools.map(tool => tool.name).sort()).toEqual(["initiative_decision", "initiative_message", "initiative_pr", "initiative_read", "initiative_report"]);
+    expect(w.tools.map(tool => tool.name).sort()).toEqual(["initiative_message", "initiative_pr", "initiative_read", "initiative_report"]);
     for (const instructions of [c.instructions!, w.instructions!, DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) {
       expect(instructions).not.toMatch(/proposedKnowledge|knowledge-review|scoped knowledge|project_read|project_report/);
       expect(instructions.length).toBeLessThanOrEqual(4096);
@@ -85,17 +87,6 @@ describe("A96 lightweight decisions and safe history", () => {
     expect(f.stop).not.toHaveBeenCalled();
   });
 
-  it("workers distinguish their agent choices from explicitly stated user choices", async () => {
-    const { f, project } = await projectFixture();
-    const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
-    const result = await f.harness.callAgentTool("initiative_decision", { action: "decision", ...choice() }, { threadId: worker.threadId! });
-    // W215: the result is a short receipt; who recorded it is on the stored record.
-    expect(JSON.parse(result as string)).toEqual({ ref: "D1", madeBy: "agent", status: "active", review: "pending" });
-    expect(f.store.decisionItem(project.id, 1)!.provenance).toMatchObject({ author: "worker", threadId: worker.threadId! });
-    const stated = await f.harness.callAgentTool("initiative_decision", { action: "decision", ...choice("Erwin chose the Linux checkout.", "user") }, { threadId: worker.threadId! });
-    expect(JSON.parse(stated as string)).toMatchObject({ madeBy: "user", review: null });
-    expect(f.store.decisionItem(project.id, 2)!.provenance).toMatchObject({ author: "worker", threadId: worker.threadId! });
-  });
 
   it("agent revisions cannot silently supersede an explicit user choice or another worker's choice", async () => {
     const { f, project } = await projectFixture();

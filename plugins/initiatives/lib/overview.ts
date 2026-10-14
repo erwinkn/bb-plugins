@@ -1,6 +1,8 @@
+import { preSwitchLine } from "./cutover";
 import type { NotDeliveredMessage } from "./not-delivered";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
-import { BUSY_STATUSES } from "./bb";
+import { BUSY_STATUSES, type Running } from "./bb";
+import type { WaitingOn } from "./context";
 import { blockerAnswerItem, blockerKey, dismissalItem, openBlockers, undismissed } from "./blockers";
 import { describeProfile } from "./policy";
 import { buildUsage, unloadedUsage, type InitiativeUsage } from "./usage";
@@ -204,6 +206,53 @@ export interface WorkerItem {
     window: number | null;
     estimated: boolean | null;
   };
+  /** v9: the lead tab its work reports to, when that isn't the coordinator tab ("Chat 2"). */
+  lead: string | null;
+  /** v9: its open assignment, if any. */
+  open: { ref: string; state: string; tasks: string[] } | null;
+  /** v9: its latest report, with the pre-switch line for work given out before the switch. */
+  latestReport: { ref: string; outcome: string; summary: string; question: string | null; reportedAt: number | null; preSwitch: string | null } | null;
+  /** Its latest work's stop reason (a failed thread says why). */
+  stopReason: string | null;
+  /** Total tokens recorded for its thread (the full tier only). */
+  tokens: number | null;
+  /** When its current work started: the open assignment's creation, else its latest one's, else the worker's. */
+  since: number;
+  /** The PRs its records name. */
+  prs: { url: string; stage: string | null }[];
+}
+
+/** v9: one BB child thread (a reviewer, a helper, theirs), from BB's own thread row: one row of a childPage. */
+export interface WorkerChild {
+  threadId: string;
+  title: string;
+  status: string;
+  archived: boolean;
+  /** What still runs in it (running()); null when it is quiet. */
+  running: Running | null;
+  providerId: string | null;
+  updatedAt: number;
+}
+
+/** v9: what a worker's descendants are doing as far as the cache knows (RunningChildren.waitingOn). */
+export interface WorkerWaiting {
+  /** A running descendant it waits on. */
+  on: WaitingOn | null;
+  /** False while part of its tree has never been listed (just after a reload): no answer yet. */
+  checked: boolean;
+}
+
+/** v9: a task with its shown status and why (computed unless set by hand). */
+export interface TaskItem {
+  ref: string;
+  title: string;
+  status: TaskStatus;
+  statusReason: string;
+  setByHand: boolean;
+  /** The stored description, which the task editor edits. */
+  summary: string;
+  workers: string[];
+  updatedAt: number;
 }
 
 /**
@@ -315,6 +364,14 @@ export interface Overview {
   activity: { at: number; kind: string; summary: string }[];
   /** Messages BB is holding for member threads with nothing running to deliver them (T133); filled by the server's native read. */
   notDelivered?: NotDeliveredMessage[];
+  /** v9: tasks with their shown status; done and cancelled ones only with history (`history`, `full`). */
+  tasks: TaskItem[];
+  /** v9 (D523): the standing rules, in order. */
+  rules: { ref: string; text: string; sources: string[] }[];
+  /** v9: each live worker's descendants as the server's cache knows them (W# →); no native read. */
+  workerWaiting?: Record<string, WorkerWaiting>;
+  /** v9: the lead tabs by thread id → label (the coordinator tab included). */
+  leadTabs: Record<string, string>;
 }
 
 /** Assignment states where work is still owed; reported work is separate. */
@@ -534,18 +591,8 @@ export function buildOverview(
       const unmet = task.dependsOn.filter(
         (num) => taskByNum.get(num)?.status !== "done",
       );
-      const questions = blockingQuestions.get(task.num) ?? [];
-      const reportedBy = assignments.filter(a => a.taskNums.includes(task.num) && a.state === "reported").at(-1);
-      const why =
-        task.status === "awaiting_acceptance" || (reportedBy && task.status === "in_progress")
-          ? `Reported by ${reportedBy ? workerRef(reportedBy.workerNum) : (latestOwner(task) ?? "a worker")}; open until it is closed.`
-          : questions.length
-            ? `Waiting for your opinion on ${questions.map((item) => item.ref).join(", ")}.`
-            : unmet.length
-              ? `Waiting on ${unmet.map(taskRef).join(", ")}.`
-              : task.status === "blocked"
-                ? (task.progress ?? "Blocked.")
-                : "Not given out yet.";
+      // v9: why it stands where it does is its computed status's reason (or "set by hand").
+      const why = unmet.length ? `Waiting on ${unmet.map(taskRef).join(", ")}.` : task.statusReason || "Not given out yet.";
       return {
         ref: task.ref,
         title: task.title,
@@ -674,6 +721,32 @@ export function buildOverview(
         window: usage?.contextWindow ?? null,
         estimated: usage?.contextEstimated ?? null,
       },
+      ...workerFacts(worker),
+    };
+  };
+  // v9: the facts the Workers tab shows, all from recorded data.
+  const prRecords = store.prRecords(projectId);
+  const leadTabs: Record<string, string> = {};
+  if (project.coordinatorThreadId) leadTabs[project.coordinatorThreadId] = "Coordinator";
+  for (const t of store.projectThreads(projectId)) if (t.discussion && t.threadId && store.membership(t.threadId)?.discussion) leadTabs[t.threadId] = t.label;
+  const workerFacts = (worker: WorkerRecord) => {
+    const mine = assignments.filter((a) => a.workerNum === worker.num);
+    const open = mine.find((a) => OPEN_STATES.includes(a.state));
+    const latest = open ?? mine.at(-1);
+    const reported = mine.filter((a) => a.report).at(-1);
+    const usage = worker.threadId ? usageByThread.get(worker.threadId) : undefined;
+    const total = usage ? (usage.sessionTotals?.total ?? 0) + (usage.closedTotals.total ?? 0) : null;
+    return {
+      lead: latest?.replyTo && latest.replyTo !== project.coordinatorThreadId ? leadTabs[latest.replyTo] ?? null : null,
+      open: open ? { ref: open.ref, state: open.state, tasks: open.taskNums.map(taskRef) } : null,
+      latestReport: reported?.report
+        ? { ref: reported.ref, outcome: reported.report.outcome === "succeeded" ? "done" : reported.report.outcome, summary: reported.report.summary,
+            question: reported.report.blocker?.question ?? null, reportedAt: reported.reportedAt, preSwitch: preSwitchLine(reported) }
+        : null,
+      stopReason: latest?.stopReason ?? null,
+      tokens: total,
+      since: (open ?? latest)?.createdAt ?? worker.createdAt,
+      prs: [...prRecords.values()].filter((r) => r.worker === worker.ref || mine.some((a) => a.ref === r.assignment)).map((r) => ({ url: r.url, stage: r.stage })),
     };
   };
 
@@ -813,6 +886,19 @@ export function buildOverview(
           since: t.createdAt,
         })),
     ],
+    // Done and cancelled tasks (folded on the Tasks tab) come with the history tier.
+    tasks: tasks.filter((task) => history || !["done", "cancelled"].includes(task.status)).map((task) => ({
+      ref: task.ref,
+      title: task.title,
+      status: task.status,
+      statusReason: task.statusReason,
+      setByHand: task.statusSetAt !== null,
+      summary: task.summary,
+      workers: [...new Set(assignments.filter((a) => a.role === "work" && a.taskNums.includes(task.num)).map((a) => workerRef(a.workerNum)))],
+      updatedAt: task.updatedAt,
+    })),
+    rules: store.rules(projectId).map((r) => ({ ref: r.ref, text: r.text, sources: r.sources })),
+    leadTabs,
     workers: {
       current: workers
         .filter((worker) => worker.state !== "retired")
@@ -916,7 +1002,8 @@ export function buildSummary(store: Store, projectId: string) {
   const assignments = store.db.prepare("SELECT state,task_nums FROM assignments WHERE project_id=?").all(projectId) as { state: string; task_nums: string }[];
   const active = assignments.filter(a => OPEN_STATES.includes(a.state as AssignmentRecord["state"]));
   const assigned = new Set<number>(active.flatMap(a => JSON.parse(a.task_nums)));
-  const tasks = store.db.prepare("SELECT num,status FROM tasks WHERE project_id=?").all(projectId) as { num: number; status: string }[];
+  // v9: the shown status is computed from the work and its PRs (Store.tasks).
+  const tasks = store.tasks(projectId).map((t) => ({ num: t.num, status: t.status }));
   const attention = store.db.prepare("SELECT human_attention,decision_owner,decision_review FROM knowledge WHERE project_id=? AND status='active' AND kind='decision'").all(projectId) as { human_attention: string; decision_owner: string | null; decision_review: string | null }[];
   const opinions = attention.filter(d => d.human_attention === "needs-opinion").length;
   const blocked = summaryBlockers(store, projectId, tasks);

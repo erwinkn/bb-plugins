@@ -85,6 +85,9 @@ function overview() {
       why: "Waiting for your opinion on privacy.",
     },
   ];
+  o.tasks = [
+    { ref: "T2", title: "Result descriptions", status: "planned", statusReason: "no worker yet", setByHand: false, summary: "", workers: [], updatedAt: Date.now() },
+  ];
   o.opinionNeeded = [
     {
       ref: "K1",
@@ -130,23 +133,18 @@ function mount(
   mounted.push(slot);
   return slot;
 }
+/** The coordinator chip opens Open thread and Replace (v9 §10). */
+const coordinatorChip = /^Coordinator · /;
+async function openReplace(slot: ReturnType<typeof mount>) {
+  fireEvent.click(await slot.findByRole("button", { name: coordinatorChip }));
+  fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+}
+/** Activity, Usage and Archive sit behind ⋯. */
+async function openView(slot: ReturnType<typeof mount>, name: "Activity" | "Usage" | "Archive") {
+  fireEvent.click(await slot.findByRole("button", { name: "More views" }));
+  fireEvent.click(slot.getByRole("button", { name }));
+}
 describe("project dashboard", () => {
-  it.each(["in-flight", "reported"] as const)("A108 labels coordinator checkpoint provenance in existing %s report details", async stage => {
-    const o = overview();
-    const checkpoint = { recordedBy: "coordinator", recordedAt: Date.now(), sourceThreadId: "worker-thread" };
-    o.inFlight = stage === "in-flight" ? [{ ...o.inFlight[0]!, assignment: "A9", tasks: [{ ref: "T9", title: "Checkpointed work" }], checkpoint }] : [];
-    o.awaitingAcceptance = stage === "reported" ? [{ assignment: "A9", role: "work", tasks: [{ ref: "T9", title: "Checkpointed work" }], owner: { worker: "W9", label: "Builder", threadId: "worker-thread" }, outcome: "succeeded", summary: "Verified checkpoint", finalMessage: null, reportedAt: Date.now(), checkpoint }] : [];
-    const command = vi.fn();
-    const slot = mount({ list: () => [], overview: () => o, command });
-    fireEvent.click(await slot.findByRole("tab", { name: "Tasks" }));
-    const region = slot.getByRole("region", { name: stage === "in-flight" ? "In flight" : "Reported" });
-    const summary = within(region).getByText("Checkpointed work").closest("summary")!;
-    fireEvent.click(summary);
-    expect(summary.parentElement?.hasAttribute("open")).toBe(true);
-    const label = within(region).getByText("Coordinator checkpoint");
-    expect(label.getAttribute("title")).toBe(stage === "in-flight" ? "Recorded by the coordinator from W2" : "Recorded by the coordinator from W9");
-    expect(command).not.toHaveBeenCalled();
-  });
 
   it("T57 quiet answers explicitly disable notification without a confirmation flow", async () => {
     const command = vi.fn().mockResolvedValue({});
@@ -172,7 +170,7 @@ describe("project dashboard", () => {
     fireEvent.click(await slot.findByRole("button", { name: "Close quietly" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0].command).toEqual({ action: "question-close", decision: "K1", note: "" });
-    fireEvent.click(slot.getByRole("tab", { name: "Decisions" }));
+    await openView(slot, "Archive");
     fireEvent.click(await slot.findByText("Closed questions · 1"));
     expect(slot.getByText("D1 · Closed quietly · No answer recorded")).toBeTruthy();
     expect(within(slot.getByText("D1 · Closed quietly · No answer recorded").closest("article")!).queryByText("Yours")).toBeNull();
@@ -191,7 +189,7 @@ describe("project dashboard", () => {
     fireEvent.click(await slot.findByRole("radio", { name: /Exclude Private notes/ }));
     fireEvent.click(slot.getByRole("button", { name: "Send answer" }));
     await waitFor(() => expect(slot.getByRole("alert").textContent).toContain("answer saved"));
-    fireEvent.click(slot.getByRole("tab", { name: "Decisions" }));
+    await openView(slot, "Archive");
     const row = await slot.findByRole("article", { name: "D1" });
     expect(within(row).getByText("Yours")).toBeTruthy();
     expect(within(row).queryByRole("button", { name: /^Okay$/ })).toBeNull();
@@ -229,8 +227,7 @@ describe("project dashboard", () => {
   it("A94 forwards the chosen native model, reasoning and tier from the existing picker", async () => {
     const command = vi.fn().mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => overview(), command });
-    await slot.findByRole("button", { name: "Replace coordinator" });
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openReplace(slot);
     fireEvent.click(slot.getByRole("checkbox", { name: "Choose a different model" }));
     fireEvent.change(slot.getByLabelText("Provider ID"), { target: { value: "codex" } });
     fireEvent.change(slot.getByLabelText("Model"), { target: { value: "gpt-6.1-sol" } });
@@ -255,22 +252,19 @@ describe("project dashboard", () => {
     o.workers.current[0]!.profile = "codex / gpt-6.1-sol / high / fast";
     db.close();
     const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("tab", { name: /Threads/ });
-    fireEvent.click(slot.getByRole("tab", { name: /Threads/ }));
-    fireEvent.click(slot.getByRole("button", { name: "Details for W1 Search" }));
-    await slot.findByText("Recorded worker profile: codex / gpt-6.1-sol / high / fast");
+    fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
+    fireEvent.click(slot.getByRole("button", { name: "W1 Search" }));
+    const detail = slot.getByRole("region", { name: "W1 details" });
+    expect(within(detail).getByText(/gpt-6\.1-sol/).textContent).toContain("gpt-6.1-sol");
+    expect(within(slot.getByRole("region", { name: "Working" })).getByTitle("codex / gpt-6.1-sol / high / fast")).toBeTruthy();
   });
+
 
   it("starts a replacement using the selected model and the reviewed handover", async () => {
     const o = overview();
     const command = vi.fn().mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => o, command });
-    await waitFor(() =>
-      expect(
-        slot.getByRole("button", { name: "Replace coordinator" }),
-      ).toBeTruthy(),
-    );
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openReplace(slot);
     expect((slot.getByLabelText(/^Handover/) as HTMLTextAreaElement).value).toBe("Written handover");
     fireEvent.change(slot.getByLabelText(/^Handover/), {
       target: {
@@ -298,8 +292,7 @@ describe("project dashboard", () => {
   it("W188: an untouched preview is not sent, so the service checks it is still current", async () => {
     const command = vi.fn().mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => overview(), command });
-    await slot.findByRole("button", { name: "Replace coordinator" });
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openReplace(slot);
     expect((slot.getByLabelText(/^Handover/) as HTMLTextAreaElement).value).toBe("Written handover");
     fireEvent.click(slot.getByRole("button", { name: "Start replacement" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
@@ -310,8 +303,7 @@ describe("project dashboard", () => {
     const command = vi.fn().mockResolvedValue({});
     const read = vi.fn(() => o);
     const slot = mount({ list: () => [], overview: read, command });
-    await slot.findByRole("button", { name: "Replace coordinator" });
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openReplace(slot);
     const box = () => slot.getByLabelText(/^Handover/) as HTMLTextAreaElement;
     expect(box().value).toBe("Written handover");
     const refresh = async (text: string) => {
@@ -326,7 +318,7 @@ describe("project dashboard", () => {
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0].command).not.toHaveProperty("handover");
     // Once the user edits, their text stays and is sent, whatever the shared draft does.
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openReplace(slot);
     fireEvent.change(box(), { target: { value: "Erwin's own words." } });
     await refresh("Another shared draft");
     expect(box().value).toBe("Erwin's own words.");
@@ -339,9 +331,9 @@ describe("project dashboard", () => {
     const o = overview();
     const slot = mount({ list: () => [], overview: () => o });
     await slot.findByRole("tab", { name: /Inbox/ });
-    expect(slot.getAllByRole("tab")).toHaveLength(8);
+    expect(slot.getAllByRole("tab")).toHaveLength(5);
     expect(slot.queryByRole("heading", { name: "Useful search" })).toBeNull();
-    expect(slot.getByRole("region", { name: "Needs your input" })).toBeTruthy();
+    expect(slot.getByRole("region", { name: "Questions" })).toBeTruthy();
     expect(
       slot.getByText(
         "Teammates could discover content that used to be private.",
@@ -350,14 +342,14 @@ describe("project dashboard", () => {
     expect(slot.getByText("Private notes stay invisible.")).toBeTruthy();
     expect(slot.getByText("Exclude until access controls exist")).toBeTruthy();
     fireEvent.click(slot.getByRole("tab", { name: /Tasks/ }));
-    expect(slot.getByRole("region", { name: "In flight" })).toBeTruthy();
-    expect(slot.getByRole("region", { name: "Remaining" })).toBeTruthy();
-    fireEvent.click(slot.getByText("Search verification"));
+    expect(within(slot.getByRole("region", { name: "Planned" })).getByText("Result descriptions")).toBeTruthy();
     expect(slot.queryByRole("button", { name: "Accept review" })).toBeNull();
-    fireEvent.click(slot.getByRole("tab", { name: "Log" }));
+    await openView(slot, "Activity");
+    expect(slot.getByRole("tab", { name: "Activity" }).getAttribute("aria-selected")).toBe("true");
     fireEvent.click(slot.getByText(o.updates[0]!.summary));
     expect(slot.getByText(o.updates[0]!.body)).toBeTruthy();
   });
+
   it("preserves an opinion draft on a failed save, then submits the explicit answer", async () => {
     const o = overview();
     const command = vi
@@ -425,7 +417,7 @@ describe("project dashboard", () => {
     });
     await waitFor(() =>
       expect(
-        slot.getByRole("button", { name: /Coordinator:.*Open thread/ }),
+        slot.getByRole("button", { name: coordinatorChip }),
       ).toBeTruthy(),
     );
   });
@@ -440,7 +432,7 @@ describe("project dashboard", () => {
     const first = renderSlot(app.threadPanelActions[0], { threadId: "worker", params: {} }, { rpc: rpc() });
     const header = renderSlot(app.threadHeaderActions[0], { threadId: "worker", projectId: "proj_a", isCompactViewport: false }, { rpc: rpc() });
     mounted.push(first, header);
-    await waitFor(() => expect(first.getByRole("button", { name: /Coordinator:.*Open thread/ })).toBeTruthy());
+    await waitFor(() => expect(first.getByRole("button", { name: coordinatorChip })).toBeTruthy());
     await waitFor(() => expect(header.getByRole("button", { name: "Initiative overview: Useful search" })).toBeTruthy());
     expect(calls).toEqual(["panel"]);
     first.unmount();
@@ -449,7 +441,7 @@ describe("project dashboard", () => {
     calls.length = 0;
     const revisit = renderSlot(app.threadPanelActions[0], { threadId: "worker", params: {} }, { rpc: rpc(new Promise(() => {})) });
     mounted.push(revisit);
-    expect(revisit.getByRole("button", { name: /Coordinator:.*Open thread/ })).toBeTruthy();
+    expect(revisit.getByRole("button", { name: coordinatorChip })).toBeTruthy();
     await waitFor(() => expect(calls).toEqual(["panel"]));
   });
   it("creates a coordinator in the selected checkout", async () => {
@@ -458,9 +450,10 @@ describe("project dashboard", () => {
     const command = vi
       .fn()
       .mockResolvedValue({ project: { id: "created" }, note });
-    const slot = mount(
-      {
-        list: () => [],
+    // D536: no Initiatives overview; a thread outside any Initiative starts one from its panel.
+    const slot = renderSlot(app.threadPanelActions[0], { threadId: "loose", params: {} }, { rpc: {
+        panel: () => ({ membership: null, summary: null, tabs: null }),
+        overview: () => overview(),
         inventory: () => [
           {
             id: "repo",
@@ -475,13 +468,13 @@ describe("project dashboard", () => {
             ],
           },
         ],
-        command,
-      },
-      "new",
-    );
+        command: answersLikeServer(command),
+      } });
+    mounted.push(slot);
     await waitFor(() =>
       expect(slot.getByRole("checkbox", { name: "Repository" })).toBeTruthy(),
     );
+    fireEvent.click(slot.getByRole("checkbox", { name: "Use this thread as the coordinator" }));
     fireEvent.change(slot.getByLabelText("Initiative name"), {
       target: { value: "Search" },
     });
@@ -518,8 +511,7 @@ describe("project dashboard", () => {
     };
     const command = vi.fn().mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => o, command });
-    await slot.findByRole("tab", { name: "Context" });
-    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
     await waitFor(() =>
       expect(
         slot.getByText("Every answer traces back to a source thread."),
@@ -527,7 +519,7 @@ describe("project dashboard", () => {
     );
     expect(slot.getByText(/Ship archive search/)).toBeTruthy();
     expect(slot.getByText(/Per-thread index shards/)).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "Edit" }));
+    fireEvent.click(slot.getByRole("button", { name: "Edit purpose and objectives" }));
     fireEvent.change(slot.getByLabelText("Vision"), {
       target: { value: "Search the team can trust." },
     });
@@ -573,16 +565,15 @@ describe("project dashboard", () => {
       return Promise.resolve({});
     });
     const slot = mount({ list: () => [], overview: () => current, command });
-    await slot.findByRole("tab", { name: "Context" });
-    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
     await waitFor(() =>
-      expect(slot.getByRole("button", { name: "Edit" })).toBeTruthy(),
+      expect(slot.getByRole("button", { name: "Edit purpose and objectives" })).toBeTruthy(),
     );
-    fireEvent.click(slot.getByRole("button", { name: "Edit" }));
+    fireEvent.click(slot.getByRole("button", { name: "Edit purpose and objectives" }));
     fireEvent.change(slot.getByLabelText("Vision"), {
       target: { value: "Draft in progress" },
     });
-    fireEvent.click(slot.getByRole("button", { name: "Initiative menu" }));
+    fireEvent.click(slot.getByRole("button", { name: /Initiative menu/ }));
     fireEvent.click(slot.getByRole("button", { name: "Pause" }));
     await waitFor(() =>
       expect(slot.getByRole("button", { name: "Resume" })).toBeTruthy(),
@@ -603,12 +594,11 @@ describe("project dashboard", () => {
       )
       .mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => current, command });
-    await slot.findByRole("tab", { name: "Context" });
-    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
     await waitFor(() =>
-      expect(slot.getByRole("button", { name: "Edit" })).toBeTruthy(),
+      expect(slot.getByRole("button", { name: "Edit purpose and objectives" })).toBeTruthy(),
     );
-    fireEvent.click(slot.getByRole("button", { name: "Edit" }));
+    fireEvent.click(slot.getByRole("button", { name: "Edit purpose and objectives" }));
     fireEvent.change(slot.getByLabelText("Vision"), {
       target: { value: "My draft vision" },
     });
@@ -648,7 +638,7 @@ describe("project dashboard", () => {
     expect(sent.context.vision).toBe("My draft vision");
     expect(sent.expected.objective).toBe("New coordinator purpose");
     await waitFor(() =>
-      expect(slot.getByRole("button", { name: "Edit" })).toBeTruthy(),
+      expect(slot.getByRole("button", { name: "Edit purpose and objectives" })).toBeTruthy(),
     );
   });
   it("treats an option literally named __other__ as a normal choice", async () => {
@@ -754,8 +744,7 @@ describe("project dashboard", () => {
     ];
     o.decisions = [{ ref: "K3", description: "Flat · Flat keeps the migration small.", madeBy: "user", review: null, reviewMessage: null, notification: null, recordedBy: { author: "coordinator", threadId: "coordinator", assignment: null }, updatedAt: Date.now() }];
     const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("tab", { name: "Decisions" });
-    fireEvent.click(slot.getByRole("tab", { name: "Decisions" }));
+    await openView(slot, "Archive");
     const row = slot.getByRole("article", { name: "K3" });
     expect(within(row).getByText("Flat · Flat keeps the migration small.")).toBeTruthy();
     expect(within(row).getByText("Yours")).toBeTruthy();
@@ -767,9 +756,9 @@ describe("project dashboard", () => {
   it("keeps telemetry off the dashboard and shows unavailable usage on its page", async () => {
     const o = overview();
     const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("button", { name: /Coordinator:.*Open thread/ });
+    await slot.findByRole("button", { name: coordinatorChip });
     expect(slot.queryByRole("heading", { name: "Observed usage" })).toBeNull();
-    fireEvent.click(slot.getByRole("tab", { name: "Usage" }));
+    await openView(slot, "Usage");
     await slot.findByText("Coverage and definitions");
     expect(slot.queryByRole("heading", { name: "Observed usage" })).toBeNull();
     expect(slot.getAllByText("n/a").length).toBeGreaterThan(0);
@@ -779,7 +768,7 @@ describe("project dashboard", () => {
       slot.getByText(/0 \/ 1 recorded generation\/member threads/),
     ).toBeTruthy();
     fireEvent.click(slot.getByRole("tab", { name: /Inbox/ }));
-    await slot.findByRole("button", { name: /Coordinator:.*Open thread/ });
+    await slot.findByRole("button", { name: coordinatorChip });
   });
 
   it("renders endpoint totals, provenance, working staleness and paired wall coverage", async () => {
@@ -812,8 +801,7 @@ describe("project dashboard", () => {
     o.usage.totals = thread.totals;
     o.usage.reportingThreads = 1;
     const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("button", { name: /Coordinator:.*Open thread/ });
-    fireEvent.click(slot.getByRole("tab", { name: "Usage" }));
+    await openView(slot, "Usage");
     expect(slot.getAllByText("1K").length).toBeGreaterThan(0);
     const row = slot.getAllByText("Coordinator G1")[0]!.closest("details")!;
     fireEvent.click(row.querySelector("summary")!);
@@ -847,8 +835,7 @@ describe("project dashboard", () => {
       .mockRejectedValueOnce(new Error("Replacement refused"))
       .mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => o, command });
-    await slot.findByRole("button", { name: "Replace coordinator" });
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openReplace(slot);
     fireEvent.change(slot.getByLabelText(/^Handover/), {
       target: { value: "Preserve this checkpoint" },
     });
@@ -915,201 +902,8 @@ describe("project dashboard", () => {
     ).toBe(true);
   });
 
-  it("keeps each native thread primary action separate from its caret, including nested and retained generations", async () => {
-    const o = overview();
-    const template = o.memberThreads[0]!;
-    o.memberThreads = [
-      { ...template, parentKnown: true, parentThreadId: null },
-      {
-        ...template,
-        threadId: "worker",
-        workerNum: 1,
-        label: "Builder",
-        ownership: "worker",
-        parentThreadId: "coordinator",
-        parentKnown: true,
-        generation: 2,
-      },
-      {
-        ...template,
-        threadId: "nested",
-        label: "Nested child",
-        ownership: "user",
-        parentThreadId: "worker",
-        parentKnown: true,
-        generation: null,
-      },
-      {
-        ...template,
-        threadId: "user",
-        label: "My investigation",
-        ownership: "user",
-        parentThreadId: "coordinator",
-        parentKnown: true,
-        generation: null,
-      },
-      {
-        ...template,
-        threadId: "old-worker",
-        workerNum: 1,
-        label: "Builder",
-        ownership: "worker",
-        parentThreadId: null,
-        parentKnown: false,
-        generation: 1,
-        retained: true,
-      },
-    ];
-    const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("tab", { name: /Threads/ });
-    fireEvent.click(slot.getByRole("tab", { name: /Threads/ }));
-    // W224: the tab is part of the page's route, replaced in place.
-    expect(slot.navigateCalls).toEqual([expect.objectContaining({ method: "toPluginPanel", path: "initiatives" })]);
-    slot.navigateCalls.length = 0;
-    fireEvent.click(
-      slot.getByRole("button", { name: "Details for W1 Builder" }),
-    );
-    expect(slot.navigateCalls).toHaveLength(0);
-    expect(
-      slot
-        .getByRole("button", { name: "Details for W1 Builder" })
-        .getAttribute("aria-expanded"),
-    ).toBe("true");
-    expect(slot.getAllByText(/Yours/)).toHaveLength(2);
-    expect(slot.queryByText(/parentless|Your threads/)).toBeNull();
-    for (const [name, id] of [
-      ["Coordinator", "coordinator"],
-      ["W1 Builder", "worker"],
-      ["Nested child", "nested"],
-      ["My investigation", "user"],
-    ]) {
-      fireEvent.click(slot.getByRole("button", { name: `Open ${name}` }));
-      expect(JSON.stringify(slot.navigateCalls.at(-1))).toContain(id);
-    }
-    const nested = slot
-      .getByRole("button", { name: "Open Nested child" })
-      .closest(".cr-thread") as HTMLElement;
-    expect(nested.style.getPropertyValue("--depth")).toBe("2");
-    fireEvent.click(
-      slot.getByRole("button", { name: /Earlier threads/ }),
-    );
-    const prior = slot.getAllByRole("button", { name: "Open W1 Builder" });
-    expect(prior).toHaveLength(2);
-    fireEvent.click(prior[1]!);
-    expect(JSON.stringify(slot.navigateCalls.at(-1))).toContain("old-worker");
-    expect(slot.queryByText("old-worker")).toBeNull();
-  });
 
-  it("folds native archived direct and nested conversations, excludes deleted navigation, and keeps unknown members current", async () => {
-    const { db, store } = memoryStore();
-    store.createProject({
-      id: "p1",
-      name: "Archive regression",
-      objective: "Keep native history honest",
-      memberProjectIds: ["repo"],
-      coordinatorThreadId: "coordinator",
-    });
-    const live = new Map<string, LiveThread>([
-      [
-        "coordinator",
-        {
-          status: "idle",
-          archived: false,
-          title: "Coordinator",
-          parentThreadId: null,
-        },
-      ],
-    ]);
-    for (const [id, parent, state] of [
-      ["current", "coordinator", "idle"],
-      ["child", "current", "idle"],
-      ["archived", "coordinator", "archived"],
-      ["archived-child", "current", "archived"],
-      ["deleted", "coordinator", "deleted"],
-      ["deleted-child", "current", "deleted"],
-      ["unknown", "coordinator", "unknown"],
-    ]) {
-      if (parent === "coordinator")
-        store.associateProjectThread({
-          projectId: "p1",
-          opId: id!,
-          threadId: id!,
-          label: id!,
-          bbProjectId: "repo",
-        });
-      else
-        store.associateNestedThread({
-          projectId: "p1",
-          threadId: id!,
-          label: id!,
-          bbProjectId: "repo",
-        });
-      if (state !== "unknown")
-        live.set(id!, {
-          status: state === "archived" ? "idle" : state!,
-          archived: state === "archived" || state === "deleted",
-          title: id!,
-          parentThreadId: parent!,
-        });
-    }
-    const o = buildOverview(store, "p1", live, Date.now());
-    db.close();
-    const recorded = o.usage.threads.map((t) => t.threadId);
-    const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("tab", { name: /Threads/ });
-    fireEvent.click(slot.getByRole("tab", { name: /Threads/ }));
-    for (const id of ["archived", "archived-child", "deleted", "deleted-child"])
-      expect(slot.queryByRole("button", { name: `Open ${id}` })).toBeNull();
-    expect(slot.getByRole("tab", { name: /Threads/ }).textContent).toBe("Threads");
-    for (const id of ["current", "child", "unknown"])
-      expect(slot.getByRole("button", { name: `Open ${id}` })).toBeTruthy();
-    expect(
-      (
-        slot
-          .getByRole("button", { name: "Open child" })
-          .closest(".cr-thread") as HTMLElement
-      ).style.getPropertyValue("--depth"),
-    ).toBe("2");
-    fireEvent.click(
-      slot.getByRole("button", { name: /Earlier threads/ }),
-    );
-    for (const id of ["archived", "archived-child"]) {
-      fireEvent.click(slot.getByRole("button", { name: `Details for ${id}` }));
-      expect(slot.getByText(/archived · User-owned conversation/)).toBeTruthy();
-      fireEvent.click(slot.getByRole("button", { name: `Open ${id}` }));
-      expect(JSON.stringify(slot.navigateCalls.at(-1))).toContain(id);
-    }
-    for (const id of ["deleted", "deleted-child"])
-      expect(slot.queryByRole("button", { name: `Open ${id}` })).toBeNull();
-    expect(o.memberThreads.find((t) => t.threadId === "deleted")).toMatchObject(
-      { nativeStatus: "deleted", retained: false },
-    );
-    expect(o.memberThreads.find((t) => t.threadId === "unknown")).toMatchObject(
-      { nativeStatus: null, runtime: "unknown" },
-    );
-    expect(o.usage.threads.map((t) => t.threadId)).toEqual(recorded);
-    expect(recorded).toEqual(
-      expect.arrayContaining([
-        "archived",
-        "archived-child",
-        "deleted",
-        "deleted-child",
-        "unknown",
-      ]),
-    );
-  });
 
-  it("A96 New thread opens native compose immediately without a custom form or create call", async () => {
-    const command = vi.fn();
-    const slot = mount({ list: () => [], overview: () => overview(), command });
-    await slot.findByRole("tab", { name: /Threads/ });
-    fireEvent.click(slot.getByRole("tab", { name: /Threads/ }));
-    fireEvent.click(slot.getByRole("button", { name: /New thread/ }));
-    expect(slot.navigateCalls.at(-1)).toEqual({ method: "toPluginPanel", path: "initiatives", options: { subPath: "p1/compose" } });
-    expect(command).not.toHaveBeenCalled();
-    expect(slot.queryByLabelText("First message")).toBeNull();
-    expect(slot.queryByLabelText("Title (optional)")).toBeNull();
-  });
 
   it("A96 native composer preserves native controls and submits its structured input before navigating", async () => {
     const command = vi.fn().mockResolvedValue({ threadId: "owned-child", note: null });
@@ -1151,10 +945,10 @@ describe("project dashboard", () => {
       });
     const slot = mount({ list: () => [], overview: () => current, command });
     await slot.findByText("New coordinator started. Confirming its checkout; this settles on its own.");
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openReplace(slot);
     fireEvent.click(slot.getByRole("button", { name: "Start replacement" }));
     await slot.findByText(/cannot be proven/);
-    fireEvent.click(slot.getByRole("button", { name: "Initiative menu" }));
+    fireEvent.click(slot.getByRole("button", { name: /Initiative menu/ }));
     fireEvent.click(slot.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(slot.queryByText(/cannot be proven/)).toBeNull());
     expect(slot.queryByText(/Confirming its checkout/)).toBeNull();
@@ -1165,166 +959,102 @@ describe("project dashboard", () => {
     const slot = mount({ list: () => [], overview: () => o });
     await slot.findByRole("tab", { name: /Inbox/ });
     const tabs = slot.getAllByRole("tab");
-    expect(tabs.map(t => t.textContent)).toEqual(["Inbox1", "Decisions", "Threads", "Tasks", "PRs", "Context", "Log", "Usage"]);
-    for (const id of ["inbox", "decisions", "threads", "tasks", "context", "log", "usage"])
-      expect(tabs.some(t => t.textContent!.includes(id))).toBe(false);
-    // Secondary views carry a real glyph for the narrowest strip, never text.
-    for (const tab of tabs.slice(4)) expect(tab.querySelector(".cr-tab-icon svg")).toBeTruthy();
+    expect(tabs.map(t => t.textContent)).toEqual(["Inbox1", "Workers", "PRs", "Tasks", "Rules"]);
+    // The PR tab carries a real glyph for the narrowest strip, never text.
+    expect(tabs[2]!.querySelector(".cr-tab-icon svg")).toBeTruthy();
     expect(tabs[0]!.querySelector(".cr-count--hot")).toBeTruthy();
+    // v9: no Threads, Decisions, Context or Log tab; Activity, Usage and Archive sit behind ⋯.
+    fireEvent.click(slot.getByRole("button", { name: "More views" }));
+    expect(within(slot.getByRole("group", { name: "More views" })).getAllByRole("button").map(b => b.textContent)).toEqual(["Activity", "Usage", "Archive"]);
   });
 
-  it("A99 Inbox lists your requests first, then unchecked agent decisions; reports and settled choices stay out", async () => {
+
+  it("v9 the Inbox lists questions, blocked workers and what was not delivered; agent decisions are no longer reviewed", async () => {
     const o = overview();
     const at = Date.now();
     const decision = (ref: string, description: string, extra: Partial<typeof o.decisions[number]> = {}): typeof o.decisions[number] => ({ ref, description, madeBy: "agent", review: "pending", reviewMessage: null, notification: null, recordedBy: { author: "coordinator", threadId: "coordinator", assignment: null }, updatedAt: at, ...extra });
     o.decisions = [
       decision("D1", "Reuse the existing index for this release."),
-      decision("D2", "Limit the first import to one repository.", { recordedBy: { author: "worker", threadId: "w", assignment: 2 } }),
-      decision("D3", "Already checked.", { review: "okay" }),
       decision("D4", "Use the main checkout.", { madeBy: "user", review: null }),
     ];
-    o.awaitingAcceptance = [{ assignment: "A8", role: "work", tasks: [{ ref: "T8", title: "Delivered work" }], owner: { worker: "W8", label: "Builder", threadId: "r" }, outcome: "succeeded", summary: "Verified", finalMessage: null, reportedAt: at }];
     const command = vi.fn();
     const slot = mount({ list: () => [], overview: () => o, command });
     await slot.findByRole("tab", { name: /Inbox/ });
-    expect(slot.getByRole("tab", { name: /Inbox/ }).textContent).toBe("Inbox3");
+    expect(slot.getByRole("tab", { name: /Inbox/ }).textContent).toBe("Inbox1");
     const inbox = slot.getByRole("tabpanel");
     const sections = Array.from(inbox.querySelectorAll("section")).map(s => s.getAttribute("aria-label"));
-    expect(sections).toEqual(["Needs your input", "Agent decisions to check"]);
-    const checks = within(slot.getByRole("region", { name: "Agent decisions to check" })).getAllByRole("article");
-    expect(checks.map(c => c.getAttribute("aria-label"))).toEqual(["D2", "D1"]);
-    expect(within(checks[0]!).getByText("Limit the first import to one repository.")).toBeTruthy();
-    expect(within(checks[0]!).getByText("Worker")).toBeTruthy();
-    expect(within(checks[1]!).getByText("Coordinator")).toBeTruthy();
-    for (const check of checks) {
-      expect(within(check).getByRole("button", { name: "Okay" })).toBeTruthy();
-      expect(within(check).getByRole("button", { name: "Not okay" })).toBeTruthy();
-    }
-    expect(within(inbox).queryByText("Already checked.")).toBeNull();
-    expect(within(inbox).queryByText("Use the main checkout.")).toBeNull();
-    expect(within(inbox).queryByText("Delivered work")).toBeNull();
-    fireEvent.click(slot.getByRole("tab", { name: "Tasks" }));
-    expect(within(slot.getByRole("region", { name: "Reported" })).getByText("Delivered work")).toBeTruthy();
+    expect(sections).toEqual(["Questions"]);
+    expect(within(inbox).queryByText("Reuse the existing index for this release.")).toBeNull();
+    expect(slot.queryByRole("button", { name: /^Okay$|^Not okay$|Accept all/ })).toBeNull();
     expect(command).not.toHaveBeenCalled();
   });
 
-  it("A99 an empty Inbox says you are up to date, with a neutral count for checks only", async () => {
+
+  it("A99 an empty Inbox says you are up to date, and an unchecked agent decision does not count", async () => {
     const o = overview();
     o.opinionNeeded = [];
+    o.decisions = [{ ref: "D5", description: "Keep it.", madeBy: "agent", review: "pending", reviewMessage: null, notification: null, recordedBy: { author: "coordinator", threadId: "c", assignment: null }, updatedAt: Date.now() }];
     const slot = mount({ list: () => [], overview: () => o });
     await slot.findByRole("tab", { name: /Inbox/ });
     expect(slot.getByText("You’re up to date.")).toBeTruthy();
     expect(slot.getByRole("tab", { name: /Inbox/ }).textContent).toBe("Inbox");
-    o.decisions = [{ ref: "D5", description: "Keep it.", madeBy: "agent", review: "pending", reviewMessage: null, notification: null, recordedBy: { author: "coordinator", threadId: "c", assignment: null }, updatedAt: Date.now() }];
-    const second = mount({ list: () => [], overview: () => o });
-    await waitFor(() => expect(second.getAllByRole("tab", { name: /Inbox/ }).at(-1)!.textContent).toBe("Inbox1"));
-    expect(second.container.querySelector(".cr-count--hot")).toBeNull();
+    expect(slot.container.querySelector(".cr-count--hot")).toBeNull();
   });
 
-  it("A99 Decisions keeps the full record and separates agent choices from yours", async () => {
+
+  it("A99 Archive keeps the full record, read-only, and separates agent choices from yours", async () => {
     const o = overview();
     const at = Date.now();
     o.decisions = [
-      { ref: "D1", description: "Agent choice.", madeBy: "agent", review: "not-okay", reviewMessage: "Use a smaller index.", notification: { op: "o", state: "sent", coordinatorThreadId: "c" }, recordedBy: { author: "worker", threadId: "w", assignment: 1 }, updatedAt: at },
+      { ref: "D1", description: "Agent choice.", madeBy: "agent", review: "pending", reviewMessage: null, notification: null, recordedBy: { author: "worker", threadId: "w", assignment: 1 }, updatedAt: at },
       { ref: "D2", description: "Your choice.", madeBy: "user", review: null, reviewMessage: null, notification: null, recordedBy: { author: "user", threadId: null, assignment: null }, updatedAt: at },
     ] as typeof o.decisions;
     const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("tab", { name: "Decisions" });
-    fireEvent.click(slot.getByRole("tab", { name: "Decisions" }));
+    await openView(slot, "Archive");
     const panel = slot.getByRole("tabpanel");
     expect(within(panel).getAllByRole("article").map(a => a.getAttribute("aria-label"))).toEqual(["D2", "D1"]);
-    expect(within(slot.getByRole("article", { name: "D1" })).getByText("Not okay")).toBeTruthy();
+    expect(within(panel).queryByRole("button", { name: /^Okay$|^Not okay$|Accept all/ })).toBeNull();
     fireEvent.click(within(panel).getByRole("button", { name: "Yours" }));
     expect(within(panel).getAllByRole("article").map(a => a.getAttribute("aria-label"))).toEqual(["D2"]);
     fireEvent.click(within(panel).getByRole("button", { name: "Agents" }));
     expect(within(panel).getAllByRole("article").map(a => a.getAttribute("aria-label"))).toEqual(["D1"]);
-    fireEvent.click(within(panel).getByRole("button", { name: "Show all of D1" }));
-    expect(within(panel).getByText("Use a smaller index.")).toBeTruthy();
   });
 
-  it("A96 decision rejection requires and sends a message while Okay is one click", async () => {
-    const o = overview(); o.revisit = [];
-    o.decisions = [{ ref: "D1", description: "Reuse the index.", madeBy: "agent", review: "pending", reviewMessage: null, notification: null, recordedBy: { author: "worker", threadId: "worker", assignment: 1 }, updatedAt: Date.now() }];
-    const command = vi.fn().mockResolvedValue({});
-    const slot = mount({ list: () => [], overview: () => o, command });
-    await slot.findByRole("tab", { name: /Inbox/ });
-    expect(slot.getByText("D1")).toBeTruthy();
-    expect(slot.getByText("Reuse the index.")).toBeTruthy();
-    expect(slot.queryByText(/quote|citation/i)).toBeNull();
-    fireEvent.click(slot.getByRole("button", { name: /^Okay$/ }));
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
-    expect(command.mock.calls[0][0].command).toEqual({ action: "decision-review", decision: "D1", verdict: "okay", message: "" });
-    fireEvent.click(slot.getByRole("button", { name: /^Not okay$/ }));
-    expect((slot.getByRole("button", { name: "Send and mark not okay" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(slot.getByLabelText("Message to coordinator"), { target: { value: "Use a smaller index." } });
-    fireEvent.click(slot.getByRole("button", { name: "Send and mark not okay" }));
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
-    expect(command.mock.calls[1][0].command).toEqual({ action: "decision-review", decision: "D1", verdict: "not-okay", message: "Use a smaller index." });
-  });
+
 
   it("A96 tab labels are not repeated as headings and legacy records are absent from active UI", async () => {
     const slot = mount({ list: () => [], overview: () => overview(), command: vi.fn() });
     await slot.findByRole("tab", { name: /Tasks/ });
-    for (const name of ["Tasks", "Context", "Usage"]) {
+    for (const name of ["Workers", "Tasks", "Rules"]) {
       fireEvent.click(slot.getByRole("tab", { name: new RegExp(name) }));
       expect(slot.queryByRole("heading", { name })).toBeNull();
     }
+    await openView(slot, "Usage");
+    expect(slot.queryByRole("heading", { name: "Usage" })).toBeNull();
     expect(slot.queryByText(/Knowledge and decisions/)).toBeNull();
   });
 
-  it("closes a reported task and retires its worker with real ledger actions, showing the final message (T136)", async () => {
-    const o = overview();
-    o.awaitingAcceptance = [
-      {
-        assignment: "A8",
-        role: "work",
-        tasks: [{ ref: "T8", title: "Delivered work" }],
-        owner: { worker: "W8", label: "Builder", threadId: "report-thread" },
-        outcome: "succeeded",
-        summary: "Verified behavior",
-        finalMessage: "Verified behavior.\n\nRan npm test: 14 passed. Nothing uncommitted.",
-        reportedAt: Date.now(),
-      },
-    ];
-    const command = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("Close refused"))
-      .mockResolvedValue({});
-    const slot = mount({ list: () => [], overview: () => o, command });
-    await slot.findByRole("tab", { name: "Tasks" });
-    fireEvent.click(slot.getByRole("tab", { name: "Tasks" }));
-    fireEvent.click(slot.getByText("Delivered work"));
-    expect(slot.getByText(/Ran npm test: 14 passed/)).toBeTruthy();
-    expect(slot.queryByRole("button", { name: "Accept T8" })).toBeNull();
-    fireEvent.click(slot.getByRole("button", { name: "Close T8" }));
-    await slot.findByText("Close refused");
-    expect(command.mock.calls[0]![0].command).toEqual({ action: "task-close", task: "T8", outcome: "done" });
-    fireEvent.click(slot.getByRole("button", { name: "Retire W8" }));
-    fireEvent.change(slot.getByLabelText("Reason for retire w8"), { target: { value: "Batch finished" } });
-    fireEvent.click(slot.getByRole("button", { name: "Confirm retire w8" }));
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
-    expect(command.mock.calls[1]![0].command).toEqual({ action: "worker-retire", worker: "W8", reason: "Batch finished" });
-  });
+
 
   it("preserves answer and context drafts across tabs and replacement inspection", async () => {
     const o = overview();
     const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("tab", { name: "Context" });
+    await slot.findByRole("tab", { name: "Rules" });
     fireEvent.click(
       slot.getByRole("radio", { name: "Other Write your own answer." }),
     );
     fireEvent.change(slot.getByLabelText("Your answer"), {
       target: { value: "My pending answer" },
     });
-    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
-    fireEvent.click(slot.getByRole("button", { name: "Edit" }));
+    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
+    fireEvent.click(slot.getByRole("button", { name: "Edit purpose and objectives" }));
     fireEvent.change(slot.getByLabelText("Vision"), {
       target: { value: "My pending vision" },
     });
-    fireEvent.click(slot.getByRole("tab", { name: "Usage" }));
-    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    await openView(slot, "Usage");
+    await openReplace(slot);
     fireEvent.click(slot.getByRole("button", { name: "Close replacement" }));
-    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
+    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
     expect((slot.getByLabelText("Vision") as HTMLTextAreaElement).value).toBe(
       "My pending vision",
     );
@@ -1334,6 +1064,7 @@ describe("project dashboard", () => {
     ).toBe("My pending answer");
     expect(slot.queryByRole("heading", { name: "Observed usage" })).toBeNull();
   });
+
 
   it("keeps repositories and Pause inside the panel and dismisses its menu with Escape", async () => {
     const o = overview();
@@ -1361,8 +1092,8 @@ describe("project dashboard", () => {
         { id: "second", name: "Second repo", environments: [] },
       ],
     });
-    await slot.findByRole("button", { name: "Initiative menu" });
-    fireEvent.click(slot.getByRole("button", { name: "Initiative menu" }));
+    await slot.findByRole("button", { name: /Initiative menu/ });
+    fireEvent.click(slot.getByRole("button", { name: /Initiative menu/ }));
     fireEvent.click(slot.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0]![0].command).toEqual({
@@ -1371,7 +1102,7 @@ describe("project dashboard", () => {
     });
     fireEvent.keyDown(document, { key: "Escape" });
     expect(slot.queryByRole("button", { name: "Pause" })).toBeNull();
-    fireEvent.click(slot.getByRole("button", { name: "Initiative menu" }));
+    fireEvent.click(slot.getByRole("button", { name: /Initiative menu/ }));
     fireEvent.click(slot.getByRole("button", { name: "Repositories" }));
     expect(await slot.findByText("/code/repo")).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Add a BB project" }));
@@ -1408,7 +1139,7 @@ describe("project dashboard", () => {
       title: "Describe each result",
       summary: "Explain the source match",
     });
-    fireEvent.click(slot.getByRole("tab", { name: "Log" }));
+    await openView(slot, "Activity");
     fireEvent.click(slot.getByText("Record an update"));
     fireEvent.change(slot.getByLabelText("Update summary"), {
       target: { value: "Accepted scope" },
@@ -1441,9 +1172,9 @@ describe("project dashboard", () => {
     const inbox = await slot.findByRole("tab", { name: /Inbox/ });
     fireEvent.keyDown(inbox, { key: "End" });
     expect(
-      slot.getByRole("tab", { name: "Usage" }).getAttribute("aria-selected"),
+      slot.getByRole("tab", { name: "Rules" }).getAttribute("aria-selected"),
     ).toBe("true");
-    fireEvent.keyDown(slot.getByRole("tab", { name: "Usage" }), {
+    fireEvent.keyDown(slot.getByRole("tab", { name: "Rules" }), {
       key: "ArrowRight",
     });
     expect(
@@ -1468,7 +1199,7 @@ describe("project dashboard", () => {
         { id: "repo", name: "Repository", environments: [] },
       ]);
     const slot = mount({ list: () => [], overview: () => o, inventory });
-    fireEvent.click(await slot.findByRole("tab", { name: "Context" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
     await slot.findByText("Inventory unavailable");
     expect(inventory).toHaveBeenCalledTimes(1);
     fireEvent.click(slot.getByRole("button", { name: "Retry" }));
@@ -1476,7 +1207,7 @@ describe("project dashboard", () => {
       expect(slot.queryByText("Inventory unavailable")).toBeNull(),
     );
     expect(inventory).toHaveBeenCalledTimes(2);
-    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
+    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
     expect(slot.getByText("Repository")).toBeTruthy();
     expect(inventory).toHaveBeenCalledTimes(2);
   });

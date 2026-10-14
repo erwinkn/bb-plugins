@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { manageCommand, manageToolSchema, messageCommand, messageToolSchema, spawnCommand, spawnToolSchema, taskCommand, taskToolSchema, workerCommand, workerToolSchema } from "../lib/agent-tools";
+import { manageCommand, manageToolSchema, messageCommand, messageToolSchema, questionToolSchema, ruleCommand, ruleToolSchema, spawnCommand, spawnToolSchema, taskCommand, taskToolSchema, workerCommand, workerToolSchema } from "../lib/agent-tools";
+import { prToolSchema } from "../lib/pr-stages";
 import { parseDecisionCommand, REMOVED_ACTIONS } from "../lib/commands";
 import { agentReadSchema, readOptionsSchema, validateFields, validateSelection, viewForRef, withImpliedDetail, type ReadView } from "../lib/read";
 
@@ -37,7 +38,7 @@ function extract(text: string, start: number) {
 }
 
 const BY_KEY: Record<string, string> = { ref: "D12", supersedes: "D12", decision: "D12", task: "T4", tasks: "T4", assignment: "A3", to: "W3", worker: "W3", reviews: "W3", refs: "A3", handoffs: "W3" };
-const PLACEHOLDER: Record<string, string> = { "T#": "T4", "W#": "W3", "D#": "D12", "A#": "A3" };
+const PLACEHOLDER: Record<string, string> = { "T#": "T4", "W#": "W3", "D#": "D12", "A#": "A3", "<the PR URL>": "https://github.com/o/r/pull/12" };
 function fill(value: unknown, key = ""): unknown {
   if (Array.isArray(value)) return value.map(v => fill(v, key));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fill(v, k)]));
@@ -47,7 +48,8 @@ function fill(value: unknown, key = ""): unknown {
 }
 
 const DECISION = ["user-choice", "veto-request", "question", "answer", "withdraw", "decision"];
-const TASK = ["create", "update", "close", "reopen"];
+const TASK = ["create", "update", "status", "close", "reopen"];
+const RULE = ["add", "edit", "remove"];
 const WORKER = ["retire", "stop", "adopt"];
 const MANAGE = ["pause", "resume", "stop-work", "archive", "edit", "handover"];
 function toolFor(example: Record<string, unknown>) {
@@ -55,6 +57,7 @@ function toolFor(example: Record<string, unknown>) {
   if (typeof action === "string") {
     if (DECISION.includes(action)) return "initiative_decision";
     if (TASK.includes(action)) return "initiative_task";
+    if (RULE.includes(action)) return "initiative_rule";
     if (WORKER.includes(action)) return "initiative_worker";
     if (MANAGE.includes(action)) return "initiative_manage";
     return null;
@@ -75,6 +78,9 @@ function parseAs(tool: string, raw: Record<string, unknown>) {
     case "initiative_message": return messageCommand(messageToolSchema.parse(raw));
     case "initiative_manage": return manageCommand(manageToolSchema.parse(raw));
     case "initiative_spawn": return spawnCommand(spawnToolSchema.parse(raw));
+    case "initiative_rule": return ruleCommand(ruleToolSchema.parse(raw));
+    case "initiative_question": return questionToolSchema.parse(raw);
+    case "initiative_pr": return prToolSchema.parse(raw);
     case "initiative_read": {
       const { view, category, stage, ...rest } = agentReadSchema.parse(raw);
       const options = withImpliedDetail(readOptionsSchema.parse(rest));
@@ -112,9 +118,9 @@ describe("W188 every suggested call parses through the real API", () => {
   const all = examples();
 
   it("finds the suggested calls (the scan itself works)", () => {
-    // notOpenQuestion's user-choice hints, the read hints, the removed-action replacements.
+    // notOpenQuestion's rule hints, the read hints, the removed-action replacements.
     expect(all.length).toBeGreaterThan(10);
-    expect(all.some(e => e.file === "lib/service.ts" && e.text.includes('"action":"user-choice"') && e.text.includes('"supersedes":"@@"'))).toBe(true);
+    expect(all.some(e => e.file === "lib/service.ts" && e.tool === "initiative_rule" && e.text.includes('"action":"add"'))).toBe(true);
   });
 
   it.each(all.map(e => [`${e.file}:${e.line} ${e.text.slice(0, 90)}`, e] as const))("%s", (_name, example) => {
@@ -131,43 +137,13 @@ describe("W188 every suggested call parses through the real API", () => {
   });
 });
 
-describe("W188 F5: the reviewer re-check the bb-plugins coordinator was refused", () => {
-  // W239 reversed it: reviews are not reused, so either form is refused with the fresh reviewer to spawn.
-  it("refuses work for a reviewer through tasks as well as work:true", async () => {
-    const { projectFixture } = await import("./fake-native");
-    const { f, project } = await projectFixture();
-    const tool = async (name: string, input: unknown) => JSON.parse(await f.harness.callAgentTool(name, input, { threadId: "coordinator" }) as string);
-    let seq = 70_000;
-    const finish = async (threadId: string, text: string) => {
-      const brief = (f.store.db.prepare("SELECT brief_text FROM assignments ORDER BY rowid DESC LIMIT 1").get() as { brief_text: string }).brief_text;
-      const request = `creq_${++seq}`;
-      f.history.push({ threadId, type: "client/turn/requested", seq: ++seq, createdAt: Date.now(), data: { requestId: request, initiator: "agent", input: [{ type: "text", text: brief }] } });
-      f.history.push({ threadId, type: "turn/started", seq: ++seq, createdAt: Date.now() });
-      f.history.push({ threadId, type: "turn/input/accepted", seq: ++seq, createdAt: Date.now(), data: { clientRequestId: request } });
-      f.history.push({ threadId, type: "item/completed", seq: ++seq, createdAt: Date.now(), data: { item: { type: "agentMessage", id: `m${seq}`, text } } });
-      f.history.push({ threadId, type: "turn/completed", seq: ++seq, createdAt: Date.now() + 1, data: { status: "completed" } });
-      await f.runtime.onThreadIdle(f.idle(threadId));
-    };
-    const task = f.task(project.id);
-    const [w] = await tool("initiative_spawn", { label: "Implement", purpose: "work", tasks: [task.ref], text: "Implement" });
-    await finish(w.threadId, "Implemented.");
-    const [r] = await tool("initiative_spawn", { role: "review", reviews: w.worker, label: "Review", purpose: "review", text: "Review it." });
-    await finish(r.threadId, "Two findings.");
-    await tool("initiative_message", { to: w.worker, work: true, tasks: [task.ref], text: "Fix both findings." });
-    await finish(w.threadId, "Fixed both.");
-    // The audit's call: tasks, no work:true.
-    await expect(tool("initiative_message", { to: r.worker, tasks: [task.ref], text: "Re-review the fixes." })).rejects.toThrow(/W2 is a reviewer, and reviews are not reused/);
-    await expect(tool("initiative_message", { to: r.worker, work: true, text: "One more look." })).rejects.toThrow(/initiative_spawn \{role:"review",reviews:"W1",handoffs:\["A2"\]/);
-  });
-});
-
 describe("W188 F5: the CLI", () => {
   it("lists describe in its usage, routes describe decision, and names an unknown subcommand", async () => {
     const { projectFixture } = await import("./fake-native");
     const { f } = await projectFixture();
     const decision = await f.harness.runCli(["describe", "decision"]);
     expect(decision.exitCode).toBe(0);
-    expect(Object.keys(JSON.parse(decision.stdout!))).toEqual(["user-choice", "veto-request", "supersede", "question", "answer", "quiet-answer", "withdraw"]);
+    expect(Object.keys(JSON.parse(decision.stdout!))).toEqual(["question", "answer", "quiet-answer", "withdraw"]);
     const unknown = await f.harness.runCli(["decision", "--help"]);
     expect(unknown.exitCode).toBe(1);
     expect(unknown.stderr).toMatch(/^Unknown subcommand decision\. Usage: bb initiative describe \[name\] \| list/);

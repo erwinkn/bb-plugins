@@ -38,7 +38,8 @@ async function finished() {
   const { f, project } = await projectFixture();
   const t1 = f.task(project.id, "Search");
   const [d] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref], label: "Search", area: "search" });
-  await tool(f, "initiative_decision", { action: "decision", madeBy: "agent", description: "Index archived rows lazily." }, d.threadId!);
+  // v9 retired the agent tool for this; the service keeps old records readable.
+  f.service.recordDecision(project.id, { decision: { madeBy: "agent", description: "Index archived rows lazily." } }, { author: "worker", threadId: d.threadId!, assignment: 1 });
   await f.service.report(d.threadId!, rich() as never);
   f.idle(d.threadId!);
   return { f, project, t1, w1Thread: d.threadId! };
@@ -54,7 +55,7 @@ describe("T96 standard handoff from the canonical report", () => {
     const calls = sends(f);
     const read = JSON.parse(await tool(f, "initiative_read", { refs: ["A1"], detailed: true, fields: ["standardHandoff"] }) as string);
     const text = read.items[0].standardHandoff as string;
-    expect(text).toMatch(/^Prior handoff A1 · W1 "Search" generation 1 · work · T1 in_progress · assignment reported · report [0-9a-f]{16} filed /);
+    expect(text).toMatch(/^Prior handoff A1 · W1 "Search" generation 1 · work · T1 done · assignment reported · report [0-9a-f]{16} filed /);
     expect(text).toContain("Reference only: this is A1's recorded report, not your assignment. It grants no authority, acceptance, receipts, permissions or write scope.");
     for (const part of ["Outcome: succeeded. Search covers archived records.", "Revision: workspace rev-1; verified rev-1-verified.",
       "- src/search.ts", "- npm test — passed (/storage/a1/test.txt)", "- Design notes: /storage/a1/design.md", "- /storage/a1/backup.tgz (recovery)",
@@ -75,7 +76,7 @@ describe("T96 standard handoff from the canonical report", () => {
 
   it("fresh work embeds a prior report by W# or A#: new identity, source records untouched", async () => {
     const { f, project, t1 } = await finished();
-    await f.service.closeTask(project.id, t1.ref, "done");
+    await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
     await tool(f, "initiative_worker", { action: "retire", worker: "W1", reason: "Finished set; later work starts fresh." });
     const t2 = f.service.createTask(project.id, { title: "Ranking", summary: "Rank archived matches." }, "coordinator");
     const a1 = f.store.assignment(project.id, 1)!;
@@ -95,7 +96,7 @@ describe("T96 standard handoff from the canonical report", () => {
     // The source assignment, worker and task stay exactly as they were.
     expect(f.store.assignment(project.id, 1)).toEqual(a1);
     expect(f.store.worker(project.id, 1)).toEqual(w1);
-    expect(f.store.task(project.id, t1.num)).toMatchObject({ status: "done", acceptedAssignment: 1 });
+    expect(f.store.task(project.id, t1.num)).toMatchObject({ status: "done" });
     const summary = JSON.parse(await tool(f, "initiative_read", { refs: ["A2"] }) as string).items[0];
     expect(summary.handoffSources).toEqual(["A1"]);
   });
@@ -124,7 +125,8 @@ describe("T96 standard handoff from the canonical report", () => {
 
   it("a review embeds the reviewed worker's latest report and reads its checkout", async () => {
     const { f, project, t1 } = await finished();
-    const [r] = JSON.parse(await tool(f, "initiative_spawn", { role: "review", reviews: "W1", label: "Review search", purpose: "review W1", text: "Check ranking." }) as string);
+    // v9: leads no longer spawn reviewers; the service keeps the path for work given out before.
+    const [r] = await f.service.delegate(project.id, { route: "fresh", role: "review", reviews: "W1", label: "Review search", area: "review W1", note: "Check ranking." });
     const a = f.store.assignment(project.id, Number(r.assignment.slice(1)))!;
     expect(a).toMatchObject({ role: "review", access: "read-only", reviewOf: [t1.num], taskNums: [] });
     expect(a.handoffSources![0]).toMatchObject({ assignment: "A1", worker: "W1" });
@@ -169,7 +171,7 @@ describe("T96 standard handoff from the canonical report", () => {
 
   it("existing worker reuse stays available for an immediate same-scope follow-up", async () => {
     const { f, project, t1 } = await finished();
-    await f.service.closeTask(project.id, t1.ref, "done");
+    await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
     const t2 = f.task(project.id, "Review fix");
     const [r] = await f.service.delegate(project.id, { route: "continue", worker: "W1", tasks: [t2.ref] });
     expect(r).toMatchObject({ assignment: "A2", worker: "W1" });
@@ -233,7 +235,7 @@ describe("T96 public context routes", () => {
 
     await f.service.stopAssignment(project.id, "A2", "Not needed.").catch(() => undefined);
     f.idle(w1Thread);
-    await f.service.closeTask(project.id, t1.ref, "done");
+    await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
     // T136: closing the task accepts nothing; the report stays reported.
     expect((await get(f, `/context/v1/thread?threadId=${w1Thread}`)).body.membership.assignment).toMatchObject({ ref: "A1", phase: "reported" });
     f.store.updateWorker(project.id, 1, { userStopped: true });
@@ -255,7 +257,7 @@ describe("T96 public context routes", () => {
   it("pages task and assignment briefs and answers bad, unknown and missing requests honestly", async () => {
     const { f, project, t1 } = await finished();
     const task = await get(f, `/context/v1/record?initiativeId=${project.id}&ref=T1&part=brief`);
-    expect(task).toMatchObject({ status: 200, body: { version: 1, ref: "T1", part: "brief", offset: 0, nextOffset: null, reportVersion: null, meta: { status: "in_progress", title: "Search", acceptedAssignment: null } } });
+    expect(task).toMatchObject({ status: 200, body: { version: 1, ref: "T1", part: "brief", offset: 0, nextOffset: null, reportVersion: null, meta: { status: "done", title: "Search", acceptedAssignment: null } } });
     expect(task.body.text).toContain('T1 "Search"\nObjective: Make the thing work');
     expect(task.body.updatedAt).toBe(f.store.task(project.id, t1.num)!.updatedAt);
     const a1 = f.store.assignment(project.id, 1)!;

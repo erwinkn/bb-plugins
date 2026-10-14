@@ -4,6 +4,7 @@ import { renderStandardHandoff } from "./handoffs";
 import { reportVersion } from "./write-holds";
 import { StoreCorruptionError, parseRef, taskRef, workerRef, assignmentRef, type AssignmentRecord, type Store } from "./store";
 import type { AssignmentState } from "./schema";
+import { running, type ActivityFacts, type Running } from "./bb";
 
 /**
  * T96: the read-only context other plugins (Account Pooler warming, Advisor) read over a
@@ -131,12 +132,93 @@ function reviewContext(store: Store, m: NonNullable<ReturnType<typeof membership
   return review && { ref: review.ref, worker: workerRef(review.workerNum), phase: PHASES[review.state], since: review.createdAt };
 }
 
+type ChildRow = ActivityFacts & { parentThreadId?: string | null; title?: string | null; titleFallback?: string | null };
+type Child = { title: string; since: number; running: Running | null; at: number };
+/** A worker's descendant it waits on, as the cache knows it. */
+export interface WaitingOn { threadId: string; title: string; running: Running; since: number }
+
+/**
+ * v9 (§4): what each thread's direct native children are doing (running() decides), so the
+ * thread route can name a worker's running child as the review the Account Pooler keeps it warm
+ * for, and the Workers tab can say a worker waits on one, both without a native read. BB's
+ * lifecycle events keep it current; every complete listing of a parent's children (the sweep's
+ * discovery, Stop's walk) replaces that parent's set, so a reload refills it in the background.
+ * A listing answers as of when it started (begin(), as DiscoveryMemory's epoch): a child an event
+ * touched since keeps the event's word. Memory only, never persisted.
+ */
+export class RunningChildren {
+  private byParent = new Map<string, { listed: boolean; children: Map<string, Child> }>();
+  private epoch = 0;
+  private entry = (thread: ChildRow, known: Child | undefined, at: number, now: number): Child => {
+    const reason = running(thread);
+    return { title: thread.title ?? thread.titleFallback ?? "Thread", since: reason && known?.running ? known.since : now, running: reason, at };
+  };
+  observe(thread: ChildRow, now = Date.now()) {
+    const parent = thread.parentThreadId;
+    if (!parent) return;
+    const set = this.byParent.get(parent) ?? { listed: false, children: new Map<string, Child>() };
+    set.children.set(thread.id, this.entry(thread, set.children.get(thread.id), ++this.epoch, now));
+    this.byParent.set(parent, set);
+  }
+  /** Call before a listing; pass the result to listed with its rows. */
+  begin() {
+    return this.epoch;
+  }
+  /** Every child BB lists under a parent, all pages: the parent's set becomes theirs, bar newer events. */
+  listed(parentThreadId: string, rows: readonly ChildRow[], epoch: number, now = Date.now()) {
+    const known = this.byParent.get(parentThreadId)?.children ?? new Map<string, Child>();
+    const children = new Map<string, Child>();
+    for (const row of rows) {
+      const had = known.get(row.id);
+      children.set(row.id, had && had.at > epoch ? had : this.entry(row, had, epoch, now));
+    }
+    for (const [id, had] of known) if (had.at > epoch && !children.has(id)) children.set(id, had);
+    this.byParent.set(parentThreadId, { listed: true, children });
+  }
+  /** Whether a complete listing of the thread's children has filled its set. */
+  isListed(parentThreadId: string) {
+    return this.byParent.get(parentThreadId)?.listed === true;
+  }
+  /** The newest running child of a thread, if any. */
+  of(parentThreadId: string): { threadId: string; title: string; since: number } | null {
+    const children = [...(this.byParent.get(parentThreadId)?.children ?? new Map<string, Child>()).entries()].filter(([, c]) => c.running);
+    const newest = children.sort((a, b) => b[1].since - a[1].since)[0];
+    return newest ? { threadId: newest[0], title: newest[1].title, since: newest[1].since } : null;
+  }
+  /**
+   * The first running descendant of a thread the cache knows, breadth-first through quiet and
+   * archived children alike, and whether that answer covers the whole tree: `checked` is false
+   * while the thread or any child on the way, archived or not, has never been listed (just after
+   * a reload: BB may have restored a descendant under an archived child meanwhile).
+   */
+  waitingOn(rootId: string): { on: WaitingOn | null; checked: boolean } {
+    let checked = true;
+    const seen = new Set([rootId]);
+    const queue = [rootId];
+    while (queue.length) {
+      const set = this.byParent.get(queue.shift()!);
+      if (!set?.listed) checked = false;
+      for (const [childId, child] of set?.children ?? []) {
+        if (child.running) return { on: { threadId: childId, title: child.title, running: child.running, since: child.since }, checked: true };
+        if (!seen.has(childId)) {
+          seen.add(childId);
+          queue.push(childId);
+        }
+      }
+    }
+    return { on: null, checked };
+  }
+}
+
 /** GET context/v1/thread?threadId= */
-export function threadContext(store: Store, query: URLSearchParams): ContextResponse {
+export function threadContext(store: Store, query: URLSearchParams, children?: RunningChildren): ContextResponse {
   return guard(() => {
     const threadId = required(query, "threadId", /^[\w-]{1,200}$/, "pass a BB thread id");
     const membership = membershipContext(store, threadId);
-    return { threadId, membership: membership && { ...membership, review: reviewContext(store, membership) } };
+    // The shape stays as it was: a running child of a worker is its review in progress.
+    const child = membership?.kind === "worker" && !membership.former ? children?.of(threadId) ?? null : null;
+    const review = membership && (reviewContext(store, membership) ?? (child && { ref: child.threadId, worker: membership.worker, phase: "running", since: child.since, title: child.title }));
+    return { threadId, membership: membership && { ...membership, review } };
   });
 }
 

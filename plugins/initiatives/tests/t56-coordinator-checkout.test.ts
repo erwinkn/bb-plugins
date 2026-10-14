@@ -220,7 +220,7 @@ describe("T56 proven coordinator default checkout", () => {
       pluginMetadata: f.spawn.mock.calls[0][0].pluginMetadata,
     }));
     expect(config.instructions).not.toContain("Read initiative state freely");
-    expect(config.instructions).toContain("once this thread is confirmed");
+    expect(config.instructions).toContain("Initiative reads and changes need confirmed membership");
     // W188 (F5): an unconfirmed coordinator is told it is pending, not that it does not belong.
     expect(JSON.parse(await f.harness.callAgentTool("initiative_read", {}, { threadId: successor.id }) as string)).toMatchObject({ identity: "pending", initiative: { id: project.id }, start: "pending" });
     await expect(f.harness.callAgentTool("initiative_read", {}, { threadId: "stranger" })).rejects.toThrow(/does not belong/);

@@ -38,6 +38,9 @@ export function queueTargets(store: Store, projectId: string): Map<string, strin
   for (const worker of store.workers(projectId))
     if (worker.threadId && worker.state !== "retired") targets.set(worker.threadId, worker.ref);
   if (project.coordinatorThreadId) targets.set(project.coordinatorThreadId, "the coordinator");
+  // v9: discussions are lead tabs; reports and notices reach them too.
+  for (const tab of store.projectThreads(projectId))
+    if (tab.discussion && tab.threadId && store.membership(tab.threadId)?.discussion) targets.set(tab.threadId, `the lead tab "${tab.label}"`);
   return targets;
 }
 

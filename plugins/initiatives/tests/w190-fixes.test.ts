@@ -55,27 +55,7 @@ it("a queued recovery keeps its request until a replacement can be prepared",asy
  expect(f.store.project(project.id)!.coordinatorThreadId).not.toBe("coordinator");
 });
 
-it("a marker received on an interrupted turn continues to identify that work after native resume",async()=>{
- const {f,project}=await projectFixture();
- const [w]=await tool(f,"initiative_spawn",{label:"Work",purpose:"work",text:"Do work"});
- start(f);end(f,"Investigation incomplete","interrupted");
- await f.runtime.onThreadIdle(f.idle(w.threadId));
- // Ordinary user continuation, preserving the existing assignment.
- await tool(f,"initiative_message",{to:w.worker,text:"Continue and finish the existing work."});
- start(f,"Continue and finish the existing work.");end(f,"The assigned work is complete.");
- await f.runtime.onThreadIdle(f.idle(w.threadId));
- expect(f.store.assignment(project.id,1)!.report?.finalMessage).toBe("The assigned work is complete.");
-});
 
-it("legacy adopt with tasks captures the adopted worker's final report",async()=>{
- const {f,project}=await projectFixture();
- const task=f.task(project.id);
- f.threads.set("adopt-me",{...f.threads.get("coordinator")!,id:"adopt-me",parentThreadId:null,status:"active"});
- const r=await tool(f,"initiative_worker",{action:"adopt",threadId:"adopt-me",role:"work",label:"Audit",area:"metrics",tasks:[task.ref]});
- start(f,"Audit the metrics");end(f,"The adopted metrics audit is complete.");
- await f.runtime.onThreadIdle(f.idle("adopt-me"));
- expect(f.store.assignment(project.id,1)!.report?.finalMessage).toBe("The adopted metrics audit is complete.");
-});
 
 it("fallback retains user instructions when the allowed task, objective and note fields fill its budget",async()=>{
  const {f,project}=await projectFixture();
@@ -110,7 +90,7 @@ it("a writer already generating before the tracking-table migration still gets a
 it("saved instructions equal to the first T136 default move to the new default; edited ones stay",async()=>{
  const { fixture } = await import("./fake-native");
  const { DEFAULT_COORDINATOR_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } = await import("../lib/guidance");
- expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
+ expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Don't start reviewers: workers do.");
  const f=fixture({coordinatorInstructions:PREVIOUS_DEFAULTS.coordinator[0]!});
  f.store.setFlag(GUIDANCE_RESET_FLAG);
  await f.preferences.ready;

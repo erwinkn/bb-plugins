@@ -12,8 +12,10 @@ import {
   parentNoticesOf,
   projectHostId,
   promptTexts,
+  running,
   textInput,
   threadExecution,
+  type Running,
   type Sdk,
   type ThreadDto,
   type ThreadListRow,
@@ -22,8 +24,14 @@ import { blockerKey, openBlockers } from "./blockers";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
-import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
-import { briefBoundary, captureHandoverSnapshot, failureText, latestInput, messagesSince, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
+import { briefAppendix, opMarker, ownBriefText, renderAssignment, renderCoordinatorSeed, reviewerCommand, workLoopBlock } from "./brief";
+import { CUTOVER_FLAG, cutoverInstruction, cutoverProjects, preSwitchBlock, preSwitchLine } from "./cutover";
+import { MAX_RULES, formatRulesFile, parseRulesFile, renderRules } from "./rules";
+import type { HandStatus } from "./task-status";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { captureHandoverSnapshot, failureText, latestInput, messagesSince, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
 import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
@@ -41,13 +49,13 @@ import { PrNotes } from "./pr-notes";
 import { prsNamed, reportNote } from "./pr-records";
 import {
   briefSchema,
-  FINAL_MESSAGE_MAX,
   reportSchema,
   decisionSchema,
   policySchema,
   projectContextSchema,
   type Brief,
   type AssignmentAccess,
+  type AssignmentState,
   type Decision,
   type EnvironmentChoice,
   type Policy,
@@ -81,6 +89,7 @@ import {
   type WorkerRecord,
 } from "./store";
 import { DiscoveryMemory, DISCOVERY_PARENT_CAP } from "./discovery";
+import { RunningChildren } from "./context";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
 import { MEMORY_SCOPE_KEY, attachMemory } from "./memory-scopes";
@@ -92,6 +101,10 @@ export const RECONCILE_GRACE_MS = 2 * 60_000;
 export const DISCUSSION_CAP = 62;
 const DESCENDANT_PAGE = 100;
 const DESCENDANT_BUDGET = 500;
+/** One page of a thread's children in the Workers tab. */
+const CHILD_PAGE = 100;
+/** Open work Stop cancels, idle adopted work included: it can own running children. */
+const OPEN_WORK: AssignmentState[] = ["dispatching", "queued", "running", "idle_no_report"];
 const LIST_PAGE = 200;
 const LIST_SCAN_BUDGET = 1000;
 /** Receipt scans read at most this many list pages per sweep, resuming where the last sweep stopped. */
@@ -108,10 +121,10 @@ const CHECKOUT_PENDING_NOTE =
 function notOpenQuestion(item: DecisionRecord) {
   const why = item.status === "answered" ? "it is already answered; the recorded answer stands"
     : item.status === "closed" ? "the user closed it"
-    : item.status === "withdrawn" ? `the coordinator withdrew it: ${(item.body.resolution?.note ?? "").replace(/\.+$/, "")}. Withdrawal records no answer. If the user has since made this choice explicitly, record it: initiative_decision {"action":"user-choice","description":"<the user's choice>"}`
+    : item.status === "withdrawn" ? `the coordinator withdrew it: ${(item.body.resolution?.note ?? "").replace(/\.+$/, "")}. Withdrawal records no answer. If the user has since made this choice explicitly and it lasts, record it as a standing rule: initiative_rule {"action":"add","text":"<the user's choice>"}`
     : item.status !== "active" ? `it is ${item.status}`
-    : item.madeBy === "agent" ? `it is an agent decision; the user checks it in the Inbox. If the user explicitly chose otherwise, record their choice in its place: initiative_decision {"action":"user-choice","description":"<the user's choice>","supersedes":"${item.ref}"}`
-    : `it is a recorded user decision. If the user explicitly changed it, record initiative_decision {"action":"user-choice","description":"<the new choice>","supersedes":"${item.ref}"}`;
+    : item.madeBy === "agent" ? `it is an agent decision; the user checks it in the Inbox. If the user explicitly chose otherwise and it lasts, record their choice as a standing rule: initiative_rule {"action":"add","text":"<the user's choice>"}`
+    : `it is a recorded user decision. If the user explicitly changed it and it lasts, record it as a standing rule: initiative_rule {"action":"add","text":"<the new choice>"}`;
   return `${item.ref} is not an open question: ${why}.`;
 }
 
@@ -199,7 +212,16 @@ export interface DelegateInput {
   handoffs?: string[];
   /** Explicit approval posture for the new thread; omitted uses the environment's configured default. */
   permissionMode?: "accept-edits" | "auto" | "full";
+  /** v9: the lead tab giving the work out; its reports come back there. null: the coordinator tab. */
+  replyTo?: string | null;
+  /** D529: send to a large cold worker anyway. */
+  resumeCold?: boolean;
 }
+
+/** v9 (§8.2, D516): where the code-review skill the worker loop names lives on the server host. */
+export const CODE_REVIEW_SKILL = join(homedir(), ".agents", "skills", "code-review", "SKILL.md");
+export const codeReviewSkillMissing = () =>
+  existsSync(CODE_REVIEW_SKILL) ? null : `The code-review skill is missing on this host (${CODE_REVIEW_SKILL}); workers review with it, so install it before they reach review.`;
 
 export interface DelegateResult {
   assignment: string;
@@ -242,6 +264,8 @@ export class ProjectsService {
   private coordinatorSwitches = new Map<string, string | null>();
   /** What discovery reads learned in this instance; never persisted, never authorizes a mutation. */
   discovery = new DiscoveryMemory();
+  /** v9: each thread's running native children, for the context route; a cache of BB's rows. */
+  runningChildren = new RunningChildren();
   /** Sweep backoff for former coordinators that refused to converge, by predecessor thread. */
   private formerRetries = new Map<string, { attempts: number; nextAt: number }>();
   /** Former coordinators seen archived, deleted or gone: done, never read again. */
@@ -407,7 +431,7 @@ export class ProjectsService {
   }
 
   message(caller: string, input: InitiativeMessage, projectId?: string) {
-    return sendInitiativeMessage(this.store, this.sdk, caller, input, projectId);
+    return sendInitiativeMessage(this.store, this.sdk, caller, input, projectId, (m) => this.workerLead(m.project, m.workerNum));
   }
 
   // Initiatives -------------------------------------------------------------------
@@ -689,6 +713,8 @@ export class ProjectsService {
           replacing: reason !== null,
           reason,
           handover: options?.handover ?? null,
+          rules: renderRules(this.store.rules(project.id)),
+          preSwitch: preSwitchBlock(this.store, project.id, this.store.flagSetAt(CUTOVER_FLAG)),
         }),
         pluginMetadata: {
           role: "coordinator",
@@ -1025,8 +1051,9 @@ export class ProjectsService {
       const count = this.openDiscussions(projectId, settled, open);
       if (count >= DISCUSSION_CAP)
         throw new ProjectError(`${project.name} has ${count} open discussions, the most it starts. Archive one to start another; restoring an archived one is always allowed.`);
+      // v9 (§9): the coordinator tab is the first chat; new tabs are "Chat 2", "Chat 3"…
       const n = this.store.projectThreads(projectId).filter((t) => t.discussion).length + 1;
-      return this.spawnUserThread(projectId, `Discussion ${n}`, {
+      return this.spawnUserThread(projectId, `Chat ${n + 1}`, {
         projectId: coordinator.projectId,
         environment: { type: "reuse", environmentId },
         providerId: coordinator.providerId,
@@ -1275,6 +1302,8 @@ export class ProjectsService {
       seen.add(parentId);
       parents++;
       const token = discovery.listing(projectId, parentId, recheck);
+      const epoch = this.runningChildren.begin();
+      const listed: ThreadListRow[] = [];
       for (let offset = 0; ; offset += 50) {
         const epoch = discovery.begin();
         const page = await this.sdk.threads.list({
@@ -1286,16 +1315,25 @@ export class ProjectsService {
         });
         if (signal?.aborted) return;
         discovery.observe(page, epoch, seeds);
+        listed.push(...page);
         for (const child of page) {
           const member = this.store.membership(child.id, true);
+          // An unclaimed child (an archived helper, or anything under one) is listed once without
+          // joining the Initiative, so the waiting cache reaches a descendant BB restored under it.
+          // Memory keeps it planned until that listing completes, however full this sweep's cap.
           if (!member) {
             if (this.associateNativeChild(child)) queue.push(child.id);
+            else if (!this.runningChildren.isListed(child.id)) {
+              discovery.found(projectId, child.id);
+              queue.push(child.id);
+            }
           } else if (member.project.id === projectId) queue.push(child.id);
         }
         if (page.length < 50) break;
       }
       // Only a completed listing discharges an event's obligation to list this parent.
-      discovery.completed(parentId, token);
+      discovery.completed(projectId, parentId, token);
+      this.runningChildren.listed(parentId, listed, epoch);
     }
     await this.attachStrandedMemberRoots(projectId, signal, skip, seeds);
   }
@@ -3299,23 +3337,20 @@ export class ProjectsService {
     return archived;
   }
 
-  /** Cancels every assignment still in an open state and stops its thread. */
+  /**
+   * Cancels every assignment still in an open state, idle adopted work included, and stops its
+   * thread and running descendants.
+   */
   async stopRunningWork(projectId: string) {
     const project = this.requireProject(projectId);
-    const running = this.store
+    const open = this.store
       .assignments(project.id)
-      .filter((assignment) =>
-        ["dispatching", "queued", "running"].includes(assignment.state),
-      );
+      .filter((assignment) => OPEN_WORK.includes(assignment.state));
     const results: string[] = [];
-    for (const assignment of running) {
+    for (const assignment of open) {
       try {
-        await this.stopAssignment(
-          project.id,
-          assignment.ref,
-          "Stopped with all running work",
-        );
-        results.push(`${assignment.ref} stopped`);
+        const done = await this.stopWork(project.id, assignment.ref, "Stopped with all running work");
+        results.push(`${assignment.ref} stopped${childrenLine(done.stoppedChildren, done.notStopped ?? [], done.unverified ?? null)}`);
       } catch (error) {
         results.push(`${assignment.ref}: ${errorMessage(error)}`);
       }
@@ -3425,77 +3460,35 @@ export class ProjectsService {
     });
   }
 
-  async cancelTask(projectId: string, ref: string, reason: string) {
-    const project = this.requireProject(projectId);
-    const task = this.requireTask(project, ref);
-    if (task.status === "done")
-      throw new ProjectError(`${task.ref} is already done.`);
-    for (const assignment of this.store
-      .assignments(projectId)
-      .filter(
-        (a) =>
-          a.taskNums.includes(task.num) &&
-          ["dispatching", "queued", "running", "idle_no_report"].includes(
-            a.state,
-          ),
-      ))
-      await this.stopAssignment(
-        projectId,
-        assignment.ref,
-        `Task cancelled: ${reason}`,
-      );
-    return this.store.tx(() => {
-      const updated = this.store.updateTask(project.id, task.num, {
-        status: "cancelled",
-        result: reason,
-      });
-      this.store.log(project.id, "task", `${task.ref} cancelled: ${reason}`, {
-        task: task.num,
-      });
-      return updated;
-    });
-  }
-
-  reopenTask(projectId: string, ref: string, reason: string) {
-    const project = this.requireProject(projectId);
-    const task = this.requireTask(project, ref);
-    return this.store.tx(() => {
-      const updated = this.store.updateTask(project.id, task.num, {
-        status: "planned",
-        progress: reason,
-        acceptedAssignment: null,
-      });
-      this.store.log(project.id, "task", `${task.ref} reopened: ${reason}`, {
-        task: task.num,
-      });
-      return updated;
-    });
-  }
-
   /**
-   * T136: done is a decision, not a ceremony. The coordinator (or the user) closes a task as
-   * done or cancelled; reports stay as filed and nothing has to be accepted first. Cancelling
-   * stops the task's still-running work; closing as done leaves running work alone.
+   * v9 (D522): set a task's status by hand, or ("auto") let it follow its work again. Only the
+   * user does this, from the dashboard, or a lead on the user's instruction, quoted in `reason`;
+   * the activity line keeps the reason and who set it. Cancelling stops the task's running work.
    */
-  async closeTask(projectId: string, ref: string, outcome: "done" | "cancelled", note?: string) {
-    if (outcome === "cancelled") return this.cancelTask(projectId, ref, note ?? "Closed as cancelled.");
+  async setTaskStatus(projectId: string, ref: string, status: HandStatus | "auto", reason: string, by: string) {
     const project = this.requireProject(projectId);
     const task = this.requireTask(project, ref);
-    if (task.status === "done") return task;
-    const latest = this.store.assignments(project.id).filter(a => a.role === "work" && a.taskNums.includes(task.num) && a.report).at(-1) ?? null;
-    return this.store.tx(() => {
-      const updated = this.store.updateTask(project.id, task.num, {
-        status: "done",
-        result: note ?? latest?.report?.summary ?? null,
-        acceptedAssignment: latest?.num ?? null,
-        progress: null,
-        nextCheckpoint: null,
-      });
-      this.store.log(project.id, "task", `${task.ref} closed as done${note ? `: ${note}` : ""}`, { task: task.num });
-      return updated;
+    const notStopped: string[] = [];
+    const unverified: string[] = [];
+    if (status === "cancelled")
+      for (const assignment of this.store
+        .assignments(projectId)
+        .filter((a) => a.taskNums.includes(task.num) && OPEN_WORK.includes(a.state))) {
+        const done = await this.stopWork(projectId, assignment.ref, `Task cancelled: ${reason}`);
+        notStopped.push(...(done.notStopped ?? []));
+        if (done.unverified) unverified.push(`${assignment.ref}: ${done.unverified}`);
+      }
+    const updated = this.store.tx(() => {
+      const updated = this.store.setTaskStatus(project.id, task.num, status === "auto" ? null : status);
+      if (status !== "auto") this.store.updateTask(project.id, task.num, { result: reason });
+      this.store.log(project.id, "task", status === "auto"
+        ? `${task.ref} follows its work again (${by}): ${reason}`
+        : `${task.ref} set to ${status} by ${by}: ${reason}`, { task: task.num });
+      return this.store.task(project.id, updated.num)!;
     });
+    // Cancelled all the same; what may still run is said, for the caller and the Tasks tab.
+    return { ...updated, ...(notStopped.length ? { notStopped } : {}), ...(unverified.length ? { unverified: unverified.join("; ") } : {}) };
   }
-
 
   // Decisions and updates -------------------------------------------------------
 
@@ -3572,10 +3565,6 @@ export class ProjectsService {
         status: "active", body: decision, madeBy: null, humanAttention: "needs-opinion",
         blocks, deadline: null, provenance, supersedes: null,
       });
-      for (const num of blocks) {
-        const task = this.store.task(projectId, num)!;
-        if (["planned", "in_progress", "awaiting_acceptance"].includes(task.status)) this.store.updateTask(projectId, num, { status: "blocked", progress: `Waiting for your opinion on ${item.ref}` });
-      }
       this.store.log(projectId, "decision", `${item.ref} needs your opinion: ${item.title}`);
       return item;
     });
@@ -3698,7 +3687,9 @@ export class ProjectsService {
     const item = this.requireDecision(project, ref);
     const body = item.body as DecisionRecord["body"] & Decision;
     const note = input.note.trim();
-    const notify = input.notify !== false && recordedBy?.threadId !== project.coordinatorThreadId;
+    // v9: the answer goes to the lead tab that asked while BB has it open; else the coordinator tab.
+    const coordinatorThreadId = await this.liveLead(project, item.provenance.threadId);
+    const notify = input.notify !== false && recordedBy?.threadId !== coordinatorThreadId;
     // An identical notified answer is a transport retry, not a new choice.
     // Pending/queued/sent/uncertain receipts never authorize another send.
     const retry = item.status === "answered" && item.notification !== null &&
@@ -3713,7 +3704,6 @@ export class ProjectsService {
       throw new ProjectError(`"${input.choice}" is not one of the options.`);
     if (input.choice === null && !note) throw new ProjectError("Pick an option or write an answer.");
     const op = newOpId();
-    const coordinatorThreadId = project.coordinatorThreadId;
     this.store.tx(() => {
       this.store.updateDecision(project.id, item.num, {
         ...(retry ? {} : {
@@ -3723,7 +3713,6 @@ export class ProjectsService {
         notification: notify ? { op, state: "pending", coordinatorThreadId } : null,
       });
       if (!retry) {
-        this.releaseQuestionTasks(project.id, item, `You answered ${item.ref}`);
         this.store.log(project.id, "decision", recordedBy
           ? `You answered ${item.ref} in chat; ${recordedBy.author === "coordinator" ? "the coordinator" : "a worker"} recorded it`
           : `You answered ${item.ref}`, recordedBy?.threadId ? { threadId: recordedBy.threadId } : undefined);
@@ -3772,7 +3761,8 @@ export class ProjectsService {
     const workerThreadId = assignment.threadId;
     if (to === "worker" && !workerThreadId) throw new ProjectError(`${worker.ref} has no thread to send to. Send your answer to the coordinator instead.`);
     const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
-    const coordinatorThreadId = project.coordinatorThreadId;
+    // v9: "coordinator" here means the worker's lead (§5.1).
+    const coordinatorThreadId = await this.workerLead(project, assignment.workerNum);
     const deliveryOp = newOpId();
     const item = same ?? this.store.tx(() => {
       const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref})${to === "worker" ? `, sent to ${worker.ref}` : ""}: ${text}`;
@@ -3795,7 +3785,7 @@ export class ProjectsService {
     };
     if (to === "coordinator") {
       await notify("Your answer is saved.",
-        `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\nAnswer: ${text}\n\nContinue ${worker.ref} with this answer, or reject or accept ${assignment.ref}. The Inbox item clears when you do.`);
+        `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\nAnswer: ${text}\n\nContinue ${worker.ref} with this answer (initiative_message work:true, with 4 more review rounds if it needs them). The Inbox item clears when ${worker.ref} reports again.`);
       return this.store.decisionItem(project.id, item.num)!;
     }
     if (!same || redeliver) {
@@ -3900,7 +3890,6 @@ export class ProjectsService {
       const result = this.store.updateDecision(project.id, item.num, {
         status: "closed", body: { ...item.body, resolution: { note: note.trim(), at: this.now() } },
       });
-      this.releaseQuestionTasks(project.id, item, `You closed ${item.ref} quietly`);
       this.store.log(project.id, "decision", `You closed ${item.ref} quietly; no answer recorded${note.trim() ? `: ${note.trim()}` : ""}`);
       return result;
     });
@@ -3913,7 +3902,8 @@ export class ProjectsService {
    */
   withdrawQuestion(projectId: string, ref: string, reason: string, by: Provenance) {
     const project = this.requireProject(projectId);
-    if (by.author !== "coordinator" || !by.threadId || by.threadId !== project.coordinatorThreadId)
+    // v9: any lead tab withdraws the questions it asked itself.
+    if (by.author !== "coordinator" || !by.threadId || !this.isLeadTab(project, by.threadId))
       throw new ProjectError("Only the current coordinator withdraws an open question, and only one it recorded itself. The user can close a question quietly in the panel.");
     const note = reason.trim();
     if (!note) throw new ProjectError(`Withdrawal needs a reason: why the user no longer needs to answer. Example: {"action":"withdraw","ref":"${ref}","reason":"Settled by D15: Erwin chose Base UI in chat."}.`);
@@ -3932,26 +3922,9 @@ export class ProjectsService {
       const result = this.store.updateDecision(project.id, item.num, {
         status: "withdrawn", body: { ...item.body, resolution: { note, at: this.now(), withdrawnBy: by } },
       });
-      this.releaseQuestionTasks(project.id, item, `The coordinator withdrew ${item.ref}`);
       this.store.log(project.id, "decision", `The coordinator withdrew ${item.ref}; no answer recorded: ${note}`, { decision: item.ref, threadId: by.threadId });
       return result;
     });
-  }
-
-  private releaseQuestionTasks(projectId: string, item: DecisionRecord, progress: string) {
-    for (const num of item.blocks) {
-      const task = this.store.task(projectId, num);
-      if (task?.status !== "blocked" || ![`Waiting for your opinion on ${item.ref}`, `Waiting for your opinion on K${item.num}`].includes(task.progress ?? "")) continue;
-      const next = this.store.decisions(projectId).find(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.blocks.includes(num));
-      const work = this.store.assignments(projectId).filter(a => a.role === "work" && a.taskNums.includes(num) && ["dispatching", "queued", "running", "idle_no_report", "reported"].includes(a.state)).at(-1);
-      const reported = work?.state === "reported" && work.report ? work.report : null;
-      // T136: a done report leaves its task open (in progress) until the coordinator closes it.
-      const resume = reported ? reported.outcome === "succeeded" ? "in_progress" : "blocked"
-        : work && ["dispatching", "queued", "running", "idle_no_report"].includes(work.state) ? "in_progress" : "planned";
-      this.store.updateTask(projectId, num, next
-        ? { status: "blocked", progress: `Waiting for your opinion on ${next.ref}`, nextCheckpoint: `Answer ${next.ref}` }
-        : { status: resume, progress: reported ? `${workerRef(work!.workerNum)} reported: ${reported.summary}` : progress, nextCheckpoint: null });
-    }
   }
 
   acknowledgeDecision(projectId: string, ref: string, _note: string) {
@@ -4030,18 +4003,242 @@ export class ProjectsService {
     const mine = this.store.assignments(project.id).filter(a => a.workerNum === reviewer.num && a.role === "review");
     const reviewed = mine[0]?.handoffSources?.[0]?.worker ?? "W#";
     const findings = mine.filter(a => a.report).at(-1)?.ref ?? reviewer.ref;
-    return `${reviewer.ref} is a reviewer, and reviews are not reused. Spawn a fresh reviewer instead: initiative_spawn {role:"review",reviews:"${reviewed}",handoffs:["${findings}"],label:"Review ${reviewed}",purpose:"review the fixes",text:"<what changed, what to check>"}, with reviews naming the latest worker on the change (e.g. a fix worker). A plain message (no work) still reaches ${reviewer.ref}.`;
+    return `${reviewer.ref} is a reviewer from before workers ran their own reviews, and reviews are not reused. Send its findings (${findings}) to the worker it reviewed as more work: initiative_message {"to":"${reviewed}","text":"<the findings>","work":true}; that worker runs its own fresh reviewer. A plain message (no work) still reaches ${reviewer.ref}.`;
   }
 
-  /** T142: refuses more work for an idle worker whose large prompt cache has gone cold. Only the user can resume it. */
-  async refuseColdResume(projectId: string, input: DelegateInput): Promise<void> {
-    if (input.route !== "continue" || !input.worker) return;
+  /**
+   * T142, D529: more work for an idle worker whose large prompt cache has gone cold is refused to
+   * a lead, with the rewrite cost, unless the call passes resumeCold:true; then it goes ahead and
+   * the result carries the cost. The user's own sends never come here.
+   */
+  async coldResume(projectId: string, input: DelegateInput): Promise<string | null> {
+    if (input.route !== "continue" || !input.worker) return null;
     const project = this.requireProject(projectId);
     const worker = this.requireWorker(project, input.worker);
     // delegate refuses work for a reviewer outright.
-    if (worker.role === "review") return;
-    const refusal = await this.coldCache.check(worker);
-    if (refusal) throw new ProjectError(refusal);
+    if (worker.role === "review") return null;
+    const cost = await this.coldCache.check(worker);
+    if (!cost) return null;
+    if (!input.resumeCold)
+      throw new ProjectError(`${cost} To send it anyway, repeat the call with resumeCold:true. Or spawn a fresh worker with handoffs:["${worker.ref}"] (its report is embedded); it takes the PR over but loses what the report leaves out.`);
+    return `Sent with resumeCold: ${cost}`;
+  }
+
+  /**
+   * v9 (§6.1): what a work brief ends with. A fresh brief: the reviewer command and the full
+   * rules (the plugin builds that session with this build's instructions). Every later work
+   * message: the whole loop, the worker guidance as a new session would get it included.
+   */
+  private workAppendix(projectId: string, policy: Policy, profile: Profile, guidance: string, route: "fresh" | "continue") {
+    const reviewer = reviewerCommand(profileFor(policy, seriesOf(profile) === "gpt" ? "reviewOfGpt" : "reviewOfClaude"));
+    const rules = renderRules(this.store.rules(projectId));
+    return route === "fresh" ? briefAppendix(reviewer, rules) : workLoopBlock(guidance, reviewer, rules);
+  }
+
+  // Leads (v9) ---------------------------------------------------------------
+
+  /** Whether a thread is one of this Initiative's lead tabs: its coordinator or a discussion. */
+  isLeadTab(project: ProjectRecord, threadId: string | null | undefined): boolean {
+    if (!threadId) return false;
+    if (threadId === project.coordinatorThreadId) return true;
+    const m = this.store.membership(threadId);
+    return !!m && !m.former && m.project.id === project.id && !!m.discussion;
+  }
+
+  /** The lead a thread acts as: its project, if it is a current coordinator or a discussion. */
+  leadOf(threadId: string): ProjectRecord {
+    const m = this.store.membership(threadId);
+    if (!m || m.former || !(m.kind === "coordinator" || m.discussion))
+      throw new ProjectError("Only a lead tab of an Initiative (its coordinator or a discussion) can do this.");
+    return m.project;
+  }
+
+  /**
+   * lead(W) from the ledger: the tab that gave out the worker's open work, else its latest work,
+   * while that tab is still a lead of this Initiative; otherwise the coordinator tab.
+   */
+  leadThreadOf(project: ProjectRecord, workerNum: number): string | null {
+    const a = this.store.openAssignment(project.id, workerNum) ?? this.store.latestAssignment(project.id, workerNum);
+    return a?.replyTo && this.isLeadTab(project, a.replyTo) ? a.replyTo : project.coordinatorThreadId;
+  }
+
+  /** lead(W), checked with BB: an archived or deleted discussion hands its workers to the coordinator tab. */
+  async workerLead(project: ProjectRecord, workerNum: number): Promise<string | null> {
+    return this.liveLead(project, this.leadThreadOf(project, workerNum));
+  }
+
+  /**
+   * A lead tab as BB has it now: the tab while it is one of this Initiative's leads and BB has it
+   * open; otherwise (an archived or deleted discussion, a former tab) the coordinator tab.
+   */
+  async liveLead(project: ProjectRecord, threadId: string | null | undefined): Promise<string | null> {
+    const id = this.isLeadTab(project, threadId) ? threadId! : project.coordinatorThreadId;
+    if (!id || id === project.coordinatorThreadId) return id;
+    try {
+      const thread = await this.sdk.threads.get({ threadId: id });
+      if (thread.archivedAt !== null || thread.deletedAt !== null) return project.coordinatorThreadId;
+    } catch (error) {
+      // BB no longer has it: as deleted. Anything else is unknown; the send to it says what happened.
+      if ((error as { status?: number }).status === 404) return project.coordinatorThreadId;
+    }
+    return id;
+  }
+
+  /** How activity lines name who acted. */
+  callerName(projectId: string, author: "user" | "coordinator", threadId: string | null): string {
+    if (author === "user" || !threadId) return "the user";
+    const project = this.requireProject(projectId);
+    if (threadId === project.coordinatorThreadId) return "the coordinator";
+    const tab = this.store.projectThreadByThreadId(threadId);
+    return tab ? `the lead tab "${tab.label}"` : "a lead";
+  }
+
+  /**
+   * The lead tabs of an Initiative that BB still has open: the coordinator, then its discussions.
+   * A discussion BB says is gone (404), archived or deleted is left out; one BB could not answer
+   * for is named in `unread`, never silently dropped and never sent to blind.
+   */
+  private async liveLeadTabs(project: ProjectRecord): Promise<{ tabs: { threadId: string; name: string }[]; unread: string[] }> {
+    const tabs: { threadId: string; name: string }[] = project.coordinatorThreadId ? [{ threadId: project.coordinatorThreadId, name: "the coordinator" }] : [];
+    const unread: string[] = [];
+    for (const t of this.store.projectThreads(project.id)) {
+      if (!t.discussion || !t.threadId || !this.isLeadTab(project, t.threadId)) continue;
+      try {
+        const thread = await this.sdk.threads.get({ threadId: t.threadId });
+        if (thread.archivedAt === null && thread.deletedAt === null) tabs.push({ threadId: t.threadId, name: t.label });
+      } catch (error) {
+        if ((error as { status?: number }).status !== 404) unread.push(`${t.label} (BB could not say whether it is open: ${errorMessage(error)})`);
+      }
+    }
+    return { tabs, unread };
+  }
+
+  // Standing rules (D523) ------------------------------------------------------
+
+  private requireRule(projectId: string, ref: string) {
+    const num = Number(/^R?([1-9]\d*)$/i.exec(ref.trim())?.[1]);
+    const rule = num ? this.store.rule(projectId, num) : null;
+    if (!rule || rule.removedAt !== null) throw new ProjectError(`No standing rule ${ref}. Read them with initiative_read {view:"rules"}.`);
+    return rule;
+  }
+
+  async addRule(projectId: string, text: string, sources: string[], by: string, callerThreadId: string | null) {
+    const project = this.requireProject(projectId);
+    if (this.store.rules(projectId).length >= MAX_RULES)
+      throw new ProjectError(`${project.name} has ${MAX_RULES} standing rules, the most it keeps. Merge or remove one first.`);
+    const rule = this.store.tx(() => {
+      const added = this.store.addRule(projectId, text, sources);
+      this.store.log(projectId, "rule", `${added.ref} added by ${by}: ${text}`);
+      return added;
+    });
+    return { rule: rule.ref, ...(await this.announceRule(project, `Rule ${rule.ref} added: "${text}"`, callerThreadId)) };
+  }
+
+  async editRule(projectId: string, ref: string, text: string, by: string, callerThreadId: string | null) {
+    const project = this.requireProject(projectId);
+    const rule = this.requireRule(projectId, ref);
+    if (rule.text === text) return { rule: rule.ref, note: "Unchanged." };
+    this.store.tx(() => {
+      this.store.updateRule(projectId, rule.num, { text });
+      this.store.log(projectId, "rule", `${rule.ref} changed by ${by}: ${text} (was: ${rule.text})`);
+    });
+    return { rule: rule.ref, ...(await this.announceRule(project, `Rule ${rule.ref} changed: "${text}"`, callerThreadId)) };
+  }
+
+  async removeRule(projectId: string, ref: string, by: string, callerThreadId: string | null) {
+    const project = this.requireProject(projectId);
+    const rule = this.requireRule(projectId, ref);
+    this.store.tx(() => {
+      this.store.updateRule(projectId, rule.num, { removed: true });
+      this.store.log(projectId, "rule", `${rule.ref} removed by ${by} (was: ${rule.text})`);
+    });
+    return { rule: rule.ref, ...(await this.announceRule(project, `Rule ${rule.ref} removed.`, callerThreadId)) };
+  }
+
+  /** The user reorders on the Rules tab; nothing is sent. */
+  moveRule(projectId: string, ref: string, to: number) {
+    this.requireProject(projectId);
+    const rule = this.requireRule(projectId, ref);
+    const order = this.store.rules(projectId).map((r) => r.num).filter((n) => n !== rule.num);
+    order.splice(Math.min(to, order.length + 1) - 1, 0, rule.num);
+    this.store.tx(() => {
+      this.store.orderRules(projectId, order);
+      this.store.log(projectId, "rule", `${rule.ref} moved to place ${to}`);
+    });
+    return { rule: rule.ref, order: order.map((n) => `R${n}`) };
+  }
+
+  /** The current list as a rules file (the import format). */
+  exportRules(projectId: string) {
+    const project = this.requireProject(projectId);
+    return formatRulesFile(project.name, this.store.rules(projectId));
+  }
+
+  /**
+   * `bb initiative rules import`: the live list becomes exactly the file's. The caller writes
+   * exportRules' text next to the file first, so importing that file is the exact undo.
+   */
+  async importRules(projectId: string, text: string, callerThreadId: string | null) {
+    const project = this.requireProject(projectId);
+    const rules = parseRulesFile(text);
+    if (formatRulesFile(project.name, rules) === this.exportRules(projectId)) return { initiative: project.id, rules: rules.length, note: "Unchanged." };
+    this.store.tx(() => {
+      this.store.replaceRules(projectId, rules);
+      this.store.log(projectId, "rule", `${rules.length} standing rules imported`);
+    });
+    // Like any other change, the new list reaches the live leads and the workers with open work.
+    const count = `${rules.length} rule${rules.length === 1 ? "" : "s"}`;
+    return { initiative: project.id, rules: rules.length, ...(await this.announceRule(project, `The standing rules were replaced by an import (${count}).`, callerThreadId)) };
+  }
+
+  /**
+   * One short message per rule change, queued, to every other live lead tab and every worker
+   * with open work. Workers without open work aren't woken: their next work message carries the
+   * current list. The result names the threads it reached, and in `notReached` those it could not
+   * send to or could not confirm are open.
+   */
+  private async announceRule(project: ProjectRecord, text: string, callerThreadId: string | null) {
+    const leads = await this.liveLeadTabs(project);
+    const targets = leads.tabs.filter((t) => t.threadId !== callerThreadId);
+    for (const worker of this.store.workers(project.id))
+      if (worker.threadId && worker.state !== "retired" && !worker.userStopped && this.store.openAssignment(project.id, worker.num))
+        targets.push({ threadId: worker.threadId, name: worker.ref });
+    const reached: string[] = [];
+    const missed = [...leads.unread];
+    for (const target of targets)
+      try {
+        await this.sdk.threads.send({ threadId: target.threadId, mode: "queue-if-active",
+          input: textInput(`Initiative · ${project.name} · Standing rules\n\n${text} Follow the current list from now on (initiative_read {view:"rules"}).`) });
+        reached.push(target.name);
+      } catch (error) {
+        missed.push(`${target.name} (${errorMessage(error)})`);
+      }
+    return { reached, ...(missed.length ? { notReached: missed } : {}) };
+  }
+
+  /**
+   * v9 (§12), once per load after migrations: when this load follows activity of the previous
+   * build (or is the first v9 load), moves the cutover flag to now and tells each live lead tab
+   * of the matching Initiatives, steering, how to treat reports on work given out before.
+   */
+  async runCutover(): Promise<string[]> {
+    const matched = cutoverProjects(this.store);
+    const first = this.store.flagSetAt(CUTOVER_FLAG) === null;
+    if (!matched.length && !first) return [];
+    const at = this.now();
+    this.store.upsertFlag(CUTOVER_FLAG, at);
+    for (const id of matched) {
+      const project = this.store.project(id);
+      if (!project || project.archivedAt !== null) continue;
+      this.store.log(id, "cutover", "Switched to worker-owned reviews; the lead tabs were told how to treat work given out before.");
+      const leads = await this.liveLeadTabs(project).catch((error) => ({ tabs: [], unread: [`its lead tabs (${errorMessage(error)})`] }));
+      for (const missed of leads.unread) this.store.log(id, "cutover", `Could not tell ${missed} about the switch.`);
+      for (const tab of leads.tabs)
+        await this.sdk.threads.send({ threadId: tab.threadId, mode: "steer-if-active",
+          input: textInput(`Initiative · ${project.name}\n\n${cutoverInstruction(at)}`) })
+          .catch((error) => this.store.log(id, "cutover", `Could not tell ${tab.name} about the switch: ${errorMessage(error)}`));
+    }
+    return matched;
   }
 
   /** The report a review embeds: the named W#/A#, or (legacy reviewOf) the latest report on those tasks. */
@@ -4449,8 +4646,6 @@ export class ProjectsService {
     tasks = taskRefs.map((ref) => this.requireTask(project, ref));
     reviewOfTasks = reviewOfRefs.map((ref) => this.requireTask(project, ref));
     for (const task of tasks) {
-      if (this.store.decisions(project.id).some(k => k.status === "active" && k.humanAttention === "needs-opinion" && k.blocks.includes(task.num)))
-        throw new ProjectError(`${task.ref} is waiting for the user's answer to a question. Get the answer before giving it out.`);
       const other = this.store.assignments(project.id).find(a =>
         a.role === "work" && a.taskNums.includes(task.num) && a.workerNum !== existing?.num &&
         (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
@@ -4535,6 +4730,8 @@ export class ProjectsService {
         handoffSources,
         reviewKey: null,
         rationale,
+        // v9: who gets this work's reports; a value here marks the work as given out by this build.
+        replyTo: input.replyTo ?? this.store.project(project.id)?.coordinatorThreadId ?? "coordinator",
         pendingIdentity:
           input.route === "continue" &&
           (input.label !== undefined || input.area !== undefined)
@@ -4544,14 +4741,13 @@ export class ProjectsService {
               }
             : null,
       });
+      // v9: new work on a task set to planned or done by hand clears that, so its status follows
+      // the work again; a task cancelled by hand was refused above.
       for (const task of tasks)
-        if (task.status === "planned" || task.status === "blocked")
-          // Who works on it is its assignments (T143), so progress is left for real notes.
-          this.store.updateTask(project.id, task.num, {
-            status: "in_progress",
-            progress: null,
-            nextCheckpoint: null,
-          });
+        if (task.statusSetAt !== null && task.status !== "cancelled") {
+          this.store.setTaskStatus(project.id, task.num, null);
+          this.store.log(project.id, "task", `${task.ref} follows its work again: ${assignment.ref} took it on.`, { task: task.num });
+        }
       this.store.updateWorker(project.id, worker.num, { state: "active" });
       this.store.log(
         project.id,
@@ -4580,6 +4776,7 @@ export class ProjectsService {
       reviewed: reviewed ? renderPriorReport(this.store, embedded[0]!, "Review") : null,
       priorReports: embedded.slice(reviewed ? 1 : 0).map((source) => renderPriorReport(this.store, source, "Prior report")),
       text: input.note ?? null,
+      appendix: worker.role === "work" ? this.workAppendix(project.id, policy, profile, settings.workerInstructions, input.route) : null,
       opId,
     });
     this.store.db
@@ -4608,9 +4805,9 @@ export class ProjectsService {
         // it when the thread is free. The receipt lands on the assignment.
         const sent = await this.sdk.threads.send({
           threadId: worker.threadId!,
-          // The coordinator steers by default: a queued brief would be overtaken by a later steer.
+          // A lead steers by default: a queued brief would be overtaken by a later steer.
           mode: input.delivery === "queue" ? "queue-if-active" : "steer-if-active",
-          ...(project.coordinatorThreadId ? { senderThreadId: project.coordinatorThreadId } : {}),
+          ...(input.replyTo ?? project.coordinatorThreadId ? { senderThreadId: (input.replyTo ?? project.coordinatorThreadId)! } : {}),
           input: textInput(text),
           model: profile.model,
           reasoningLevel: profile.reasoningLevel,
@@ -4743,7 +4940,6 @@ export class ProjectsService {
               assignment.num,
               { opState: "failed", pendingIdentity: null },
             );
-            this.releaseCancelledTasks(project.id, updated, "never");
             this.store.log(
               project.id,
               "delegate",
@@ -4790,6 +4986,7 @@ export class ProjectsService {
           final.handoffSources?.length
             ? `The brief embeds the report${final.handoffSources.length > 1 ? "s" : ""} of ${final.handoffSources.map(h => `${h.worker} (${h.assignment})`).join(", ")}.`
             : null,
+          final.role === "work" ? codeReviewSkillMissing() : null,
           ...notes,
         ]
           .filter(Boolean)
@@ -4988,14 +5185,6 @@ export class ProjectsService {
         // with it so the worker keeps the identity its thread still carries.
         pendingIdentity: null,
       });
-      for (const taskNum of assignment.taskNums) {
-        const task = this.store.task(projectId, taskNum);
-        if (task?.status === "in_progress")
-          this.store.updateTask(projectId, taskNum, {
-            status: "planned",
-            progress: `Delegation failed: ${reason}`,
-          });
-      }
       const worker = this.store.worker(projectId, assignment.workerNum)!;
       if (!worker.threadId)
         this.store.updateWorker(projectId, worker.num, { state: "retired" });
@@ -5544,7 +5733,6 @@ export class ProjectsService {
             queuedMessageId: null,
             pendingIdentity: null,
           });
-          this.releaseCancelledTasks(project.id, assignment, "never");
           this.store.log(
             project.id,
             "delegate",
@@ -5553,7 +5741,6 @@ export class ProjectsService {
         });
         if (staged) await this.syncWorkerTitle(project.id, assignment.workerNum);
       } else {
-        this.releaseCancelledTasks(project.id, assignment, "never");
         await this.failDispatch(
           project.id,
           assignment.num,
@@ -5562,39 +5749,6 @@ export class ProjectsService {
       }
     }
     return this.store.assignment(project.id, assignment.num)!;
-  }
-
-  /**
-   * Release the tasks a cancelled assignment still holds in "blocked" state
-   * once native evidence proves nothing can still execute for it: either the
-   * queued brief never ran, or the dispatched turn has positively ended. Only
-   * the rows this stop blocked move; the cancelled business state stays.
-   */
-  releaseCancelledTasks(
-    projectId: string,
-    assignment: AssignmentRecord,
-    outcome: "never" | "settled",
-  ) {
-    for (const num of assignment.taskNums) {
-      const task = this.store.task(projectId, num);
-      if (task?.status !== "blocked" || !task.progress?.includes(assignment.ref))
-        continue;
-      this.store.updateTask(
-        projectId,
-        num,
-        outcome === "settled"
-          ? {
-              status: "planned",
-              progress: assignment.report
-                ? `${assignment.ref}'s report proves work ran; its native side is now quiet or gone and the reservation is released. The cancelled state and report stay evidence.`
-                : `${assignment.ref}'s native side is now quiet or gone; the reservation is released. ${assignment.briefDelivered ? "BB accepted its brief, but execution is not established by that receipt." : "Execution is not established; quiet settlement does not prove the brief was never delivered."}`,
-            }
-          : {
-              status: "planned",
-              progress: `${assignment.ref}'s brief was confirmed not delivered for execution; the reservation is released.`,
-            },
-      );
-    }
   }
 
   /**
@@ -5927,11 +6081,6 @@ export class ProjectsService {
         // that a brief ran; confirmed delivery already committed its identity.
         pendingIdentity: null,
       });
-      this.releaseCancelledTasks(
-        assignment.projectId,
-        current,
-        "settled",
-      );
       this.store.log(
         assignment.projectId,
         "assignment",
@@ -6131,66 +6280,130 @@ export class ProjectsService {
   }
 
   /**
-   * Walk every native descendant (archived ones too, since a restored
-   * grandchild can sit under an archived child) and describe anything that
-   * archiving would cut off. Refuses conservatively past a node budget.
+   * What archiving would cut off: every live descendant still running work (running()), each
+   * named. Refuses conservatively past the walk's budget.
    */
-  async liveDescendants(
-    rootId: string,
-    budget = DESCENDANT_BUDGET,
-  ): Promise<string[]> {
-    const blockers: string[] = [];
-    const pending = [rootId];
+  async liveDescendants(rootId: string, budget = DESCENDANT_BUDGET): Promise<string[]> {
+    const walk = await this.descendants(rootId, budget);
+    if (!walk.complete) return [`it has more than ${budget} descendant threads, too many to verify safely`];
+    return walk.threads.flatMap((child) => {
+      const name = child.title ?? child.titleFallback ?? child.id;
+      return child.running ? [`"${name}" ${BLOCKER_WORDS[child.running] ?? `is ${child.running}`}`] : [];
+    });
+  }
+
+  /**
+   * v9: Stop a worker, with or without open work: its open work is cancelled (stopWork), else its
+   * thread is stopped and then its running descendants. Stopping a child can still wake the
+   * worker with BB's "interrupted" notice; a report it files afterwards is accepted on the
+   * cancelled work. The result counts only the Stops BB accepted, and names the ones it refused
+   * and any descendants the walk could not reach.
+   */
+  async stopWorker(projectId: string, ref: string, reason: string) {
+    const project = this.requireProject(projectId);
+    const worker = this.requireWorker(project, ref);
+    if (!worker.threadId || worker.state === "retired") throw new ProjectError(`${worker.ref} is retired or has no thread; there is nothing to stop.`);
+    const open = this.store.openAssignment(project.id, worker.num);
+    if (open && OPEN_WORK.includes(open.state)) {
+      const result = await this.stopWork(projectId, open.ref, reason, `${worker.ref} stopped: ${reason}`);
+      return { worker: worker.ref, ...result };
+    }
+    const own = await this.sdk.threads.stop({ threadId: worker.threadId }).then(() => null, (error) => `${worker.ref}'s thread (${errorMessage(error)})`);
+    const children = await this.stopDescendants(worker.threadId);
+    const failed = [...(own ? [own] : []), ...children.failed];
+    this.store.log(project.id, "worker", `${worker.ref} stopped: ${reason}${childrenLine(children.stopped, failed, children.unverified)}`);
+    return { worker: worker.ref, stoppedChildren: children.stopped, ...(failed.length ? { notStopped: failed } : {}), ...(children.unverified ? { unverified: children.unverified } : {}) };
+  }
+
+  /**
+   * Cancel open work (cancelAssignment) and stop its thread's running descendants: the one way
+   * stopping a worker, cancelling a task, stopping all work and the older assignment Stop end
+   * a worker's reviewers and helpers too. `notStopped` names every Stop BB refused, the work's
+   * own thread first.
+   */
+  async stopWork(projectId: string, ref: string, reason: string, line?: string) {
+    const { assignment, notStopped } = await this.cancelAssignment(projectId, ref, reason);
+    const children = assignment.threadId ? await this.stopDescendants(assignment.threadId) : { stopped: 0, failed: [], unverified: null };
+    const failed = [...(notStopped ? [notStopped] : []), ...children.failed];
+    if (line) this.store.log(projectId, "worker", `${line}${childrenLine(children.stopped, failed, children.unverified)}`);
+    else {
+      const parts = childrenParts(children.stopped, failed, children.unverified);
+      if (parts.length) this.store.log(projectId, "worker", `${assignment.ref}'s threads: ${parts.join("; ")}.`);
+    }
+    return { assignment: assignment.ref, state: assignment.state, stoppedChildren: children.stopped,
+      ...(failed.length ? { notStopped: failed } : {}), ...(children.unverified ? { unverified: children.unverified } : {}) };
+  }
+
+  /**
+   * Stop every running descendant of a thread (running()). `stopped` counts the Stops BB
+   * accepted; `failed` names those it refused; `unverified` says why some may still run unseen
+   * (a failed or budget-capped walk).
+   */
+  private async stopDescendants(threadId: string): Promise<{ stopped: number; failed: string[]; unverified: string | null }> {
+    let walk: Awaited<ReturnType<ProjectsService["descendants"]>>;
+    try {
+      walk = await this.descendants(threadId);
+    } catch (error) {
+      return { stopped: 0, failed: [], unverified: `its child threads could not be listed (${errorMessage(error)})` };
+    }
+    let stopped = 0;
+    const failed: string[] = [];
+    for (const child of walk.threads.filter((t) => t.running))
+      try {
+        await this.sdk.threads.stop({ threadId: child.id });
+        stopped++;
+      } catch (error) {
+        failed.push(`"${child.title ?? child.titleFallback ?? child.id}" (${errorMessage(error)})`);
+      }
+    return { stopped, failed, unverified: walk.complete ? null
+      : `it has more than ${DESCENDANT_BUDGET} descendant threads; those past the first ${DESCENDANT_BUDGET} were not checked` };
+  }
+
+  /**
+   * v9: the one walk of a thread's native descendants, which archive and Stop read: breadth-first,
+   * every page of both listings, through archived children too (BB can restore a grandchild under
+   * an archived child), each row with its depth and what still runs in it (running(); null for an
+   * archived or deleted row). `complete` is false when the walk stopped at `budget` threads. Each
+   * parent's listing also refreshes runningChildren.
+   */
+  async descendants(rootId: string, budget = DESCENDANT_BUDGET): Promise<{ threads: (ThreadListRow & { depth: number; running: Running | null })[]; complete: boolean }> {
+    const threads: (ThreadListRow & { depth: number; running: Running | null })[] = [];
+    const pending = [{ id: rootId, depth: 0 }];
     const seen = new Set<string>([rootId]);
-    let visited = 0;
     while (pending.length) {
-      const parentThreadId = pending.shift()!;
-      for (const archived of [false, true]) {
+      const parent = pending.shift()!;
+      const epoch = this.runningChildren.begin();
+      const listed: ThreadListRow[] = [];
+      for (const archived of [false, true])
         for (let offset = 0; ; offset += DESCENDANT_PAGE) {
-          const page = await this.sdk.threads.list({
-            parentThreadId,
-            archived,
-            includeHidden: true,
-            limit: DESCENDANT_PAGE,
-            offset,
-          });
+          const page = await this.sdk.threads.list({ parentThreadId: parent.id, archived, includeHidden: true, limit: DESCENDANT_PAGE, offset });
+          listed.push(...page);
+          // The budget holds per page, so a refusal never waits on the rest of a long listing.
           for (const child of page) {
             if (seen.has(child.id)) continue;
+            if (threads.length >= budget) return { threads, complete: false };
             seen.add(child.id);
-            if (++visited > budget)
-              return [
-                `it has more than ${budget} descendant threads, too many to verify safely`,
-              ];
-            pending.push(child.id);
-            const name = child.title ?? child.titleFallback ?? child.id;
-            if (
-              !ProjectsService.lifecycleWellFormed(child.archivedAt) ||
-              !ProjectsService.lifecycleWellFormed(child.deletedAt)
-            ) {
-              blockers.push(`"${name}" returned unreadable lifecycle fields`);
-              continue;
-            }
-            if (child.archivedAt !== null || child.deletedAt !== null) continue;
-            const activity = child.activity;
-            if (BUSY_STATUSES.has(child.status) || child.status === "pending")
-              blockers.push(`"${name}" is ${child.status}`);
-            else if (
-              activity.activeBackgroundAgentCount +
-                activity.activeBackgroundCommandCount +
-                activity.activeWorkflowCount >
-              0
-            )
-              blockers.push(`"${name}" has background work running`);
-            else if (child.queuedWork === "waiting")
-              blockers.push(`"${name}" has queued work waiting`);
-            else if (child.hasPendingInteraction)
-              blockers.push(`"${name}" is waiting for input`);
+            threads.push({ ...child, depth: parent.depth + 1, running: running(child) });
+            pending.push({ id: child.id, depth: parent.depth + 1 });
           }
           if (page.length < DESCENDANT_PAGE) break;
         }
-      }
+      // Only a parent's every page replaces its cached set.
+      this.runningChildren.listed(parent.id, listed, epoch);
     }
-    return blockers;
+    return { threads, complete: true };
+  }
+
+  /**
+   * v9: one page of a thread's native children, archived ones included, for the Workers tab to
+   * open a worker's tree one level and one page at a time. `next` is the offset of the following
+   * page, null on the last.
+   */
+  async childPage(parentThreadId: string, offset = 0) {
+    const epoch = this.runningChildren.begin();
+    const page = await this.sdk.threads.list({ parentThreadId, includeHidden: true, limit: CHILD_PAGE, offset });
+    if (offset === 0 && page.length < CHILD_PAGE) this.runningChildren.listed(parentThreadId, page, epoch);
+    return { rows: page.map((row) => ({ ...row, running: running(row) })), next: page.length < CHILD_PAGE ? null : offset + page.length };
   }
 
   /**
@@ -6203,6 +6416,11 @@ export class ProjectsService {
    * reserved; nothing here is retried, resent or revived on its own.
    */
   async stopAssignment(projectId: string, ref: string, reason: string) {
+    return (await this.cancelAssignment(projectId, ref, reason)).assignment;
+  }
+
+  /** stopAssignment, and the Stop BB refused for the work's thread, if it did (`notStopped`). */
+  private async cancelAssignment(projectId: string, ref: string, reason: string) {
     const project = this.requireProject(projectId);
     let assignment = this.requireAssignment(project, ref);
     if (assignment.state === "reported")
@@ -6265,23 +6483,26 @@ export class ProjectsService {
       assignment = this.store.updateAssignment(project.id, assignment.num, {
         opState: "uncertain",
       });
-    if (
-      assignment.threadId &&
-      ["running", "dispatching"].includes(assignment.state)
-    )
-      // Best-effort: a Stop refusal or host failure is about the request,
-      // never about execution still running — the cancellation and its
-      // reservation stand either way.
-      await this.sdk.threads
-        .stop({ threadId: assignment.threadId })
-        .catch((error) => {
-          if ((error as { status?: number }).status === 404) return;
-          this.store.log(
-            project.id,
-            "assignment",
-            `Stop request for ${assignment.ref}'s thread failed (${errorMessage(error)}); the reservation holds until positive native end evidence.`,
-          );
-        });
+    // Every caller is a Stop, so the work's thread is stopped whatever the assignment's state says:
+    // an adopted or idle_no_report thread can be running work Initiatives never dispatched. On a
+    // quiet thread there is no turn to interrupt, but the Stop is not free: BB still asks the
+    // thread's host to release its runtime (a host call). Best-effort: a Stop refusal or host failure is
+    // about the request, never about execution still running — the cancellation and its
+    // reservation stand either way; the caller is told (`notStopped`).
+    const notStopped =
+      assignment.threadId
+        ? await this.sdk.threads
+            .stop({ threadId: assignment.threadId })
+            .then(() => null, (error) => {
+              if ((error as { status?: number }).status === 404) return null;
+              this.store.log(
+                project.id,
+                "assignment",
+                `Stop request for ${assignment.ref}'s thread failed (${errorMessage(error)}); the reservation holds until positive native end evidence.`,
+              );
+              return `${workerRef(assignment.workerNum)}'s thread (${errorMessage(error)})`;
+            })
+        : null;
     const stopped = this.store.tx(() => {
       const latest = this.store.assignment(project.id, assignment.num)!;
       if (latest.state === "accepted") return latest;
@@ -6289,16 +6510,6 @@ export class ProjectsService {
         state: "cancelled",
         stopReason: `Stopped: ${reason}`,
       });
-      for (const num of assignment.taskNums) {
-        const task = this.store.task(project.id, num);
-        if (task && task.status === "in_progress")
-          this.store.updateTask(project.id, num, {
-            status: unsettled ? "blocked" : "planned",
-            progress: unsettled
-              ? `Stopped (${assignment.ref}) before its native side was positively settled; the reservation holds until reconcile or an explicit settle.`
-              : `Stopped (${assignment.ref}): ${reason}`,
-          });
-      }
       this.store.log(
         project.id,
         "assignment",
@@ -6308,7 +6519,7 @@ export class ProjectsService {
     });
     if (confirmedBeforeStop && stopped.state === "cancelled")
       await this.settleCancelledIfQuiet(stopped);
-    return this.store.assignment(project.id, assignment.num)!;
+    return { assignment: this.store.assignment(project.id, assignment.num)!, notStopped };
   }
 
   private async assertAdoptionRole(
@@ -6351,6 +6562,9 @@ export class ProjectsService {
       throw new ProjectError(
         "Reviewers are always fresh threads spawned by delegation; an existing context cannot be adopted as a reviewer.",
       );
+    // v9 (§8.1): an adoption hands out the worker loop, so it obeys Pause: here, before the
+    // optional parent detach, and again at the commit, after every await.
+    if (project.paused) throw new ProjectError(ADOPT_PAUSED);
     const thread = await this.sdk.threads.get({ threadId: input.threadId });
     await this.assertAdoptionRole(thread, input.role);
     const existing = this.store.membership(thread.id, true);
@@ -6373,6 +6587,8 @@ export class ProjectsService {
     const tasks = (input.tasks ?? []).map((ref) =>
       this.requireTask(project, ref),
     );
+    for (const task of tasks)
+      if (task.status === "cancelled" && task.statusSetAt !== null) throw new ProjectError(handCancelled(task.ref));
     let nativeParent =
       thread.parentThreadId !== null &&
       thread.parentThreadId === project.coordinatorThreadId;
@@ -6391,6 +6607,14 @@ export class ProjectsService {
     const execution = await threadExecution(this.sdk, thread.id);
     const opId = newOpId();
     const result = this.store.tx(() => {
+      // Every await above took real time: a Pause that landed meanwhile refuses the adoption
+      // here, with nothing written.
+      const fresh = this.requireProject(projectId);
+      if (fresh.paused) throw new ProjectError(ADOPT_PAUSED);
+      for (const ref of input.tasks ?? []) {
+        const task = this.requireTask(fresh, ref);
+        if (task.status === "cancelled" && task.statusSetAt !== null) throw new ProjectError(handCancelled(task.ref));
+      }
       // The attach/detach await took real time: the flag is evidence only
       // while it names the coordinator current at write time.
       const currentCoordinator =
@@ -6415,19 +6639,19 @@ export class ProjectsService {
         state: BUSY_STATUSES.has(thread.status) ? "active" : "idle",
       });
       this.store.openGeneration(projectId, worker.num, 1, thread.id);
-      let assignment: AssignmentRecord | null = null;
-      if (tasks.length) {
-        assignment = this.store.createAssignment({
+      // v9: always one open assignment, tasks or not, with reply_to set, so the adopted thread
+      // is a worker with v9 work like any other (and rollback's query finds it).
+      const assignment = this.store.createAssignment({
           projectId,
           workerNum: worker.num,
           taskNums: tasks.map((task) => task.num),
           route: "continue",
           role: input.role,
-          workKind: input.role === "work" ? tasks[0]!.workKind : null,
+          workKind: input.role === "work" ? tasks[0]?.workKind ?? "implementation" : null,
           threadId: thread.id,
           generation: 1,
           profile: {
-            providerId: thread.providerId,
+            providerId: thread.providerId ?? "unknown",
             model: execution?.model ?? "unknown",
             reasoningLevel: execution?.reasoningLevel ?? "high",
             ...(execution?.serviceTier ? { serviceTier: execution.serviceTier } : {}),
@@ -6442,13 +6666,10 @@ export class ProjectsService {
           briefText: ADOPTED_BRIEF,
           reviewOf: null,
           rationale: "Adopted an existing thread",
+          replyTo: currentCoordinator ?? "coordinator",
         });
-        for (const task of tasks)
-          this.store.updateTask(projectId, task.num, {
-            status: "in_progress",
-            progress: `Adopted ${worker.ref}`,
-          });
-      }
+      for (const task of tasks)
+        if (task.statusSetAt !== null && task.status !== "cancelled") this.store.setTaskStatus(projectId, task.num, null);
       this.store.log(
         projectId,
         "worker",
@@ -6465,9 +6686,27 @@ export class ProjectsService {
       role: "worker",
       projectId,
       worker: result.worker.num,
-      assignment: result.assignment?.num ?? null,
+      assignment: result.assignment.num,
     });
-    return { ...result, note: await this.reloadToolsIfIdle(thread) };
+    // Only now, with its record committed, does the thread get the loop: queued behind a running
+    // turn, whose end reports nothing.
+    const settings = await this.preferences.read();
+    const policy = withProfileDefaults(this.requireProject(projectId).policy, settings);
+    const { worker, assignment } = result;
+    const message = [
+      `You are now ${worker.ref} "${worker.label}" (${worker.area}) in the "${project.name}" Initiative, on ${assignment.ref}${tasks.length ? `, for ${tasks.map((t) => t.ref).join(", ")}` : ""}. Your current work is this assignment: finish it with initiative_report (outcome, summary, report); ending a turn reports nothing. Your lead is the coordinator; message it with initiative_message to:"lead".`,
+      "Until this session restarts, your tools may lack the Initiative ones. Use the shell meanwhile: `bb initiative report '{\"outcome\":\"done\",\"summary\":\"…\",\"report\":\"…\"}'`, `bb initiative pr '<json>'` and `bb initiative message '<json>'`.",
+      this.workAppendix(projectId, policy, assignment.profile, settings.workerInstructions, "continue"),
+      opMarker(assignment.opId),
+    ].join("\n\n");
+    let sent: string | null = null;
+    try {
+      await this.sdk.threads.send({ threadId: thread.id, mode: "queue-if-active", ...(assignment.replyTo && assignment.replyTo !== "coordinator" ? { senderThreadId: assignment.replyTo } : {}), input: textInput(message) });
+    } catch (error) {
+      sent = `The adoption is recorded, but its message could not be sent (${errorMessage(error)}): tell ${worker.ref} with initiative_message work:false.`;
+      this.store.log(projectId, "worker", `${worker.ref}'s adoption message could not be sent: ${errorMessage(error)}`);
+    }
+    return { ...result, note: [await this.reloadToolsIfIdle(thread), sent].filter(Boolean).join(" ") };
   }
 
   // Worker reports ----------------------------------------------------------
@@ -6633,20 +6872,6 @@ export class ProjectsService {
       this.store.updateWorker(project.id, worker.num, {
         handoff: report.handoff,
       });
-      // T136: a report never closes a task; the coordinator does. A blocked or failed report
-      // marks its tasks blocked, a done one leaves them open with the report as progress.
-      if (!terminalNow)
-        for (const num of [...assignment.taskNums]) {
-          const task = this.store.task(project.id, num);
-          if (task && !["done", "cancelled"].includes(task.status)) {
-            const waiting = this.store.decisions(project.id).find(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.blocks.includes(num));
-            this.store.updateTask(project.id, num, {
-              status: waiting || report.outcome !== "succeeded" ? "blocked" : "in_progress",
-              progress: waiting ? `Waiting for your opinion on ${waiting.ref}` : `${worker.ref} reported: ${report.summary}`,
-              nextCheckpoint: waiting ? `Answer ${waiting.ref}` : null,
-            });
-          }
-        }
       const subject =
         assignment.role === "review"
           ? `review ${assignment.ref}`
@@ -6665,7 +6890,7 @@ export class ProjectsService {
       // D442: the summary goes on every PR the report names, else on those its brief gave it.
       // The report's own length bounds how many that can be.
       const named = prsNamed(`${report.handoff.summary}\n${report.finalMessage ?? ""}`);
-      for (const url of named.length ? named : prsNamed(assignment.briefText))
+      for (const url of named.length ? named : prsNamed(ownBriefText(assignment.briefText)))
         this.prNotes.append(project.id, url, { at: this.now(), author: worker.ref, kind: "note", text: reportNote(report.handoff.summary), link: assignment.ref });
     });
     if (!captured) notifyNote = await this.sendReport(threadId, this.store.assignment(project.id, assignment.num)!);
@@ -6726,64 +6951,6 @@ export class ProjectsService {
             : " Put anything the coordinator should know in your final reply: it stays in this thread, and if this thread is an ordinary native child, BB shows it to its native parent when your turn ends." +
               (listed.length ? ` The background work it lists (${jobs}) is not recorded either: stop it before ending your turn and name it in your final reply.` : "")),
     );
-  }
-
-  /** Where each open assignment's brief entered its thread (event sequence), once found. */
-  private briefBoundaries = new Map<string, number>();
-
-  /**
-   * T136: a worker that never calls initiative_report has its final message recorded as the
-   * report, read when its turn ends (idle or failed). It fills the dashboard and is never sent
-   * (D417); the stuck-worker check tells the coordinator.
-   *
-   * - Open work is reported by the first normally completed turn that ends after its brief
-   *   entered the thread (the turn input carrying its op marker) or, for an adopted thread,
-   *   after the adoption. An interrupted turn that a later message resumes still reports it;
-   *   a turn that ended before the brief arrived never does.
-   * - While a turn is still running, or BB's events cannot be read, nothing is decided.
-   */
-  async captureFinalMessage(thread: ThreadDto) {
-    const m = this.store.membership(thread.id);
-    if (!m?.worker || m.former || m.workerNum <= 0 || m.worker.threadId !== thread.id) return;
-    const { project, worker } = m;
-    let turn: Awaited<ReturnType<typeof latestTurn>>;
-    try {
-      turn = await latestTurn(this.sdk, thread.id);
-    } catch {
-      return;
-    }
-    if (!turn || turn.status === "running") return;
-    if (!turn.final) return;
-    // T150: work closed on a thread failure still takes the report of that thread once retried.
-    const latest = this.store.latestAssignment(project.id, worker.num);
-    const open = this.store.openAssignment(project.id, worker.num) ?? (latest && closedOnThreadFailure(latest) ? latest : null);
-    if (!open || !["running", "idle_no_report", "failed"].includes(open.state) || open.threadId !== thread.id ||
-        open.queuedMessageId || open.cancelRequested || open.report) return;
-    const adopted = open.briefText === ADOPTED_BRIEF;
-    if (!adopted && !open.briefDelivered) return;
-    if (adopted) {
-      if (turn.endedAt === null || turn.endedAt < open.createdAt) return;
-    } else {
-      const key = `${project.id}:${open.num}`;
-      let boundary = this.briefBoundaries.get(key) ?? null;
-      if (boundary === null) {
-        boundary = await briefBoundary(this.sdk, thread.id, opMarker(open.opId)).catch(() => null);
-        if (boundary === null) return;
-        this.briefBoundaries.set(key, boundary);
-      }
-      if (turn.endSeq <= boundary) return;
-      this.briefBoundaries.delete(key);
-    }
-    const summary = summaryOf(turn.final.text);
-    await this.report(thread.id, {
-      assignment: open.ref,
-      outcome: "succeeded",
-      summary,
-      evidence: [],
-      handoff: { summary, workspaceRevision: "not recorded", files: [], openQuestions: [], nextSteps: [], dirtyFiles: [], recoveryArtifacts: [], pendingCommands: [] },
-      pendingBackgroundWork: [],
-      finalMessage: clipFinal(turn.final.text),
-    }, { captured: true });
   }
 
   /**
@@ -6859,42 +7026,54 @@ export class ProjectsService {
   }
 
   /**
-   * D417: workers report explicitly, so one that stops without reporting would go unseen. The
-   * coordinator is told once per worker input when all three hold: the worker's thread is idle
-   * or failed with nothing queued or running in the background (unknown counts skip it), and it
-   * has neither messaged the coordinator nor filed a report since its latest input. Everything is
-   * checked again right before each send; the coordinator's inputs are read once per Initiative.
+   * D417: workers report explicitly, so one that stops without reporting would go unseen. Its
+   * lead (§5.1) is told once per worker input when all of these hold: the worker's thread is idle
+   * or failed with nothing queued or running in the background (unknown counts skip it), no
+   * descendant of it is live (v9: it is waiting on a child, not stuck; a walk that fails or runs
+   * out of budget claims nothing either way), and it has neither messaged its lead nor filed a
+   * report since its latest input. Everything is checked again right before each send; each
+   * lead tab's inputs are read once.
    */
   private async flagStuckWorkers(project: ProjectRecord, workers: WorkerRecord[], rows: Map<string, ThreadListRow>, failing: Map<string, number>) {
-    const coordinator = project.coordinatorThreadId!;
-    const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[] = [];
+    const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string; lead: string }[] = [];
     for (const worker of workers) {
       const row = rows.get(worker.threadId!);
       if (!row || row.archivedAt !== null || ProjectsService.rowQuiescence(row) !== "ended") continue;
       // T150: open work on a failed thread is closeFailedAssignments' to report, once.
       if (row.status === "error" && failing.has(worker.threadId!)) continue;
       const input = await latestInput(this.sdk, worker.threadId!).catch(() => null);
-      if (input && !this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) candidates.push({ worker, input, status: row.status });
+      if (!input || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
+      const lead = await this.workerLead(project, worker.num);
+      if (lead) candidates.push({ worker, input, status: row.status, lead });
     }
-    if (!candidates.length) return;
-    const heard = await messagesSince(this.sdk, coordinator, Math.min(...candidates.map(c => c.input.at)), this.now()).catch(() => null);
+    for (const lead of new Set(candidates.map((c) => c.lead)))
+      await this.flagStuckFor(project, lead, candidates.filter((c) => c.lead === lead));
+  }
+
+  private async flagStuckFor(project: ProjectRecord, lead: string, candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[]) {
+    const heard = await messagesSince(this.sdk, lead, Math.min(...candidates.map(c => c.input.at)), this.now()).catch(() => null);
     if (!heard) return;
     for (const { worker, input, status } of candidates) {
       const threadId = worker.threadId!;
       // Silence is proven only as far back as the read reached.
       if (input.at < heard.reached || (heard.latest.get(threadId) ?? -Infinity) >= input.at) continue;
+      // v9: a worker with a live child is waiting on it, not stuck. Walked only for the silent
+      // ones, the few that would be flagged.
+      const children = await this.liveDescendants(threadId).catch(() => null);
+      if (children === null || children.length) continue;
       try {
         const turn = await latestTurn(this.sdk, threadId);
         const now = await latestInput(this.sdk, threadId);
         // Re-validated with no await before the send: still stopped on the same input, still
         // eligible, still unflagged, and the coordinator unchanged.
         const current = this.store.worker(project.id, worker.num);
+        const fresh = this.store.project(project.id);
         if (!turn || turn.status === "running" || now?.seq !== input.seq || !current || current.threadId !== threadId ||
-            !this.mayBeStuck(project.id, current, input.at) || this.store.project(project.id)?.coordinatorThreadId !== coordinator ||
+            !this.mayBeStuck(project.id, current, input.at) || !fresh || (this.leadThreadOf(fresh, worker.num) !== lead && lead !== fresh.coordinatorThreadId) ||
             this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
         const text = turn.final?.text ?? "(none)";
         const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
-        await this.sdk.threads.send({ threadId: coordinator, mode: "queue-if-active", input: textInput(
+        await this.sdk.threads.send({ threadId: lead, mode: "queue-if-active", input: textInput(
           `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input. Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
         this.store.setFlag(stuckKey(project.id, worker.num, input.seq));
       } catch (error) {
@@ -6945,11 +7124,6 @@ export class ProjectsService {
       const worker = workerRef(current.workerNum);
       this.store.tx(() => {
         this.store.updateAssignment(current.projectId, current.num, { state: "failed", stopReason: `${THREAD_FAILED}${clipped}.` });
-        for (const num of current.taskNums) {
-          const task = this.store.task(current.projectId, num);
-          if (task?.status === "in_progress")
-            this.store.updateTask(current.projectId, num, { status: "blocked", progress: `${worker}'s thread failed on ${current.ref} without a report` });
-        }
         this.store.log(current.projectId, "worker", `${current.ref} failed: ${worker}'s thread ended in an error BB is not retrying (${clipped}); no report.`, { assignment: current.num });
       });
       this.failedSeen.delete(threadId);
@@ -6988,8 +7162,10 @@ export class ProjectsService {
       if (!failed || !closedOnThreadFailure(failed) || failed.report || this.store.hasFlag(key) ||
           !project || project.archivedAt !== null || !project.coordinatorThreadId) continue;
       const worker = workerRef(failed.workerNum);
+      // v9: the worker's lead hears of it (§5.1).
+      const lead = await this.workerLead(project, failed.workerNum) ?? project.coordinatorThreadId;
       try {
-        await this.sdk.threads.send({ threadId: project.coordinatorThreadId, mode: "queue-if-active", input: textInput(
+        await this.sdk.threads.send({ threadId: lead, mode: "queue-if-active", input: textInput(
           `Initiative · ${project.name} · ${worker}\n\n${worker} ended without a report on ${failed.ref} (thread ${failed.threadId}). ${failed.stopReason}\n\nNo report; retire and respawn ${worker}, or retry its thread.`) });
         this.store.setFlag(key);
       } catch (error) {
@@ -7004,20 +7180,27 @@ export class ProjectsService {
     }
   }
 
-  /** D417: a filed report goes to the coordinator once, as an ordinary message from the worker. */
+  /**
+   * D417, v9: a filed report goes once, as an ordinary message from the worker, to its lead
+   * (§5.1). A done report queues behind a busy lead; a blocked one steers into its turn. Work
+   * given out before the switch carries the pre-switch line.
+   */
   private async sendReport(threadId: string, assignment: AssignmentRecord): Promise<string> {
     const { project, worker } = this.workerOf(threadId);
-    if (!project.coordinatorThreadId) return "Report recorded; there is no current coordinator to send it to.";
+    const lead = await this.workerLead(project, worker.num);
+    if (!lead) return "Report recorded; there is no current coordinator to send it to.";
+    const name = lead === project.coordinatorThreadId ? "the coordinator" : `"${this.store.projectThreadByThreadId(lead)?.label ?? lead}"`;
     const report = assignment.report!;
+    const preSwitch = preSwitchLine(assignment);
     try {
-      await this.sdk.threads.send({ threadId: project.coordinatorThreadId, senderThreadId: threadId,
+      await this.sdk.threads.send({ threadId: lead, senderThreadId: threadId,
         mode: report.outcome === "blocked" ? "steer-if-active" : "queue-if-active",
-        input: textInput(`Initiative · ${project.name} · ${worker.ref}\n\n${reportNotice(worker.ref, assignment.ref, report, assignment.role)}`),
+        input: textInput(`Initiative · ${project.name} · ${worker.ref}\n\n${reportNotice(worker.ref, assignment.ref, report, assignment.role)}${preSwitch ? `\n\n${preSwitch}` : ""}`),
       });
-      return "Report recorded and sent to the coordinator.";
+      return `Report recorded and sent to ${name}.`;
     } catch (error) {
-      this.store.log(project.id, "report", `${assignment.ref}'s report could not be sent to the coordinator: ${errorMessage(error)}`);
-      return `Report recorded, but sending it to the coordinator failed (${errorMessage(error)}); tell the coordinator with initiative_message.`;
+      this.store.log(project.id, "report", `${assignment.ref}'s report could not be sent to ${name}: ${errorMessage(error)}`);
+      return `Report recorded, but sending it to ${name} failed (${errorMessage(error)}); tell ${name} with initiative_message to:"lead".`;
     }
   }
 
@@ -7136,19 +7319,6 @@ function noticeBody(workerRef: string, assignmentRef: string, report: Report) {
   ].join("\n\n");
 }
 
-/** A final message stored as the report: its head and tail when longer than the cap. */
-function clipFinal(text: string) {
-  if (text.length <= FINAL_MESSAGE_MAX) return text;
-  const half = Math.floor(FINAL_MESSAGE_MAX / 2) - 20;
-  return `${text.slice(0, half)}\n\n[… ${text.length - 2 * half} characters cut …]\n\n${text.slice(-half)}`;
-}
-
-/** The dashboard line for a report taken from a final message: its first paragraph, plain. */
-export function summaryOf(text: string) {
-  const first = text.split(/\n\s*\n/).map(p => p.replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim()).find(Boolean) ?? "Reported.";
-  return first.length > 300 ? `${first.slice(0, 297).trimEnd()}…` : first;
-}
-
 /** How often the sweep checks for workers that stopped without reporting (D417). */
 const STUCK_CHECK_MS = 3 * 60_000;
 /** How long a worker thread stays failed with nothing queued before its open assignment closes (T150). */
@@ -7157,11 +7327,30 @@ const FAILED_GRACE_MS = 60_000;
 const FAILURE_TEXT_MAX = 600;
 /** How much of a stuck worker's last message the coordinator's notice quotes. */
 const STUCK_EXCERPT = 1500;
+/** How archive names a running descendant; a busy status reads "is <status>". */
+const BLOCKER_WORDS: Partial<Record<Running, string>> = {
+  "background work": "has background work running",
+  "queued work": "has queued work waiting",
+  "waiting for input": "is waiting for input",
+  unreadable: "returned unreadable lifecycle fields",
+};
+/** What a Stop did to a worker's child threads, for activity lines and results; empty when there were none. */
+const childrenParts = (stopped: number, failed: readonly string[], unverified: string | null) => [
+  ...(stopped ? [`${stopped} running child thread${stopped === 1 ? "" : "s"} stopped`] : []),
+  ...(failed.length ? [`not stopped: ${failed.join(", ")}`] : []),
+  ...(unverified ? [`unverified: ${unverified}`] : []),
+];
+const childrenLine = (stopped: number, failed: readonly string[], unverified: string | null) => {
+  const parts = childrenParts(stopped, failed, unverified);
+  return parts.length ? ` (${parts.join("; ")})` : "";
+};
 /** The flag recording that the coordinator was told this worker stopped on this input. */
 const stuckKey = (projectId: string, workerNum: number, inputSeq: number) => `stuck:${projectId}:${workerNum}:${inputSeq}`;
 
 /** The brief text of an adopted thread's assignment: no brief was sent, so no op marker. */
 const ADOPTED_BRIEF = "(adopted existing thread)";
+const ADOPT_PAUSED = "The Initiative is paused. Resume it before adopting a thread.";
+const handCancelled = (ref: string) => `${ref} was cancelled by hand. Ask the user, who can choose Follow the work on the Tasks tab.`;
 
 export function slug(text: string) {
   return (

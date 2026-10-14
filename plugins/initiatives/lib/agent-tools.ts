@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { environmentSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
 import type { Command } from "./commands";
+import { ruleSources, ruleText } from "./rules";
 import { ToolInputError } from "./tool-errors";
 import { MODE_HELP } from "./messaging";
 
@@ -17,9 +18,10 @@ export const spawnToolSchema = z.object({
   label: text(200).describe("Short name, shown in the W# title."),
   purpose: text(300).describe("What this worker is for."),
   text: text(20000).describe("The brief: the task, the context it needs, explicit user instructions that matter, how to verify."),
-  role: z.enum(["work", "review"]).optional().describe("work by default. A review is read-only and reports findings."),
+  /** Older sessions only (not advertised): v9 refuses role "review" and reviews, workers review their own work. */
+  role: z.enum(["work", "review"]).optional(),
   tasks: z.array(ref).max(30).optional().describe("T# tasks this work is for."),
-  reviews: ref.optional().describe("Review only: the W# (its latest report) or A# to review; that report is embedded."),
+  reviews: ref.optional(),
   handoffs: z.array(ref).max(3).optional().describe("Up to 3 prior reports to embed, as W# (latest report) or A#."),
   kind: workerKindSchema.optional().describe("Work only: worker (default; a known change), experimenter (prototype, report options), fast (small, well-specified), very-fast (mechanical: lookups, scans, simple edits) or explorer (read and report; no building). Settings map each to a model."),
   profile: profileSchema.optional().describe("An explicit model; wins over kind."),
@@ -29,24 +31,49 @@ export const spawnToolSchema = z.object({
 }).strict();
 
 export const messageToolSchema = z.object({
-  to: z.string().max(32).optional().describe("W# or \"coordinator\"."),
+  to: z.string().max(32).optional().describe("W#, or (a worker) \"lead\": the tab that gave you your work. \"coordinator\": the coordinator tab."),
   /** Older sessions' name for to; not advertised (messageToolAdvertised). */
   target: z.string().max(32).optional(),
   text: text(20000),
   mode: z.enum(["steer", "queue"]).optional().describe(MODE_HELP),
-  tasks: z.array(ref).max(30).optional().describe("Coordinator only: give this worker more work on these tasks."),
-  work: z.boolean().optional().describe("Coordinator only: this message is more work (the worker reports on it again), even without tasks. Refused for a reviewer: reviews are not reused, so spawn a fresh reviewer."),
+  tasks: z.array(ref).max(30).optional().describe("A lead only: give this worker more work on these tasks."),
+  work: z.boolean().optional().describe("A lead only: this message is more work (the worker reports on it again), even without tasks."),
+  resumeCold: z.boolean().optional().describe("A lead only: send more work even though the worker is idle with a large, cold cache; the refusal without it states the rewrite cost."),
 }).strict();
 /** What agents see: messageToolSchema without the older target. */
 export const messageToolAdvertised = messageToolSchema.omit({ target: true });
+/** What initiative_spawn advertises: no review fields (workers run their own reviews). */
+export const spawnToolAdvertised = spawnToolSchema.omit({ role: true, reviews: true });
 
 export const taskToolSchema = z.object({
-  action: z.enum(["create", "update", "close", "reopen"]),
-  task: ref.optional().describe("T# (update, close, reopen)."),
+  action: z.enum(["create", "update", "status", "close", "reopen"]),
+  task: ref.optional().describe("T# (update, status)."),
   title: text(200).optional(),
   text: text(20000).optional().describe("What the task is about."),
-  note: text().optional().describe("update: progress note. close: what happened."),
-  outcome: z.enum(["done", "cancelled"]).optional().describe("close: done or cancelled."),
+  note: text().optional().describe("update: progress note."),
+  status: z.enum(["planned", "cancelled", "done", "auto"]).optional().describe("status: only on the user's instruction. auto lets the status follow the task's work and PRs again."),
+  reason: text().optional().describe("status: the user's instruction, quoted."),
+  /** Older sessions only. */
+  outcome: z.enum(["done", "cancelled"]).optional(),
+}).strict();
+export const taskToolAdvertised = taskToolSchema.extend({ action: z.enum(["create", "update", "status"]) }).omit({ outcome: true });
+
+/** v9 (D523): the standing rules, for leads. */
+export const ruleToolSchema = z.object({
+  action: z.enum(["add", "edit", "remove"]),
+  rule: ref.optional().describe("R# (edit, remove)."),
+  text: ruleText.optional().describe("add, edit: one line, one or two sentences."),
+  sources: ruleSources.optional().describe("add: where it comes from, e.g. D12."),
+}).strict();
+
+/** v9: a question for the user (the question half of the old initiative_decision). */
+export const questionToolSchema = z.object({
+  question: text(1000).optional().describe("The question, in plain words."),
+  context: text(2000).optional().describe("What the user needs to know to answer."),
+  options: z.array(z.object({ label: text(200), consequences: z.string().max(1000) }).strict()).max(6).optional(),
+  recommendation: z.string().max(1000).optional(),
+  withdraw: ref.optional().describe("D# of your own open question to withdraw instead (with reason)."),
+  reason: text().optional().describe("withdraw: why the user no longer needs to answer."),
 }).strict();
 
 export const workerToolSchema = z.object({
@@ -107,15 +134,21 @@ const need = <T>(value: T | undefined, what: string): T => {
   return value;
 };
 
-export const spawnCommand = (i: z.infer<typeof spawnToolSchema>): Command => ({
+/** v9 (§3): no one starts a review assignment; existing reviewers still report. */
+export const NO_NEW_REVIEWS = "Workers run their own reviews now: give the work to one worker, which starts a fresh reviewer each round and reports once. To check a finished worker's change, send it back to that worker with initiative_message work:true.";
+
+export const spawnCommand = (i: z.infer<typeof spawnToolSchema>): Command => {
+  if (i.role === "review" || i.reviews) throw new ToolInputError(NO_NEW_REVIEWS);
+  return spawnCommandOf(i);
+};
+const spawnCommandOf = (i: z.infer<typeof spawnToolSchema>): Command => ({
   action: "delegate",
   route: "fresh",
-  role: i.role ?? "work",
+  role: "work",
   label: i.label,
   area: i.purpose,
   note: i.text,
   ...(i.tasks ? { tasks: i.tasks } : {}),
-  ...(i.reviews ? { reviews: i.reviews } : {}),
   ...(i.handoffs ? { handoffs: i.handoffs } : {}),
   ...(i.kind ? { kind: i.kind } : {}),
   ...(i.profile ? { profile: i.profile } : {}),
@@ -130,12 +163,13 @@ export const spawnCommand = (i: z.infer<typeof spawnToolSchema>): Command => ({
  */
 export function messageCommand(i: z.infer<typeof messageToolSchema>): Command {
   const to = i.to ?? i.target;
-  if (!to) throw new ToolInputError('Name the recipient: to:"W4" or to:"coordinator".');
+  if (!to) throw new ToolInputError('Name the recipient: to:"W4", to:"lead" or to:"coordinator".');
   if (i.to && i.target && i.to !== i.target) throw new ToolInputError("Give the recipient once, as to.");
   if (i.tasks?.length || i.work) {
-    if (to === "coordinator") throw new ToolInputError("Work goes to a worker (W#), not the coordinator.");
-    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "steer" };
+    if (to === "coordinator" || to === "lead") throw new ToolInputError("Work goes to a worker (W#), not a lead.");
+    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "steer", ...(i.resumeCold ? { resumeCold: true } : {}) };
   }
+  if (i.resumeCold) throw new ToolInputError("resumeCold applies to more work (work:true or tasks).");
   return { action: "message", target: to as never, text: i.text, ...(i.mode ? { mode: i.mode } : {}) };
 }
 
@@ -145,6 +179,8 @@ export function taskCommand(i: z.infer<typeof taskToolSchema>): Command {
       return { action: "task-create", title: need(i.title, "title"), ...(i.text ? { summary: i.text } : {}) };
     case "update":
       return { action: "task-update", task: need(i.task, "task"), ...(i.title ? { title: i.title } : {}), ...(i.text ? { summary: i.text } : {}), ...(i.note ? { note: i.note } : {}) };
+    case "status":
+      return { action: "task-status", task: need(i.task, "task"), status: need(i.status, "status (planned, cancelled, done or auto)"), reason: need(i.reason, "reason (the user's instruction)") };
     case "close":
       return { action: "task-close", task: need(i.task, "task"), outcome: need(i.outcome, "outcome (done or cancelled)"), ...(i.note ? { note: i.note } : {}) };
     case "reopen":
@@ -161,6 +197,17 @@ export function workerCommand(i: z.infer<typeof workerToolSchema>): Command | { 
       return { action: "worker-stop", worker: need(i.worker, "worker"), reason: i.reason ?? "Stopped by the coordinator." };
     case "adopt":
       return { action: "adopt", threadId: need(i.threadId, "threadId"), role: i.role ?? "work", label: need(i.label, "label"), ...(i.purpose ? { area: i.purpose } : {}) };
+  }
+}
+
+export function ruleCommand(i: z.infer<typeof ruleToolSchema>): Command {
+  switch (i.action) {
+    case "add":
+      return { action: "rule-add", text: need(i.text, "text"), ...(i.sources ? { sources: i.sources } : {}) };
+    case "edit":
+      return { action: "rule-edit", rule: need(i.rule, "rule"), text: need(i.text, "text") };
+    case "remove":
+      return { action: "rule-remove", rule: need(i.rule, "rule") };
   }
 }
 

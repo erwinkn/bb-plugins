@@ -6,7 +6,7 @@ import { memoryStore } from "./helpers";
 import { buildOverview } from "../lib/overview";
 import { report } from "./fake-native";
 
-// T96: a worker's latest report is reachable from its thread details as a copyable
+// T96: a worker's latest report is reachable from its Workers detail as a copyable
 // standard handoff and as the delegate field that embeds it in fresh work.
 installTestPluginRuntime();
 const app = await loadPluginApp(() => import("../app"));
@@ -28,7 +28,7 @@ function reportedOverview() {
   return o;
 }
 
-it("thread details copy the latest handoff text and the delegate field without any command", async () => {
+it("worker details copy the latest handoff text and the delegate field without any command", async () => {
   const o = reportedOverview();
   expect(o.workers.current[0]!.lastHandoff).toBe("A1");
   const writeText = vi.fn(async (_text: string) => undefined);
@@ -37,8 +37,8 @@ it("thread details copy the latest handoff text and the delegate field without a
   const command = vi.fn();
   const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview: () => o, read, command } });
   mounted.push(slot);
-  fireEvent.click(await slot.findByRole("tab", { name: /Threads/ }));
-  fireEvent.click(slot.getByRole("button", { name: "Details for W1 Search" }));
+  fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
+  fireEvent.click(slot.getByRole("button", { name: "W1 Search" }));
   await slot.findByText("Latest handoff: A1. Later related work can start a fresh worker with it.");
   fireEvent.click(slot.getByRole("button", { name: "Copy handoff" }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("Prior handoff A1 · W1 …"));
@@ -46,6 +46,6 @@ it("thread details copy the latest handoff text and the delegate field without a
   await slot.findByText("Copied A1's handoff.");
   fireEvent.click(slot.getByRole("button", { name: "Copy delegate field" }));
   await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('"handoffs":["A1"]'));
-  expect(slot.getByRole("button", { name: "Retire worker" })).toBeTruthy();
+  expect(slot.getByRole("button", { name: "Retire" })).toBeTruthy();
   expect(command).not.toHaveBeenCalled();
 });

@@ -44,13 +44,18 @@ describe("W198 PR stages", () => {
     expect(f.store.prRecords(project.id).has(PR)).toBe(false);
   });
 
-  it("is the coordinator's: a worker cannot set stages, through the tool or the CLI", async () => {
-    const { f } = await projectFixture();
+  it("v9: a worker sets the stage of its own PRs only, through the tool or the CLI", async () => {
+    const { f, project } = await projectFixture();
     const [w] = await call(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
-    await expect(call(f, "initiative_pr", { prs: [{ url: PR, stage: "working" }] }, w.threadId)).rejects.toThrow(/coordinator/i);
+    await expect(call(f, "initiative_pr", { prs: [{ url: PR, stage: "working" }] }, w.threadId)).rejects.toThrow(/keeps only PRs its assignments name/);
     const cli = await f.harness.runCli(["pr", JSON.stringify({ prs: [{ url: PR, stage: "working" }] })], { threadId: w.threadId });
     expect(cli.exitCode).toBe(1);
-    expect(cli.stderr).toMatch(/Only the current initiative coordinator sets PR stages/);
+    expect(cli.stderr).toMatch(/keeps only PRs its assignments name/);
+    // A PR its lead recorded as its own: stage and notes are the worker's to keep.
+    await call(f, "initiative_pr", { prs: [{ url: PR, worker: "W1" }] });
+    await call(f, "initiative_pr", { prs: [{ url: PR, stage: "ready-for-erwin", notes: [{ text: "Clean review in r2." }] }] }, w.threadId);
+    expect(f.store.prRecords(project.id).get(PR)).toMatchObject({ stage: "ready-for-erwin" });
+    await expect(call(f, "initiative_pr", { prs: [{ url: PR, category: "Search" }] }, w.threadId)).rejects.toThrow(/category is a lead's to set/);
   });
 
   it("bb initiative pr works from the coordinator and from a terminal with the initiative id", async () => {
@@ -86,9 +91,9 @@ describe("W198 initiative_batch", () => {
     const { f, project } = await projectFixture();
     const result = await call(f, "initiative_batch", { actions: [
       { tool: "task", action: "create", title: "Merge queue" },
-      { tool: "task", action: "close", task: "T999", outcome: "done" },
+      { tool: "task", action: "status", task: "T999", status: "done", reason: "Erwin: done." },
       { tool: "pr", prs: [{ url: PR, stage: "in-review" }] },
-      { tool: "task", action: "close", task: "T1", outcome: "done", note: "Shipped." },
+      { tool: "task", action: "status", task: "T1", status: "done", reason: "Erwin: shipped." },
       { tool: "read", refs: ["T1"] },
     ] });
     expect(result.succeeded).toBe(4);
@@ -127,7 +132,7 @@ describe("W198 initiative_batch", () => {
     const { f, project } = await projectFixture();
     for (let n = 0; n < 3; n++) await call(f, "initiative_task", { action: "create", title: `Task ${n}`, text: "x".repeat(19000) });
     const reads = Array.from({ length: 18 }, () => ({ tool: "read", view: "tasks", detailed: true }));
-    const result = await call(f, "initiative_batch", { actions: [...reads, { tool: "pr", prs: [{ url: PR, stage: "working" }] }, { tool: "task", action: "close", task: "T1", outcome: "done" }] });
+    const result = await call(f, "initiative_batch", { actions: [...reads, { tool: "pr", prs: [{ url: PR, stage: "working" }] }, { tool: "task", action: "status", task: "T1", status: "done", reason: "Erwin: done." }] });
     const size = Buffer.byteLength(JSON.stringify(result));
     // The complete serialized response, envelope and receipts included.
     expect(size).toBeLessThanOrEqual(65536);

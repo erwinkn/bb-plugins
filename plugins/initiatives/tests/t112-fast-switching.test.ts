@@ -16,7 +16,8 @@ async function longHistory() {
     }
     for (let n = 0; n < 100; n++) {
       const task = f.task(project.id, `Done ${n}`);
-      f.store.updateTask(project.id, task.num, { status: "done", result });
+      f.store.setTaskStatus(project.id, task.num, "done");
+      f.store.updateTask(project.id, task.num, { result });
     }
   });
   for (let n = 0; n < 100; n++)
@@ -173,8 +174,9 @@ describe("T112 sidebar tree and sweep signals", () => {
 
   it("a sweep that wrote nothing announces nothing", async () => {
     const { f, project } = await projectFixture();
-    // Settle the fixture's first-sweep work, so the next one is quiet.
+    // Settle the fixture's first-sweep work, so the next one is quiet (and v9's first-load cutover).
     await f.runtime.sweep();
+    await f.service.runCutover();
     const sweep = vi.spyOn(f.runtime, "sweep");
     const run = async () => {
       const before = f.harness.inspection.realtimeSignals.length;

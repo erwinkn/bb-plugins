@@ -427,7 +427,7 @@ describe("A38 named workers", () => {
       area: "search pipeline",
     });
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, t.ref, "done");
+    await f.service.setTaskStatus(project.id, t.ref, "done", "Closed as done.", "the user");
     f.idle(d.threadId!);
     const t2 = f.task(project.id, "Second task");
     await f.service.delegate(project.id, {
@@ -463,7 +463,7 @@ describe("A38 named workers", () => {
       area: "old purpose",
     });
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, t.ref, "done");
+    await f.service.setTaskStatus(project.id, t.ref, "done", "Closed as done.", "the user");
     f.idle(d.threadId!);
     const t2 = f.task(project.id, "Second task");
     f.queueSend("q-rename");
@@ -498,7 +498,7 @@ describe("A38 named workers", () => {
       area: "old purpose",
     });
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, t.ref, "done");
+    await f.service.setTaskStatus(project.id, t.ref, "done", "Closed as done.", "the user");
     f.idle(d.threadId!);
     const t2 = f.task(project.id, "Second task");
     // BB refuses the cosmetic title update; the brief send itself lands.

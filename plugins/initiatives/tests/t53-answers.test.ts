@@ -53,7 +53,7 @@ describe("T53 recording the user's explicit chat answer", () => {
     const { f, project, q } = await openQuestion();
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     f.store.db.prepare("UPDATE workers SET state='retired' WHERE project_id=? AND thread_id=?").run(project.id, worker.threadId);
-    await expect(viaTool(f, worker.threadId!, answer(q.ref))).rejects.toThrow(/current coordinator or a current worker/);
+    await expect(viaTool(f, worker.threadId!, answer(q.ref))).rejects.toThrow(/a lead tab or a current worker/);
     expect((await viaCli(f, worker.threadId!, answer(q.ref), project.id)).exitCode).toBe(1);
     await expect(viaTool(f, "stranger", answer(q.ref))).rejects.toThrow();
     const foreign = await viaCli(f, "coordinator", answer(q.ref), "prj_elsewhere");

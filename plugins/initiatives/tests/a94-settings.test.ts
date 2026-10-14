@@ -20,7 +20,7 @@ describe("A94 editable native Settings consumers", () => {
     expect(descriptors.workerInstructions).toMatchObject({ type: "string", experimental_multiline: true, default: DEFAULT_WORKER_INSTRUCTIONS });
     expect(descriptors.executionProfiles).toHaveProperty("experimental_schema");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Delegate with initiative_spawn");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn");
   });
 
   it("loads persisted instructions and profiles before new native configuration/dispatch", async () => {
@@ -29,7 +29,8 @@ describe("A94 editable native Settings consumers", () => {
       workerInstructions: "Persisted worker instructions",
       executionProfiles: JSON.stringify({ implementation: fast }),
     });
-    expect((await configuration(f, "coordinator")).instructions).toMatch(/^Persisted coordinator instructions\n\nCurrent Initiative membership:/);
+    // v9: the plugin's own lines (identity, rules pointer) come first, then the saved guidance whole.
+    expect((await configuration(f, "coordinator")).instructions).toMatch(/^You are the coordinator tab of the "[^"]+" Initiative[^\n]*\nStanding rules: 0\.[^\n]*\n\nPersisted coordinator instructions$/);
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, workerInput(task.ref));
     expect(f.spawn.mock.calls[0][0]).toMatchObject(fast);
@@ -63,17 +64,18 @@ describe("A94 editable native Settings consumers", () => {
     expect(f.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it("saved worker guidance reaches the worker's configuration, never its briefs (T136)", async () => {
+  it("saved worker guidance reaches the worker's configuration and, v9, every later work message (not the first brief)", async () => {
     const { f, project } = await projectFixture();
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { ...workerInput(task.ref), profile: fast });
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, task.ref, "done");
+    await f.service.setTaskStatus(project.id, task.ref, "done", "Closed as done.", "the user");
     f.idle(d.threadId!);
     await f.preferences.handle.experimental_set({ workerInstructions: "Reuse the checked revision; verify the changed interface." });
     const next = f.task(project.id, "Correction");
+    expect(f.spawn.mock.calls[0][0].prompt).not.toContain("Reuse the checked revision");
     await f.service.delegate(project.id, { route: "continue", worker: d.worker, tasks: [next.ref] });
-    expect(f.send.mock.calls.at(-1)![0].input[0].text).not.toContain("Reuse the checked revision");
+    expect(f.send.mock.calls.at(-1)![0].input[0].text).toContain("How you work in this Initiative (current; replaces anything earlier):\n\nReuse the checked revision; verify the changed interface.");
     expect((await configuration(f, d.threadId!)).instructions).toContain("Reuse the checked revision; verify the changed interface.");
     expect(f.stop).not.toHaveBeenCalled();
   });
@@ -83,16 +85,16 @@ describe("A94 editable native Settings consumers", () => {
     await f.preferences.handle.experimental_set({ coordinatorInstructions: "Custom coordinator", workerInstructions: "Custom worker" });
     await f.harness.callRpc("resetSetting", { field: "coordinatorInstructions" });
     await f.harness.callRpc("resetSetting", { field: "workerInstructions" });
-    expect((await configuration(f, "coordinator")).instructions).toBe(DEFAULT_COORDINATOR_INSTRUCTIONS + "\n\n" + `Current Initiative membership: ${JSON.stringify({ initiative: project.id, coordinator: "coordinator", role: "coordinator", threadId: "coordinator" })}`);
+    expect((await configuration(f, "coordinator")).instructions!.endsWith(`\n\n${DEFAULT_COORDINATOR_INSTRUCTIONS}`)).toBe(true);
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { ...workerInput(task.ref), profile: fast });
     expect((await configuration(f, d.threadId!)).instructions).toContain(DEFAULT_WORKER_INSTRUCTIONS);
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, task.ref, "done");
+    await f.service.setTaskStatus(project.id, task.ref, "done", "Closed as done.", "the user");
     f.idle(d.threadId!);
     const next = f.task(project.id, "Correction");
     await f.service.delegate(project.id, { route: "continue", worker: d.worker, tasks: [next.ref] });
-    expect(f.send.mock.calls.at(-1)![0].input[0].text).not.toContain(DEFAULT_WORKER_INSTRUCTIONS);
+    expect(f.send.mock.calls.at(-1)![0].input[0].text).toContain(DEFAULT_WORKER_INSTRUCTIONS);
   });
 
   it("rejects instruction edits that would be truncated by native configuration", async () => {
@@ -143,11 +145,11 @@ describe("A94 editable native Settings consumers", () => {
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, workerInput(task.ref));
     expect(f.spawn.mock.calls.at(-1)![0]).toMatchObject(good);
-    await f.service.report(d.threadId!, report()); await f.service.closeTask(project.id, task.ref, "done"); f.idle(d.threadId!);
+    await f.service.report(d.threadId!, report()); await f.service.setTaskStatus(project.id, task.ref, "done", "Closed as done.", "the user"); f.idle(d.threadId!);
     const userTask = f.service.createTask(project.id, { title: "Explicit GPT", summary: "User choice", brief: brief(), profile: fast }, "user");
     const [user] = await f.service.delegate(project.id, workerInput(userTask.ref));
     expect(f.spawn.mock.calls.at(-1)![0]).toMatchObject(fast);
-    await f.service.report(user.threadId!, report()); await f.service.closeTask(project.id, userTask.ref, "done"); f.idle(user.threadId!);
+    await f.service.report(user.threadId!, report()); await f.service.setTaskStatus(project.id, userTask.ref, "done", "Closed as done.", "the user"); f.idle(user.threadId!);
     const explicit = f.task(project.id);
     await f.service.delegate(project.id, { ...workerInput(explicit.ref), profile: fast });
     expect(f.spawn.mock.calls.at(-1)![0]).toMatchObject(fast);
@@ -158,7 +160,7 @@ describe("A94 editable native Settings consumers", () => {
     const { f, project } = await projectFixture();
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { ...workerInput(task.ref), profile: fast });
-    await f.service.report(d.threadId!, report()); await f.service.closeTask(project.id, task.ref, "done"); f.idle(d.threadId!);
+    await f.service.report(d.threadId!, report()); await f.service.setTaskStatus(project.id, task.ref, "done", "Closed as done.", "the user"); f.idle(d.threadId!);
     await f.preferences.handle.experimental_set({ executionProfiles: settingsDescriptors.executionProfiles.default });
     const next = f.task(project.id);
     await f.service.delegate(project.id, { route: "continue", worker: d.worker, tasks: [next.ref], permissionMode: "full" });
@@ -182,7 +184,7 @@ describe("A94 editable native Settings consumers", () => {
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { ...workerInput(task.ref), profile: fast });
     const config = await configuration(f, d.threadId!);
-    expect(config.tools.map((tool) => tool.name).sort()).toEqual(["initiative_decision", "initiative_message", "initiative_pr", "initiative_read", "initiative_report"]);
+    expect(config.tools.map((tool) => tool.name).sort()).toEqual(["initiative_message", "initiative_pr", "initiative_read", "initiative_report"]);
     expect(config.instructions).toContain('You are W1 "Search" (Archived search), role work.');
     expect(() => f.service.coordinatorOf(d.threadId)).toThrow(/not the current coordinator/);
   });

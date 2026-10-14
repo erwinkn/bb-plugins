@@ -13,42 +13,96 @@ panel.
 
 ## How it works
 
-An example, in the bb-plugins Initiative:
+v9 (worker-owned reviews; design: `~/.bb-backups/worker-patches/20261012/initiative-redesign-v9/design.md`).
+An example, in the Equisafe Initiative:
 
-1. The coordinator creates T40 "Archived records in search" (optional).
-2. It spawns W190 "Search index" (purpose "search ranking"): `initiative_spawn
-   {label, purpose, text, tasks:["T40"]}`. The brief is the label, the task, the
-   coordinator's text and one report line; standing rules live in the worker
-   instructions, given once per session.
-3. W190 **reports with `initiative_report {outcome:"done"|"blocked"|"failed",
-   summary, report}`** (D417): `summary` stands on its own (outcome, PR URL and
-   head, merge order, what is needed; its first 300 characters are the dashboard
-   line), `report` is the full text. The plugin records it and sends the
-   coordinator one message, e.g. "W190 reported (done) on A301: Search covers
-   archives", followed by the report when it is at most 1200 characters. A longer
-   one (W215) arrives as its summary (up to 1000 characters), the PR links its
-   body names that the summary doesn't (up to 3) and the `initiative_read` call
-   for the full report; a blocked one leads with the question.
-   Blocked needs the question, which also waits in the Inbox. A worker that never
-   calls the tool has the final message of the first normally completed turn
-   after its brief arrived recorded as its report (a resumed turn counts; for an
-   adopted thread, after the adoption), for the dashboard only: it is not sent.
-4. A reviewer: `initiative_spawn {role:"review", reviews:"W190", ...}`. Its brief
-   embeds W190's latest report, it reads W190's checkout, and it reports findings
-   the same way. No revision strings.
-5. Fixes go to a fresh worker (W259): `initiative_spawn {handoffs:["W190",
-   "<the review's A#>"], ...}` embeds the implementation report and the review
-   findings. Only a tiny related fix goes back to W190 while its cache is warm:
-   `initiative_message {to:"W190", text,
-   work:true}` (or `tasks:[...]`). A message without them is just a message.
-   Reviewers are never reused: the coordinator retires the reviewer once it has
-   read its report (unless it needs to ask it a clarifying question first), and
-   each review round gets a fresh one, `initiative_spawn {role:"review",
-   reviews:"W190", handoffs:["<the previous review's A#>"]}`, naming the latest
-   worker on the change. Work for a reviewer is refused.
-6. Done: the coordinator closes T40 (`initiative_task {action:"close", task:"T40",
-   outcome:"done"}`) and retires W190. Nothing is accepted or
-   rejected.
+1. Erwin, in the coordinator tab: "The human-steps query double-counts KYB steps. Fix it."
+   The coordinator spawns W1420: `initiative_spawn {label, purpose, text, tasks:["T163"]}`.
+   Its assignment A1641 records `reply_to` = the coordinator tab. The brief ends with the
+   **reviewer command** (a `bb thread spawn` of the other model family, from the
+   `reviewOfClaude`/`reviewOfGpt` profile) and the **standing rules**.
+2. W1420 implements, opens its PR and keeps its stage with `initiative_pr`. For each review
+   round it starts a fresh reviewer as an ordinary BB child thread (`--parent-self
+   --lifecycle-owner-thread`, in its checkout), copies the rules that matter into the
+   reviewer's brief, and ends its turn: BB's child turn-end notice wakes it. Ending a turn
+   records nothing; only `initiative_report` finishes work.
+3. At most 4 rounds (D522, worker guidance; the plugin counts nothing). Clean: it sets the
+   PR to `ready-for-erwin` and reports done once. Still rejected after round 4: it reports
+   blocked with the open findings and options. The lead grants 4 more rounds
+   (`initiative_message work:true`) only when a standing rule or Erwin's explicit
+   instruction settles the finding; otherwise it asks Erwin (`initiative_question`).
+4. The report goes to the worker's **lead**: the tab that gave it the work, or the
+   coordinator tab once that tab is archived. A done report queues behind a busy lead and
+   runs as its own turn when drained; a blocked one steers into the running turn.
+5. Every later work message ends with the whole loop (the worker guidance as a new session
+   gets it, the reviewer command, the rules), under "How you work in this Initiative
+   (current; replaces anything earlier)".
+
+What changed from v8 (the previous build, `3d46353`):
+
+- **Every tab is a lead.** Discussions get the coordinator's tools and guidance; a worker's
+  reports, messages (`to:"lead"`; a worker's `to:"coordinator"` means the same), failure and
+  stuck notices go to `lead(W)`. The discussion gate is gone.
+- **Leads don't start reviewers**: `initiative_spawn`, the retained `initiative_delegate` and
+  `bb initiative command` refuse `role:"review"`/`reviews`. Reviewers given out before the
+  switch keep working and reporting as before.
+- **Tasks are computed** from their work and its PRs (planned, in progress, blocked, done),
+  unless set by hand (`tasks.status_set_at`). Only the user, or a lead on the user's
+  instruction (`initiative_task {action:"status"}`), sets one; a hand-cancelled task refuses
+  new work, and new work clears a hand-set planned or done. Old closes made by the previous
+  build come back as hand-set on every load. A task's PRs are those any of its work names, in
+  its PR records or anywhere in its reports; the newest work decides the outcome. PR states (`pr_states`) come from the merge
+  queue's open lists plus a background `gh pr view` pass (10 PRs, 2 at a time, after each
+  fetch); reads never call GitHub.
+- **Standing rules replace the decision log** (D518, D523): `initiative_rule`, the Rules
+  tab, `initiative_read {view:"rules"}`, `bb initiative rules import|export`. The list
+  travels in briefs, work messages and each coordinator's first message; instructions carry
+  only a pointer (BB cuts them at 4096). A PR a rule names is nobody's work: PR attribution
+  reads a brief without that shared appendix. Every change, an import or its undo included,
+  is announced to the other live lead tabs and the workers with open work; a discussion BB
+  could not confirm is open is named in `notReached`, not skipped. `user-choice`/`veto-request` are refused with where
+  such a choice goes now; questions stay (`initiative_question`).
+- **Stuck vs waiting**: a worker with a live descendant isn't flagged. "Live" is one rule
+  everywhere (`running()` in `lib/bb.ts`): a busy status, background agents, commands or
+  workflows, queued work, or pending input. The Account Pooler's context route names a
+  worker's running child as its review, and the Workers tab says what a worker waits on, both
+  from an in-memory cache that lifecycle events and the sweep's child discovery keep; after a
+  reload a worker reads "child threads not checked yet" until the sweep has listed its tree,
+  archived children included (an unclaimed one is listed once, without joining the
+  Initiative, so a descendant BB restored under it is found).
+- **Stop** works without open work and stops running descendants, as do cancelling a task,
+  Stop initiative work (idle adopted work included) and the older assignment Stop. Each
+  stops the work's own thread whatever its assignment state says (an adopted or idle thread
+  can run work Initiatives never dispatched; on a quiet thread there is no turn to
+  interrupt, and BB asks the thread's host to release its runtime instead). One walk, through archived children, serves archive and Stop; it gives up at 500
+  descendants as soon as a page passes them. The result counts only the Stops BB
+  accepted and names refused ones, the worker's own thread included, and descendants the walk
+  could not reach; the Tasks and Workers tabs show them. The Workers tab opens child threads
+  a level and 100 rows at a time, so every descendant is reachable; the overview never walks
+  them. Its `childPage` RPC never waits on BB: it answers from a cache a background read fills
+  (loading until the first read lands), and the open trees refresh with the dashboard,
+  re-reading every page they opened.
+- **No Initiatives overview (D536)**: the sidebar lists the Initiatives and creates them
+  (`command` `create`, keyed). The nav entry stays because a BB nav panel has no route
+  without one, and the dashboard (`/plugins/initiatives/initiatives/<id>`) and composer live
+  on that route; its bare page only points to the sidebar. Hide the entry with BB's
+  **Hide from sidebar**.
+- **Adoption** always records one open assignment (with `reply_to`), obeys Pause at its
+  commit, then sends the adopted thread the loop.
+- **Cold workers (D529)**: more work for a large, cold worker is refused to a lead with
+  the rewrite cost unless it passes `resumeCold:true`; the user's own sends never are.
+- **Pre-switch work** (`reply_to IS NULL`) carries a line wherever a lead reads its report,
+  and the first load after old-code activity sends each live lead tab the cutover
+  instruction once (flag `loops-v5`).
+- **Code-owned guidance defaults are never stored**: a saved text equal to a default is
+  unset on load, so a rollback reads its own defaults.
+
+Upstream candidates (recorded, nothing filed): U1 rename a tab by double-clicking it
+(`experimental_threadGroupTabs`); U2 `skills.has(host, name)` for the missing-skill warning
+on remote hosts; U3 apply changed plugin instructions and tools to a live session at its
+next turn; U4 run queued agent messages from different senders as one turn (D514).
+
+The sections below describe v8's behaviour where v9 didn't change it.
 
 Details:
 
@@ -188,8 +242,9 @@ bb plugin build ~/Code/bb-plugins/plugins/initiatives
 bb plugin reload initiatives
 ```
 
-Open Initiatives in the navigation, or Initiative from a thread's panel menu. Start a
-new coordinator in a selected checkout, or adopt the current thread. Adoption
+Open an Initiative from the sidebar's Initiatives list, or Initiative from a thread's panel
+menu. Start one from the sidebar's + (a new coordinator in the first repository's checkout),
+or adopt the current thread from its Initiative panel. Adoption
 preserves its runtime; tools activate at the next natural session construction.
 The CLI works immediately. Replace coordinator opens a live model picker and
 the handover GPT-6 Luna High writes from recent activity, then starts a fresh
@@ -317,7 +372,7 @@ or mock action is imported. The external prototype and feedback data are separat
 
 ### Merge queue (PRs tab)
 
-The dashboard remembers its open tab per Initiative. On the Initiatives page
+The dashboard remembers its open tab per Initiative. On an Initiative's page
 the tab is part of the route (`/plugins/initiatives/initiatives/<id>/prs`,
 replaced in place as tabs change, so back still leaves the dashboard); a
 thread's side panel has no route, so both remember the last tab in
@@ -908,26 +963,26 @@ it embedded (`handoffSources`: A#, W#, generation, tasks, state, report version
 and revision); a report re-filed while the spawn checks BB refuses that spawn
 instead of embedding a stale filing.
 
-### Large cold workers (T142)
+### Large cold workers (T142, D529)
 
-More work from the coordinator for an existing worker is refused when the worker
-is idle, its prompt cache has expired and its context is larger than the
-`coldResumeTokens` setting (default 150,000; 0 turns the check off). That covers
-`initiative_message` with `work:true` or `tasks` (also inside `initiative_batch`
-and `bb initiative message`), `bb initiative command` delegate/continue and the
-legacy `initiative_delegate`. No agent can override it (W259 removed the
-`resumeCold` field; it is now rejected as unknown). The user's own sends from
-the dashboard are never refused. Resuming would rewrite the whole context into
-the cache; a fresh worker with the old one's report embedded is usually far
-cheaper:
+More work from a lead for an existing worker is refused when the worker is idle,
+its prompt cache has expired and its context is larger than the `coldResumeTokens`
+setting (default 150,000; 0 turns the check off), unless the call passes
+`resumeCold:true`; then it is sent and the result's `warnings` carry the cost. That
+covers `initiative_message` with `work:true` or `tasks` (also inside
+`initiative_batch` and `bb initiative message`), `bb initiative command`
+delegate/continue and the legacy `initiative_delegate`. The user's own sends
+(author `user`: the dashboard and a `bb initiative` call from a terminal) are never
+refused. Resuming rewrites the whole context into the cache; a fresh worker with
+the old one's report embedded is often cheaper, but loses what the report left out:
 
 > W188's cache is cold (last request 23 min ago) and its context is ~480k
-> tokens: resuming costs ~600k tokens of cache rewrite. Spawn a fresh worker
-> with handoffs:["W188"] (its report is embedded). Agents cannot override this;
-> only the user can resume W188 from the dashboard.
+> tokens: resuming it costs ~600k tokens of cache rewrite. To send it anyway,
+> repeat the call with resumeCold:true. Or spawn a fresh worker with
+> handoffs:["W188"] (its report is embedded); it takes the PR over but loses
+> what the report leaves out.
 
-A reviewer's refusal suggests a fresh reviewer with `reviews` (the reviewed
-worker) and `handoffs` (its findings). The rewrite is priced at 1.25× the
+The rewrite is priced at 1.25× the
 context for a 5-minute entry and 2× for a 1-hour one. Cache state comes from the
 Account Pooler (`threads.cacheState`): the prefix, the TTL and any warming lease.
 When the Pooler is absent, fails, takes over 2 s (logged once) or has no record
@@ -969,11 +1024,13 @@ Initiative tool results from 455 KB to 193 KB and its report messages from
 
 An Initiative has its coordinator plus any number of **discussions**: threads
 where the user talks its work through with an agent, across PRs and themes
-(D446). They share the Initiative's memory with the coordinator.
+(D446). They share the Initiative's memory with the coordinator. Since v9 every
+discussion is a **lead** with the coordinator's tools and guidance: workers it
+gives work report back to it, and the D480 restrictions below no longer apply.
 
 **Tabs.** In the header of the coordinator and of each discussion, the title
 becomes a tab strip (BB's `experimental_threadGroupTabs`, Erwin's fork):
-**Coordinator** pinned first, then the discussions oldest first, each named by
+the coordinator (titled by its thread, v9) pinned first, then the discussions oldest first, each named by
 its thread title (rename it from the thread menu), then **+** for a new one. BB
 owns selection, keyboard, overflow and each tab's status. Other threads, and a
 BB without the slot, keep the plain title. The tabs come with the header's

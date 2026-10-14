@@ -28,6 +28,11 @@ type Row = { id: string; archivedAt: number | null; deletedAt: number | null };
  * parents displaces both for a sweep, and sustained arrivals at that rate admit
  * no finite bound. These are bounds in sweeps, not minutes.
  *
+ * An unclaimed parent a listing found (an archived helper, or a thread under
+ * one) is no seed, so the walk only reaches it behind every seed. It is kept
+ * here until a listing of it completes, and planned with the never-listed
+ * seeds, so a cap the seeds fill defers it to the next sweep, not forever.
+ *
  * Native child listings hide deleted threads, so a deleted seed is never
  * observed by a listing; only its own read (stranded-root or convergence get)
  * can mark it, otherwise it keeps being listed (with no rows) every sweep.
@@ -37,6 +42,8 @@ export class DiscoveryMemory {
   private listedOrder = new Map<string, Set<string>>();
   /** Parents a native event says must be listed, with the epoch of the latest such event. */
   private obligations = new Map<string, number>();
+  /** Per project, unclaimed parents a listing found that no completed listing has covered yet. */
+  private unclaimed = new Map<string, Set<string>>();
   private epoch = 0;
 
   /** A native event may have revived these member threads or given them children. */
@@ -65,8 +72,8 @@ export class DiscoveryMemory {
    * One sweep's walk for a project: the current coordinator, then listing
    * obligations, then parents never listed in this instance in reverse seed
    * collection order (nested, project, worker, then coordinator threads; not a
-   * creation-time sort), then the archived re-checks, then the rest least
-   * recently listed first.
+   * creation-time sort), then unclaimed parents found and not yet listed, then
+   * the archived re-checks, then the rest least recently listed first.
    */
   plan(projectId: string, seeds: readonly string[], coordinator: string | null) {
     const seedSet = new Set(seeds);
@@ -85,6 +92,12 @@ export class DiscoveryMemory {
     if (coordinator && seedSet.has(coordinator) && !skip(coordinator)) queue.add(coordinator);
     for (const id of this.obligations.keys()) if (seedSet.has(id)) queue.add(id);
     for (const id of [...seeds].reverse()) if (!listed.has(id) && !skip(id)) queue.add(id);
+    // An unclaimed parent that has since joined is a seed and rotates as one.
+    const unclaimed = this.unclaimed.get(projectId) ?? new Set<string>();
+    for (const id of unclaimed) {
+      if (seedSet.has(id)) unclaimed.delete(id);
+      else queue.add(id);
+    }
     for (const id of recheck) queue.add(id);
     for (const id of listed) if (!skip(id)) queue.add(id);
     return { queue: [...queue], skip, recheck };
@@ -102,8 +115,16 @@ export class DiscoveryMemory {
     return this.obligations.get(parentId);
   }
 
+  /** A listing found an unclaimed parent to walk; it is planned until a listing of it completes. */
+  found(projectId: string, parentId: string) {
+    const unclaimed = this.unclaimed.get(projectId) ?? new Set<string>();
+    unclaimed.add(parentId);
+    this.unclaimed.set(projectId, unclaimed);
+  }
+
   /** A listing finished; it discharges an obligation only if no newer event arrived meanwhile. */
-  completed(parentId: string, token: number | undefined) {
+  completed(projectId: string, parentId: string, token: number | undefined) {
+    this.unclaimed.get(projectId)?.delete(parentId);
     if (token !== undefined && this.obligations.get(parentId) === token) this.obligations.delete(parentId);
   }
 }

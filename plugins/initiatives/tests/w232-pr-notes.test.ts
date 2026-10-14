@@ -125,8 +125,10 @@ describe("D442 notes per PR", () => {
     const { threadId } = await spawn(f, project.id, `Fix ${url(7)}.`);
     expect(await call(f, "initiative_pr", { prs: [{ url: url(7), notes: [{ kind: "question", text: "Squash before merge?" }] }] }, threadId))
       .toEqual({ prs: [{ url: url(7), noted: [1] }] });
-    await expect(call(f, "initiative_pr", { prs: [{ url: url(8), notes: [{ text: "x" }] }] }, threadId)).rejects.toThrow(/W1 notes only PRs its assignments name/);
-    await expect(call(f, "initiative_pr", { prs: [{ url: url(7), stage: "in-review" }] }, threadId)).rejects.toThrow(/Workers only add notes \(\{prs:\[\{url,notes\}\]\}\); stage is the coordinator's to set/);
+    await expect(call(f, "initiative_pr", { prs: [{ url: url(8), notes: [{ text: "x" }] }] }, threadId)).rejects.toThrow(/W1 keeps only PRs its assignments name/);
+    // v9: a worker keeps its own PRs' stage too; other fields stay a lead's.
+    await call(f, "initiative_pr", { prs: [{ url: url(7), stage: "in-review" }] }, threadId);
+    await expect(call(f, "initiative_pr", { prs: [{ url: url(7), category: "Search" }] }, threadId)).rejects.toThrow(/Workers set their PRs' stage and add notes \(\{prs:\[\{url,stage,notes\}\]\}\); category is a lead's to set/);
     await expect(call(f, "initiative_pr", { rename: [{ from: "a", to: "b" }] }, threadId)).rejects.toThrow(/rename/);
     // A PR the coordinator put on the worker counts too.
     await call(f, "initiative_pr", { prs: [{ url: url(8), worker: "W1" }] });

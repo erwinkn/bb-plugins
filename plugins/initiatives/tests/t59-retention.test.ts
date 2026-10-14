@@ -39,29 +39,7 @@ describe("A108 reviewed retention/state boundaries", () => {
     expect(f.send).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["blocked", "failed"] as const)("answer/quiet close restores the recorded %s report and clears Answer D checkpoint", async outcome => {
-    const { f, project, task, worker } = await work();
-    const ask = () => f.service.recordQuestion(project.id, { title: "Scope", question: "Include archives?", context: "Need scope", humanAttention: "needs-opinion", blocksTaskIds: [task.ref] }, coordinator);
-    const first = ask(), second = ask();
-    await f.service.report(worker.threadId!, { ...blocked(), outcome });
-    f.send.mockClear();
-    await f.service.answerOpinion(project.id, first.ref, { choice: null, note: "Yes", notify: false });
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${second.ref}`, nextCheckpoint: `Answer ${second.ref}` });
-    f.service.closeQuestion(project.id, second.ref, "Already settled in chat.");
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: "W1 reported: Blocked on contract", nextCheckpoint: null, acceptedAssignment: null });
-    expect(f.send).not.toHaveBeenCalled();
-  });
 
-  it("planned and running task releases reset stale question checkpoints", async () => {
-    const { f, project, task } = await work();
-    const planned = f.task(project.id, "Next");
-    for (const [t, state, checkpoint] of [[task, "in_progress", null], [planned, "planned", null]] as const) {
-      const q = f.service.recordQuestion(project.id, { title: "Scope", question: "Include archives?", context: "Need scope", humanAttention: "needs-opinion", blocksTaskIds: [t.ref] }, coordinator);
-      f.store.updateTask(project.id, t.num, { nextCheckpoint: `Answer ${q.ref}` });
-      f.service.closeQuestion(project.id, q.ref, "Already settled.");
-      expect(f.store.task(project.id, t.num)).toMatchObject({ status: state, nextCheckpoint: checkpoint });
-    }
-  });
 
   it.each(["removed", "superseded"] as const)("refuses stale review, acknowledgement and supersession of %s decisions before any write/send", async status => {
     const { f, project } = await projectFixture();

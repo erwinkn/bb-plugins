@@ -108,7 +108,7 @@ describe("T88 A189: each refusal names the real prerequisite and next step", () 
     const t1 = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref] });
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, t1.ref, "done");
+    await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
     f.idle(d.threadId!);
     const worker = f.store.workers(project.id)[0]!;
     return { f, project, worker, t2: f.task(project.id, "Next") };
@@ -199,7 +199,7 @@ describe("T88 A191: a cancelled operation already settled as failed is terminal"
     const t1 = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref] });
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, t1.ref, "done");
+    await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
     f.idle(d.threadId!);
     const worker = f.store.workers(project.id)[0]!;
     const t2 = f.task(project.id, "Next");

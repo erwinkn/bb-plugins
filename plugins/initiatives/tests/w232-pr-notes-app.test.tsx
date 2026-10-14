@@ -103,15 +103,17 @@ describe("W229 P2: the page route selects the tab", () => {
     const { f, project } = await projectFixture();
     const summary = await f.harness.callRpc("overview", { projectId: project.id, detail: "summary" });
     const overview = vi.fn(async (input: unknown) => ((input as { detail: string }).detail === "summary" ? summary : f.harness.callRpc("overview", { projectId: project.id, detail: (input as { detail: string }).detail })));
-    const slot = renderSlot({ component: ProjectsPage }, { subPath: `${project.id}/tasks` }, { rpc: { overview, mergeQueue: async () => queue() } });
+    const slot = renderSlot({ component: ProjectsPage }, { subPath: `${project.id}/prs` }, { rpc: { overview, mergeQueue: async () => queue() } });
     slots.push(slot);
     const selected = () => Array.from(slot.container.querySelectorAll("[role=tab]")).find((t) => t.getAttribute("aria-selected") === "true")!.textContent;
-    await waitFor(() => expect(selected()).toMatch(/^Tasks/));
-    slot.rerender(createElement(ProjectsPage, { subPath: `${project.id}/prs` }));
     await waitFor(() => expect(selected()).toMatch(/^PRs/));
     expect(overview).not.toHaveBeenCalledWith(expect.objectContaining({ detail: "history" }));
-    slot.rerender(createElement(ProjectsPage, { subPath: `${project.id}/decisions` }));
-    await waitFor(() => expect(selected()).toMatch(/^Decisions/));
+    // v9: Tasks folds the done and cancelled tasks, which come with the history tier.
+    slot.rerender(createElement(ProjectsPage, { subPath: `${project.id}/tasks` }));
+    await waitFor(() => expect(selected()).toMatch(/^Tasks/));
     await waitFor(() => expect(overview).toHaveBeenCalledWith(expect.objectContaining({ detail: "history" })));
+    // A route from before v9 opens the view that replaced it: Decisions is now the Archive.
+    slot.rerender(createElement(ProjectsPage, { subPath: `${project.id}/decisions` }));
+    await waitFor(() => expect(selected()).toMatch(/^Archive/));
   });
 });

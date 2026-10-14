@@ -62,7 +62,7 @@ describe("T115 blocked reports in the Inbox and Needs you", () => {
     expect(sentTo(f, "coordinator")).toHaveLength(2);
     expect((await f.overview(project.id, "summary")).blockers[0]!.answer!.note).toBe("Only TEKK_KEY.");
     // The coordinator acts on the report (T136: closes its task): the item clears.
-    await f.service.closeTask(project.id, "T1", "done", "Continued with the answer");
+    await f.service.setTaskStatus(project.id, "T1", "done", "Continued with the answer", "the user");
     expect((await f.overview(project.id, "summary")).blockers).toEqual([]);
     expect(await tree(f)).toBe(0);
   });
@@ -79,7 +79,7 @@ describe("T115 blocked reports in the Inbox and Needs you", () => {
   it("refuses a stale or settled blocker without saving anything", async () => {
     const { f, project } = await blockedWorker();
     await expect(f.service.answerBlocker(project.id, "A1", { ...seen, question: "An older question?" }, "x")).rejects.toThrow(/blocker changed since you opened it/);
-    await f.service.closeTask(project.id, "T1", "done", "Handled in chat");
+    await f.service.setTaskStatus(project.id, "T1", "done", "Handled in chat", "the user");
     await expect(f.service.answerBlocker(project.id, "A1", seen, "x")).rejects.toThrow(/no longer waiting on a blocker/);
     expect(f.store.decisions(project.id).filter((d) => d.body.blocker)).toEqual([]);
   });

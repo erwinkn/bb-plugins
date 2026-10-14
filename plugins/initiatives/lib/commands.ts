@@ -17,10 +17,13 @@ import {
 import type { ProjectsService } from "./service";
 import { ProjectError } from "./bb";
 import { ToolInputError } from "./tool-errors";
+import { NO_NEW_REVIEWS } from "./agent-tools";
 import { messageSchema } from "./messaging";
 import { DECISION_ACTIONS, decisionIssues, normalizeDecisionInput } from "./decision-input";
 import { settlementReceipt } from "./receipts";
 import { PROJECT_COLORS, PROJECT_ICONS } from "./tree-schema";
+import { HAND_STATUSES } from "./task-status";
+import { MAX_RULES, ruleSources, ruleText } from "./rules";
 
 const text = (max = 2000) => z.string().trim().min(1).max(max);
 const ref = text(80);
@@ -76,6 +79,8 @@ export const delegateSchema = z
     rationale: text().optional(),
     handoffs: z.array(ref).max(3).optional(),
     permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(),
+    /** D529: send more work to a large worker whose cache has gone cold anyway, paying the rewrite. */
+    resumeCold: z.boolean().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -107,6 +112,10 @@ export const taskCommands = [
   z
     .object({ action: z.literal("task-reopen"), task: ref, reason: text().optional() })
     .strict(),
+  /** v9 (D522): set a task's status by hand, or "auto" to let it follow its work again. */
+  z
+    .object({ action: z.literal("task-status"), task: ref, status: z.enum([...HAND_STATUSES, "auto"]), reason: text() })
+    .strict(),
   z
     .object({
       action: z.literal("assignment-stop"),
@@ -129,6 +138,10 @@ export const workerCommands = [
   z
     .object({ action: z.literal("worker-retire"), worker: ref, reason: text() })
     .strict(),
+  /** v9: stop a worker with or without open work, and its running children. */
+  z
+    .object({ action: z.literal("worker-stop"), worker: ref, reason: text() })
+    .strict(),
   z
     .object({
       action: z.literal("adopt"),
@@ -140,6 +153,14 @@ export const workerCommands = [
       detachNativeParent: z.boolean().optional(),
     })
     .strict(),
+] as const;
+/** Standing rules (D523): at most MAX_RULES, each one line (ruleText, ruleSources). */
+export const ruleCommands = [
+  z.object({ action: z.literal("rule-add"), text: ruleText, sources: ruleSources.optional() }).strict(),
+  z.object({ action: z.literal("rule-edit"), rule: ref, text: ruleText }).strict(),
+  z.object({ action: z.literal("rule-remove"), rule: ref }).strict(),
+  /** The user reorders on the Rules tab; `to` is the rule's new 1-based place. */
+  z.object({ action: z.literal("rule-move"), rule: ref, to: z.number().int().min(1).max(MAX_RULES) }).strict(),
 ] as const;
 export const decisionCommands = [
   z.object({
@@ -324,6 +345,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   threadCreateSchema,
   delegateSchema,
   ...taskCommands,
+  ...ruleCommands,
   ...workerCommands,
   ...decisionCommands,
   z.object({ action: z.literal("decision-accept-all") }).strict(),
@@ -347,6 +369,14 @@ const decisionCommandSchema = z.discriminatedUnion("action", [...decisionCommand
 export type DecisionCommand = z.infer<typeof decisionCommandSchema>;
 /** The one agent boundary for initiative_decision and its CLI: flat or legacy input, errors with an example. */
 export function parseDecisionCommand(raw: unknown): DecisionCommand {
+  // v9 (D518): the decision log is retired; questions stay. A user's lasting choice becomes a
+  // standing rule, a choice about one PR a PR note, and an agent's reversible choice a line in
+  // its update.
+  const action = (raw as { action?: unknown } | null)?.action;
+  if (action === "user-choice" || action === "veto-request" || action === "decision")
+    throw new ToolInputError(action === "veto-request" || (raw as { madeBy?: unknown }).madeBy === "agent"
+      ? 'Veto requests are retired. Say "Reversible: …" in your initiative_update and in the PR\'s notes, and go ahead.'
+      : 'The decision log is retired. A lasting choice of the user becomes a standing rule: initiative_rule {"action":"add","text":"<the choice>"} (a worker tells its lead). A choice about one PR goes in its notes: initiative_pr {"prs":[{"url":"<the PR URL>","notes":[{"kind":"note","text":"<the choice>"}]}]}.');
   const normalized = normalizeDecisionInput(raw);
   if (!normalized.ok) throw new ToolInputError(normalized.message);
   const parsed = decisionCommandSchema.safeParse(normalized.value);
@@ -355,11 +385,11 @@ export function parseDecisionCommand(raw: unknown): DecisionCommand {
 }
 /** T136: actions that no longer exist, with what replaces them. */
 export const REMOVED_ACTIONS: Record<string, string> = {
-  "task-accept": 'Acceptance was removed: close the task with initiative_task {"action":"close","task":"T#","outcome":"done"}.',
+  "task-accept": "Acceptance was removed: a task's status follows its work and PRs.",
   "review-accept": "Review acceptance was removed: read the review's final message, send fixes to the worker, and retire the reviewer.",
   "assignment-reject": 'Rejection was removed: message the worker with the fixes (initiative_message {"to":"W#","text":"…","work":true}).',
   "assignment-scope-release": "Write holds were removed; overlapping writers only get a warning.",
-  "task-checkpoint": 'Checkpoints were removed: record the outcome with initiative_task {"action":"update","task":"T#","note":"…"} or close the task.',
+  "task-checkpoint": 'Checkpoints were removed: record the outcome with initiative_task {"action":"update","task":"T#","note":"…"}; its status follows its work.',
   "decision-cleanup": "Decision cleanup was removed; the user checks agent decisions in the Inbox.",
   fork: "Forking was removed: spawn a fresh worker with handoffs, or message the existing one.",
   memory: "Memory moved to the Chat memory plugin (T145): the coordinator reads it with memory_read and memory_zoom, or `bb chat-memory status`; only the user switches it, from the coordinator's Memory pill.",
@@ -431,27 +461,53 @@ export async function runCommand(
       return service.createTask(projectId, c, author);
     case "task-update":
       return service.updateTask(projectId, c.task, c, author);
+    // v9: an agent no longer closes or reopens tasks; their status follows the work unless the
+    // user sets it. The dashboard's older actions are the user's hand-set statuses.
     case "task-close":
-      return service.closeTask(projectId, c.task, c.outcome, c.note);
     case "task-cancel":
-      return service.cancelTask(projectId, c.task, c.reason);
-    case "task-reopen":
-      return service.reopenTask(projectId, c.task, c.reason ?? "Reopened.");
+    case "task-reopen": {
+      if (author !== "user")
+        throw new ProjectError(`Tasks follow their work now. Only when the user asks, set one by hand, e.g. initiative_task {"action":"status","task":"${c.task}","status":"cancelled","reason":"<the user's words>"} (status planned, cancelled, done, or auto to follow the work again).`);
+      const status = c.action === "task-reopen" ? "planned" : c.action === "task-cancel" ? "cancelled" : c.outcome;
+      const reason = (c.action === "task-close" ? c.note : c.reason) ?? (status === "planned" ? "Reopened." : `Closed as ${status}.`);
+      return service.setTaskStatus(projectId, c.task, status, reason, "the user");
+    }
+    case "task-status":
+      return service.setTaskStatus(projectId, c.task, c.status, c.reason, service.callerName(projectId, author, threadId));
+    case "rule-add":
+      return service.addRule(projectId, c.text, c.sources ?? [], service.callerName(projectId, author, threadId), threadId);
+    case "rule-edit":
+      return service.editRule(projectId, c.rule, c.text, service.callerName(projectId, author, threadId), threadId);
+    case "rule-remove":
+      return service.removeRule(projectId, c.rule, service.callerName(projectId, author, threadId), threadId);
+    case "rule-move":
+      if (author !== "user") throw new ProjectError("Only the user reorders rules, on the Rules tab.");
+      return service.moveRule(projectId, c.rule, c.to);
     case "assignment-stop":
-      return service.stopAssignment(projectId, c.assignment, c.reason);
+      // v9: the older Stop of one assignment ends its thread's running descendants too, as worker-stop does.
+      return service.stopWork(projectId, c.assignment, c.reason);
     case "assignment-settle": {
       // Lead with what the settle did and did not confirm; the full record follows unchanged.
       const settled = await service.settleUncertain(projectId, c.assignment, c.outcome);
       return { settlement: settlementReceipt(settled, c.outcome), ...settled };
     }
-    case "delegate":
-      // The coordinator's every way of giving more work; the user's own sends are never refused.
-      if (author === "coordinator") await service.refuseColdResume(projectId, c);
-      return service.delegate(projectId, c);
+    case "delegate": {
+      // v9: the retained initiative_delegate and `bb initiative command` refuse a new review
+      // as initiative_spawn does; reports from existing reviewers are still taken.
+      if (c.role === "review" || c.reviews) throw new ToolInputError(NO_NEW_REVIEWS);
+      // A lead's every way of giving more work; the user's own sends are never refused (D529).
+      const cold = author === "coordinator" ? await service.coldResume(projectId, c) : null;
+      // v9: the work's reports and messages go back to the lead that gave it; the user's own
+      // sends and terminal calls to the coordinator tab.
+      const results = await service.delegate(projectId, { ...c, replyTo: author === "coordinator" ? threadId : null });
+      return cold ? results.map((r) => ({ ...r, warnings: [...(r.warnings ?? []), cold] })) : results;
+    }
     case "adopt":
       return service.adoptWorker(projectId, c);
     case "worker-retire":
       return service.retireWorker(projectId, c.worker, c.reason);
+    case "worker-stop":
+      return service.stopWorker(projectId, c.worker, c.reason);
     case "decision":
       return service.recordDecision(projectId, c, provenance);
     case "question":

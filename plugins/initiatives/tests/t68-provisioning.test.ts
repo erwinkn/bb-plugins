@@ -27,8 +27,8 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     const stopped = await f.service.stopAssignment(project.id, "A1", "Provisioning failed");
     expect(stopped).toMatchObject({ state: "cancelled", opState: "done", briefDelivered: true, report: null });
     const released = f.store.task(project.id, task.num)!;
-    expect(released.status).toBe("planned"); expect(released.progress).toContain("execution is not established");
-    expect(released.progress).not.toContain("brief ran");
+    // v9: tasks hold no reservation progress; cancelled work leaves the task planned.
+    expect(released.status).toBe("planned");
     const [retry] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
     expect(retry.assignment).toBe("A2"); expect(f.store.tasks(project.id)).toHaveLength(1);
     expect(f.store.assignment(project.id, 1)?.state).toBe("cancelled");
@@ -60,7 +60,6 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     f.harness.sdk.stub("threads.get", async () => { throw Object.assign(new Error("Gone"), { status: 404 }); });
     await f.service.stopAssignment(project.id, "A1", "Gone");
     expect(f.store.assignment(project.id, 1)?.opState).toBe("done");
-    expect(f.store.task(project.id, task.num)?.progress).toContain("execution is not established");
   });
   it.each(["command", "workflow", "failed-queue", "malformed-count"])("a native %s list row cannot settle cancelled work", async kind => {
     const { f, project, task, thread } = await failedProvision();
@@ -93,7 +92,6 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "uncertain", report: report() });
     f.threads.set(thread.id, thread); await f.runtime.onThreadIdle(thread);
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "done", report: report() });
-    expect(f.store.task(project.id, task.num)?.progress).toContain("report proves work ran");
   });
   it("new accepted evidence arriving during a quiet read cannot be overwritten by settlement", async () => {
     const { f, project, thread } = await failedProvision();
@@ -110,7 +108,6 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     const [created] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
     f.idle(created.threadId!); f.history.splice(0);
     await f.service.stopAssignment(project.id, "A1", "No report");
-    expect(f.store.task(project.id, task.num)?.progress).toContain("execution is not established");
     expect(f.harness.inspection.sdk.callsTo("threads.events.list")).toHaveLength(0);
   });
   it("Stop racing an unconfirmed create holds until its real receipt arrives", async () => {
@@ -129,13 +126,12 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "uncertain", threadId: null });
     release(); await dispatch;
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "done", briefDelivered: true });
-    expect(f.store.task(project.id, task.num)?.progress).toContain("execution is not established");
     expect(f.spawn).toHaveBeenCalledTimes(1);
   });
   it("a quiet old thread cannot settle Stop racing an unconfirmed continuation or its later queue receipt", async () => {
     const { f, project } = await projectFixture(); const first = f.task(project.id);
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref] });
-    await f.service.report(worker.threadId!, report()); await f.service.closeTask(project.id, first.ref, "done"); f.idle(worker.threadId!);
+    await f.service.report(worker.threadId!, report()); await f.service.setTaskStatus(project.id, first.ref, "done", "Closed as done.", "the user"); f.idle(worker.threadId!);
     const task = f.task(project.id, "Next"); let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });

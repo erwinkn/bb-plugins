@@ -55,7 +55,8 @@ describe("T85 questions: question + context is enough", () => {
     expect(asked).toMatchObject({ madeBy: null, status: "active" });
     const item = f.store.decisionItem(project.id, Number(asked.ref.slice(1)))!;
     expect(item).toMatchObject({ title: "Where is the Monolith repo?", humanAttention: "needs-opinion", madeBy: null });
-    expect(f.store.task(project.id, task.num)?.status).toBe("blocked");
+    // v9: a question no longer blocks a task; its status follows its work.
+    expect(f.store.task(project.id, task.num)?.status).toBe("planned");
     const viaCli = await cli(f, { action: "question", question: "Run CI on PRs?", context: "Costs Actions minutes.", options: ["Yes", { label: "No" }] }, "coordinator", project.id);
     expect(viaCli.exitCode).toBe(0);
     const second = f.store.decisions(project.id).find(d => d.title === "Run CI on PRs?")!;
@@ -142,100 +143,10 @@ describe("T85 questions: question + context is enough", () => {
   it("still lets only coordinators ask", async () => {
     const { f, project } = await projectFixture();
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
-    expect(await refused(f, { action: "question", question: "Q?", context: "C" }, worker.threadId!)).toMatch(/through the coordinator/);
+    expect(await refused(f, { action: "question", question: "Q?", context: "C" }, worker.threadId!)).toMatch(/through your lead/);
   });
 });
 
-describe("T85 decisions: explicit owner, flat fields, legacy nesting", () => {
-  it("records flat and nested choices; agreeing duplicates are fine, conflicts and missing owners are refused", async () => {
-    const { f, project } = await projectFixture();
-    expect(await tool(f, { action: "decision", madeBy: "user", description: "Erwin chose Base UI." })).toMatchObject({ madeBy: "user", status: "active" });
-    // bb-plugins 17390: madeBy repeated at top level with the same value.
-    const d = await tool(f, { action: "decision", madeBy: "user", decision: { madeBy: "user", description: "Accept, not delete." }, topic: "Bulk" });
-    expect(d).toMatchObject({ madeBy: "user" });
-    // Solera 11767: supersedes written inside the nested object.
-    expect(await tool(f, { action: "decision", decision: { madeBy: "user", description: "Accept quietly.", supersedes: d.ref } })).toMatchObject({ madeBy: "user" });
-    const before = f.store.decisions(project.id).length;
-    const conflict = await refused(f, { action: "decision", madeBy: "agent", decision: { madeBy: "user", description: "X" } });
-    expect(conflict).toMatch(/madeBy/);
-    // Solera 19369: no owner is never defaulted.
-    const missing = await refused(f, { action: "decision", description: "Vocabulary for the observed-set model." });
-    expect(missing).toMatch(/madeBy/);
-    expect(missing).toContain('"action":"user-choice"');
-    expect(f.store.decisions(project.id)).toHaveLength(before);
-  });
-
-  it("Solera 14213 (exact): an approval-shaped decision is refused with the coordinator question path, through tool and CLI, writing nothing", async () => {
-    const { f, project } = await projectFixture();
-    const real = { action: "decision", decision: { description: "Naming, needs Erwin (coordinator's proposal): keep concurrency= on @asset (at most N partitions run at once, across runs; 7645ab8). Rename the per-key input's concurrency=16 (keys of one batch processed in parallel) to parallel=. Rename the sensor 'tick claim', which isn't a claim, to 'in-flight tick', matching the code's status 'ticking'. Reason: one name per concept.", review: "needs-opinion" } };
-    const activity = f.store.activity(project.id).length;
-    const message = await refused(f, real);
-    expect(message).toMatch(/If the user still has to choose/);
-    expect(message).toMatch(/coordinator asks with action question/);
-    expect(message).toContain('"action":"question"');
-    // A taken significant agent choice that merely awaits review stays possible, conditionally phrased.
-    expect(message).toMatch(/already made .* awaits the user's review/);
-    expect(message).not.toMatch(/"madeBy":"user"/);
-    const viaCli = await cli(f, real, "coordinator", project.id);
-    expect(viaCli.exitCode).toBe(1);
-    expect(viaCli.stderr).toBe(message);
-    expect(f.store.decisions(project.id)).toHaveLength(0);
-    expect(f.store.activity(project.id)).toHaveLength(activity);
-  });
-
-  it("question-only fields on a decision, flat or nested, get the same conditional question guidance", async () => {
-    const { f, project } = await projectFixture();
-    const signals: Record<string, unknown>[] = [
-      { humanAttention: "needs-opinion" }, { humanAttention: "second-pass" }, { question: "Rename concurrency=?" }, { context: "Two knobs." },
-      { options: ["Rename", "Keep"] }, { recommendation: "Rename" }, { blocksTaskIds: ["T1"] }, { review: "needs-opinion" },
-    ];
-    for (const signal of signals) for (const input of [
-      { action: "decision", madeBy: "agent", description: "Rename concurrency= to parallel=.", ...signal },
-      { action: "decision", decision: { madeBy: "agent", description: "Rename concurrency= to parallel=.", ...signal } },
-    ]) {
-      const message = await refused(f, input);
-      expect(message, JSON.stringify(input)).toMatch(/If the user still has to choose/);
-      expect(message).toContain('"action":"question"');
-    }
-    // Other unknown fields alongside are still named; conflicts and owner rules are unchanged.
-    expect(await refused(f, { action: "decision", madeBy: "agent", description: "X", humanAttention: "second-pass", rationale: "Y" })).toMatch(/"rationale"/);
-    expect(await refused(f, { action: "decision", madeBy: "agent", decision: { madeBy: "user", description: "X", review: "needs-opinion" } })).toMatch(/Conflicting madeBy/);
-    expect(f.store.decisions(project.id)).toHaveLength(0);
-  });
-
-  it("negative controls: legitimate choices still record, and an unrelated review value is an ordinary unknown field", async () => {
-    const { f } = await projectFixture();
-    expect(await tool(f, { action: "decision", madeBy: "agent", description: "Rename concurrency= to parallel=.", topic: "Naming" })).toMatchObject({ madeBy: "agent", review: "pending" });
-    expect(await tool(f, { action: "decision", decision: { madeBy: "user", description: "Erwin chose parallel=." } })).toMatchObject({ madeBy: "user" });
-    const other = await refused(f, { action: "decision", madeBy: "agent", description: "X", review: "okay" });
-    expect(other).toMatch(/Unknown field "review"/);
-    expect(other).not.toMatch(/If the user still has to choose/);
-  });
-
-  it("Coffre 32460 / Solera 13804 / Solera 11753: guessed actions and fields are refused with an example", async () => {
-    const { f, project } = await projectFixture();
-    const record = await refused(f, { action: "record", madeBy: "user", text: "Erwin chose Base UI." });
-    expect(record).toMatch(/user-choice, veto-request, question, answer or withdraw/);
-    expect(record).toMatch(/bb initiative describe/);
-    expect(await refused(f, { action: "list-actions" })).toMatch(/user-choice, veto-request, question, answer or withdraw/);
-    const text = await refused(f, { action: "decision", madeBy: "user", text: "Erwin chose Base UI." });
-    expect(text).toMatch(/"text"/);
-    expect(text).toMatch(/description/);
-    expect(text).toContain('"action":"user-choice"');
-    expect(await refused(f, { action: "decision", madeBy: "user", description: "X", review: "needs Erwin" })).toMatch(/"review"/);
-    expect(f.store.decisions(project.id)).toHaveLength(0);
-  });
-
-  it("Equisafe 751: superseding an open question states that only an explicit user answer closes it", async () => {
-    const { f, project } = await projectFixture();
-    const q = f.service.recordQuestion(project.id, { title: "CI cadence", humanAttention: "needs-opinion", question: "Run CI on PRs?", context: "Cost" }, coordinator);
-    const message = await refused(f, { action: "decision", madeBy: "user", description: "CI runs on push only.", supersedes: q.ref });
-    expect(message).toMatch(/explicit/);
-    expect(message).toContain('"action":"answer"');
-    expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "active", madeBy: null });
-    expect(f.store.decisions(project.id)).toHaveLength(1);
-  });
-});
 
 describe("T85 answers and cleanup", () => {
   async function question() {
@@ -264,45 +175,6 @@ describe("T85 answers and cleanup", () => {
     expect((f.store.decisionItem(project.id, q.num)!.body as { answer: { choice: string } }).answer.choice).toBe("(c) retryable");
   });
 
-  it("Solera 12139 / W188: answering an agent choice suggests a user-choice that supersedes it, and that call works", async () => {
-    const { f, project } = await projectFixture();
-    const d = await tool(f, { action: "decision", madeBy: "agent", description: "Overnight team is four threads." });
-    const message = await refused(f, { action: "answer", ref: d.ref, choice: "okay" });
-    expect(message).toMatch(/agent decision/);
-    expect(message).not.toMatch(/cleanup/);
-    const viaCli = await cli(f, { action: "answer", decision: d.ref, choice: "okay" }, "coordinator", project.id);
-    expect(viaCli.exitCode).toBe(1);
-    expect(viaCli.stderr).toContain(`"supersedes":"${d.ref}"`);
-    expect(f.store.decisionItem(project.id, Number(d.ref.slice(1)))).toMatchObject({ review: "pending", status: "active" });
-    // The suggested call, with its placeholder filled in, records the user's choice in place of D#.
-    const example = JSON.parse(/initiative_decision (\{.*?\})\./.exec(message)![1]!);
-    expect(example).toEqual({ action: "user-choice", description: "<the user's choice>", supersedes: d.ref });
-    const recorded = await tool(f, { ...example, description: "Erwin confirmed four threads." });
-    expect(recorded).toMatchObject({ madeBy: "user", status: "active" });
-    expect(f.store.decisionItem(project.id, Number(d.ref.slice(1)))).toMatchObject({ status: "superseded" });
-  });
 
-  it("user-choice and veto-request carry their owner; cleanup is refused with what replaces it (T136)", async () => {
-    const { f, project } = await projectFixture();
-    expect(await tool(f, { action: "user-choice", description: "Erwin chose Linux." })).toMatchObject({ madeBy: "user", status: "active" });
-    expect(await tool(f, { action: "veto-request", description: "Keeping the old index for one release." })).toMatchObject({ madeBy: "agent", review: "pending" });
-    expect(await refused(f, { action: "user-choice", madeBy: "agent", description: "X" })).toMatch(/drop madeBy/);
-    expect(await refused(f, { action: "cleanup", ref: "D2", operation: "accept", reason: "x" })).toMatch(/cleanup was removed/);
-    expect(f.store.decisions(project.id)).toHaveLength(2);
-    expect(f.send).not.toHaveBeenCalled();
-  });
 });
 
-describe("T85 describe examples are canonical and valid", () => {
-  it("every decision-family example records through the real tool", async () => {
-    const { f, project } = await projectFixture();
-    const examples = JSON.parse((await f.harness.runCli(["describe"], { threadId: "coordinator" })).stdout!).commands as string[];
-    for (const name of ["question", "user-choice", "veto-request"]) {
-      const example = JSON.parse((await f.harness.runCli(["describe", name], { threadId: "coordinator" })).stdout!);
-      expect(examples).toContain(name);
-      expect(example.decision === undefined || typeof example.decision === "string").toBe(true);
-      const input = name === "question" ? { ...example, blocksTaskIds: [f.task(project.id).ref] } : example;
-      expect(await tool(f, input)).toMatchObject({ status: "active" });
-    }
-  });
-});

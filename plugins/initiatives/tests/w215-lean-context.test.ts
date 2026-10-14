@@ -35,11 +35,11 @@ describe("W215 write receipts", () => {
     expect(w).toEqual({ assignment: "A1", worker: "W1", threadId: w.threadId, state: "running", profile: expect.any(String), note: expect.any(String) });
     const raw = await f.harness.callAgentTool("initiative_batch", { actions: [
       { tool: "worker", action: "stop", worker: "W1", reason: "Moved on." },
-      { tool: "task", action: "close", task: task.ref, outcome: "done", note: "Shipped." },
+      { tool: "task", action: "status", task: task.ref, status: "done", reason: "Erwin: shipped." },
       { tool: "worker", action: "retire", worker: "W1" },
     ] }, { threadId: "coordinator" }) as string;
     const result = JSON.parse(raw);
-    expect(result.results[0]).toMatchObject({ tool: "worker", ok: true, ref: "A1", worker: "W1", state: "cancelled" });
+    expect(result.results[0]).toMatchObject({ tool: "worker", ok: true, worker: "W1", assignment: "A1", state: "cancelled" });
     expect(result.results[1]).toEqual({ tool: "task", ok: true, ref: task.ref, state: "done" });
     // Retiring right after a stop is refused while the stop settles; the error stays whole.
     expect(result.results[2]).toMatchObject({ tool: "worker", ok: false, error: expect.stringMatching(/W1/) });
@@ -90,7 +90,7 @@ describe("W215 task listing", () => {
     const task = f.task(project.id, "Archived search");
     f.store.updateTask(project.id, task.num, { progress: "W1 is on it" });
     const page = await tool(f, "initiative_read", { view: "tasks" });
-    expect(page.items[0]).toEqual({ ref: task.ref, status: "planned", title: "Archived search", priority: expect.any(Number), progress: "W1 is on it" });
+    expect(page.items[0]).toEqual({ ref: task.ref, status: "planned", statusReason: "no worker yet", title: "Archived search", priority: expect.any(Number), progress: "W1 is on it" });
     expect(page.detail).toContain('refs:["T4"] adds its summary');
     const overview = await tool(f, "initiative_read", {});
     expect(overview.tasks[0]).not.toHaveProperty("summary");

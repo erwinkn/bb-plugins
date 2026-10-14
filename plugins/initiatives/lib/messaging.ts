@@ -2,23 +2,25 @@ import { z } from "zod";
 import type { Store, Membership } from "./store";
 import { ProjectError, errorMessage, isDefiniteRejection, textInput, type Sdk, type ThreadDto } from "./bb";
 
-/** The default depends on the pair (messageMode): the coordinator steers a worker, everyone else queues. */
-export const MODE_HELP = "Default: steer from the coordinator to a worker, so a correction or new fact arrives mid-turn in the order sent; queue otherwise. queue holds the message until the recipient's turn ends: use it only for what must wait.";
+/** The default depends on the pair (messageMode): a lead steers a worker, everyone else queues. */
+export const MODE_HELP = "Default: steer from a lead to a worker, so a correction or new fact arrives mid-turn in the order sent; queue otherwise. queue holds the message until the recipient's turn ends: use it only for what must wait.";
 export const messageSchema = z.object({
-  target: z.union([z.literal("coordinator"), z.string().max(32).regex(/^W[1-9]\d*$/, "Use a current W# or coordinator.")]),
+  /** v9: "lead" is a worker's lead (§5.1); a worker's "coordinator" means the same. */
+  target: z.union([z.literal("coordinator"), z.literal("lead"), z.string().max(32).regex(/^W[1-9]\d*$/, "Use a current W#, lead or coordinator.")]),
   text: z.string().trim().min(1).max(20000),
   mode: z.enum(["steer", "queue"]).optional().describe(MODE_HELP),
 }).strict();
 export type InitiativeMessage = z.infer<typeof messageSchema>;
 /**
  * A queued message to a busy worker is held until its turn ends, so a later steer overtakes it and
- * the stale one then starts a new turn on dropped work. The coordinator therefore steers by default;
- * a recipient that has not started (pending) can only queue. An explicit mode always wins.
+ * the stale one then starts a new turn on dropped work. A lead therefore steers by default; a
+ * recipient that has not started (pending) can only queue. An explicit mode always wins.
  */
-export function messageMode(explicit: "steer" | "queue" | undefined, fromCoordinator: boolean, toWorker: boolean, targetStatus?: string): "steer" | "queue" {
+export function messageMode(explicit: "steer" | "queue" | undefined, fromLead: boolean, toWorker: boolean, targetStatus?: string): "steer" | "queue" {
   if (explicit) return explicit;
-  return fromCoordinator && toWorker && targetStatus !== "pending" ? "steer" : "queue";
+  return fromLead && toWorker && targetStatus !== "pending" ? "steer" : "queue";
 }
+const isLead = (m: Membership) => m.kind === "coordinator" || !!m.discussion;
 const activeStates = ["dispatching", "queued", "running", "idle_no_report", "stopped"];
 
 /** Cheap bounded assignment/task references, with no report or usage projection. */
@@ -63,32 +65,42 @@ function nativeAvailable(thread: ThreadDto, m: Membership, pendingQueue = false)
     throw new ProjectError(`Native caller/target is unavailable (status ${thread.status}), archived, deleted or outside this Initiative. Pending recipients support queue mode only; messaging cannot resume stopped/finished work.`);
 }
 
-/** One native send, with caller provenance and no plugin inbox, retry or wake on reads. */
-export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: string, input: InitiativeMessage, projectId?: string) {
+/**
+ * One native send, with caller provenance and no plugin inbox, retry or wake on reads. v9: a
+ * worker's "lead" (or "coordinator") goes to its lead, resolved by `workerLead` (§5.1); a lead's
+ * "coordinator" is the coordinator tab; any lead may message any worker.
+ */
+export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: string, input: InitiativeMessage, projectId?: string,
+  workerLead?: (m: Membership) => Promise<string | null>) {
+  const sender = currentMember(store, caller);
+  const toLead = !!sender.m.worker && (input.target === "lead" || input.target === "coordinator");
+  const leadId = toLead && workerLead ? await workerLead(sender.m) : null;
   const resolve = () => {
     const from = currentMember(store, caller);
     if (projectId && from.m.project.id !== projectId) throw new ProjectError("Cannot message another Initiative.");
-    if (from.m.discussion && input.target !== "coordinator") throw new ProjectError("A discussion messages the coordinator only; it asks the coordinator to direct workers.");
-    const id = input.target === "coordinator" ? from.m.project.coordinatorThreadId : store.worker(from.m.project.id, Number(input.target.slice(1)))?.threadId;
-    if (!id) throw new ProjectError("Target has no current native thread. Read workers and ask the coordinator.");
+    const byRef = input.target !== "coordinator" && input.target !== "lead";
+    const id = !byRef
+      ? (toLead ? leadId ?? from.m.project.coordinatorThreadId : from.m.project.coordinatorThreadId)
+      : store.worker(from.m.project.id, Number(input.target.slice(1)))?.threadId;
+    if (!id) throw new ProjectError("Target has no current native thread. Read workers and ask a lead.");
     if (id === caller) throw new ProjectError("Don't send yourself a message.");
     const to = currentMember(store, id);
-    if (to.m.project.id !== from.m.project.id || input.target !== "coordinator" && to.m.worker?.ref !== input.target)
+    if (to.m.project.id !== from.m.project.id || byRef && to.m.worker?.ref !== input.target)
       throw new ProjectError("Target is not a current member of this Initiative.");
-    if (from.m.worker?.role === "review" && to.m.kind !== "coordinator" || to.m.worker?.role === "review" && from.m.kind !== "coordinator")
-      throw new ProjectError("Independent reviewers communicate through the current coordinator; direct peer messages are for work workers.");
+    if (from.m.worker?.role === "review" && !isLead(to.m) || to.m.worker?.role === "review" && !isLead(from.m))
+      throw new ProjectError("Independent reviewers communicate through a lead; direct peer messages are for work workers.");
     return { from, to, id, generation: to.m.worker?.generation ?? null };
   };
   const initial = resolve();
-  const [sender, target] = await Promise.all([sdk.threads.get({ threadId: caller }), sdk.threads.get({ threadId: initial.id })]);
+  const [senderThread, target] = await Promise.all([sdk.threads.get({ threadId: caller }), sdk.threads.get({ threadId: initial.id })]);
   const fresh = resolve();
   if (fresh.id !== initial.id || fresh.generation !== initial.generation || fresh.from.assignment !== initial.from.assignment || fresh.to.assignment !== initial.to.assignment || fresh.from.m.worker?.generation !== initial.from.m.worker?.generation)
     throw new ProjectError("Caller, target or assignment changed while checking native state; read current membership before a new message.");
-  if (sender.id !== caller || target.id !== fresh.id) throw new ProjectError("Native lookup did not confirm caller/target identity; no message sent.");
-  const mode = messageMode(input.mode, fresh.from.m.kind === "coordinator", !!fresh.to.m.worker, target.status);
-  nativeAvailable(sender, fresh.from.m); nativeAvailable(target, fresh.to.m, mode === "queue");
+  if (senderThread.id !== caller || target.id !== fresh.id) throw new ProjectError("Native lookup did not confirm caller/target identity; no message sent.");
+  const mode = messageMode(input.mode, isLead(fresh.from.m), !!fresh.to.m.worker, target.status);
+  nativeAvailable(senderThread, fresh.from.m); nativeAvailable(target, fresh.to.m, mode === "queue");
   const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})`
-    : fresh.from.m.discussion ? `discussion "${sender.title ?? caller}"` : "coordinator";
+    : fresh.from.m.discussion ? `lead tab "${senderThread.title ?? caller}"` : "coordinator";
   try {
     const receipt = await sdk.threads.send({ threadId: fresh.id, senderThreadId: caller,
       mode: mode === "steer" ? "steer-if-active" : "queue-if-active",

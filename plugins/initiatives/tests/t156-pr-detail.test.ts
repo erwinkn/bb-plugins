@@ -172,7 +172,8 @@ describe("T156 prDetail RPC", () => {
     await call(f, "initiative_spawn", { label: "SWC", purpose: "pr", text: `Implement ${url(7)}.`, tasks: [task.ref] });
     const work = f.store.assignments(project.id).at(-1)!;
     const worker = f.store.worker(project.id, work.workerNum)!;
-    await call(f, "initiative_decision", { action: "decision", decision: { description: "Keep the controller test hook.", madeBy: "agent" } }, worker.threadId!);
+    // v9: agents no longer write the decision log; records made before stay readable.
+    f.service.recordDecision(project.id, { decision: { description: "Keep the controller test hook.", madeBy: "agent" } }, { author: "worker", threadId: worker.threadId!, assignment: 1 });
     await call(f, "initiative_report", { outcome: "done", summary: `Pushed ${url(7)} at abc123.`, report: "Done." }, worker.threadId!);
     // Another worker's brief only mentions #7: tied, but as a mention.
     await call(f, "initiative_spawn", { label: "Stack", purpose: "stack", text: "Rebase the stack #6 ← #7 ← #8." });

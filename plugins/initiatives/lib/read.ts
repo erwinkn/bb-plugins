@@ -1,3 +1,4 @@
+import { preSwitchLine } from "./cutover";
 import { z } from "zod";
 import type { AssignmentRecord, Store } from "./store";
 import { ProjectError } from "./bb";
@@ -23,7 +24,7 @@ export type ReadView = (typeof READ_VIEWS)[number];
 export type ReadOptions = z.infer<typeof readOptionsSchema>;
 // "memory": an alias of Chat memory's memory_read for sessions built before T145 (A469).
 // category and stage select a slice of view prs (T155).
-export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", "context", "memory", "prs", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional(),
+export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", "context", "memory", "prs", "rules", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional(),
   category: z.string().min(1).max(80).optional(), stage: z.enum(PR_STAGE_IDS).optional() }).strict();
 export const MAX_READ_BYTES = 65536;
 const refViews: Record<string, ReadView> = { T: "tasks", W: "workers", A: "assignments", D: "decisions", K: "decisions", U: "updates" };
@@ -46,15 +47,22 @@ function fullRow(view: ReadView, row: Record<string, any>) {
   // Activity stores an object named ref; public reads expose its numeric ID
   // as ref and the event association as payload, like the other event view.
   if (view === "activity") return { ...row, ref: rowRef(view, row), payload: row.ref };
+  if (view === "assignments" || view === "reports") return withPreSwitch(row);
   if (view !== "decisions") return row;
   const body = row.body;
   return { ref: row.ref, description: row.description, madeBy: row.madeBy, review: row.review, reviewMessage: row.reviewMessage, notification: row.notification,
     recordedBy: body.answer?.recordedBy ?? row.provenance, supersedes: row.supersedes, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
     question: body.question ?? null, answer: body.answer ?? null, resolution: body.resolution ?? null, body };
 }
+/** v9 (§12): work given out before the switch says so wherever a lead reads its report. */
+const withPreSwitch = (row: Record<string, any>) => {
+  const line = row.workerNum ? preSwitchLine(row as AssignmentRecord) : null;
+  return line ? { ...row, preSwitch: line } : row;
+};
 /** listing: a page of a collection (no refs), where a task is one short line (W215). */
 function summary(view: ReadView, row: Record<string, any>, listing = false) {
-  const common = { ref: rowRef(view, row), ...(row.state ? { state: row.state } : {}), ...(row.status ? { status: row.status } : {}) };
+  const common = { ref: rowRef(view, row), ...(row.state ? { state: row.state } : {}), ...(row.status ? { status: row.status } : {}),
+    ...(view === "tasks" && row.statusReason ? { statusReason: row.statusReason } : {}) };
   const trimmed: string[] = [];
   const text = (key: string, value: unknown, length = 400) => {
     if (typeof value !== "string") return value ?? null;
@@ -73,8 +81,8 @@ function summary(view: ReadView, row: Record<string, any>, listing = false) {
         ...(row.dependsOn?.length ? { dependsOn: refs("dependsOn", row.dependsOn) } : {}), ...(row.acceptedAssignment ? { acceptedAssignment: `A${row.acceptedAssignment}` } : {}) }
       : { ...common, title: text("title", row.title, 200), summary: text("summary", row.summary), progress: text("progress", row.progress, 240), priority: row.priority, dependsOn: refs("dependsOn", row.dependsOn), acceptedAssignment: row.acceptedAssignment ? `A${row.acceptedAssignment}` : null }; break;
     case "workers": item = { ...common, label: text("label", row.label, 200), area: text("area", row.area, 200), role: row.role, threadId: row.threadId, generation: row.generation, bbProjectId: row.bbProjectId, userStopped: row.userStopped, assignments: row.assignments, assignmentsTruncated: row.assignmentsTruncated, ...(row.latestReport !== undefined ? { latestReport: row.latestReport } : {}) }; break;
-    case "assignments": item = { ...common, reportVersion: row.report ? reportVersion(row as AssignmentRecord) : null, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, access: row.access, route: row.route, opState: row.opState, queuedMessageId: row.queuedMessageId, profile: row.actualProfile ?? row.profile, reviewOf: refs("reviewOf", row.reviewOf), report: row.report ? { outcome: row.report.outcome, summary: text("report.summary", row.report.summary) } : null, notification: row.reportNotice ? { ...row.reportNotice, ...(row.reportNotice.detail ? { detail: text("notification.detail", row.reportNotice.detail, 240) } : {}) } : null, verificationRevision: text("verificationRevision", row.report?.handoff.verificationRevision ?? row.report?.handoff.workspaceRevision, 200), checkpoint: row.checkpoint ? { recordedBy: row.checkpoint.recordedBy } : null, ...(row.handoffSources?.length ? { handoffSources: row.handoffSources.map((h: { assignment: string }) => h.assignment) } : {}) }; break;
-    case "reports": item = { ...common, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, outcome: row.report?.outcome === "succeeded" ? "done" : row.report?.outcome ?? null, summary: text("summary", row.report?.summary), reportedAt: row.reportedAt, finalMessage: text("finalMessage", row.report?.finalMessage ?? null, 600) }; break;
+    case "assignments": item = { ...common, reportVersion: row.report ? reportVersion(row as AssignmentRecord) : null, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, access: row.access, route: row.route, opState: row.opState, queuedMessageId: row.queuedMessageId, profile: row.actualProfile ?? row.profile, reviewOf: refs("reviewOf", row.reviewOf), report: row.report ? { outcome: row.report.outcome, summary: text("report.summary", row.report.summary) } : null, notification: row.reportNotice ? { ...row.reportNotice, ...(row.reportNotice.detail ? { detail: text("notification.detail", row.reportNotice.detail, 240) } : {}) } : null, verificationRevision: text("verificationRevision", row.report?.handoff.verificationRevision ?? row.report?.handoff.workspaceRevision, 200), checkpoint: row.checkpoint ? { recordedBy: row.checkpoint.recordedBy } : null, ...(row.handoffSources?.length ? { handoffSources: row.handoffSources.map((h: { assignment: string }) => h.assignment) } : {}) }; item = withPreSwitch({ ...item, workerNum: row.workerNum, replyTo: row.replyTo, role: row.role }); delete item.workerNum; delete item.replyTo; break;
+    case "reports": item = { ...common, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, outcome: row.report?.outcome === "succeeded" ? "done" : row.report?.outcome ?? null, summary: text("summary", row.report?.summary), reportedAt: row.reportedAt, finalMessage: text("finalMessage", row.report?.finalMessage ?? null, 600) }; item = withPreSwitch({ ...item, workerNum: row.workerNum, replyTo: row.replyTo, role: row.role }); delete item.workerNum; delete item.replyTo; break;
     case "decisions": item = { ...common, description: text("description", row.description), madeBy: row.madeBy, review: row.review, recordedBy: row.body.answer?.recordedBy ?? row.provenance, supersedes: row.supersedes, notification: row.notification ? { ...row.notification, ...(row.notification.detail ? { detail: text("notification.detail", row.notification.detail, 240) } : {}) } : null }; break;
     case "updates": item = { ...common, summary: text("summary", row.summary), createdAt: row.createdAt }; break;
     case "inbox": case "activity": item = { ...common, kind: row.kind, summary: text("summary", row.summary), createdAt: row.createdAt ?? row.at }; break;

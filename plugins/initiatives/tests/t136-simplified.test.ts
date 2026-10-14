@@ -34,8 +34,9 @@ describe("T136 giving work: spawn or message, tasks optional", () => {
     const [r] = await tool(f, "initiative_spawn", { label: "Search index", purpose: "search ranking", text: "Index archived records. Verify with npm test." });
     expect(r).toMatchObject({ worker: "W1", assignment: "A1", state: "running" });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
-    expect(brief).toMatch(/^W1 "Search index" \(search ranking\) · work\n\nIndex archived records\. Verify with npm test\.\n\nExecution: .*\n\nFinish by calling initiative_report with your full report\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
-    expect(brief.length).toBeLessThan(400);
+    // v9: a brief ends with the reviewer command and the standing rules (D523).
+    expect(brief).toMatch(/^W1 "Search index" \(search ranking\) · work\n\nIndex archived records\. Verify with npm test\.\n\nExecution: .*\n\nFinish by calling initiative_report with your full report\.\n\nReviewer command \(code-review skill, other model family\):\nbb thread spawn [^]*\n\nStanding rules: none yet\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
+    expect(brief.length).toBeLessThan(900);
     expect(f.store.assignment(project.id, 1)).toMatchObject({ taskNums: [], role: "work" });
   });
 
@@ -56,35 +57,26 @@ describe("T136 giving work: spawn or message, tasks optional", () => {
     const { f } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     await f.service.report(w.threadId, report());
-    await expect(tool(f, "initiative_spawn", { label: "X", purpose: "x", text: "y" }, w.threadId)).rejects.toThrow(/coordinator/);
-    const [r] = await tool(f, "initiative_spawn", { role: "review", reviews: "W1", label: "Review", purpose: "review W1", text: "Check it." });
-    f.idle(r.threadId);
-    await f.service.report(r.threadId, report());
-    // Reviewers are never reused (W239): work, a re-review included, is refused.
-    await expect(f.service.delegate(f.store.projects()[0]!.id, { route: "continue", role: "work", worker: r.worker })).rejects.toThrow(/reviews are not reused/);
-    await expect(tool(f, "initiative_message", { to: r.worker, text: "Re-check it", work: true })).rejects.toThrow(/Spawn a fresh reviewer instead/);
+    await expect(tool(f, "initiative_spawn", { label: "X", purpose: "x", text: "y" }, w.threadId)).rejects.toThrow(/not the current coordinator/);
+    // v9: workers run their own reviewers; a lead's review spawn is refused with what replaces it.
+    await expect(tool(f, "initiative_spawn", { role: "review", reviews: "W1", label: "Review", purpose: "review W1", text: "Check it." })).rejects.toThrow(/Workers run their own reviews/);
   });
 });
 
 describe("T136 the final message is the report", () => {
-  it("records the turn's final message as a done report; the task stays open until closed", async () => {
+  it("v9: a turn end records nothing; only initiative_report finishes work", async () => {
     const { f, project } = await projectFixture();
     const task = f.task(project.id, "Archived search");
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it.", tasks: [task.ref] });
-    finishTurn(f, "## Done\n\nArchived records are indexed and ranked below live ones.\n\nRan npm test: 14 passed. Nothing uncommitted.");
+    finishTurn(f, "Reviewer r1 is running; waiting for it.");
     await f.runtime.onThreadIdle(f.idle(w.threadId));
-    const a = f.store.assignment(project.id, 1)!;
-    expect(a).toMatchObject({ state: "reported", report: { outcome: "succeeded", summary: "Done" } });
-    expect(a.report!.finalMessage).toContain("Ran npm test: 14 passed.");
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", progress: "W1 reported: Done" });
-    // D417: a captured final message only fills the dashboard record; it is never sent.
-    expect(f.send).not.toHaveBeenCalled();
-    const closed = await tool(f, "initiative_task", { action: "close", task: task.ref, outcome: "done", note: "Shipped." });
-    expect(closed).toEqual({ ref: task.ref, state: "done" });
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "done", result: "Shipped.", acceptedAssignment: 1 });
-    expect(f.store.assignment(project.id, 1)!.state).toBe("reported");
+    expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "running", report: null });
+    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", statusReason: "W1 on A1" });
+    await tool(f, "initiative_report", { outcome: "done", summary: "Done after 2 review rounds, last verdict clean.", report: "Done." }, w.threadId);
+    expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "reported", report: { outcome: "succeeded" } });
+    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "done", statusReason: "W1 reported done, no PR" });
     const read = await tool(f, "initiative_read", { refs: ["W1"] });
-    expect(read.items[0].latestReport).toMatchObject({ ref: "A1", outcome: "done", summary: "Done" });
+    expect(read.items[0].latestReport).toMatchObject({ ref: "A1", outcome: "done" });
   });
 
   it("an interrupted turn or a turn without a message records nothing", async () => {
@@ -93,19 +85,6 @@ describe("T136 the final message is the report", () => {
     finishTurn(f, "Half-way there", "interrupted");
     await f.runtime.onThreadIdle(f.idle(w.threadId));
     expect(f.store.assignment(project.id, 1)!.report).toBeNull();
-  });
-
-  it("the Reported list keeps each live worker's latest report until its task closes or the worker retires", async () => {
-    const { f, project } = await projectFixture();
-    const task = f.task(project.id, "Archived search");
-    const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it.", tasks: [task.ref] });
-    finishTurn(f, "Done and verified.");
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    let o = await f.overview(project.id, "summary");
-    expect(o.awaitingAcceptance).toEqual([expect.objectContaining({ assignment: "A1", finalMessage: "Done and verified." })]);
-    await tool(f, "initiative_task", { action: "close", task: task.ref, outcome: "done" });
-    o = await f.overview(project.id, "summary");
-    expect(o.awaitingAcceptance).toEqual([]);
   });
 });
 
@@ -207,10 +186,11 @@ describe("T136 instructions", () => {
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     // W210 (D417): reports go through initiative_report; stop background work first.
     // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1400);
+    // v9: the worker owns its review loop; the reviewer command moved to briefs.
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1900);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per substantial PR (or a few small related ones), then retire it, and a fresh reviewer per review round");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn. Don't start reviewers: workers do.");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("At most 4 review rounds.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
   });
 
@@ -235,7 +215,7 @@ describe("T136 sessions constructed before the change", () => {
     await tool(f, "initiative_report", report(), d.threadId);
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "reported", report: { outcome: "succeeded" } });
     expect(await tool(f, "initiative_progress", { note: "Half-way" }, d.threadId)).toMatchObject({ note: expect.stringMatching(/no longer recorded/) });
-    await expect(tool(f, "initiative_task", { action: "task-accept", task: task.ref })).rejects.toThrow(/close the task/);
+    await expect(tool(f, "initiative_task", { action: "task-accept", task: task.ref })).rejects.toThrow(/follows its work/);
     await expect(tool(f, "initiative_task", { action: "assignment-reject", assignment: "A1", reason: "x" })).rejects.toThrow(/message the worker/);
     await expect(tool(f, "initiative_delegate", { action: "delegate", route: "fork", worker: "W1" })).rejects.toThrow(/spawn a fresh worker/i);
     expect(await tool(f, "initiative_task", { action: "task-create", title: "Old style", summary: "Created by an older session." })).toMatchObject({ title: "Old style" });

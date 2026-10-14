@@ -46,6 +46,36 @@ export const textInput = (text: string) => [
 
 export const BUSY_STATUSES = new Set(["active", "starting", "stopping"]);
 
+/** The parts of a list row or a GET/event DTO that say whether a thread can still run work. */
+export type ActivityFacts = Pick<ThreadDto, "id" | "status"> & {
+  archivedAt: unknown;
+  deletedAt: unknown;
+  activity?: Pick<ThreadListRow["activity"], "activeBackgroundAgentCount" | "activeBackgroundCommandCount" | "activeWorkflowCount">;
+  queuedWork?: string;
+  hasPendingInteraction?: boolean;
+  activeBackgroundAgentCount?: number;
+  queuedMessageCount?: number;
+};
+/** Why a live descendant still counts as running work: archive refuses it, Stop stops it, a worker waits on it. */
+export type Running = ThreadDto["status"] | "pending" | "background work" | "queued work" | "waiting for input" | "unreadable";
+const wellFormed = (value: unknown) => value === null || (typeof value === "number" && Number.isFinite(value));
+
+/**
+ * What keeps a thread running, or null when it is quiet, archived or deleted. A list row is full
+ * evidence; the GET/event DTO has no background command, workflow or pending-input fields, so it
+ * can only say less.
+ */
+export function running(t: ActivityFacts): Running | null {
+  if (!wellFormed(t.archivedAt) || !wellFormed(t.deletedAt)) return "unreadable";
+  if (t.archivedAt !== null || t.deletedAt !== null) return null;
+  if (BUSY_STATUSES.has(t.status) || t.status === "pending") return t.status;
+  const a = t.activity;
+  if ((a ? a.activeBackgroundAgentCount + a.activeBackgroundCommandCount + a.activeWorkflowCount : t.activeBackgroundAgentCount ?? 0) > 0) return "background work";
+  if (t.queuedWork === "waiting" || (t.queuedMessageCount ?? 0) > 0) return "queued work";
+  if (t.hasPendingInteraction) return "waiting for input";
+  return null;
+}
+
 /**
  * How a child's turn ends reach its parent, in our BB fork (W203). "explicit" (final reports
  * only): never; the parent hears the child's own messages, needs-input and one notice when the

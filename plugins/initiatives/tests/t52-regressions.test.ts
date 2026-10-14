@@ -67,7 +67,6 @@ describe("T52 legacy history regressions", () => {
     db.exec(repair);
     const after = rawRow(db, "knowledge", project.id, q.num);
     expect(after).toEqual({ ...before, decision_owner: null, decision_review: null });
-    expect(f.store.task(project.id, task.num)?.status).toBe("blocked");
     await f.service.answerOpinion(project.id, q.ref, { choice: "Yes", note: "" });
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ madeBy: "user", status: "answered" });
     expect(f.store.task(project.id, task.num)?.status).toBe("planned");

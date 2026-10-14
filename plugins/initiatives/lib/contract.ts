@@ -5,10 +5,15 @@ import { legacyThreadCreateSchema } from "./legacy";
 import type { MergeQueue } from "./merge-queue";
 import type { PrNote } from "./pr-notes";
 import type { PrDetail } from "./pr-detail";
-import type { Overview } from "./overview";
+import type { Overview, WorkerChild } from "./overview";
+import type { Cached } from "./live-threads";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
 import { readOptionsSchema, READ_VIEWS } from "./read";
 export type { ProjectSummary, ProjectTree } from "./tree-schema";
+
+/** One page of a thread's native children and the offset of the next, null on the last. */
+export type ChildPage = { rows: WorkerChild[]; next: number | null };
+export type { Cached };
 
 const id = z.string().min(1).max(80);
 const membershipSchema = z
@@ -68,6 +73,17 @@ export const projectsContract = defineRpcContract({
   discussionCreate: {
     input: z.object({ projectId: id }),
     output: z.object({ threadId: z.string().nullable(), note: z.string().nullable() }),
+  },
+  /**
+   * v9: one page of a thread's BB children, archived ones included, as the Workers tab opens a
+   * worker's tree one level at a time, never part of the overview. It answers at once from a cache
+   * the native read fills in the background ("loading" until the first read lands, "failed" if
+   * it did not); `initiatives-changed` announces a changed page. `next` is the offset of the
+   * following page, null on the last.
+   */
+  childPage: {
+    input: z.object({ projectId: id, threadId: id, offset: z.number().int().min(0).max(100_000).optional() }),
+    output: z.custom<Cached<ChildPage>>(),
   },
   overview: {
     /** `detail` wins over the older `detailed` (false = summary, default full). */

@@ -63,6 +63,9 @@ export function replayStore(fx: ReplayCase): Store {
   insert(store, "projects", fx.ledger.project);
   for (const [table, rows] of [["workers", fx.ledger.workers], ["tasks", fx.ledger.tasks], ["assignments", fx.ledger.assignments], ["knowledge", fx.ledger.knowledge], ["updates", fx.ledger.updates]] as const)
     for (const row of rows) insert(store, table, row);
+  // The previous build's ledger, read as v9 reads it after its load: a done or cancelled that
+  // build stored stays as set by hand (server.ts runs this on every load).
+  store.reconcileTaskOverrides();
   return store;
 }
 

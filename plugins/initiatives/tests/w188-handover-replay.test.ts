@@ -90,7 +90,8 @@ describe("W188 replay: the misses the audit found", () => {
 
   it("Coffre: #165 merged, the Doppler token deleted, the 0.4.1 rebuild (C1, C3, C4)", () => {
     const p = packet("coffre");
-    expect(p).toMatch(/- T44 \[reported, still open\][^\n]*It is not merged[^\n]*\(as of 2026-10-05[^\n]*\n {2}Newer, from the coordinator \(2026-10-06[^\n]*merged as #165 and shipped in 0\.4\.0/);
+    // v9: T44's status is computed from its work (a done report naming no PR URL: done), so it
+    // is no longer listed among the open tasks.
     // The user's Doppler instruction carries its answer, and the task that did it reads as done.
     expect(p).toMatch(/· User\] Yeah we should move\. If everything works with Coffre, we should delete the Doppler token[^\n]*\n {2}Answered \(2026-10-06 09:16 UTC\): W38 is on it \(T60\)/);
     expect(p).toContain('- T60 "erwinkn.com off Doppler: scripts and guidance on coffre, DOPPLER_TOKEN deleted": done, closed 2026-10-06 09:28 UTC.');

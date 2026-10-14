@@ -80,8 +80,9 @@ export function reportedRetryHint(a: AssignmentRecord, taskRef: string): string 
   const worker = `W${a.workerNum}`;
   const task = taskRef.split(",")[0]?.trim() || null;
   if (a.role === "review")
-    return `Read the review's final message, retire ${worker}, and send the fixes to the reviewed worker with initiative_message {"to":"${a.handoffSources?.[0]?.worker ?? "W#"}","text":"<the fixes>","work":true}. After the fixes, spawn a fresh reviewer: initiative_spawn {"role":"review","reviews":"<the latest worker on the change>","handoffs":["${a.ref}"],"label":"Review the fixes","purpose":"review the fixes","text":"<what changed, what to check>"}.`;
-  return `To retry, send ${worker} the fixes as more work: initiative_message {"to":"${worker}","text":"<the fixes>","work":true}${task ? `. If it is done, close the task: initiative_task {"action":"close","task":"${task}","outcome":"done"}` : ""}.`;
+    return `Read the review's final message, retire ${worker}, and send the findings to the reviewed worker, which runs its own reviews now: initiative_message {"to":"${a.handoffSources?.[0]?.worker ?? "W#"}","text":"<the findings>","work":true}.`;
+  void task;
+  return `To retry, send ${worker} the fixes as more work: initiative_message {"to":"${worker}","text":"<the fixes>","work":true}. Its task's status follows its work.`;
 }
 
 /** A ledger record: task, worker, assignment or update. Decisions answer with their own short shape. */

@@ -29,14 +29,14 @@ describe("T147 unknown keys name the fix", () => {
     const { f } = await projectFixture();
     const message = await refused(f, "initiative_message", { worker: "W1", text: "hi" });
     expect(message).toContain("`worker` is not a key of initiative_message; did you mean `to`?");
-    expect(message).toContain("Valid keys: to, text, mode, tasks, work.");
+    expect(message).toContain("Valid keys: to, text, mode, tasks, work, resumeCold.");
   });
 
   it("task: summary and description point at text; a key with no meant name still lists the valid ones", async () => {
     const { f } = await projectFixture();
     const message = await refused(f, "initiative_task", { action: "create", title: "Rank", summary: "Why.", description: "More.", priority: "high" });
     expect(message).toContain("`summary`, `description` are not keys of initiative_task; did you mean `text`?");
-    expect(message).toContain("`priority` is not a key of initiative_task. Valid keys: action, task, title, text, note, outcome.");
+    expect(message).toContain("`priority` is not a key of initiative_task. Valid keys: action, task, title, text, note, status, reason, outcome.");
     expect(await refused(f, "initiative_task", { action: "close", task: "T1", outcome: "done", id: "T1" })).toContain("`id` is not a key of initiative_task; did you mean `task`?");
   });
 
@@ -210,7 +210,7 @@ describe("T147 v2: review findings", () => {
     for (const tool of ["initiative_manage", "initiative_report", "initiative_spwn"]) {
       const message = await refused(f, "initiative_batch", { actions: [{ tool, action: "resume" }] });
       expect(message, tool).not.toContain("drop the initiative_ prefix");
-      expect(message, tool).toContain(`\`actions.0.tool\` is "${tool}", which a batch cannot run. Use one of spawn, message, task, worker, decision, update, pr, read (without the initiative_ prefix); any other tool is called on its own.`);
+      expect(message, tool).toContain(`\`actions.0.tool\` is "${tool}", which a batch cannot run. Use one of spawn, message, task, worker, question, rule, decision, update, pr, read (without the initiative_ prefix); any other tool is called on its own.`);
     }
     expect(await refused(f, "initiative_batch", { actions: [{ tool: "initiative_pr", prs: [] }] })).toContain('drop the initiative_ prefix ("pr")');
   });
@@ -339,7 +339,8 @@ describe("T147 v3: review findings", () => {
     ] });
     const errors: string[] = batch.results.map((r: { error: string }) => r.error);
     expect(errors[0]).toMatch(/^actions\[0\]: W1 belongs to workers, not tasks\. Omit view/);
-    expect(errors[1]).toMatch(/^actions\[1\]: Invalid decision: description/);
+    // v9: the decision log is retired, so a veto request is refused with where such a choice goes now.
+    expect(errors[1]).toMatch(/^actions\[1\]: Veto requests are retired/);
     expect(errors[2]).toMatch(/^actions\[2\]: Unknown initiative_decision action/);
     expect(errors[3]).toMatch(/^actions\[3\]: view records requires refs/);
     expect(errors[4]).toMatch(/^actions\[4\]: Invalid arguments for initiative_read: /);

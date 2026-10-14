@@ -56,11 +56,13 @@ describe("T157 PR stage history", () => {
     expect(store.prStageChanges("p", url(7), 2)).toMatchObject({ items: [{ n: 2 }, { n: 3 }], total: 3 });
   });
 
-  it("records nothing for a worker, who only adds notes, or a call that fails", async () => {
+  it("records a worker's stage on its own PR under its W#, and nothing for a call that fails", async () => {
     const { f, project } = await projectFixture();
-    await call(f, "initiative_spawn", { label: "SWC", purpose: "pr", text: `Implement ${url(7)}.` });
+    await call(f, "initiative_spawn", { label: "SWC", purpose: "pr", text: `Implement ${url(7)} and ${url(9)}.` });
     const worker = f.store.worker(project.id, f.store.assignments(project.id).at(-1)!.workerNum)!;
-    await expect(call(f, "initiative_pr", { prs: [{ url: url(7), stage: "in-review" }] }, worker.threadId!)).rejects.toThrow(/Workers only add notes/);
+    // v9: a worker keeps its own PR's stage.
+    await call(f, "initiative_pr", { prs: [{ url: url(9), stage: "in-review" }] }, worker.threadId!);
+    expect(f.store.prStageChanges(project.id, url(9), 50).items).toMatchObject([{ author: worker.ref }]);
     // The whole call rolls back: the stage it set and its history.
     await expect(call(f, "initiative_pr", { prs: [{ url: url(7), stage: "in-review" }, { url: url(8), worker: "W99" }] })).rejects.toThrow(/Unknown worker W99/);
     expect(f.store.prStageChanges(project.id, url(7), 50)).toEqual({ items: [], total: 0 });

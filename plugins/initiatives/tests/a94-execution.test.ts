@@ -16,7 +16,7 @@ async function completedWorker() {
   const task = f.task(project.id);
   const [d] = await f.service.delegate(project.id, fresh(task.ref));
   await f.service.report(d.threadId!, report());
-  await f.service.closeTask(project.id, task.ref, "done");
+  await f.service.setTaskStatus(project.id, task.ref, "done", "Closed as done.", "the user");
   f.idle(d.threadId!);
   f.send.mockClear();
   return { f, project, d };
@@ -55,7 +55,7 @@ describe("A94 native execution and complete startup", () => {
     const schema = tool.inputSchema as any;
     expect((schema.properties!.profile as any).properties.serviceTier.enum).toEqual(["default", "fast"]);
     expect((schema.properties!.permissionMode as any).enum).toEqual(["accept-edits", "auto", "full"]);
-    expect(tool.description).toContain("Give work to a new worker");
+    expect(tool.description).toContain("Give one PR (or a few small related ones) to a new worker");
   });
 
   it("CLI launches one native child with full brief, identity, assignment and explicit execution", async () => {

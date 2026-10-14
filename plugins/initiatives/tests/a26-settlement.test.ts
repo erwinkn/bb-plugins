@@ -21,7 +21,7 @@ async function continuation() {
     tasks: [t1.ref],
   });
   await f.service.report(d.threadId!, report());
-  await f.service.closeTask(project.id, t1.ref, "done");
+  await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
   f.idle(d.threadId!);
   const worker = f.store.workers(project.id)[0]!;
   const t2 = f.task(project.id, "Next");
@@ -181,7 +181,8 @@ describe("cancelled reservations hold until native execution settles", () => {
     expect(a2.state).toBe("cancelled");
     expect(a2.report?.outcome).toBe("succeeded");
     expect(a2.opState).toBe("uncertain");
-    expect(f.store.task(project.id, t2.num)!.status).toBe("blocked");
+    // v9: the late report is the work's last word for its task (done, no PR).
+    expect(f.store.task(project.id, t2.num)!.status).toBe("done");
     await held(f, project, t2);
     // Only the turn's end settles it.
     await f.runtime.onThreadIdle(f.idle(worker.threadId!));

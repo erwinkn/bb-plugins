@@ -58,15 +58,4 @@ describe("A96 native composer boundary", () => {
     expect(f.send).not.toHaveBeenCalled();
   });
 
-  it("lets a retained worker distinguish user ownership from its recording provenance using the canonical CLI", async () => {
-    const { f, project } = await projectFixture();
-    const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
-    expect(f.harness.registrations.cli?.name).toBe("initiative");
-    const result = await f.harness.runCli(["command", JSON.stringify({ action: "decision", decision: { description: "Reuse the index.", madeBy: "agent" } }), project.id], { threadId: worker.threadId! });
-    expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ ref: "D1", madeBy: "agent", provenance: { author: "worker", threadId: worker.threadId } });
-    const userChoice = await f.harness.runCli(["command", JSON.stringify({ action: "decision", decision: { description: "The user chose this.", madeBy: "user" } }), project.id], { threadId: worker.threadId! });
-    expect(userChoice.exitCode).toBe(0);
-    expect(JSON.parse(userChoice.stdout)).toMatchObject({ madeBy: "user", description: "The user chose this.", provenance: { author: "worker", threadId: worker.threadId } });
-  });
 });

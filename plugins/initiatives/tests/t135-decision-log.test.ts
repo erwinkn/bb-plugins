@@ -39,14 +39,14 @@ describe("T135 agents never receive the decision log", () => {
     expect(read.items[0].description).toBe("Keep native dispatch everywhere");
   });
 
-  it("tool descriptions and instructions record decisions for the user and never point agents at the log", async () => {
+  it("tool descriptions and instructions never point agents at the log (v9: it is retired)", async () => {
     const { f } = await projectFixture();
     const tools = f.harness.registrations.agentTools;
     const decision = tools.find(t => t.name === "initiative_decision")!.description;
     const read = tools.find(t => t.name === "initiative_read")!.description;
-    expect(decision).toContain("never consult the log for your own work");
+    expect(decision).toMatch(/^Older sessions only/);
     expect(read).not.toMatch(/D12|decisions/);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text).not.toMatch(/read (the )?decisions|decisions first/i);
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("The decision log is the user's record; don't consult it to plan.");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("A lasting choice by the user becomes a rule (initiative_rule)");
   });
 });

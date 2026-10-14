@@ -43,13 +43,6 @@
   overflow: auto;
   container-type: inline-size;
 }
-.project-header {
-  display: flex;
-  gap: 16px;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 14px;
-}
 .project-eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -80,8 +73,7 @@
 .project-section--attention > h2 {
   color: var(--warning-text, #b45309);
 }
-.project-count,
-.project-badge {
+.project-count {
   font-size: 10px;
   color: var(--muted-foreground);
   background: var(--muted);
@@ -89,10 +81,6 @@
   padding: 1px 6px;
   font-weight: 400;
   white-space: nowrap;
-}
-.project-badge {
-  margin-left: auto;
-  flex-shrink: 0;
 }
 .project-card {
   border: 1px solid var(--border);
@@ -352,21 +340,6 @@
   padding: 3px 0;
   color: var(--muted-foreground);
 }
-.bb-projects .project-catalog-card {
-  display: block;
-  text-align: left;
-  width: 100%;
-  padding: 16px;
-  margin: 12px 0;
-  border-radius: 8px;
-}
-.project-catalog-card h2 {
-  font-size: 14px;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--foreground);
-  margin-bottom: 4px;
-}
 .project-header-button {
   border: 0;
   font-size: 11px;
@@ -383,10 +356,6 @@
   .bb-projects {
     padding: 16px 14px;
   }
-  .project-header {
-    flex-direction: column;
-    gap: 10px;
-  }
   .bb-projects h1 {
     font-size: 18px;
   }
@@ -394,10 +363,6 @@
 @media (max-width: 640px) {
   .bb-projects {
     padding: 18px 16px;
-  }
-  .project-header {
-    flex-direction: column;
-    gap: 12px;
   }
   .project-card {
     padding: 12px;
@@ -435,5 +400,4 @@
 .project-usage-values dt { color: var(--muted-foreground); }
 .project-usage-values dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .project-usage-link { margin: 12px 0; }
-.project-needs-you { color: var(--warning-text, #b45309); font-weight: 600; }
 

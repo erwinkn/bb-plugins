@@ -19,16 +19,19 @@ async function turn(f: Fx, threadId: string, text: string) {
   f.history.push({ type: "turn/input/accepted", seq: ++seq, createdAt: Date.now(), data: { clientRequestId: requestId } });
   f.history.push({ type: "item/completed", seq: ++seq, createdAt: Date.now(), data: { item: { type: "agentMessage", text } } });
   f.history.push({ type: "turn/completed", seq: ++seq, createdAt: Date.now(), data: { status: "completed" } });
+  // v9: only initiative_report finishes work.
+  await f.harness.callAgentTool("initiative_report", { outcome: "done", summary: text, report: text }, { threadId });
   await f.runtime.onThreadIdle(f.idle(threadId));
 }
 
 describe("W259 coordinator guidance", () => {
   it("sizes work per worker, picks models by difficulty and sends fixes to a fresh worker", () => {
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per substantial PR (or a few small related ones), then retire it");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("very-fast (mechanical: lookups, scans, simple edits) or explorer (read lots and report; no building or running). Complex work stays on a worker (Opus).");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Fixes go to a fresh worker with handoffs; only a tiny related fix goes back to the original worker while it is warm.");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).not.toContain("Send fixes to the same worker");
+    // v9 reverses W259's fresh fix workers: a worker owns its PR to a clean review, and more work
+    // (a rule- or user-settled finding, 4 more rounds) goes back to the same worker.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn.");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("very-fast (mechanical: lookups, scans, simple edits) or explorer (read lots and report; no building or running).");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("More work goes back to the same worker (initiative_message work:true).");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Don't start reviewers: workers do.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
   });
 

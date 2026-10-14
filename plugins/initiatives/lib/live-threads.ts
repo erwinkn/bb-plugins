@@ -178,3 +178,41 @@ export class Recent<T> {
     return value;
   }
 }
+
+/** What a Background read answers: the last good value, or that the first read is loading or failed. */
+export type Cached<T> = { status: "ready"; value: T } | { status: "loading" } | { status: "failed"; error: string };
+
+/**
+ * A native read no request waits on. get answers at once with what the cache holds and starts a
+ * read in the background when there is nothing yet, the value is older than `ttl`, or the last
+ * read failed; a failed reload keeps the last good value. `changed` runs when a background read
+ * changes the answer, so the caller can announce it and readers ask again.
+ */
+export class Background<T> {
+  private entries = new Map<string, { answer: Cached<T>; at: number; reading: boolean }>();
+  constructor(
+    private readonly ttl: number,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  get(key: string, load: () => Promise<T>, changed: () => void): Cached<T> {
+    let entry = this.entries.get(key);
+    if (!entry) this.entries.set(key, entry = { answer: { status: "loading" }, at: 0, reading: false });
+    if (!entry.reading && (entry.answer.status !== "ready" || this.now() - entry.at >= this.ttl)) {
+      const read = entry;
+      const before = JSON.stringify(read.answer);
+      read.reading = true;
+      void load()
+        .then(
+          (value) => { read.answer = { status: "ready", value }; },
+          (error) => { if (read.answer.status !== "ready") read.answer = { status: "failed", error: error instanceof Error ? error.message : String(error) }; },
+        )
+        .finally(() => {
+          read.reading = false;
+          read.at = this.now();
+          if (JSON.stringify(read.answer) !== before) changed();
+        });
+    }
+    return entry.answer;
+  }
+}

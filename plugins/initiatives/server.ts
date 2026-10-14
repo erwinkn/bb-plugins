@@ -5,6 +5,7 @@ import type {
 import { z } from "zod";
 import {
   projectsContract,
+  type ChildPage,
   type InitiativeTabs,
   type ProjectSummary,
   type ProjectTree,
@@ -28,9 +29,14 @@ import {
   messageToolAdvertised,
   messageToolSchema,
   reportToolSchema,
+  questionToolSchema,
+  ruleCommand,
+  ruleToolSchema,
   spawnCommand,
+  spawnToolAdvertised,
   spawnToolSchema,
   taskCommand,
+  taskToolAdvertised,
   taskToolSchema,
   updateToolSchema,
   workerCommand,
@@ -52,7 +58,7 @@ import {
   type LiveThread,
   type OverviewDetail,
 } from "./lib/overview";
-import { LiveThreads, Recent } from "./lib/live-threads";
+import { Background, LiveThreads, Recent } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
 import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
 import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
@@ -63,17 +69,20 @@ import { prsByRef, prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
-const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "rules", "reconcile", "recreate-coordinators"];
 /** Tools initiative_batch can run, by their name without the initiative_ prefix. */
-const BATCH_TOOLS = ["spawn", "message", "task", "worker", "decision", "update", "pr", "read"] as const;
-const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
+const BATCH_TOOLS = ["spawn", "message", "task", "worker", "question", "rule", "decision", "update", "pr", "read"] as const;
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | rules (import <id> <file> | export <id> [file]) | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
 import { ProjectError, errorMessage } from "./lib/bb";
+import { codeReviewSkillMissing } from "./lib/service";
+import { assembleInstructions, clip80, leadRulesPointer, workerRulesPointer } from "./lib/instructions";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { isOwnOrigin } from "./lib/identity";
 import { scopedNativeEvent } from "./lib/native-events";
 import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
-import { messageSchema, currentIdentity, workerWork } from "./lib/messaging";
 import {
   readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection, withImpliedDetail,
   readOptionsSchema, isPrRef, readMixedRefs,
@@ -87,7 +96,12 @@ export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new Store(db);
-  const preferences = definePreferences(bb, { has: (key) => store.hasFlag(key), set: (key) => store.setFlag(key) });
+  // v9 (§7): closes the previous build made stay closed, as hand-set statuses.
+  for (const closed of store.reconcileTaskOverrides())
+    store.log(closed.projectId, "task", `T${closed.num} was ${closed.status === "done" ? "closed as done" : "cancelled"} while the previous build ran; kept as set by hand.`, { task: closed.num });
+  const skillMissing = codeReviewSkillMissing();
+  const preferences = definePreferences(bb, { has: (key) => store.hasFlag(key), set: (key) => store.setFlag(key) },
+    skillMissing ? { workerInstructions: `Warning: ${skillMissing}` } : undefined);
   const service = new ProjectsService(bb, store, preferences);
   const runtime = new Runtime(service);
   const changed = (projectId?: string) => {
@@ -134,18 +148,6 @@ export default function plugin(bb: BbPluginApi) {
     writes = next.catch(() => undefined);
     return next;
   };
-  /**
-   * D480: what a discussion may call, checked at the two doors every agent call comes through,
-   * its tools and `bb initiative`: reads, a message to the coordinator and PR notes, which check
-   * their callers again. Everything else is refused, whatever it writes and whenever it is added.
-   * A discussion stays one after its Initiative is archived; adopted as coordinator, it no longer is.
-   */
-  const DISCUSSION_TOOLS = ["initiative_read", "initiative_zoom", "initiative_message", "initiative_pr"];
-  const DISCUSSION_CLI = ["describe", "list", "overview", "read", "message"];
-  const refuseDiscussion = (threadId: string | null | undefined, allowed: boolean) => {
-    if (!allowed && threadId && store.membership(threadId, true)?.discussion)
-      throw new ProjectError('A discussion only messages the coordinator and keeps PR notes. Ask the coordinator: initiative_message {to:"coordinator",text:"…"}.');
-  };
   // W244, W248: a dashboard write sent again after its answer was lost runs once.
   const receipts = new WriteReceipts(db, ledgerVersion);
   const perform = (
@@ -156,7 +158,7 @@ export default function plugin(bb: BbPluginApi) {
   ) => {
     const run = () => runCommand(service, id, command, author, threadId);
     if (
-      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "stop-work"].includes(
+      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "worker-stop", "stop-work"].includes(
         command.action,
       )
     )
@@ -168,6 +170,7 @@ export default function plugin(bb: BbPluginApi) {
   // change found that way announces the Initiative. Agent and CLI reads stay fresh.
   const liveThreads = new LiveThreads((threadId) => bb.sdk.threads.get({ threadId }));
   const nativeContext = new Recent<unknown>(10_000);
+  const childPages = new Background<ChildPage>(10_000);
   const instanceEpoch = Math.random().toString(36).slice(2, 10);
   const overview = async (
     projectId: string,
@@ -200,6 +203,9 @@ export default function plugin(bb: BbPluginApi) {
     } catch {
       result.notDelivered = [];
     }
+    // v9: what each live worker's descendants are doing, from the cache events and the sweep keep;
+    // no native read, so no first paint waits on a walk. The Workers tab opens a tree by childPage.
+    result.workerWaiting = Object.fromEntries(result.workers.current.flatMap((w) => w.threadId ? [[w.ref, service.runningChildren.waitingOn(w.threadId)]] : []));
     if (result.project.coordinatorThreadId) {
       const threadId = result.project.coordinatorThreadId;
       try {
@@ -306,11 +312,22 @@ export default function plugin(bb: BbPluginApi) {
       return cached.value;
     };
   };
+  /**
+   * D532: threads that once belonged to the Initiative and no longer show as nodes: retired
+   * workers' threads and every earlier coordinator and worker generation, so the sidebar can
+   * hide them with their descendants.
+   */
+  const formerThreadIds = (projectId: string, current: Set<string>) => {
+    const rows = store.db.prepare(`SELECT thread_id FROM generations WHERE project_id = ? UNION SELECT thread_id FROM workers WHERE project_id = ? AND thread_id IS NOT NULL`)
+      .all(projectId, projectId) as { thread_id: string }[];
+    return [...new Set(rows.map((r) => r.thread_id))].filter((id) => !current.has(id)).sort();
+  };
   const buildTree = (): ProjectTree => ({
     version: 1,
     projects: store.projects().map((p) => ({
       ...summary(p.id),
       retired: store.workers(p.id).filter((w) => w.state === "retired").length,
+      formerThreadIds: formerThreadIds(p.id, new Set([p.coordinatorThreadId, ...orderedWorkers(p.id).map((w) => w.threadId)].filter((id): id is string => !!id))),
       nodes: [
         {
           threadId: p.coordinatorThreadId,
@@ -344,6 +361,8 @@ export default function plugin(bb: BbPluginApi) {
             threadId: t.threadId,
             label: t.label,
             role: "adhoc" as const,
+            // D532: a discussion is a lead tab, not a user-attached thread.
+            ...(t.discussion && t.threadId && store.membership(t.threadId, true)?.discussion ? { discussion: true as const } : {}),
             worker: null,
             parentWorker: null,
             // An associated thread carries no execution evidence of its own;
@@ -378,6 +397,13 @@ export default function plugin(bb: BbPluginApi) {
   ) => {
     service.requireProject(projectId);
     return readCollection(store, projectId, view, options);
+  };
+  /** v9 (D523): the full numbered list, current first; removed rules are left out. */
+  const readRules = (projectId: string) => {
+    const project = service.requireProject(projectId);
+    const rules = store.rules(projectId);
+    return { initiative: project.name, count: rules.length, rules: rules.map((r) => ({ ref: r.ref, text: r.text, ...(r.sources.length ? { sources: r.sources } : {}) })),
+      note: "Follow every rule. A lead adds one when the user states a lasting choice (initiative_rule), and edits or removes one only when the user asks." };
   };
   const readThreads = async (projectId: string, options: ReadOptions) => {
     options = withImpliedDetail(options);
@@ -424,6 +450,11 @@ export default function plugin(bb: BbPluginApi) {
     prRecords: (projectId) => store.prRecords(projectId),
     assignedPrs: (projectId) => assignedPrs.read(projectId),
     notes: (projectId) => service.prNotes.summaries(projectId),
+    prStates: {
+      markOpen: (urls, at) => store.markPrsOpen(urls, at),
+      toLookUp: (listed, at, limit) => store.prsToLookUp(listed, at, limit),
+      save: (url, at, result) => store.savePrLookup(url, at, result),
+    },
   }, undefined, undefined,
   // D441: reads never wait on GitHub; a finished fetch tells the dashboards to read again.
   (repo) => bb.realtime.publish("merge-queue-changed", { repo }));
@@ -450,6 +481,15 @@ export default function plugin(bb: BbPluginApi) {
     overview: ({ projectId, detailed, detail }) =>
       overview(projectId, detail ?? (detailed === false ? "summary" : "full"), { fresh: false }),
     membership: ({ threadId }) => membershipOf(threadId),
+    childPage: ({ projectId, threadId, offset }) => {
+      service.requireProject(projectId);
+      // Never waits on BB: the cached page, or loading; a read that changes it announces the Initiative.
+      return childPages.get(`${threadId}:${offset ?? 0}`, async () => {
+        const page = await service.childPage(threadId, offset);
+        return { next: page.next, rows: page.rows.map((row) => ({ threadId: row.id, title: row.title ?? row.titleFallback ?? "Thread", status: row.status,
+          archived: row.archivedAt !== null, running: row.running, providerId: row.providerId ?? null, updatedAt: row.updatedAt })) };
+      }, () => bb.realtime.publish("initiatives-changed", { projectId }));
+    },
     reportReadTimeout: ({ read, ...r }) => {
       bb.log.warn(
         `An Initiatives ${read} read timed out in a client: elapsedMs=${r.elapsedMs} hidden=${r.hidden} online=${r.online} sinceVisibleMs=${r.sinceVisibleMs} hiddenDuringRead=${r.hiddenDuringRead}`,
@@ -519,7 +559,8 @@ export default function plugin(bb: BbPluginApi) {
 
   // T96: read-only lifecycle and brief/handoff context for other local plugins
   // (Pooler warming, Advisor). Token auth; own store only; reads never write or wake.
-  for (const [path, read] of [["/context/v1/thread", threadContext], ["/context/v1/record", recordText], ["/context/v1/initiatives", initiativesContext], ["/context/v1/members", membersContext]] as const)
+  const runningChildren = service.runningChildren;
+  for (const [path, read] of [["/context/v1/thread", (s: Store, q: URLSearchParams) => threadContext(s, q, runningChildren)], ["/context/v1/record", recordText], ["/context/v1/initiatives", initiativesContext], ["/context/v1/members", membersContext]] as const)
     bb.http.route("GET", path, (c) => {
       const { status, body } = read(store, new URL(c.req.url).searchParams);
       return c.json(body, status);
@@ -554,18 +595,18 @@ export default function plugin(bb: BbPluginApi) {
     const m = store.membership(threadId);
     const current =
       m && !m.former && m.project.archivedAt === null &&
-      (m.kind === "coordinator" ||
+      (m.kind === "coordinator" || m.discussion ||
         (m.kind === "worker" && m.worker?.state !== "retired" && m.worker?.threadId === threadId));
     if (!current)
-      throw new ProjectError("Only the current coordinator or a current worker records the user's chat answer.");
+      throw new ProjectError("Only a lead tab or a current worker records the user's chat answer.");
     if (projectId && projectId !== m.project.id)
       throw new ProjectError("Record answers only for questions in your own Initiative.");
     return {
       projectId: m.project.id,
       recordedBy: {
-        author: m.kind === "coordinator" ? ("coordinator" as const) : ("worker" as const),
+        author: m.kind === "worker" ? ("worker" as const) : ("coordinator" as const),
         threadId,
-        assignment: m.kind === "coordinator" ? null : (store.openAssignment(m.project.id, m.workerNum)?.num ?? null),
+        assignment: m.kind === "worker" ? (store.openAssignment(m.project.id, m.workerNum)?.num ?? null) : null,
       },
     };
   };
@@ -587,13 +628,15 @@ export default function plugin(bb: BbPluginApi) {
     )
       await service.confirmCreated(a.projectId, a.num, thread);
   };
-  const coordinatorTools = [
+  /** v9: every lead tab (the coordinator and each discussion) gets the same tools. */
+  const leadTools = [
     "initiative_read",
     "initiative_spawn",
     "initiative_message",
     "initiative_task",
     "initiative_worker",
-    "initiative_decision",
+    "initiative_question",
+    "initiative_rule",
     "initiative_update",
     "initiative_manage",
     "initiative_pr",
@@ -633,15 +676,16 @@ export default function plugin(bb: BbPluginApi) {
             "UPDATE coordinator_starts SET thread_id=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain') AND (thread_id IS NULL OR thread_id=?)",
           )
           .run(ctx.thread.id, meta.projectId, meta.op, ctx.thread.id);
+      const project = store.project(meta.projectId);
       return {
-        tools: coordinatorTools,
+        tools: leadTools,
         skills: ["initiative-coordinator"],
-        instructions: [
-          guidance().coordinatorInstructions,
+        instructions: assembleInstructions([
           start && ["pending", "uncertain"].includes(start.state)
-            ? `You are the pending coordinator of this initiative. Your start receipt is recorded but this thread's checkout is still being proven against the primary repository's default source. Read initiative state once this thread is confirmed; until then, Initiative reads and mutations require confirmed membership. If membership is unavailable, leave confirmation and settlement to the operator. Do not retry the start.`
-            : `Your coordinator start did not confirm (state ${start?.state ?? "unknown"}). Initiative reads and mutations require confirmed membership. Leave settlement to the operator. Do not retry the start.`,
-        ].join("\n\n"),
+            ? `You are the pending coordinator of the "${clip80(project?.name ?? meta.projectId)}" Initiative: this thread's checkout is still being proven. Initiative reads and changes need confirmed membership; if it stays unavailable, leave it to the operator. Do not retry the start.`
+            : `Your coordinator start did not confirm (state ${start?.state ?? "unknown"}). Initiative reads and changes need confirmed membership. Leave settlement to the operator. Do not retry the start.`,
+          leadRulesPointer(store.rulesStamp(meta.projectId)),
+        ], guidance().coordinatorInstructions),
       };
     }
     // A user thread (a discussion too) can configure before the create RPC's own confirm lands.
@@ -656,13 +700,16 @@ export default function plugin(bb: BbPluginApi) {
         store.confirmProjectThread(meta.op, ctx.thread.id);
     }
     const m = store.membership(ctx.thread.id);
-    // D480: a discussion talks the work through with the user, shares the Initiative's memory (Chat
-    // memory gives its tools), messages the coordinator and keeps PR notes. It never directs workers.
-    if (m?.discussion)
+    // v9: a discussion is a lead tab like the coordinator's: the same tools and guidance, the
+    // Initiative's shared memory (Chat memory gives its tools); workers it gives work report here.
+    if (m?.discussion && m.project.archivedAt === null)
       return {
-        tools: ["initiative_read", "initiative_message", "initiative_pr"],
-        skills: [],
-        instructions: `This is a discussion of the "${m.project.name}" Initiative: the user talks its work through with you, across PRs and themes. You share the Initiative's memory with its coordinator: memory_read and memory_zoom show what was said and decided in either thread. Read the Initiative's state with initiative_read. Tell the coordinator what it should act on with initiative_message {to:"coordinator",text:"…"}, and keep PR notes and answer their questions with initiative_pr (notes and answered only). You never spawn, direct or message workers, record tasks or decisions, or change the repositories: ask the coordinator.`,
+        tools: leadTools,
+        skills: ["initiative-coordinator"],
+        instructions: assembleInstructions([
+          `This tab is a lead of the "${clip80(m.project.name)}" Initiative, like its coordinator tab: the same tools, and its shared memory (memory_read, memory_zoom). Workers you give work report back to this tab; to:"coordinator" reaches the coordinator tab.`,
+          leadRulesPointer(store.rulesStamp(m.project.id)),
+        ], guidance().coordinatorInstructions),
       };
     if (m?.kind === "adhoc")
       // The user's own thread: project read access on its first turn, and an
@@ -690,17 +737,24 @@ export default function plugin(bb: BbPluginApi) {
     if (m?.workerNum === 0)
       // T145: the memory tools, guidance and turn hook come from the Chat memory plugin.
       return {
-        tools: coordinatorTools,
+        tools: leadTools,
         skills: ["initiative-coordinator"],
-        instructions: [guidance().coordinatorInstructions, `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}`].join("\n\n"),
+        instructions: assembleInstructions([
+          `You are the coordinator tab of the "${clip80(m.project.name)}" Initiative (${m.project.id}), thread ${ctx.thread.id}. It receives whatever has no live lead tab of its own.`,
+          leadRulesPointer(store.rulesStamp(m.project.id)),
+        ], guidance().coordinatorInstructions),
       };
-    const worker = m?.worker ?? pendingMember(ctx)?.worker;
-    const work = m?.worker ? workerWork(store, m.project.id, m.worker.num, m.worker.generation).assignments[0] : null;
-    if (worker)
+    const pending = m?.worker ? null : pendingMember(ctx);
+    const worker = m?.worker ?? pending?.worker;
+    const projectId = m?.project.id ?? pending?.project.id;
+    if (worker && projectId)
       return {
-        tools: ["initiative_read", "initiative_report", "initiative_message", "initiative_decision", "initiative_pr"],
+        tools: ["initiative_read", "initiative_report", "initiative_message", "initiative_pr"],
         skills: ["initiative-worker"],
-        instructions: guidance().workerInstructions + "\n\n" + `You are ${worker.ref} "${worker.label}" (${worker.area}), role ${worker.role}${m && !m.former ? "" : " (membership still being confirmed)"}.`,
+        instructions: assembleInstructions([
+          `You are ${worker.ref} "${clip80(worker.label)}" (${clip80(worker.area)}), role ${worker.role}${m && !m.former ? "" : " (membership still being confirmed)"}.`,
+          workerRulesPointer(store.rulesStamp(projectId)),
+        ], guidance().workerInstructions),
       };
     return { tools: ["initiative_create"], skills: [] };
   });
@@ -721,7 +775,6 @@ export default function plugin(bb: BbPluginApi) {
   const registerTool: typeof bb.agents.registerTool = (tool: Parameters<typeof bb.agents.registerTool>[0]) => {
     const schema = typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function" ? tool.parameters as unknown as z.ZodType : null;
     const run: ToolExecute = (input, context) => {
-      refuseDiscussion(context.threadId, DISCUSSION_TOOLS.includes(tool.name));
       return tool.execute(schema ? parseToolInput(schema, input, tool.name) : input, context);
     };
     handlers.set(tool.name, run);
@@ -796,10 +849,11 @@ export default function plugin(bb: BbPluginApi) {
    * constructed before T136 can still send its older payloads: those run as the commands
    * they always were, and removed actions answer with what replaces them.
    */
+  /** v9: the Initiative a lead tab (its coordinator or a discussion) acts on. */
   const coordinatorProject = async (threadId: string | undefined) => {
     if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
     await ensureMember(threadId);
-    return service.coordinatorOf(threadId);
+    return store.membership(threadId)?.discussion ? service.leadOf(threadId) : service.coordinatorOf(threadId);
   };
   /** An older session's payload for a reused tool name: run it as the command it always was. */
   const legacyCommand = async (raw: unknown, threadId: string, actions: readonly string[]) => {
@@ -815,15 +869,15 @@ export default function plugin(bb: BbPluginApi) {
     const command = messageCommand(parseToolInput(messageToolSchema, raw, "initiative_message"));
     if (command.action === "message") return service.message(threadId, command);
     // Work for a reviewer is refused: each review round gets a fresh reviewer (W239).
-    return perform(service.coordinatorOf(threadId).id, command, "coordinator", threadId);
+    return perform((await coordinatorProject(threadId)).id, command, "coordinator", threadId);
   };
   const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>;
   /** W215: write tools answer with a short receipt; initiative_read has the full records. */
   const receipt = (value: unknown) => JSON.stringify(toolReceipt(value));
   registerTool({
     name: "initiative_spawn",
-    parameters: jsonSchema(spawnToolSchema),
-    description: 'Give work to a new worker: {label:"Search index",purpose:"search ranking",text:"<the brief>",tasks:["T40"]}. A review: {role:"review",reviews:"W12",label,purpose,text:"what to check"}. The result lists warnings, such as another writer in the same checkout.',
+    parameters: jsonSchema(spawnToolAdvertised),
+    description: 'Give one PR (or a few small related ones) to a new worker, which implements, reviews with its own reviewers and reports once: {label:"Search index",purpose:"search ranking",text:"<the brief>",tasks:["T40"]}. Its reports come back to this tab. The result lists warnings, such as another writer in the same checkout.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
       return receipt(await perform(p.id, spawnCommand(parseToolInput(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));
@@ -832,7 +886,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_message",
     parameters: jsonSchema(messageToolAdvertised),
-    description: 'One message to a worker (W#) or the coordinator: {to:"W4",text:"…"}. With tasks:["T41"] or work:true it gives the worker more work, and the worker reports again; a plain message corrects work in progress. From the coordinator to a worker a message steers by default (it arrives mid-turn, in order); mode:"queue" holds it until the turn ends. Messages never resume a stopped or retired worker.',
+    description: 'One message to a worker (W#), your lead ("lead", for a worker) or the coordinator tab: {to:"W4",text:"…"}. From a lead, tasks:["T41"] or work:true gives the worker more work (it reports again; the message carries the current worker loop and rules); a plain message corrects work in progress. A lead\'s message to a worker steers by default (it arrives mid-turn, in order); mode:"queue" holds it until the turn ends. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return receipt(await sendMessage(raw, threadId));
@@ -840,8 +894,8 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_task",
-    parameters: jsonSchema(taskToolSchema),
-    description: 'Optional tasks. {action:"create",title,text?} · {action:"update",task:"T4",title?,text?,note?} · {action:"close",task:"T4",outcome:"done"|"cancelled",note?} (cancelling stops its running work) · {action:"reopen",task:"T4",note?}.',
+    parameters: jsonSchema(taskToolAdvertised),
+    description: 'Optional tasks; their status follows their work and PRs. {action:"create",title,text?} · {action:"update",task:"T4",title?,text?,note?} · only when the user asks: {action:"status",task:"T4",status:"planned"|"cancelled"|"done"|"auto",reason:"<the user\'s words>"} sets it by hand (cancelled stops its running work; auto follows the work again).',
     async execute(raw, { threadId }) {
       const legacy = await legacyCommand(raw, threadId!, ["task-create", "task-update", "task-cancel", "task-reopen", "assignment-stop", "assignment-settle", ...Object.keys(REMOVED_ACTIONS)]);
       if (legacy) return legacy;
@@ -852,7 +906,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_worker",
     parameters: jsonSchema(workerToolSchema),
-    description: 'Retire a finished worker ({action:"retire",worker:"W4"}; once its turn has ended, since a report can arrive first; its reports stay readable), stop its running work ({action:"stop",worker:"W4",reason}), or adopt an existing thread ({action:"adopt",threadId,role,label,purpose}).',
+    description: 'Retire a finished worker ({action:"retire",worker:"W4"}; once its turn has ended and its children are quiet; its reports stay readable), stop it and its running children ({action:"stop",worker:"W4",reason}), or adopt an existing thread as a worker ({action:"adopt",threadId,label,purpose}; it gets one open assignment and the worker loop, and finishes with initiative_report).',
     async execute(raw, { threadId }) {
       const legacy = await legacyCommand(raw, threadId!, ["worker-retire"]);
       if (legacy) return legacy;
@@ -864,12 +918,8 @@ export default function plugin(bb: BbPluginApi) {
       }
       const p = await coordinatorProject(threadId);
       const command = workerCommand(parseToolInput(workerToolSchema, raw, "initiative_worker"));
-      if (command.action === "worker-stop") {
-        const worker = service.requireWorker(p, command.worker);
-        const open = store.openAssignment(p.id, worker.num);
-        if (!open) throw new ProjectError(`${worker.ref} has no running work to stop.`);
-        return receipt(await perform(p.id, { action: "assignment-stop", assignment: open.ref, reason: command.reason }, "coordinator", threadId!));
-      }
+      if (command.action === "worker-stop")
+        return receipt(await perform(p.id, { action: "worker-stop", worker: command.worker, reason: command.reason }, "coordinator", threadId!));
       return receipt(await perform(p.id, command, "coordinator", threadId!));
     },
   });
@@ -906,10 +956,11 @@ export default function plugin(bb: BbPluginApi) {
     // Plain JSON Schema with an object root: Claude's bridge blanks union roots. Validation is
     // parseDecisionCommand, shared with the CLI, so every refusal carries a valid example.
     parameters: decisionToolJsonSchema as Record<string, unknown>,
-    description: 'Record choices for the user, who follows and redirects the work with them; never consult the log for your own work. {action:"user-choice",description} records the user\'s explicit choice from chat; {action:"veto-request",description} a choice of yours the user may want to veto (you proceed unless they do). Routine steps are not decisions. Coordinator only: {action:"question",question,context,options?,recommendation?,blocksTaskIds?} asks a real open choice (never inferred from prose); {action:"withdraw",ref:"D12",reason} retracts your own open question. {action:"answer",ref:"D12",choice,note?} records the user\'s explicit answer; workers notify the coordinator unless notify:false.',
+    description: 'Older sessions only. Questions: initiative_question. A lasting choice of the user: initiative_rule add. A choice about one PR: a note with initiative_pr. A choice the user may reverse: say "Reversible: …" in your update.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Record decisions from an Initiative thread.");
       await ensureMember(threadId);
+      // v9 (D518): parseDecisionCommand refuses the retired decision log with where each choice goes now.
       const input = parseDecisionCommand(raw);
       if (input.action === "answer") {
         const { projectId, recordedBy } = chatAnswerRecorder(threadId);
@@ -919,7 +970,7 @@ export default function plugin(bb: BbPluginApi) {
       const { projectId, recordedBy: provenance } = chatAnswerRecorder(threadId);
       let result;
       if (input.action === "question") {
-        if (provenance.author !== "coordinator") throw new ProjectError("Ask the user questions through the coordinator.");
+        if (provenance.author !== "coordinator") throw new ProjectError("Ask the user questions through your lead, or report blocked with the question.");
         result = service.recordQuestion(projectId, input.question, provenance);
       } else if (input.action === "question-withdraw") {
         const withdrawn = service.withdrawQuestion(projectId, input.decision, input.reason, provenance);
@@ -928,6 +979,36 @@ export default function plugin(bb: BbPluginApi) {
       } else result = service.recordDecision(projectId, input, provenance);
       // W215: no echo of the description the caller just wrote; initiative_read has the record.
       return JSON.stringify({ ref: result.ref, madeBy: result.madeBy, status: result.status, review: result.review });
+    },
+  });
+  registerTool({
+    name: "initiative_question",
+    parameters: jsonSchema(questionToolSchema),
+    description: 'Ask the user a real open choice (never inferred from prose): {question,context,options?:[{label,consequences}],recommendation?}. It shows in the Inbox; the answer comes back to this tab. {withdraw:"D12",reason} retracts your own open question. Decide routine things yourself.',
+    async execute(raw, { threadId }) {
+      const p = await coordinatorProject(threadId);
+      const input = parseToolInput(questionToolSchema, raw, "initiative_question");
+      const provenance = { author: "coordinator" as const, threadId: threadId!, assignment: null };
+      if (input.withdraw) {
+        if (!input.reason) throw new ToolInputError("withdraw needs a reason: why the user no longer needs to answer.");
+        const withdrawn = service.withdrawQuestion(p.id, input.withdraw, input.reason, provenance);
+        return receipt({ ref: withdrawn.ref, status: withdrawn.status });
+      }
+      if (!input.question || !input.context) throw new ToolInputError("A question needs question and context.");
+      const question = parseDecisionCommand({ action: "question", question: input.question, context: input.context,
+        ...(input.options ? { options: input.options } : {}), ...(input.recommendation ? { recommendation: input.recommendation } : {}) });
+      if (question.action !== "question") throw new ToolInputError("A question needs question and context.");
+      const result = service.recordQuestion(p.id, question.question, provenance);
+      return receipt({ ref: result.ref, status: result.status });
+    },
+  });
+  registerTool({
+    name: "initiative_rule",
+    parameters: jsonSchema(ruleToolSchema),
+    description: 'The standing rules every lead and worker follows (initiative_read {view:"rules"}). Add one when the user states a lasting choice: {action:"add",text:"One or two sentences."}; edit or remove one only when the user asks: {action:"edit",rule:"R5",text} · {action:"remove",rule:"R5"}. Each change is announced to the other lead tabs and to workers with open work; the result names them.',
+    async execute(raw, { threadId }) {
+      const p = await coordinatorProject(threadId);
+      return receipt(await perform(p.id, ruleCommand(parseToolInput(ruleToolSchema, raw, "initiative_rule")), "coordinator", threadId!));
     },
   });
   /** initiative_pr and `bb initiative pr`: record PR stages, categories and notes, in one transaction. */
@@ -961,10 +1042,8 @@ export default function plugin(bb: BbPluginApi) {
         const { project, worker } = service.workerOf(threadId);
         return receipt(setPrStages(project.id, raw, "initiative_pr", workerCaller(project.id, worker, threadId)));
       }
-      if (m?.discussion)
-        return receipt(setPrStages(m.project.id, raw, "initiative_pr", { author: "discussion", worker: null, discussion: true, threadId }));
       const p = await coordinatorProject(threadId);
-      return receipt(setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, threadId }));
+      return receipt(setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, author: m?.discussion ? "lead" : "coordinator", threadId }));
     },
   });
   registerTool({
@@ -978,14 +1057,14 @@ export default function plugin(bb: BbPluginApi) {
       const m = store.membership(threadId);
       if (!m || m.former || (m.workerNum !== 0 && m.workerNum !== -1))
         throw new ProjectError(
-          "Publish updates from the coordinator or the user's own initiative thread.",
+          "Publish updates from a lead tab or the user's own initiative thread.",
         );
       const input = parseToolInput(updateToolSchema, raw, "initiative_update");
       return receipt(
         await perform(
           m.project.id,
           parseToolInput(updateSchema, { action: "update", ...input }, "initiative_update"),
-          m.workerNum === 0 ? "coordinator" : "user",
+          m.workerNum === 0 || m.discussion ? "coordinator" : "user",
           threadId,
         ),
       );
@@ -993,7 +1072,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_read",
-    description: 'Read the Initiative. {} is the overview; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state, refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
+    description: 'Read the Initiative. {} is the overview; {view:"rules"} the standing rules; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state, refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
     parameters: agentReadSchema,
     async execute(input, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
@@ -1018,6 +1097,7 @@ export default function plugin(bb: BbPluginApi) {
       if (!view || view === "overview") return JSON.stringify(compactOverview(store, m.project.id));
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
+      if (view === "rules") return JSON.stringify(readRules(m.project.id));
       if (view === "memory") return JSON.stringify(await chatMemory("read", { threadId }, z.object({ messages: z.number(), view: z.string(), note: z.string() })));
       if (view === "prs") {
         const queue = await mergeQueue.read(m.project.id);
@@ -1033,7 +1113,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_batch",
     parameters: jsonSchema(batchSchema),
-    description: 'Several Initiative actions in one call, run in order; one failing never stops the rest. Each is {tool, ...that tool\'s arguments}: {actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"message",to:"W12",text:"…"}]}. Returns one result per action. Coordinator only.',
+    description: 'Several Initiative actions in one call, run in order; one failing never stops the rest. Each is {tool, ...that tool\'s arguments}: {actions:[{tool:"rule",action:"add",text:"…"},{tool:"message",to:"W12",text:"…"}]}. Returns one result per action. Leads only.',
     async execute(raw, context) {
       await coordinatorProject(context.threadId);
       const { actions } = parseToolInput(batchSchema, raw, "initiative_batch");
@@ -1106,8 +1186,9 @@ export default function plugin(bb: BbPluginApi) {
     summary: "Durable initiatives, worker lifecycles, decisions and overview",
     commands: [
       { name: "message", summary: "One message to a worker or the coordinator; the coordinator adds tasks or work:true to give a worker more work", usage: "bb initiative message '{\"to\":\"W4\",\"text\":\"Interface fact\"}'" },
-      { name: "describe", summary: "Show short valid JSON examples for commands and reads", usage: "bb initiative describe [read|decision|spawn|review|work-message|fresh-with-handoff|message|task-close|question|answer|quiet-answer|user-choice|veto-request|supersede|withdraw|handover|<initiative_tool>]" },
+      { name: "describe", summary: "Show short valid JSON examples for commands and reads", usage: "bb initiative describe [read|spawn|work-message|fresh-with-handoff|message|task-status|rule|question|answer|quiet-answer|withdraw|handover|<initiative_tool>]" },
       { name: "list", summary: "List initiatives", usage: "bb initiative list" },
+      { name: "rules", summary: "Import a standing-rules file (the live list becomes exactly the file's; the previous list is written next to it as rules-before-<time>.md, the undo) or export the list", usage: "bb initiative rules import <initiative-id> <file> | bb initiative rules export <initiative-id> [file]" },
       {
         name: "overview",
         summary: "Read the four-part initiative overview",
@@ -1117,7 +1198,7 @@ export default function plugin(bb: BbPluginApi) {
         name: "read",
         summary: "Read a stored collection",
         usage:
-          "bb initiative read <records|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs. The coordinator's memory: bb chat-memory",
+          "bb initiative read <records|rules|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs. The coordinator's memory: bb chat-memory",
       },
       {
         name: "command",
@@ -1131,8 +1212,8 @@ export default function plugin(bb: BbPluginApi) {
       },
       {
         name: "report",
-        summary: "Report from the current worker thread",
-        usage: "bb initiative report '<json>'",
+        summary: "Report from the current worker thread: {outcome:\"done\"|\"blocked\"|\"failed\",summary,report,question?}",
+        usage: "bb initiative report '{\"outcome\":\"done\",\"summary\":\"…\",\"report\":\"…\"}'",
       },
       {
         name: "reconcile",
@@ -1150,7 +1231,6 @@ export default function plugin(bb: BbPluginApi) {
         const args = argv.filter((a) => a !== "--json");
         const [action, value, explicitId] = args;
         if (ctx.threadId) await ensureMember(ctx.threadId);
-        refuseDiscussion(ctx.threadId, !!action && DISCUSSION_CLI.includes(action));
         const member = ctx.threadId ? store.membership(ctx.threadId) : null;
         const id = explicitId ?? member?.project.id;
         let result: unknown;
@@ -1165,9 +1245,10 @@ export default function plugin(bb: BbPluginApi) {
         else if (action === "overview" && args.length <= 2)
           result = ctx.threadId ? compactOverview(store, value ?? member?.project.id ?? "") : await overview(value ?? member?.project.id ?? "");
         else if (action === "read" && args.length <= 4) {
-          const view = z.enum(["records", ...READ_VIEWS]).parse(value);
+          const view = z.enum(["records", "rules", ...READ_VIEWS]).parse(value);
           const options = readOptionsSchema.parse(args[3] ? JSON.parse(args[3]) : {});
-          result = view === "records" ? readRefs(store, id ?? "", options)
+          result = view === "rules" ? readRules(id ?? "")
+            : view === "records" ? readRefs(store, id ?? "", options)
             : view === "threads" ? await readThreads(id ?? "", options)
             : read(id ?? "", view, options);
         } else if (action === "message" && value && args.length === 2) {
@@ -1193,34 +1274,57 @@ export default function plugin(bb: BbPluginApi) {
             result = service.recordDecision(projectId, command, recordedBy);
           } else {
             if (ctx.threadId && command.action !== "create") {
-              if (!member || member.former || member.workerNum !== 0)
-                throw new ProjectError("Only the current initiative coordinator manages work from an agent CLI.");
+              if (!member || member.former || !(member.workerNum === 0 || member.discussion))
+                throw new ProjectError("Only a lead tab (the coordinator or a discussion) manages work from an agent CLI.");
               if (id !== member.project.id)
-                throw new ProjectError("A coordinator cannot manage another initiative through its agent CLI.");
+                throw new ProjectError("A lead cannot manage another initiative through its agent CLI.");
             }
             result = await perform(id, command, ctx.threadId ? "coordinator" : "user", ctx.threadId ?? null);
           }
         } else if (action === "pr" && value && args.length <= 3) {
           if (ctx.threadId) {
-            if (!member || member.former || member.workerNum !== 0)
-              throw new ProjectError("Only the current initiative coordinator sets PR stages from an agent CLI.");
+            if (!member || member.former || !(member.workerNum >= 0 || member.discussion))
+              throw new ProjectError("Only a lead tab or a worker sets PR stages from an agent CLI.");
             if (id !== member.project.id)
-              throw new ProjectError("A coordinator cannot set another initiative's PR stages.");
+              throw new ProjectError("A thread cannot set another initiative's PR stages.");
           }
           if (!id) throw new ProjectError("Pass the initiative id: bb initiative pr '<json>' <initiative-id>.");
-          result = setPrStages(id, JSON.parse(value), "bb initiative pr", ctx.threadId ? { ...COORDINATOR, threadId: ctx.threadId } : { ...COORDINATOR, author: "user" });
+          // v9: an adopted worker whose tools predate the switch keeps its PRs from the shell.
+          result = ctx.threadId && member?.worker
+            ? setPrStages(id, JSON.parse(value), "bb initiative pr", workerCaller(id, service.workerOf(ctx.threadId).worker, ctx.threadId))
+            : setPrStages(id, JSON.parse(value), "bb initiative pr", ctx.threadId ? { ...COORDINATOR, threadId: ctx.threadId } : { ...COORDINATOR, author: "user" });
         } else if (
           action === "report" &&
           value &&
           args.length === 2 &&
           ctx.threadId
         ) {
-          result = await service.report(
-            ctx.threadId,
-            reportSchema
-              .safeExtend({ assignment: z.string().optional() })
-              .parse(JSON.parse(value)),
-          );
+          const raw = JSON.parse(value);
+          // The short form, as initiative_report takes it, or an older session's full report.
+          if (typeof raw === "object" && raw !== null && "handoff" in raw)
+            result = await service.report(ctx.threadId, reportSchema.safeExtend({ assignment: z.string().optional() }).parse(raw));
+          else {
+            const input = parseToolInput(reportToolSchema, raw, "bb initiative report");
+            if (input.outcome === "blocked" && !input.question) throw new ToolInputError("A blocked report needs the question you need answered.");
+            result = await service.shortReport(ctx.threadId, input);
+          }
+        } else if (action === "rules" && (value === "import" || value === "export") && args.length >= 3 && args.length <= 4) {
+          // v9: `rules import <id> <file>` makes the live list exactly the file's, after writing the
+          // current one to rules-before-<time>.md next to it (importing that is the exact undo).
+          const [, , projectId, file] = args as [string, string, string, string | undefined];
+          if (ctx.threadId && !(member && !member.former && (member.workerNum === 0 || member.discussion) && member.project.id === projectId))
+            throw new ProjectError("Import or export rules from a terminal or a lead tab of that Initiative.");
+          if (value === "export") {
+            const text = service.exportRules(projectId);
+            if (file) writeFileSync(resolvePath(file), text);
+            result = file ? { written: resolvePath(file) } : text;
+          } else {
+            if (!file || !existsSync(resolvePath(file))) throw new ProjectError("Name the rules file: bb initiative rules import <initiative-id> <file>.");
+            const path = resolvePath(file);
+            const before = join(dirname(path), `rules-before-${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
+            writeFileSync(before, service.exportRules(projectId));
+            result = { ...(await service.importRules(projectId, readFileSync(path, "utf8"), ctx.threadId ?? null)), undo: `bb initiative rules import ${projectId} ${before}` };
+          }
         } else if (action === "reconcile" && args.length === 1) {
           result = await service.reconcile();
         } else if (action === "recreate-coordinators") {
@@ -1281,7 +1385,10 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Lifecycle events carry the current DTO: keep dashboard facts current.
   for (const name of ["thread.created", "thread.active", "thread.idle", "thread.failed", "thread.archived", "thread.unarchived", "thread.deleted"] as const)
-    bb.events.on(name, ({ thread }) => liveThreads.observe(thread));
+    bb.events.on(name, ({ thread }) => {
+      liveThreads.observe(thread);
+      runningChildren.observe(thread);
+    });
   bb.events.on(
     "message.dispatched",
     event(({ entry }) => runtime.onMessageDispatched(entry.id)),
@@ -1293,6 +1400,8 @@ export default function plugin(bb: BbPluginApi) {
   bb.background.service("initiatives-sweep", {
     async start(signal) {
       runtime.start(signal);
+      // v9 (§12): a load that follows the previous build's activity tells the lead tabs once.
+      await announcing(() => service.runCutover()).catch((error) => bb.log.warn(`Cutover check failed: ${errorMessage(error)}`));
       while (!signal.aborted) {
         const before = ledgerVersion();
         await runtime.sweep(signal);

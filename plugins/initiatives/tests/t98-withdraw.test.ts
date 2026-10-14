@@ -35,12 +35,11 @@ const activity = (f: Fixture, projectId: string, ref: string) =>
 describe("T98 the current coordinator withdraws its own open question", () => {
   it("records a distinct withdrawal, keeps the question, releases its task and invents no answer", async () => {
     const { f, project, task, q } = await question();
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${q.ref}` });
     const receipt = { state: "uncertain" as const, op: "old", coordinatorThreadId: "coordinator", detail: "Lost native reply" };
     f.store.updateDecision(project.id, q.num, { notification: receipt });
 
     const result = await tool(f, withdraw(q.ref));
-    expect(result).toMatchObject({ ref: q.ref, status: "withdrawn", madeBy: null, tasks: [{ ref: task.ref, status: "planned" }] });
+    expect(result).toMatchObject({ ref: q.ref, status: "withdrawn", madeBy: null, });
     expect(result.answer).toBeUndefined();
 
     const stored = f.store.decisionItem(project.id, q.num)!;
@@ -48,7 +47,6 @@ describe("T98 the current coordinator withdraws its own open question", () => {
       body: { question: "Which component kit?", context: "The kit choice blocks the form work.", recommendation: "Base UI", options: [{ label: "Base UI" }, { label: "Radix" }] } });
     expect(stored.body).not.toHaveProperty("answer");
     expect(stored.body.resolution).toEqual({ note: reason, at: expect.any(Number), withdrawnBy: coordinator });
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "planned", progress: `The coordinator withdrew ${q.ref}` });
     expect(activity(f, project.id, q.ref)).toHaveLength(1);
     expect(activity(f, project.id, q.ref)[0]!.summary).toContain(reason);
     expect(f.send).not.toHaveBeenCalled();
@@ -76,13 +74,10 @@ describe("T98 the current coordinator withdraws its own open question", () => {
     const { f, project, task, q } = await question();
     const first = await tool(f, withdraw(q.ref));
     // The task moves on after the release; a repeat must not touch it again.
-    f.store.updateTask(project.id, task.num, { status: "in_progress", progress: "Worker started" });
     const again = await tool(f, withdraw(q.ref));
     // Same saved record; tasks report their current state, which has moved on since.
     expect({ ...again, tasks: null }).toEqual({ ...first, tasks: null });
-    expect(again.tasks).toEqual([{ ref: task.ref, status: "in_progress", progress: "Worker started" }]);
     expect(activity(f, project.id, q.ref)).toHaveLength(1);
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", progress: "Worker started" });
     const other = await refused(f, withdraw(q.ref, "Another reason"));
     expect(other).toMatch(/already withdrawn/);
     expect(other).toContain(reason);
@@ -135,7 +130,6 @@ describe("T98 protected callers and records", () => {
     await expect(f.harness.callRpc("command", { projectId: project.id, command: { action: "question-withdraw", decision: q.ref, reason } })).rejects.toThrow(/coordinator/);
     expect((await cli(f, withdraw(q.ref), null, project.id)).exitCode).toBe(1);
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "active" });
-    expect(f.store.task(project.id, task.num)?.status).toBe("blocked");
   });
 
   it("a former coordinator cannot withdraw, and its replacement cannot withdraw the predecessor's question", async () => {
@@ -147,7 +141,6 @@ describe("T98 protected callers and records", () => {
     expect(message).toMatch(/recorded by/);
     expect((await cli(f, withdraw(q.ref), "replacement", project.id)).exitCode).toBe(1);
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "active" });
-    expect(f.store.task(project.id, task.num)?.status).toBe("blocked");
     // The replacement's own question stays withdrawable.
     const own = f.service.recordQuestion(project.id, { title: "Own", humanAttention: "needs-opinion", question: "Ship Friday?", context: "Date" }, { ...coordinator, threadId: "replacement" });
     expect(await tool(f, withdraw(own.ref), "replacement")).toMatchObject({ status: "withdrawn" });
@@ -163,9 +156,8 @@ describe("T98 protected callers and records", () => {
     f.service.closeQuestion(project.id, closed.ref, "Done in chat");
     expect(await refused(f, withdraw(closed.ref))).toMatch(/user closed it/);
     expect(f.store.decisionItem(project.id, closed.num)).toMatchObject({ status: "closed", body: { resolution: { note: "Done in chat" } } });
-    const agent = await tool(f, { action: "decision", madeBy: "agent", description: "Keep native dispatch." });
-    const user = await tool(f, { action: "decision", madeBy: "user", description: "Erwin chose Linux." });
-    for (const ref of [agent.ref, user.ref]) expect(await refused(f, withdraw(ref))).toMatch(/not an open question/);
+    const user = f.service.recordDecision(project.id, { action: "decision", decision: { madeBy: "user", description: "Erwin chose Linux." } } as never, coordinator);
+    expect(await refused(f, withdraw(user.ref))).toMatch(/not an open question/);
     const asked = f.service.recordQuestion(project.id, { title: "User", humanAttention: "needs-opinion", question: "Mine?", context: "c" }, { author: "user", threadId: null, assignment: null });
     expect(await refused(f, withdraw(asked.ref))).toMatch(/recorded by/);
     expect(f.store.decisionItem(project.id, asked.num)?.status).toBe("active");
@@ -174,30 +166,7 @@ describe("T98 protected callers and records", () => {
 });
 
 describe("T98 task blocking and answer races", () => {
-  it("releases only this question: other open questions, unrelated blocks and delegation guards still hold", async () => {
-    const { f, project, task, q } = await question();
-    const second = f.service.recordQuestion(project.id, { title: "Scope", humanAttention: "needs-opinion", question: "Include archives?", context: "Scope", blocksTaskIds: [task.ref] }, coordinator);
-    const unrelated = f.task(project.id);
-    f.store.updateTask(project.id, unrelated.num, { status: "blocked", progress: "Waiting for upstream SDK" });
-    f.store.db.prepare("UPDATE knowledge SET blocks=? WHERE project_id=? AND num=?").run(JSON.stringify([task.num, unrelated.num]), project.id, q.num);
-    await tool(f, withdraw(q.ref));
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${second.ref}` });
-    expect(f.store.task(project.id, unrelated.num)).toMatchObject({ status: "blocked", progress: "Waiting for upstream SDK" });
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/waiting for the user's answer to a question/);
-    expect((await f.overview(project.id)).opinionNeeded.map(o => o.ref)).toEqual([second.ref]);
-  });
 
-  it("a task with running work resumes in progress, and its assignment and receipts are untouched", async () => {
-    const { f, project } = await projectFixture();
-    const task = f.task(project.id);
-    const [work] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
-    const q = f.service.recordQuestion(project.id, { title: "Mid", humanAttention: "needs-opinion", question: "Keep going?", context: "c", blocksTaskIds: [task.ref] }, coordinator);
-    expect(f.store.task(project.id, task.num)?.status).toBe("blocked");
-    const before = f.store.assignments(project.id).find(a => a.ref === work.assignment)!;
-    await tool(f, withdraw(q.ref));
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", nextCheckpoint: null });
-    expect(f.store.assignments(project.id).find(a => a.ref === work.assignment)).toEqual(before);
-  });
 
   it("an answer that lands first stands; withdrawal is refused without a second message or release", async () => {
     const { f, project, task, q } = await question();
@@ -205,13 +174,11 @@ describe("T98 task blocking and answer races", () => {
     f.send.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const answering = f.harness.callRpc("command", { projectId: project.id, command: { action: "answer", decision: q.ref, choice: "Radix", note: "" } });
     await vi.waitFor(() => expect(f.store.decisionItem(project.id, q.num)?.notification?.state).toBe("pending"));
-    f.store.updateTask(project.id, task.num, { status: "in_progress", progress: "Worker started" });
     expect(await refused(f, withdraw(q.ref))).toMatch(/already answered/);
     finish({ delivery: "sent", thread: f.threads.get("coordinator") });
     await answering;
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "answered", madeBy: "user", notification: { state: "sent" }, body: { answer: { choice: "Radix" } } });
     expect(f.store.decisionItem(project.id, q.num)!.body.resolution).toBeUndefined();
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", progress: "Worker started" });
     expect(f.send).toHaveBeenCalledTimes(1);
   });
 
@@ -223,8 +190,7 @@ describe("T98 task blocking and answer races", () => {
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     const chat = await refused(f, { action: "answer", ref: q.ref, choice: "Radix" }, worker.threadId!);
     expect(chat).toContain(reason);
-    expect(chat).toContain('initiative_decision {"action":"user-choice","description":"<the user\'s choice>"}');
-    expect(await refused(f, { action: "decision", madeBy: "user", description: "x", supersedes: q.ref })).toMatch(/withdrawn/);
+    expect(chat).toContain('initiative_rule {"action":"add","text":"<the user\'s choice>"}');
     await expect(f.harness.callRpc("command", { projectId: project.id, command: { action: "question-close", decision: q.ref, note: "" } })).rejects.toThrow(/not an open question/);
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "withdrawn", madeBy: null });
     expect(f.store.decisionItem(project.id, q.num)!.body).not.toHaveProperty("answer");
@@ -250,12 +216,12 @@ describe("T98 A238 follow-ups", () => {
     // Agent and CLI recorders keep the actionable madeBy:user path.
     const recorded = await refused(f, { action: "answer", ref: q.ref, choice: "Radix" });
     expect(recorded).toContain(reason);
-    expect(recorded).toContain('{"action":"user-choice"');
+    expect(recorded).toContain('{"action":"add"');
     const agentCli = await cli(f, { action: "answer", ref: q.ref, choice: "Radix" }, "coordinator", project.id);
-    expect(agentCli.stderr).toContain('"action":"user-choice"');
+    expect(agentCli.stderr).toContain('initiative_rule {"action":"add"');
     // W188 (F5): the suggested call works as written once its placeholder is filled in.
-    const example = JSON.parse(/initiative_decision (\{.*?\})\./.exec(recorded)![1]!);
-    expect(await tool(f, { ...example, description: "Erwin chose Radix." })).toMatchObject({ madeBy: "user", status: "active" });
+    const example = JSON.parse(/initiative_rule (\{.*?\})(?:$|\.)/.exec(recorded)![1]!);
+    expect(JSON.parse(await f.harness.callAgentTool("initiative_rule", { ...example, text: "Use Radix." }, { threadId: "coordinator" }) as string)).toMatchObject({ rule: "R1" });
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "withdrawn", madeBy: null, notification: null });
     expect(f.store.decisionItem(project.id, q.num)!.body).not.toHaveProperty("answer");
     expect(f.send).not.toHaveBeenCalled();
@@ -303,6 +269,8 @@ describe("T98 published schema", () => {
     expect(schema.properties.ref.description).toMatch(/withdraw/);
     expect(schema.properties.reason).toMatchObject({ type: "string", maxLength: 2000 });
     expect(schema.properties.reason.description).toMatch(/withdraw/);
-    expect(record.description).toContain('{action:"withdraw",ref:"D12",reason}');
+    // v9: initiative_decision is a hidden alias for older sessions; initiative_question asks and withdraws.
+    const question = f.harness.registrations.agentTools.find(t => t.name === "initiative_question")! as { description: string };
+    expect(question.description).toContain('{withdraw:"D12",reason}');
   });
 });

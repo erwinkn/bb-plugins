@@ -4,9 +4,9 @@ import type { Store, WorkerRecord } from "./store";
 
 /**
  * T142: more work for an idle worker whose prompt cache has expired re-sends its whole context
- * as a cache write. Above a size, a fresh worker with the old one's report embedded is far
- * cheaper (W188 spent 356M tokens over 19 fix rounds), so the coordinator is refused, with the
- * numbers, and no agent can override it; the user's own sends still resume the worker. Running,
+ * as a cache write. Above a size, a fresh worker with the old one's report embedded is often
+ * cheaper (W188 spent 356M tokens over 19 fix rounds), so a lead is refused, with the numbers,
+ * unless it passes resumeCold:true (D529); the user's own sends are never refused. Running,
  * warm and small workers pass silently.
  *
  * Cache state comes from the Account Pooler (threads.cacheState): the cached prefix, when the
@@ -108,7 +108,7 @@ export function createColdCacheGuard(deps: {
   }
 
   return {
-    /** Why more work for this worker should go to a fresh one instead, or null to go ahead. */
+    /** What resuming this worker would rewrite, when it is large and cold; null to go ahead. */
     async check(worker: WorkerRecord): Promise<string | null> {
       const limit = deps.limit();
       if (limit <= 0 || !worker.threadId || worker.state === "retired") return null;
@@ -121,7 +121,7 @@ export function createColdCacheGuard(deps: {
       if (context === null || context <= limit) return null;
       // The worker may have started a turn while the Pooler answered.
       if (!await idle(threadId)) return null;
-      return `${worker.ref}'s cache is cold (last request ${duration(now - cache.lastRequestAt)} ago) and its context is ~${thousands(context)} tokens: resuming costs ~${thousands(context * cache.writeFactor)} tokens of cache rewrite. Spawn a fresh worker with handoffs:["${worker.ref}"] (its report is embedded). Agents cannot override this; only the user can resume ${worker.ref} from the dashboard.`;
+      return `${worker.ref}'s cache is cold (last request ${duration(now - cache.lastRequestAt)} ago) and its context is ~${thousands(context)} tokens: resuming it costs ~${thousands(context * cache.writeFactor)} tokens of cache rewrite.`;
     },
   };
 }

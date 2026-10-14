@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { MIGRATIONS, Store } from "../lib/store";
 import type { Brief } from "../lib/schema";
+import type { Cached, ChildPage } from "../lib/contract";
 
 export function memoryStore(start = 1_700_000_000_000) {
   const db = new Database(":memory:");
@@ -39,3 +40,16 @@ export const answersLikeServer =
     const answer = await command(input);
     return (input as { key?: string } | null)?.key ? { write: "done", answer } : answer;
   };
+
+/** childPage answers from the server's cache: ask again until its background read has landed. */
+export async function settledChildPage(
+  harness: { callRpc(method: string, input: unknown): Promise<unknown> },
+  input: { projectId: string; threadId: string; offset?: number },
+): Promise<Exclude<Cached<ChildPage>, { status: "loading" }>> {
+  for (let n = 0; n < 100; n++) {
+    const answer = (await harness.callRpc("childPage", input)) as Cached<ChildPage>;
+    if (answer.status !== "loading") return answer;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("childPage is still loading");
+}

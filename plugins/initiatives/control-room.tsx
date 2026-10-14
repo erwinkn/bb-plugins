@@ -11,17 +11,20 @@ import {
   type TextareaHTMLAttributes,
 } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
-import type { BlockerItem, InFlightItem, Overview, OpinionItem, TaskLink } from "./lib/overview";
+import type { BlockerItem, Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
 import { needsYouCount } from "./lib/blockers";
-import type { DecisionRecord } from "./lib/store";
+import { MAX_RULES, RULE_MAX_CHARACTERS } from "./lib/rules";
 import type { Command } from "./lib/commands";
-import type { projectsContract } from "./lib/contract";
+import type { Cached, ChildPage, projectsContract } from "./lib/contract";
+import { useData } from "./use-data";
+import { appReads } from "./lib/dashboard-data";
 import { UsagePage } from "./usage-view";
 import { useWrite } from "./write-status";
 import { WRITE_SLOW_MESSAGE } from "./lib/write-timeout";
 import "./control-room.css";
 
-export type Tab = "inbox" | "decisions" | "threads" | "tasks" | "prs" | "context" | "usage" | "log";
+/** Five tabs, then the three views behind ⋯ (D512, v9 §10). */
+export type Tab = "inbox" | "workers" | "prs" | "tasks" | "rules" | "activity" | "usage" | "archive";
 type Inventory = typeof projectsContract.inventory.output._output;
 type Run = (command: Command) => Promise<unknown>;
 const message = (error: unknown) =>
@@ -36,6 +39,7 @@ export const compactAge = (at: number) => {
         ? `${Math.floor(minutes / 60)}h`
         : `${Math.floor(minutes / 1440)}d`;
 };
+
 function Age({ at }: { at: number | null | undefined }) {
   return at == null ? null : (
     <time
@@ -83,6 +87,9 @@ const glyphs = {
   context: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h4",
   log: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
   usage: "M5 20V11M12 20V4M19 20v-6",
+  open: "M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4",
+  up: "M6 15l6-6 6 6",
+  edit: "M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16zM13.5 6.5l4 4",
   pr: "M6 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM6 15.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM6 8.5v7M18 15.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM18 15.5V9a3 3 0 0 0-3-3h-3M14.5 3.5 12 6l2.5 2.5",
 };
 function Glyph({ name }: { name: keyof typeof glyphs }) {
@@ -138,63 +145,6 @@ function Fold({
     </details>
   );
 }
-/**
- * In-flight assignments under each task they are for, in order of each task's first; taskless
- * ones stand alone. An assignment for T1 and T2 shows under both, so a task shows all its work.
- */
-const uniqueTasks = (tasks: TaskLink[]) => tasks.filter((t, i) => tasks.findIndex((u) => u.ref === t.ref) === i);
-function inFlightGroups(items: InFlightItem[]) {
-  const groups = new Map<string, { key: string; task: TaskLink | null; items: InFlightItem[] }>();
-  for (const a of items)
-    for (const task of a.tasks.length ? uniqueTasks(a.tasks) : [null]) {
-      const key = task?.ref ?? a.assignment;
-      const group = groups.get(key) ?? { key, task, items: [] };
-      group.items.push(a);
-      groups.set(key, group);
-    }
-  return [...groups.values()];
-}
-
-/** One in-flight assignment: its worker, age and state, and what the worker is doing. */
-function InFlightRow({ a, title, detail, run, openThread }: {
-  a: InFlightItem;
-  title: ReactNode;
-  /** The task's description, shown for a task's only assignment. */
-  detail?: string;
-  run: Run;
-  openThread: (threadId: string) => void;
-}) {
-  return (
-    <Fold
-      title={title}
-      meta={
-        <span className="cr-row-meta">
-          <span className="cr-task-owner">{a.owner.worker}</span>
-          <Age at={a.since} />
-          <span className="cr-task-state" title={a.state.replaceAll("_", " ")}>
-            {a.threadBusy ? "working" : a.state === "idle_no_report" ? "idle" : a.state}
-          </span>
-        </span>
-      }
-    >
-      {detail ? <p>{detail}</p> : null}
-      <p className="project-muted">
-        {a.owner.worker} {a.brief} · {a.assignment} · {a.state.replaceAll("_", " ")}
-        {a.threadBusy ? " · working" : ""}
-      </p>
-      {a.checkpoint ? <p className="project-meta" title={`Recorded by the coordinator from ${a.owner.worker}`}>Coordinator checkpoint</p> : null}
-      <p>{a.progress}</p>
-      <p>Next: {a.nextCheckpoint}</p>
-      {a.warnings.map((w) => (
-        <p key={w} className="project-note">
-          {w}
-        </p>
-      ))}
-      {a.owner.threadId ? <button onClick={() => openThread(a.owner.threadId!)}>Open work thread</button> : null}
-      <ReasonAction label="Cancel assignment" run={run} make={(reason) => ({ action: "assignment-stop", assignment: a.assignment, reason })} />
-    </Fold>
-  );
-}
 function Action({
   run,
   command,
@@ -235,16 +185,27 @@ function Action({
     </>
   );
 }
+/**
+ * What a Stop or a task cancel left running: the threads BB refused to stop and any it could not
+ * check (`notStopped`, `unverified` in the result). The Stop or cancel itself stands.
+ */
+export function stillRunning(result: unknown): string | null {
+  const { notStopped, unverified } = (result ?? {}) as { notStopped?: string[]; unverified?: string };
+  const parts = [notStopped?.length ? `not stopped: ${notStopped.join(", ")}` : null, unverified ? `not checked: ${unverified}` : null].filter(Boolean);
+  return parts.length ? `Some work may still run: ${parts.join("; ")}.` : null;
+}
 function ReasonAction({
   label,
   make,
   run,
   needsReason = true,
+  refusal,
 }: {
   label: string;
   make: (reason: string) => Command;
   run: Run;
   needsReason?: boolean;
+  refusal?: (result: unknown) => string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -266,7 +227,7 @@ function ReasonAction({
           )}
           <div className="project-actions">
             {!needsReason || reason.trim() ? (
-              <Action command={make(reason.trim())} run={run}>
+              <Action command={make(reason.trim())} run={run} refusal={refusal}>
                 Confirm {label.toLowerCase()}
               </Action>
             ) : (
@@ -282,18 +243,28 @@ function ReasonAction({
   );
 }
 // Secondary views carry a glyph used only once the narrowest strip needs room.
-const tabSpecs = [
+type TabSpec = readonly [Tab, string, keyof typeof glyphs | null];
+const mainTabs: readonly TabSpec[] = [
   ["inbox", "Inbox", null],
-  ["decisions", "Decisions", null],
-  ["threads", "Threads", null],
-  ["tasks", "Tasks", null],
+  ["workers", "Workers", null],
   ["prs", "PRs", "pr"],
-  ["context", "Context", "context"],
-  ["log", "Log", "log"],
+  ["tasks", "Tasks", null],
+  ["rules", "Rules", null],
+];
+/** Behind ⋯; the open one joins the strip so the reader sees where they are. */
+const moreTabs: readonly TabSpec[] = [
+  ["activity", "Activity", "log"],
   ["usage", "Usage", "usage"],
-] as const;
-export const isTab = (value: unknown): value is Tab => tabSpecs.some(([id]) => id === value);
+  ["archive", "Archive", "context"],
+];
+/** Views a remembered tab or an old route may still name, before v9's five tabs. */
+const formerTabs: Record<string, Tab> = { threads: "workers", decisions: "archive", context: "rules", log: "activity" };
+export const isTab = (value: unknown): value is Tab => [...mainTabs, ...moreTabs].some(([id]) => id === value);
+/** A tab from a stored or routed value, mapping the views v9 renamed; null when it names none. */
+export const toTab = (value: unknown): Tab | null =>
+  isTab(value) ? value : typeof value === "string" && Object.hasOwn(formerTabs, value) ? formerTabs[value]! : null;
 const TAB_LEVELS = 3;
+
 function Tabs({
   tab,
   change,
@@ -302,7 +273,7 @@ function Tabs({
   prefix,
   specs,
 }: {
-  specs: readonly (typeof tabSpecs)[number][];
+  specs: readonly TabSpec[];
   tab: Tab;
   change: (tab: Tab) => void;
   counts: Partial<Record<Tab, number>>;
@@ -398,12 +369,64 @@ function Tabs({
   );
 }
 
+/**
+ * A button that opens a small panel of controls below it. Escape and a press
+ * outside close it; `children` gets `close` for controls that finish at once.
+ */
+function Menu({
+  label,
+  trigger,
+  className,
+  align = "start",
+  children,
+}: {
+  label: string;
+  trigger: ReactNode;
+  className?: string;
+  align?: "start" | "end";
+  children: (close: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const keys = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      button.current?.focus();
+    };
+    const outside = (event: PointerEvent) => {
+      if (!wrap.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("keydown", keys);
+    document.addEventListener("pointerdown", outside);
+    return () => {
+      document.removeEventListener("keydown", keys);
+      document.removeEventListener("pointerdown", outside);
+    };
+  }, [open]);
+  return (
+    <div className="cr-menu-wrap" ref={wrap}>
+      <button ref={button} type="button" className={className} aria-label={label} aria-expanded={open} onClick={() => setOpen(!open)}>
+        {trigger}
+      </button>
+      {open ? (
+        <div className={`cr-menu cr-menu--${align}`} role="group" aria-label={label}>
+          {children(() => setOpen(false))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const FAILED_STATUSES = ["error", "failed", "missing", "deleted"];
+
 export function ControlRoom({
   overview: o,
   inventory,
   run,
   openThread,
-  newThread,
   refresh,
   notice,
   renderOpinion,
@@ -414,12 +437,15 @@ export function ControlRoom({
   initialTab = "inbox",
   detailNotice,
   readHandoff,
+  loadChildren,
   mergeQueue,
 }: {
   /** The merge queue tab: its open PR count and its view. */
   mergeQueue?: { count: number; view: ReactNode };
   /** The standard handoff text of a reported assignment, rendered from its stored report. */
   readHandoff?: (ref: string) => Promise<string | null>;
+  /** v9: one page of a thread's BB children, read live (childPage). */
+  loadChildren?: LoadChildren;
   onTab?: (tab: Tab) => void;
   /** The tab to open on (a route's or the remembered one); onTab hears it on mount. */
   initialTab?: Tab;
@@ -428,7 +454,6 @@ export function ControlRoom({
   inventory: Inventory;
   run: Run;
   openThread: (threadId: string) => void;
-  newThread: () => void;
   refresh: () => Promise<void>;
   notice?: ReactNode;
   renderOpinion: (item: OpinionItem) => ReactNode;
@@ -437,7 +462,6 @@ export function ControlRoom({
   newTask: ReactNode;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
-  const acceptDecisions = useAcceptAgentDecisions(o, run);
   const chooseTab = (value: Tab) => { setTab(value); onTab?.(value); };
   // Once, on mount: load what the opening tab needs.
   useEffect(() => { if (initialTab !== "inbox") onTab?.(initialTab); }, []);
@@ -449,37 +473,23 @@ export function ControlRoom({
     if (initialTab !== tab) chooseTab(initialTab);
   }, [initialTab]);
   const [replace, setReplace] = useState(false);
-  const [menu, setMenu] = useState(false);
-  const [coordinatorDetail, setCoordinatorDetail] = useState(false);
   const [editing, setEditing] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  // The worker open in the Workers tab's detail; the Tasks tab opens one too.
+  const [worker, setWorker] = useState<string | null>(null);
+  const showWorker = (ref: string) => { setWorker(ref); chooseTab("workers"); };
+  const repositories = useRef<HTMLElement>(null);
   useEffect(() => {
-    const keys = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenu(false);
-        setReplace(false);
-      }
-    };
-    const outside = (event: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node))
-        setMenu(false);
-    };
+    const keys = (event: KeyboardEvent) => { if (event.key === "Escape") setReplace(false); };
     document.addEventListener("keydown", keys);
-    document.addEventListener("pointerdown", outside);
-    return () => {
-      document.removeEventListener("keydown", keys);
-      document.removeEventListener("pointerdown", outside);
-    };
+    return () => document.removeEventListener("keydown", keys);
   }, []);
   const prefix = useId();
   const p = o.project;
-  const active = ["active", "starting", "stopping"].includes(
-    p.coordinatorStatus,
-  );
+  const failed = FAILED_STATUSES.includes(p.coordinatorStatus);
+  const active = ["active", "starting", "stopping"].includes(p.coordinatorStatus);
   const cState = `${p.coordinatorStatus}${p.paused ? "; Initiative paused" : ""}`;
   // Open questions and blocked reports wait on the user: shown before anything else.
   const needsYou = needsYouCount(o);
-  const unchecked = [...o.decisions].reverse().filter(pendingReview);
   // A dismissal leaves the Inbox, unless telling the coordinator did not go
   // through; so does an answered blocker once its card is gone (T132).
   const undeliveredState = (r: Receipt) => r?.state === "failed" || r?.state === "uncertain";
@@ -489,151 +499,84 @@ export function ControlRoom({
     d.blockerAnswer && !carded.has(d.ref) && (undeliveredState(d.notification) || undeliveredState(d.blockerAnswer.delivery)));
   // Messages BB is holding for members with nothing running to deliver them (T133).
   const held = o.notDelivered ?? [];
-  // A report's own row replaces the remaining row of the task it awaits.
-  const reported = new Set(o.awaitingAcceptance.flatMap((a) => a.tasks.map((t) => t.ref)));
-  const remaining = o.remaining.filter((t) => !(t.status === "awaiting_acceptance" && reported.has(t.ref)));
+  const inboxCount = o.opinionNeeded.length + o.blockers.length + undelivered.length + held.length;
+  const shownTabs = [
+    ...(mergeQueue ? mainTabs : mainTabs.filter(([id]) => id !== "prs")),
+    ...moreTabs.filter(([id]) => id === tab),
+  ];
   return (
     <div className="cr" data-component="ControlRoom">
       <div className="cr-sticky">
         <div className="cr-head">
           <span className="cr-mark" aria-hidden="true">{p.name.slice(0, 2).toLowerCase()}</span>
-          <strong className="cr-head-name">{p.name}</strong>
+          <Menu label={`${p.name}: Initiative menu`} className="cr-head-name" trigger={<><strong>{p.name}</strong><Glyph name="down" /></>}>
+            {(close) => (
+              <>
+                <Action run={run} command={{ action: "pause", paused: !p.paused }}>
+                  {p.paused ? "Resume" : "Pause"}
+                </Action>
+                <button onClick={() => { chooseTab("rules"); setEditing(true); close(); }}>Edit initiative</button>
+                <button
+                  onClick={() => {
+                    chooseTab("rules");
+                    close();
+                    requestAnimationFrame(() => repositories.current?.scrollIntoView?.({ block: "start" }));
+                  }}
+                >
+                  Repositories
+                </button>
+                <button onClick={() => { void refresh(); close(); }}>Refresh</button>
+                <ReasonAction label="Stop initiative work" make={(reason) => ({ action: "stop-work", reason })} run={run} />
+                <ReasonAction label="Archive initiative" needsReason={false} make={() => ({ action: "archive" })} run={run} />
+              </>
+            )}
+          </Menu>
+          <Menu
+            label={`Coordinator · ${cState}`}
+            className={`cr-chip${failed ? " cr-chip--error" : ""}`}
+            trigger={
+              <>
+                <span className={`project-dot project-dot--${active ? "live" : failed ? "attention" : "muted"}`} />
+                Coordinator<span className="cr-chip-status"> · {p.coordinatorStatus}</span>
+                <Glyph name="down" />
+              </>
+            }
+          >
+            {(close) => (
+              <>
+                <p className="cr-menu-meta" title={p.coordinatorHome?.path ?? undefined}>
+                  G{p.coordinatorGeneration} · {p.coordinatorProfile ?? "Profile unavailable"}
+                  {p.coordinatorHome?.path ? ` · ${p.coordinatorHome.path.split("/").filter(Boolean).at(-1)}` : ""}
+                </p>
+                {p.coordinatorHome?.mismatch ? <p className="cr-menu-meta">{p.coordinatorHome.mismatch}</p> : null}
+                {p.coordinatorThreadId ? (
+                  <button onClick={() => { openThread(p.coordinatorThreadId!); close(); }}>Open coordinator thread</button>
+                ) : null}
+                <button onClick={() => { setReplace(true); close(); }}>Replace coordinator</button>
+                <p className="cr-menu-meta">Stop a running turn with BB's native Stop control in its thread.</p>
+              </>
+            )}
+          </Menu>
           {needsYou ? (
             <button type="button" className="cr-needs-you" onClick={() => chooseTab("inbox")}>
               Needs you · {needsYou}
             </button>
           ) : null}
-          <div className="cr-menu-wrap" ref={menuRef}>
-            <button
-              className="cr-iconbtn"
-              aria-label="Initiative menu"
-              aria-expanded={menu}
-              onClick={() => setMenu(!menu)}
-            >
-              <Glyph name="menu" />
-            </button>
-            {menu ? (
-              <div
-                className="cr-menu"
-                role="group"
-                aria-label="Initiative controls"
-              >
-                <Action
-                  run={run}
-                  command={{ action: "pause", paused: !p.paused }}
-                >
-                  {p.paused ? "Resume" : "Pause"}
-                </Action>
-                <button
-                  onClick={() => {
-                    chooseTab("context");
-                    setEditing(true);
-                    setMenu(false);
-                  }}
-                >
-                  Edit initiative
-                </button>
-                <button
-                  onClick={() => {
-                    chooseTab("context");
-                    setMenu(false);
-                  }}
-                >
-                  Repositories
-                </button>
-                <button
-                  onClick={() => {
-                    void refresh();
-                    setMenu(false);
-                  }}
-                >
-                  Refresh
-                </button>
-                <ReasonAction
-                  label="Stop initiative work"
-                  make={(reason) => ({ action: "stop-work", reason })}
-                  run={run}
-                />
-                <ReasonAction
-                  label="Archive initiative"
-                  needsReason={false}
-                  make={() => ({ action: "archive" })}
-                  run={run}
-                />
-              </div>
-            ) : null}
-          </div>
         </div>
-        <div className={`cr-coordinator${["error", "failed", "missing", "deleted"].includes(p.coordinatorStatus) ? " cr-coordinator--error" : ""}`}>
-        <div className="cr-coordinator-row">
-          <button
-            className="cr-coordinator-title"
-            aria-label={`Coordinator: ${cState}. Open thread`}
-            title={`Coordinator ${cState}`}
-            onClick={() => p.coordinatorThreadId && openThread(p.coordinatorThreadId)}
-          >
-            <span
-              className={`project-dot project-dot--${active ? "live" : ["error", "failed", "missing", "deleted"].includes(p.coordinatorStatus) ? "attention" : "muted"}`}
-            />
-            <strong>Coordinator</strong>
-          </button>
-          <button className="cr-iconbtn cr-caret" aria-label="Coordinator details" aria-expanded={coordinatorDetail} onClick={() => setCoordinatorDetail(!coordinatorDetail)}><Glyph name="down" /></button>
-          <button
-            className={`cr-iconbtn cr-replace${["error", "failed"].includes(p.coordinatorStatus) ? " cr-replace--error" : ""}`}
-            aria-label="Replace coordinator"
-            title="Replace coordinator"
-            aria-expanded={replace}
-            onClick={() => {
-              setReplace(!replace);
-              setMenu(false);
-            }}
-          >
-            <Glyph name="replace" />
-          </button>
-
-        </div>
-        <p className="cr-coordinator-meta" title={p.coordinatorHome?.path ?? undefined}>
-          {p.coordinatorProfile ?? "Profile unavailable"}{p.coordinatorHome?.path ? ` · ${p.coordinatorHome.path.split("/").filter(Boolean).at(-1)}` : ""}
-        </p>
-        </div>
-        {coordinatorDetail ? (
-          <div className="cr-coordinator-detail">
-            <p>
-              G{p.coordinatorGeneration} · {cState}
-            </p>
-            {p.coordinatorThreadId ? (
-              <button onClick={() => openThread(p.coordinatorThreadId!)}>
-                Open coordinator thread
-              </button>
-            ) : null}
-            {p.coordinatorHome ? (
-              <p className="project-meta">
-                {p.coordinatorHome.name} ·{" "}
-                {p.coordinatorHome.hostId ?? "host unknown"}
-                <br />
-                <code>{p.coordinatorHome.path ?? "Path unknown"}</code>
-                {p.coordinatorHome.mismatch ? (
-                  <>
-                    <br />
-                    {p.coordinatorHome.mismatch}
-                  </>
-                ) : null}
-              </p>
-            ) : null}
-            <p className="project-meta">
-              Stop a running turn with BB's native Stop control in its thread.
-            </p>
-          </div>
-        ) : null}
-        <div hidden={replace}>
+        <div className="cr-tabrow" hidden={replace}>
           <Tabs
-            specs={mergeQueue ? tabSpecs : tabSpecs.filter(([id]) => id !== "prs")}
+            specs={shownTabs}
             tab={tab}
             change={chooseTab}
             prefix={prefix}
-            counts={{ inbox: o.opinionNeeded.length + o.blockers.length + unchecked.length, prs: mergeQueue?.count }}
+            counts={{ inbox: inboxCount, workers: o.workers.current.length, prs: mergeQueue?.count }}
             urgent={needsYou > 0}
           />
+          <Menu label="More views" align="end" className="cr-iconbtn" trigger={<Glyph name="menu" />}>
+            {(close) => moreTabs.map(([id, label]) => (
+              <button key={id} aria-current={tab === id || undefined} onClick={() => { chooseTab(id); close(); }}>{label}</button>
+            ))}
+          </Menu>
         </div>
       </div>
       <div className="cr-body">
@@ -762,7 +705,8 @@ export function ControlRoom({
           <KeepTab current={tab} id="inbox">
             <div className="cr-inbox">
               {o.opinionNeeded.length ? (
-                <section aria-label="Needs your input" onKeyDown={moveBetweenFolds}>
+                <section aria-label="Questions" onKeyDown={moveBetweenFolds}>
+                  <h2 className="cr-section-heading">Questions <span className="cr-count">{o.opinionNeeded.length}</span></h2>
                   {o.opinionNeeded.map((item, index) => (
                     <Fold group={`${prefix}-inbox`}
                       key={item.ref}
@@ -782,12 +726,13 @@ export function ControlRoom({
               ) : null}
               {o.blockers.length ? (
                 <section aria-label="Blocked workers" onKeyDown={moveBetweenFolds}>
+                  <h2 className="cr-section-heading">Blocked workers <span className="cr-count">{o.blockers.length}</span></h2>
                   {o.blockers.map((item, index) => (
                     <Fold group={`${prefix}-inbox`}
                       key={item.assignment}
                       title={
                         <>
-                          <span className="cr-kind" aria-hidden="true">!</span>
+                          <span className="cr-kind cr-kind--blocked" aria-hidden="true">!</span>
                           {item.owner.label} is blocked
                         </>
                       }
@@ -805,285 +750,70 @@ export function ControlRoom({
                 </section>
               ) : null}
               {undelivered.length || held.length ? <section aria-label="Not delivered">
-                <h2 className="cr-section-heading">Not delivered</h2>
+                <h2 className="cr-section-heading">Not delivered <span className="cr-count">{undelivered.length + held.length}</span></h2>
                 {undelivered.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
                 {held.map(m => <HeldMessage key={m.id} m={m} run={run} openThread={openThread} />)}
               </section> : null}
-              {unchecked.length || acceptDecisions.eligible ? <section aria-label="Agent decisions to check">
-                <div className="cr-inbox-decision-head">
-                  <h2 className="cr-section-heading">Agent decisions to check</h2>
-                  <AcceptAgentDecisions state={acceptDecisions} />
-                </div>
-                {unchecked.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
-              </section> : null}
-              {!o.opinionNeeded.length && !o.blockers.length && !unchecked.length && !undelivered.length && !held.length ? (
-                <p className="cr-empty">You’re up to date.</p>
-              ) : null}
+              {!inboxCount ? <p className="cr-empty">You’re up to date.</p> : null}
             </div>
           </KeepTab>
-          <KeepTab current={tab} id="decisions">
-            <Decisions o={o} run={run} acceptDecisions={acceptDecisions} />
-          </KeepTab>
-          {detailNotice && ["threads", "usage", "log"].includes(tab) ? <p role="status" className="project-muted">{detailNotice}</p> : null}
-          <KeepTab current={tab} id="threads">
-            <Threads
-              o={o}
-              inventory={inventory}
-              run={run}
-              readHandoff={readHandoff}
-              openThread={openThread}
-              newThread={newThread}
-            />
+          {detailNotice && ["workers", "usage", "activity"].includes(tab) ? <p role="status" className="project-muted">{detailNotice}</p> : null}
+          <KeepTab current={tab} id="workers">
+            <Workers o={o} run={run} openThread={openThread} readHandoff={readHandoff} loadChildren={loadChildren} selected={worker} select={setWorker} />
           </KeepTab>
           <KeepTab current={tab} id="tasks">
-            <>
-              {newTask}
-              <section aria-label="In flight">
-                {inFlightGroups(o.inFlight).map(({ key, task, items }) => {
-                  const [a] = items as [InFlightItem];
-                  // Each assignment is named by its own brief (W262), never its worker's current label.
-                  if (!task) return <InFlightRow key={key} a={a} title={a.brief} detail={a.outcome} run={run} openThread={openThread} />;
-                  const head = <><span className="cr-ref">{task.ref}</span>{task.title}</>;
-                  // T143: a task with several assignments is one row, with a line per assignment.
-                  if (items.length === 1)
-                    return <InFlightRow key={key} a={a} title={<>{head}<span className="cr-inflight-brief">{a.brief}</span></>} detail={a.outcome} run={run} openThread={openThread} />;
-                  return (
-                    <div key={key} className="cr-inflight-group" role="group" aria-label={`${task.ref}: ${items.length} assignments`}>
-                      <div className="cr-inflight-task" title={items.find((i) => i.role === "work" && i.tasks[0]?.ref === task.ref)?.outcome}>{head}</div>
-                      {items.map((item) => <InFlightRow key={item.assignment} a={item} title={item.brief} run={run} openThread={openThread} />)}
-                    </div>
-                  );
-                })}
-              </section>
-              <section aria-label="Reported">
-                {o.awaitingAcceptance.map((a) => (
-                  <Fold
-                    key={a.assignment}
-                    title={
-                      <>
-                        <span className="cr-ref">{a.tasks.map((t) => t.ref).join(", ")}</span>
-                        {a.tasks.map((t) => t.title).join(" · ") || a.owner.label}
-                      </>
-                    }
-                    meta={
-                      <span className="cr-row-meta">
-                        <span className="cr-task-owner">{a.owner.worker}</span>
-                        <Age at={a.reportedAt} />
-                        <span className={`cr-task-state${a.outcome === "succeeded" ? "" : " cr-task-state--warn"}`} title={`Report ${a.assignment} · ${a.outcome}`}>
-                          {a.outcome === "succeeded" ? "reported" : a.outcome}
-                        </span>
-                      </span>
-                    }
-                  >
-                    {a.checkpoint ? <p className="project-meta" title={`Recorded by the coordinator from ${a.owner.worker}`}>Coordinator checkpoint</p> : null}
-                    <p>{a.summary}</p>
-                    {a.finalMessage && a.finalMessage !== a.summary ? <FinalMessage text={a.finalMessage} /> : null}
-                    <p className="project-meta">
-                      {a.owner.worker} · {a.assignment} · {a.outcome === "succeeded" ? "done" : a.outcome}
-                    </p>
-                    {a.owner.threadId ? (
-                      <button onClick={() => openThread(a.owner.threadId!)}>
-                        Open report thread
-                      </button>
-                    ) : null}
-                    <div className="project-actions">
-                      {a.role === "work"
-                        ? a.tasks.map((t) => (
-                            <Action key={t.ref} run={run} command={{ action: "task-close", task: t.ref, outcome: "done" }}>
-                              Close {t.ref}
-                            </Action>
-                          ))
-                        : null}
-                      <ReasonAction
-                        label={`Retire ${a.owner.worker}`}
-                        run={run}
-                        make={(reason) => ({ action: "worker-retire", worker: a.owner.worker, reason })}
-                      />
-                    </div>
-                  </Fold>
-                ))}
-              </section>
-              <section aria-label="Remaining">
-                {remaining.map((t) => (
-                  <Fold
-                    key={t.ref}
-                    title={
-                      <>
-                        <span className="cr-ref">{t.ref}</span>
-                        {t.title}
-                      </>
-                    }
-                    meta={
-                      <span className="cr-row-meta">
-                        <Age at={t.updatedAt} />
-                        <span
-                          className="cr-task-state"
-                          title={t.status.replaceAll("_", " ")}
-                        >
-                          {t.status === "awaiting_acceptance"
-                            ? "reported"
-                            : t.status === "in_progress"
-                              ? "working"
-                              : t.status}
-                        </span>
-                        <span
-                          className="cr-priority"
-                          title={`Priority ${t.priority}`}
-                        >
-                          P{t.priority}
-                        </span>
-                      </span>
-                    }
-                  >
-                    <p className="project-meta">
-                      {t.status.replaceAll("_", " ")}
-                    </p>
-                    <p>{t.summary}</p>
-                    <p>{t.why}</p>
-                    <TaskEdit task={t} run={run} />
-                    <Action run={run} command={{ action: "task-close", task: t.ref, outcome: "done" }}>
-                      Close as done
-                    </Action>
-                    <ReasonAction
-                      label="Cancel task"
-                      run={run}
-                      make={(reason) => ({
-                        action: "task-cancel",
-                        task: t.ref,
-                        reason,
-                      })}
-                    />
-                  </Fold>
-                ))}
-              </section>
-              {!remaining.length && !o.inFlight.length && !o.awaitingAcceptance.length ? (
-                <p className="cr-empty">No remaining work.</p>
-              ) : null}
-            </>
+            <Tasks o={o} run={run} newTask={newTask} showWorker={showWorker} />
           </KeepTab>
           {mergeQueue ? <KeepTab current={tab} id="prs">{mergeQueue.view}</KeepTab> : null}
-          <KeepTab current={tab} id="context">
+          <KeepTab current={tab} id="rules">
             <>
-              <div className="cr-toolbar">
-                <span className="cr-age" title="Initiative last updated"><Age at={p.updatedAt} /></span>
-                <button
-                  onClick={() => setEditing(!editing)}
-                  aria-expanded={editing}
-                >
-                  Edit
-                </button>
-              </div>
-              {editing ? (
-                renderContext(() => setEditing(false))
-              ) : (
-                <div className="cr-context-notes">
-                  <h3>Purpose</h3>
-                  <Markdown content={p.objective} />
-                  {p.context.vision ? (
-                    <>
-                      <h3>Vision</h3>
-                      <Markdown content={p.context.vision} />
-                    </>
-                  ) : null}
-                  {(["objectives", "ideas"] as const).map((key) =>
-                    p.context[key].length ? (
-                      <div key={key}>
-                        <h3>{key === "ideas" ? "Ideas" : "Objectives"}</h3>
-                        <ul>
-                          {p.context[key].map((text, index) => (
-                            <li key={index}>{text}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null,
-                  )}
-                </div>
-              )}
-              <Repositories o={o} inventory={inventory} run={run} />
+              <section className="cr-card cr-purpose" aria-label="Purpose and objectives">
+                {editing ? (
+                  renderContext(() => setEditing(false))
+                ) : (
+                  <>
+                    <div className="cr-context-notes">
+                      <h3>Purpose</h3>
+                      <Markdown content={p.objective} />
+                      {p.context.vision ? (
+                        <>
+                          <h3>Vision</h3>
+                          <Markdown content={p.context.vision} />
+                        </>
+                      ) : null}
+                      {(["objectives", "ideas"] as const).map((key) =>
+                        p.context[key].length ? (
+                          <div key={key}>
+                            <h3>{key === "ideas" ? "Ideas" : "Objectives"}</h3>
+                            <ul>
+                              {p.context[key].map((text, index) => (
+                                <li key={index}>{text}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null,
+                      )}
+                    </div>
+                    <button className="cr-link" onClick={() => setEditing(true)}>
+                      Edit purpose and objectives
+                    </button>
+                  </>
+                )}
+              </section>
+              <Rules o={o} run={run} openArchive={() => chooseTab("archive")} />
+              <section ref={repositories} className="cr-repositories">
+                <Repositories o={o} inventory={inventory} run={run} />
+              </section>
             </>
           </KeepTab>
           <KeepTab current={tab} id="usage">
             {o.detailsLoaded === false ? <p className="project-muted">Loading usage…</p> : <UsagePage usage={o.usage} openThread={openThread} />}
           </KeepTab>
-          <KeepTab current={tab} id="log">
-            <>
-              <h2 className="cr-section-heading">Updates</h2>
-              {o.updates.length ? (
-                o.updates.map((u) => (
-                  <Fold
-                    key={u.ref}
-                    title={u.summary}
-                    meta={<Age at={u.createdAt} />}
-                  >
-                    <Markdown content={u.body} />
-                  </Fold>
-                ))
-              ) : (
-                <p className="cr-empty">No explicit updates recorded.</p>
-              )}
-              <UpdateForm run={run} />
-              <h2 className="cr-section-heading">Recent activity</h2>
-              {o.activity.map((a, index) => (
-                <div key={index} className="cr-activity">
-                  <Age at={a.at} />
-                  <span>{a.summary}</span>
-                </div>
-              ))}
-              <h2 className="cr-section-heading">Coordinator history</h2>
-              {o.usage.coordinator.generations.map((g) => (
-                <Fold
-                  key={g.threadId}
-                  title={
-                    <>
-                      <span className="cr-gen">G{g.generation ?? "?"}</span>
-                      Coordinator
-                    </>
-                  }
-                >
-                  <button onClick={() => openThread(g.threadId)}>
-                    Open coordinator generation
-                  </button>
-                  <p className="project-meta">
-                    {g.threadId === p.coordinatorThreadId
-                      ? "Current"
-                      : "Former"}{" "}
-                    · {g.runtime}
-                  </p>
-                  <p>
-                    {
-                      p.formerCoordinators.find(
-                        (f) => f.threadId === g.threadId,
-                      )?.reason
-                    }
-                  </p>
-                </Fold>
-              ))}
-              <h2 className="cr-section-heading">Completed tasks</h2>
-              {o.historyLoaded === false ? <p className="project-muted">Loading completed tasks…</p> : null}
-              {o.done.map((t) => (
-                <Fold
-                  key={t.ref}
-                  title={
-                    <>
-                      <span className="cr-ref">{t.ref}</span>
-                      {t.title}
-                    </>
-                  }
-                  meta={<Age at={t.updatedAt} />}
-                >
-                  <p>{t.result ?? "Result not recorded."}</p>
-                  <ReasonAction
-                    label="Reopen task"
-                    run={run}
-                    make={(reason) => ({
-                      action: "task-reopen",
-                      task: t.ref,
-                      reason,
-                    })}
-                  />
-                </Fold>
-              ))}
-            </>
+          <KeepTab current={tab} id="activity">
+            <Activity o={o} run={run} openThread={openThread} />
+          </KeepTab>
+          <KeepTab current={tab} id="archive">
+            <Archive o={o} run={run} />
           </KeepTab>
         </div>
       </div>
@@ -1106,25 +836,48 @@ function KeepTab({
   return seen.current ? <div hidden={current !== id}>{children}</div> : null;
 }
 
-// Presentation only: retained accounting records remain in Usage.
-function currentThread(
-  t: Overview["memberThreads"][number],
-  coordinator: string | null,
-) {
+/** The old Log: updates, recent activity and every coordinator generation. */
+function Activity({ o, run, openThread }: { o: Overview; run: Run; openThread: (threadId: string) => void }) {
+  const p = o.project;
   return (
-    t.nativeStatus !== "deleted" &&
-    (t.threadId === coordinator ||
-      (!t.retained && t.nativeStatus !== "archived"))
-  );
-}
-function historicalThread(
-  t: Overview["memberThreads"][number],
-  coordinator: string | null,
-) {
-  return (
-    t.threadId !== coordinator &&
-    t.nativeStatus !== "deleted" &&
-    (t.retained || t.nativeStatus === "archived")
+    <>
+      <h2 className="cr-section-heading">Updates</h2>
+      {o.updates.length ? (
+        o.updates.map((u) => (
+          <Fold key={u.ref} title={u.summary} meta={<Age at={u.createdAt} />}>
+            <Markdown content={u.body} />
+          </Fold>
+        ))
+      ) : (
+        <p className="cr-empty">No explicit updates recorded.</p>
+      )}
+      <UpdateForm run={run} />
+      <h2 className="cr-section-heading">Recent activity</h2>
+      {o.activity.map((a, index) => (
+        <div key={index} className="cr-activity">
+          <Age at={a.at} />
+          <span>{a.summary}</span>
+        </div>
+      ))}
+      <h2 className="cr-section-heading">Coordinator history</h2>
+      {o.usage.coordinator.generations.map((g) => (
+        <Fold
+          key={g.threadId}
+          title={
+            <>
+              <span className="cr-gen">G{g.generation ?? "?"}</span>
+              Coordinator
+            </>
+          }
+        >
+          <button onClick={() => openThread(g.threadId)}>Open coordinator generation</button>
+          <p className="project-meta">
+            {g.threadId === p.coordinatorThreadId ? "Current" : "Former"} · {g.runtime}
+          </p>
+          <p>{p.formerCoordinators.find((f) => f.threadId === g.threadId)?.reason}</p>
+        </Fold>
+      ))}
+    </>
   );
 }
 
@@ -1156,188 +909,355 @@ function HandoffActions({ assignment, readHandoff }: { assignment: string; readH
   );
 }
 
-function Threads({
+// ---- Workers (v9 §10.1): the one place every worker and its child threads are reached.
+
+type WorkerGroup = "needs" | "working" | "waiting" | "done" | "earlier";
+/** A worker as the Workers tab shows it: its group, and why, in words from its records. */
+interface WorkerView {
+  w: WorkerItem;
+  group: WorkerGroup;
+  /** Amber (warn) or red (error) rows say why from recorded text. */
+  tone: "warn" | "error" | null;
+  status: string;
+  why: string;
+  /** What its descendants are doing, as the server's cache knows it. */
+  waiting: WorkerWaiting | null;
+  /** When its open work started, or when it last reported. */
+  since: number | null;
+}
+const BUSY_THREAD = new Set(["active", "starting", "stopping"]);
+const FAILED_THREAD = new Set(["error", "failed"]);
+const firstLine = (text: string) => text.trim().split("\n")[0]!.trim();
+const childStatus = (status: string) => (status === "active" ? "running" : status);
+/** Until the cache has listed its whole tree, a quiet-looking worker may still be waiting on a child. */
+const UNCHECKED = " · child threads not checked yet";
+
+function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: number | null): WorkerView {
+  const report = w.latestReport;
+  const live = waiting?.on ?? null;
+  const unchecked = waiting && !waiting.checked ? UNCHECKED : "";
+  const base = { w, waiting, since: openSince ?? w.since ?? report?.reportedAt ?? null, tone: null };
+  if (w.state === "retired")
+    return { ...base, group: "earlier", status: "Retired", why: report ? `Last report: ${report.outcome} · ${firstLine(report.summary)}` : "Retired" };
+  if (FAILED_THREAD.has(w.runtime))
+    return { ...base, group: "needs", tone: "error", status: "Thread failed", why: `Thread failed${w.stopReason ? `: ${w.stopReason}` : ""}` };
+  if (BUSY_THREAD.has(w.runtime))
+    return { ...base, group: "working", status: "Running", why: `Running · ${w.area}` };
+  if (live) {
+    const line = `Waiting on “${live.title}” (${childStatus(live.running)} ${compactAge(live.since)})`;
+    return { ...base, group: "waiting", status: line, why: line };
+  }
+  if (!w.open && report?.outcome === "done")
+    return { ...base, group: "done", status: "Reported done", why: `Reported done · ${firstLine(report.summary)}${unchecked}` };
+  if (!w.open && report) {
+    const word = report.outcome === "failed" ? "Failed" : "Blocked";
+    return { ...base, group: "needs", tone: report.outcome === "failed" ? "error" : "warn", status: word, why: `${word}: ${firstLine(report.question ?? report.summary)}` };
+  }
+  const idle = w.stopReason ? `Stopped: ${w.stopReason}` : `Idle without a report${w.runtime === "idle" ? "" : ` · thread ${w.runtime}`}${unchecked}`;
+  return { ...base, group: "needs", tone: "warn", status: idle, why: idle };
+}
+
+const prNumber = (url: string) => /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
+/** "anthropic / claude-opus-5-5 / high / …" → "Opus 5.5"; other models keep their id. */
+export function modelName(profile: string | null) {
+  if (!profile) return null;
+  const parts = profile.split(" / ");
+  const model = parts[1] ?? parts[0]!;
+  const known = /^(?:claude-)?(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?/i.exec(model);
+  return known ? `${known[1]![0]!.toUpperCase()}${known[1]!.slice(1)} ${known[2]}${known[3] ? `.${known[3]}` : ""}` : model;
+}
+export const tokenCount = (n: number) =>
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+
+const GROUPS: [WorkerGroup, string][] = [
+  ["needs", "Needs you"],
+  ["working", "Working"],
+  ["waiting", "Waiting"],
+  ["done", "Done · PR waiting"],
+];
+
+function Workers({
   o,
-  inventory,
   run,
-  readHandoff,
   openThread,
-  newThread,
+  readHandoff,
+  loadChildren,
+  selected,
+  select,
 }: {
   o: Overview;
-  inventory: Inventory;
   run: Run;
+  openThread: (threadId: string) => void;
   readHandoff?: (ref: string) => Promise<string | null>;
-  openThread: (id: string) => void;
-  newThread: () => void;
+  loadChildren?: LoadChildren;
+  selected: string | null;
+  select: (ref: string | null) => void;
 }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [retained, setRetained] = useState(false);
-  const visible = o.memberThreads.filter((t) =>
-    currentThread(t, o.project.coordinatorThreadId),
+  const since = new Map<string, number>();
+  for (const a of o.inFlight) since.set(a.owner.worker, Math.min(since.get(a.owner.worker) ?? Infinity, a.since));
+  const views = [...o.workers.current, ...o.workers.retired].map((w) =>
+    workerView(w, o.workerWaiting?.[w.ref] ?? null, since.get(w.ref) ?? null));
+  const by = (group: WorkerGroup) => views.filter((v) => v.group === group);
+  const count = (group: WorkerGroup) => by(group).length;
+  const tokens = o.workers.current.reduce((sum, w) => sum + (w.tokens ?? 0), 0);
+  const summary = [
+    count("working") ? `${count("working")} working` : null,
+    count("waiting") ? `${count("waiting")} waiting on a child` : null,
+    count("needs") ? `${count("needs")} need${count("needs") === 1 ? "s" : ""} you` : null,
+    count("done") ? `${count("done")} done` : null,
+    tokens ? `${tokenCount(tokens)} tokens` : null,
+  ].filter(Boolean).join(" · ");
+  const open = views.find((v) => v.w.ref === selected) ?? null;
+  const row = (v: WorkerView) => (
+    <WorkerRow key={v.w.ref} projectId={o.project.id} v={v} selected={v.w.ref === selected} select={() => select(v.w.ref)} openThread={openThread} loadChildren={loadChildren} />
   );
-  const knownIds = new Set(visible.map((t) => t.threadId));
-  const root = o.project.coordinatorThreadId;
-  const visited = new Set<string>();
-  const rows: { thread: Overview["memberThreads"][number]; depth: number }[] =
-    [];
-  const walk = (thread: Overview["memberThreads"][number], depth: number) => {
-    if (visited.has(thread.threadId)) return;
-    visited.add(thread.threadId);
-    rows.push({ thread, depth });
-    visible
-      .filter((t) => t.parentThreadId === thread.threadId)
-      .forEach((t) => walk(t, depth + 1));
-  };
-  const coordinator = visible.find((t) => t.threadId === root);
-  if (coordinator) walk(coordinator, 0);
-  // Unknown/disconnected parents stay in the unified list, with honest details.
-  visible
-    .filter((t) => !knownIds.has(t.parentThreadId ?? ""))
-    .forEach((t) => walk(t, t.threadId === root ? 0 : 1));
-  visible.forEach((t) => walk(t, 1));
-  const render = (t: Overview["memberThreads"][number], depth: number) => {
-    const worker = [...o.workers.current, ...o.workers.retired].find(
-      (w) => w.ref === `W${t.workerNum}`,
-    );
-    const label = t.ownership === "coordinator" ? "Coordinator" : t.label;
-    const title = `${t.ownership === "worker" ? `W${t.workerNum} ` : ""}${label}`;
-    const env = inventory
-      .flatMap((p) => p.environments)
-      .find((e) => e.id === t.environmentId);
-    const work = o.inFlight.filter((a) => a.owner.threadId === t.threadId);
-    return (
-      <div
-        key={t.threadId}
-        className="cr-thread"
-        style={{ "--depth": Math.min(depth, 5) } as React.CSSProperties}
-      >
-        <div className="cr-thread-line">
-          <button
-            className="cr-thread-main"
-            title={`Open ${title}`}
-            aria-label={`Open ${title}`}
-            onClick={() => openThread(t.threadId)}
-          >
-            <span
-              className={`project-dot project-dot--${["active", "starting", "stopping"].includes(t.runtime) ? "live" : ["failed", "error"].includes(t.runtime) ? "attention" : "muted"}`}
-              title={t.runtime}
-            />
-            {t.ownership === "worker" ? (
-              <span className="cr-ref">W{t.workerNum}{worker?.kind ? <small className="cr-kind"> {worker.kind}</small> : null}</span>
-            ) : null}
-            <span className="cr-thread-name">
-              <b>{label}</b>
-              <small>
-                {t.ownership === "user" ? "Yours · " : ""}
-                {work
-                  .map((a) => a.tasks.map((task) => task.ref).join(", "))
-                  .join(" · ") || t.runtime}
-              </small>
-            </span>
-            {t.ownership === "coordinator" && t.generation !== null ? (
-              <span className="cr-gen">G{t.generation}</span>
-            ) : null}
-          </button>
-          <button
-            className="cr-iconbtn cr-caret"
-            aria-label={`Details for ${title}`}
-            aria-expanded={expanded === t.threadId}
-            onClick={() =>
-              setExpanded(expanded === t.threadId ? null : t.threadId)
-            }
-          >
-            <Glyph name="down" />
-          </button>
-        </div>
-        {expanded === t.threadId ? (
-          <div className="cr-thread-detail">
-            <p className="project-meta">
-              {t.runtime} ·{" "}
-              {t.ownership === "user"
-                ? "User-owned conversation"
-                : (worker?.role ?? "Coordinator")}
-              {t.retained ? " · retained generation" : ""}
-            </p>
-            {!t.parentKnown ? (
-              <p className="project-meta">Native parent unavailable.</p>
-            ) : t.parentThreadId &&
-              knownIds.has(t.parentThreadId) ? null : t.threadId !== root ? (
-              <p className="project-note">
-                Native parent is outside this visible current tree.
-              </p>
-            ) : null}
-            {t.forkedFrom ? <p>Forked from {t.forkedFrom}</p> : null}
-            {worker?.area ? <p>{worker.area}</p> : null}
-            {worker?.profile ? (
-              <p className="project-meta">
-                Recorded worker profile: {worker.profile}
-              </p>
-            ) : null}
-            {env ? (
-              <p className="project-meta">
-                {env.hostId} · <code>{env.path ?? "Path unknown"}</code>
-                {env.isWorktree ? " · worktree" : ""}
-              </p>
-            ) : null}
-            {work.map((a) => (
-              <div key={a.assignment}>
-                <p>{a.outcome}</p>
-                <p>{a.progress}</p>
-                <p>Next: {a.nextCheckpoint}</p>
-              </div>
-            ))}
-            {worker?.lastHandoff ? <HandoffActions assignment={worker.lastHandoff} readHandoff={readHandoff} /> : null}
-            {worker &&
-            worker.state !== "retired" &&
-            worker.threadId === t.threadId ? (
-              <ReasonAction
-                label="Retire worker"
-                run={run}
-                make={(reason) => ({
-                  action: "worker-retire",
-                  worker: worker.ref,
-                  reason,
-                })}
-              />
-            ) : null}
-            <p className="project-meta">
-              Use native Stop in this thread to interrupt a turn.
-            </p>
-          </div>
-        ) : null}
-      </div>
-    );
-  };
   return (
-    <div className="cr-threads">
-      <div aria-label="Coordinator and its threads">
-        {rows.map(({ thread, depth }) => render(thread, depth))}
+    <div className="cr-split-view" data-detail={open ? "open" : "closed"}>
+      <div className="cr-w-list">
+        {views.length ? <p className="cr-lede">{summary || "No current workers"}</p> : null}
+        {GROUPS.map(([group, title]) =>
+          count(group) ? (
+            <section key={group} aria-label={title}>
+              <h2 className="cr-section-heading">{title} <span className="cr-count">{count(group)}</span></h2>
+              <ul className="cr-w-rows">{by(group).map(row)}</ul>
+            </section>
+          ) : null,
+        )}
+        {o.historyLoaded === false ? <p className="project-muted">Loading earlier workers…</p> : count("earlier") ? (
+          <details className="cr-earlier">
+            <summary>Earlier <span className="cr-count">{count("earlier")}</span></summary>
+            <section aria-label="Earlier">
+              <ul className="cr-w-rows">{by("earlier").map(row)}</ul>
+            </section>
+          </details>
+        ) : null}
+        {!views.length && o.historyLoaded !== false ? <p className="cr-empty">No workers yet.</p> : null}
       </div>
-      {o.threads
-        .filter((t) => !t.threadId)
-        .map((t) => (
-          <p key={t.createdAt} className="cr-unconfirmed">
-            {t.label} · {t.state}, native thread not confirmed.
-          </p>
-        ))}
-      <button className="cr-add" onClick={newThread}>+ New thread</button>
-      <button
-        className="cr-retained"
-        aria-expanded={retained}
-        onClick={() => setRetained(!retained)}
-      >
-        Earlier threads{" "}
-        <span className="cr-count">{o.memberThreads.filter((t) => historicalThread(t, root)).length}</span>
-      </button>
-      {retained
-        ? o.memberThreads
-            .filter((t) => historicalThread(t, root))
-            .map((t) => render(t, 0))
-        : null}
+      {open ? (
+        <WorkerDetail v={open} o={o} run={run} openThread={openThread} readHandoff={readHandoff} loadChildren={loadChildren} close={() => select(null)} />
+      ) : null}
     </div>
   );
 }
+
+function WorkerRow({ projectId, v, selected, select, openThread, loadChildren }: {
+  projectId: string;
+  v: WorkerView;
+  selected: boolean;
+  select: () => void;
+  openThread: (threadId: string) => void;
+  loadChildren?: LoadChildren;
+}) {
+  const { w } = v;
+  // Its child threads are one click away; a worker waiting on one shows them open.
+  const [showChildren, setShowChildren] = useState(v.group === "waiting");
+  const pr = w.prs[0];
+  const number = pr ? prNumber(pr.url) : null;
+  const model = modelName(w.profile);
+  return (
+    <li className="cr-w" data-group={v.group} data-tone={v.tone ?? undefined} aria-current={selected || undefined}>
+      <div className="cr-w-line">
+        <button type="button" className="cr-w-main" onClick={select} aria-label={`${w.ref} ${w.label}`} aria-pressed={selected}>
+          <span className="cr-w-head">
+            <span className="cr-w-dot" aria-hidden="true" />
+            <span className="cr-ref">{w.ref}</span>
+            <span className="cr-w-label">{w.label}</span>
+            {w.kind ? <span className="cr-chip-tag">{w.kind}</span> : null}
+            {w.lead ? <span className="cr-chip-tag cr-chip-tag--from">from {w.lead}</span> : null}
+            <span className="cr-w-facts">
+              {number ? <span className="cr-w-pr" title={pr!.stage ?? undefined}>#{number}</span> : null}
+              {model ? <span title={w.profile ?? undefined}>{model}</span> : null}
+              {v.since ? <Age at={v.since} /> : null}
+              {w.tokens ? <span className="cr-w-tokens">{tokenCount(w.tokens)}</span> : null}
+            </span>
+          </span>
+          <span className="cr-w-why">{v.why}</span>
+        </button>
+        {w.threadId ? (
+          <button type="button" className="cr-iconbtn" aria-label={`Open ${w.ref}'s thread`} title={`Open ${w.ref}'s thread`} onClick={() => openThread(w.threadId!)}>
+            <Glyph name="open" />
+          </button>
+        ) : null}
+      </div>
+      {w.threadId && loadChildren && w.state !== "retired" ? (
+        <>
+          <button type="button" className="cr-w-fold" aria-expanded={showChildren} onClick={() => setShowChildren(!showChildren)}>
+            Child threads
+          </button>
+          {showChildren ? <ChildTree projectId={projectId} threadId={w.threadId} load={loadChildren} openThread={openThread} /> : null}
+        </>
+      ) : null}
+    </li>
+  );
+}
+
+/** One page of a thread's BB children, from the server's cache (childPage). */
+export type LoadChildren = (threadId: string, offset: number) => Promise<Cached<ChildPage>>;
+
+type ChildTreeData = { rows: WorkerChild[]; next: number | null; status: Cached<ChildPage>["status"]; error: string | null; pages: number };
+
+/**
+ * A thread's BB child threads (reviewers, helpers, theirs) a page at a time: title · provider ·
+ * status and age. Each child opens its own children the same way, so every descendant is
+ * reachable however many there are. It refreshes like the rest of the dashboard (useData) and
+ * re-reads every page it opened, so new children show and statuses move while it is open; the
+ * count of opened pages lives in the shared entry, so every tree of a thread shows the same.
+ */
+function ChildTree({ projectId, threadId, load, openThread }: { projectId: string; threadId: string; load: LoadChildren; openThread: (threadId: string) => void }) {
+  const key = `children:${threadId}:${projectId}`;
+  const read = (pages: number) => async (): Promise<ChildTreeData> => {
+    const rows: WorkerChild[] = [];
+    let next: number | null = 0;
+    for (let n = 0; n < pages && next !== null; n++) {
+      const page = await load(threadId, next);
+      if (page.status !== "ready") return { rows, next, status: page.status, error: page.status === "failed" ? page.error : null, pages };
+      rows.push(...page.value.rows);
+      next = page.value.next;
+    }
+    return { rows, next, status: "ready", error: null, pages };
+  };
+  // Read at call time: a refresh started by an older render still reads every page opened since.
+  const state = useData(key, () => read((appReads.entry(key).data as ChildTreeData | null)?.pages ?? 1)());
+  const tree = state.data;
+  // The new count is saved before the read, so every refresh from now on reads that page too,
+  // a realtime one replacing this one within the debounce included.
+  const more = () => {
+    if (tree) appReads.seed(key, { ...tree, status: "loading", pages: tree.pages + 1 });
+    state.schedule();
+  };
+  const error = tree?.status === "failed" ? tree.error : state.error;
+  return (
+    <>
+      {tree?.rows.length ? (
+        <ul className="cr-w-children" aria-label="Child threads">
+          {tree.rows.map((c) => <ChildRow key={c.threadId} projectId={projectId} c={c} load={load} openThread={openThread} />)}
+        </ul>
+      ) : null}
+      {!tree || tree.status === "loading" ? <p role="status" className="project-muted">Loading child threads…</p> : null}
+      {error ? (
+        <p role="alert" className="project-error">
+          Couldn’t read child threads: {error}{tree?.rows.length ? " (more may exist)" : ""}.{" "}
+          <button type="button" className="cr-link" onClick={() => void state.refresh()}>Retry</button>
+        </p>
+      ) : null}
+      {tree?.status === "ready" && tree.next !== null ? (
+        <button type="button" className="cr-w-fold" onClick={more}>More child threads</button>
+      ) : null}
+      {tree?.status === "ready" && !tree.rows.length ? <p className="project-muted">No child threads.</p> : null}
+    </>
+  );
+}
+
+function ChildRow({ projectId, c, load, openThread }: { projectId: string; c: WorkerChild; load: LoadChildren; openThread: (threadId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const status = c.archived ? "archived" : childStatus(c.running ?? c.status);
+  return (
+    <li>
+      <button type="button" className="cr-w-child" data-live={c.running ? true : undefined} aria-label={`Open ${c.title}`} title={`Open ${c.title}`} onClick={() => openThread(c.threadId)}>
+        <span className="cr-w-child-mark" aria-hidden="true" />
+        <span className="cr-w-dot" aria-hidden="true" />
+        <span className="cr-w-child-title">{c.title}</span>
+        <span className="cr-w-child-meta">
+          {c.providerId ? `${c.providerId} · ` : ""}{status} {compactAge(c.updatedAt)}
+        </span>
+      </button>
+      <button type="button" className="cr-w-fold" aria-expanded={open} aria-label={`${c.title}'s child threads`} onClick={() => setOpen(!open)}>
+        {open ? "Hide its child threads" : "Its child threads"}
+      </button>
+      {open ? <ChildTree projectId={projectId} threadId={c.threadId} load={load} openThread={openThread} /> : null}
+    </li>
+  );
+}
+
+function WorkerDetail({ v, o, run, openThread, readHandoff, loadChildren, close }: {
+  v: WorkerView;
+  o: Overview;
+  run: Run;
+  openThread: (threadId: string) => void;
+  readHandoff?: (ref: string) => Promise<string | null>;
+  loadChildren?: LoadChildren;
+  close: () => void;
+}) {
+  const { w } = v;
+  const report = w.latestReport;
+  const tasks = o.tasks.filter((t) => t.workers.includes(w.ref));
+  const retired = w.state === "retired";
+  return (
+    <section className="cr-w-detail" data-group={v.group} data-tone={v.tone ?? undefined} aria-label={`${w.ref} details`}>
+      <button type="button" className="cr-back" onClick={close}>‹ Workers</button>
+      <header className="cr-w-detail-head">
+        <p className="cr-w-detail-status">
+          <span className="cr-ref">{w.ref}</span>
+          <span className="cr-w-dot" aria-hidden="true" />
+          <span className="cr-w-detail-why">{v.group === "needs" ? v.why : v.status}</span>
+          <span className="cr-w-from">from {w.lead ?? "Coordinator"}</span>
+          <button type="button" className="cr-iconbtn cr-w-close" aria-label="Close details" onClick={close}><Glyph name="close" /></button>
+        </p>
+        <h2>{w.label}</h2>
+        <p className="cr-w-detail-meta">
+          {[modelName(w.profile), w.kind, w.role === "review" ? "reviewer" : null, w.tokens ? `${tokenCount(w.tokens)} tokens` : null].filter(Boolean).join(" · ")}
+        </p>
+        <div className="project-actions">
+          {w.threadId ? <button className="project-primary" onClick={() => openThread(w.threadId!)}>Open thread</button> : null}
+          {!retired ? (
+            <ReasonAction label="Stop" run={run} make={(reason) => ({ action: "worker-stop", worker: w.ref, reason })} refusal={stillRunning} />
+          ) : null}
+          {!retired ? (
+            <ReasonAction label="Retire" run={run} make={(reason) => ({ action: "worker-retire", worker: w.ref, reason })} />
+          ) : null}
+        </div>
+      </header>
+      {w.area ? (
+        <div className="cr-card">
+          <h3 className="cr-card-title">Purpose</h3>
+          <p>{w.area}</p>
+        </div>
+      ) : null}
+      {report ? (
+        <div className="cr-card">
+          <h3 className="cr-card-title">Latest report <span className="cr-ref">{report.ref}</span> {report.reportedAt ? <Age at={report.reportedAt} /> : null}</h3>
+          <p className={`cr-report-outcome cr-report-outcome--${report.outcome}`}>{report.outcome === "done" ? "Done" : report.outcome === "failed" ? "Failed" : "Blocked"}</p>
+          {report.question ? <p className="cr-report-question">{report.question}</p> : null}
+          <FinalMessage text={report.summary} />
+          {report.preSwitch ? <p className="project-meta">{report.preSwitch}</p> : null}
+        </div>
+      ) : null}
+      {w.prs.length ? (
+        <div className="cr-card">
+          <h3 className="cr-card-title">Pull requests</h3>
+          <ul className="cr-plain-list">
+            {w.prs.map((pr) => (
+              <li key={pr.url}>
+                <a className="cr-worker-link" href={pr.url} target="_blank" rel="noreferrer">#{prNumber(pr.url) ?? pr.url}</a>
+                {pr.stage ? <span className="project-meta"> · {pr.stage.replaceAll("-", " ")}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {tasks.length ? (
+        <div className="cr-card">
+          <h3 className="cr-card-title">Tasks</h3>
+          <ul className="cr-plain-list">
+            {tasks.map((t) => (
+              <li key={t.ref}>
+                <span className="cr-ref">{t.ref}</span> {t.title} <span className="project-meta">· {statusWord(t.status)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {w.threadId && loadChildren ? (
+        <div className="cr-card">
+          <h3 className="cr-card-title">Child threads</h3>
+          <ChildTree projectId={o.project.id} threadId={w.threadId} load={loadChildren} openThread={openThread} />
+        </div>
+      ) : null}
+      {w.lastHandoff ? <HandoffActions assignment={w.lastHandoff} readHandoff={readHandoff} /> : null}
+    </section>
+  );
+}
+
 /**
  * T130: a primary action with a chevron menu of alternatives. The menu opens
  * from the chevron (click, Enter, Space or ↓), moves with ↑/↓, closes on
@@ -1430,7 +1350,7 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
   };
   const dismiss = telling ? null : (
     <SplitButton label="Dismiss" align="end" className="cr-split--quiet"
-      main={<button type="button" disabled={!!busy} title="Leave the coordinator to settle it; nothing is sent. Undo from Decisions."
+      main={<button type="button" disabled={!!busy} title="Leave the coordinator to settle it; nothing is sent. Undo from Archive."
         onClick={() => void act("dismiss", { action: "blocker-dismiss", assignment: item.assignment, question: item.question, context: item.context, notify: false, note: "" })}>
         {busy === "dismiss" ? "Saving…" : "Dismiss"}
       </button>}
@@ -1550,10 +1470,6 @@ function DismissNotify({ item, run, cancel }: { item: BlockerItem; run: Run; can
   );
 }
 
-type DecisionRow = Overview["decisions"][number];
-const pendingReview = (d: DecisionRow) => d.madeBy === "agent" && d.review === "pending";
-const owner = (d: DecisionRow) =>
-  d.madeBy === "user" ? "Yours" : d.recordedBy.author === "worker" ? "Worker" : "Coordinator";
 
 /** ↑/↓ moves between a list's folds, opening only the focused one. */
 function moveBetweenFolds(event: React.KeyboardEvent<HTMLElement>) {
@@ -1567,7 +1483,7 @@ function moveBetweenFolds(event: React.KeyboardEvent<HTMLElement>) {
   next.focus();
 }
 
-/** One decision: its text first, then who made it, when, and its review. */
+
 /** One message BB still holds: what it says, why it is held, and the user's two ways out. */
 function HeldMessage({ m, run, openThread }: { m: NonNullable<Overview["notDelivered"]>[number]; run: Run; openThread: (threadId: string) => void }) {
   return (
@@ -1587,9 +1503,214 @@ function HeldMessage({ m, run, openThread }: { m: NonNullable<Overview["notDeliv
   );
 }
 
+// ---- Tasks (v9 §7, §10.3): status follows the work unless set by hand.
+
+const statusWord = (status: string) =>
+  status === "in_progress" || status === "awaiting_acceptance" ? "in progress" : status;
+const TASK_SECTIONS: { title: string; statuses: string[]; folded: boolean }[] = [
+  { title: "In progress", statuses: ["in_progress", "awaiting_acceptance"], folded: false },
+  { title: "Blocked", statuses: ["blocked"], folded: false },
+  { title: "Planned", statuses: ["planned"], folded: false },
+  { title: "Done", statuses: ["done"], folded: true },
+  { title: "Cancelled", statuses: ["cancelled"], folded: true },
+];
+const HAND_REASON = "Set from the Tasks tab.";
+
+function Tasks({ o, run, newTask, showWorker }: {
+  o: Overview;
+  run: Run;
+  newTask: ReactNode;
+  showWorker: (ref: string) => void;
+}) {
+  return (
+    <div className="cr-tasks">
+      {newTask}
+      {TASK_SECTIONS.map(({ title, statuses, folded }) => {
+        const items = o.tasks.filter((t) => statuses.includes(t.status));
+        if (!items.length) return null;
+        const list = (
+          <section aria-label={title}>
+            {!folded ? <h2 className="cr-section-heading">{title} <span className="cr-count">{items.length}</span></h2> : null}
+            {items.map((t) => <TaskRow key={t.ref} t={t} run={run} showWorker={showWorker} />)}
+          </section>
+        );
+        return folded ? (
+          <details key={title} className="cr-earlier">
+            <summary>{title} <span className="cr-count">{items.length}</span></summary>
+            {list}
+          </details>
+        ) : <div key={title}>{list}</div>;
+      })}
+      {o.historyLoaded === false ? <p role="status" className="project-muted">Loading done and cancelled tasks…</p> : null}
+      {!o.tasks.length && o.historyLoaded !== false ? <p className="cr-empty">No tasks yet.</p> : null}
+    </div>
+  );
+}
+
+function TaskRow({ t, run, showWorker }: {
+  t: TaskItem;
+  run: Run;
+  showWorker: (ref: string) => void;
+}) {
+  const set = (status: "planned" | "cancelled" | "done" | "auto"): Command => ({ action: "task-status", task: t.ref, status, reason: HAND_REASON });
+  // A hand-set status says so, whatever the reason line already holds.
+  const reason = t.setByHand && !/by hand/i.test(t.statusReason) ? [t.statusReason, "set by hand"].filter(Boolean).join(" · ") : t.statusReason;
+  return (
+    <details className="cr-task" data-status={t.status}>
+      <summary>
+        <span className="cr-ref">{t.ref}</span>
+        <span className="cr-task-title">{t.title}</span>
+        <span className="cr-pill" data-status={t.status}>{statusWord(t.status)}</span>
+        <span className="cr-task-why">
+          {reason || "—"}
+          {t.workers.length ? <span className="cr-task-workers"> · {t.workers.join(", ")}</span> : null}
+        </span>
+      </summary>
+      <div className="cr-task-detail">
+        <p className="project-meta">Status follows its work and PRs, unless you set it by hand.</p>
+        {t.workers.length ? (
+          <p className="cr-task-links">
+            {t.workers.map((ref) => (
+              <button key={ref} type="button" className="cr-link" onClick={() => showWorker(ref)}>{ref}</button>
+            ))}
+          </p>
+        ) : null}
+        <div className="project-actions">
+          {t.status !== "cancelled" ? <Action run={run} command={set("cancelled")} refusal={stillRunning}>Cancel task</Action> : null}
+          {t.status !== "done" ? <Action run={run} command={set("done")}>Mark done</Action> : null}
+          {t.status !== "planned" ? <Action run={run} command={set("planned")}>Mark planned</Action> : null}
+          {t.setByHand ? (
+            <Action run={run} command={set("auto")} title="Clear the hand-set status; it follows its work and PRs again.">Follow the work</Action>
+          ) : null}
+        </div>
+        <TaskEdit task={{ ref: t.ref, title: t.title, summary: t.summary }} run={run} />
+      </div>
+    </details>
+  );
+}
+
+// ---- Rules (D523): the standing rules every lead tab and worker gets.
+
+function Rules({ o, run, openArchive }: { o: Overview; run: Run; openArchive: () => void }) {
+  const [adding, setAdding] = useState(false);
+  return (
+    <section className="cr-rules" aria-label="Standing rules">
+      <h2 className="cr-section-heading cr-rules-head">
+        Standing rules <span className="cr-rules-count">{o.rules.length} / {MAX_RULES}</span>
+      </h2>
+      {o.rules.length ? (
+        <ol className="cr-rule-list">
+          {o.rules.map((rule, index) => (
+            <RuleRow key={rule.ref} rule={rule} index={index} last={index === o.rules.length - 1} run={run} />
+          ))}
+        </ol>
+      ) : (
+        <p className="cr-lede">No standing rules yet.</p>
+      )}
+      {adding ? (
+        <RuleForm label="New rule" initial="" save={(text) => run({ action: "rule-add", text })} close={() => setAdding(false)} />
+      ) : o.rules.length < MAX_RULES ? (
+        <button type="button" className="cr-add-box" onClick={() => setAdding(true)}>+ Add rule</button>
+      ) : null}
+      <p className="cr-lede">
+        Every lead tab and worker gets these: in briefs, work messages and each coordinator’s first message; a change is
+        announced to live lead tabs and workers with open work.
+      </p>
+      <button type="button" className="cr-link cr-archive-link" onClick={openArchive}>
+        Archive{o.historyLoaded ? `: ${o.decisions.length} earlier decisions and closed questions` : ": earlier decisions and closed questions"} (read-only) →
+      </button>
+    </section>
+  );
+}
+
+function RuleRow({ rule, index, last, run }: {
+  rule: Overview["rules"][number];
+  index: number;
+  last: boolean;
+  run: Run;
+}) {
+  const [mode, setMode] = useState<"view" | "edit" | "delete">("view");
+  const write = useWrite();
+  const act = (command: Command) => void write.run(() => run(command));
+  if (mode === "edit")
+    return (
+      <li className="cr-rule">
+        <span className="cr-ref">{rule.ref}</span>
+        <RuleForm label={`Edit ${rule.ref}`} initial={rule.text} save={(text) => run({ action: "rule-edit", rule: rule.ref, text })} close={() => setMode("view")} />
+      </li>
+    );
+  return (
+    <li className="cr-rule">
+      <span className="cr-ref">{rule.ref}</span>
+      <div className="cr-rule-text">
+        <p>{rule.text}</p>
+        {rule.sources.length ? <p className="cr-rule-sources">from {rule.sources.join(", ")}</p> : null}
+        {mode === "delete" ? (
+          <div className="project-actions">
+            <span>Delete {rule.ref}?</span>
+            <button type="button" disabled={write.busy} onClick={() => act({ action: "rule-remove", rule: rule.ref })}>{write.busy ? "Deleting…" : "Delete"}</button>
+            <button type="button" onClick={() => setMode("view")}>Keep</button>
+          </div>
+        ) : null}
+        {write.error ? <p role="alert" className="project-error">{write.error}</p> : null}
+      </div>
+      <div className="cr-rule-actions">
+        <button type="button" className="cr-iconbtn" aria-label={`Move ${rule.ref} up`} disabled={index === 0 || write.busy} onClick={() => act({ action: "rule-move", rule: rule.ref, to: index })}><Glyph name="up" /></button>
+        <button type="button" className="cr-iconbtn" aria-label={`Move ${rule.ref} down`} disabled={last || write.busy} onClick={() => act({ action: "rule-move", rule: rule.ref, to: index + 2 })}><Glyph name="down" /></button>
+        <button type="button" className="cr-iconbtn" aria-label={`Edit ${rule.ref}`} onClick={() => setMode("edit")}><Glyph name="edit" /></button>
+        <button type="button" className="cr-iconbtn" aria-label={`Delete ${rule.ref}`} onClick={() => setMode("delete")}><Glyph name="close" /></button>
+      </div>
+    </li>
+  );
+}
+
+/** One line, one or two sentences: Enter saves, Escape cancels. */
+function RuleForm({ label, initial, save, close }: {
+  label: string;
+  initial: string;
+  save: (text: string) => Promise<unknown>;
+  close: () => void;
+}) {
+  const [text, setText] = useState(initial);
+  const write = useWrite();
+  const clean = text.replace(/\s+/g, " ").trim();
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!clean || write.busy) return;
+    const done = await write.run(() => save(clean));
+    if (done.ok) close();
+  };
+  return (
+    <form className="cr-rule-form" onSubmit={submit}>
+      <input
+        aria-label={label}
+        value={text}
+        autoFocus
+        maxLength={RULE_MAX_CHARACTERS}
+        placeholder="One or two sentences."
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}
+      />
+      <div className="project-actions">
+        <button className="project-primary" disabled={!clean || write.busy}>{write.busy ? "Saving…" : "Save rule"}</button>
+        <button type="button" onClick={close}>Cancel</button>
+        <span className="cr-rule-limit">{clean.length} / {RULE_MAX_CHARACTERS}</span>
+      </div>
+      {write.slow ? <p role="status" className="project-muted">{WRITE_SLOW_MESSAGE}</p> : null}
+      {write.error ? <p role="alert" className="project-error">{write.error}</p> : null}
+    </form>
+  );
+}
+
+// ---- Archive: the decision record, read-only (v9 §6: no veto, no review).
+
+type DecisionRow = Overview["decisions"][number];
+const owner = (d: DecisionRow) =>
+  d.madeBy === "user" ? "Yours" : d.recordedBy.author === "worker" ? "Worker" : "Coordinator";
+
+/** One decision: its text first, then who made it and when, with any delivery that still needs a retry. */
 function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: Overview["answered"][number] }) {
   const [full, setFull] = useState(false);
-  const reviewable = d.madeBy === "agent" && (d.review === "pending" || d.notification?.state === "failed");
   return (
     <article className="cr-decision" aria-label={d.ref}>
       {answer && full ? (
@@ -1620,18 +1741,77 @@ function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: O
         {d.dismissal?.undoneAt ? <span className="cr-verdict">Undone</span> : null}
         {d.dismissal && !d.dismissal.undoneAt ? <Action run={run} command={{ action: "blocker-dismiss-undo", decision: d.ref }}
           title={`Bring ${d.dismissal.assignment}'s blocker back to the Inbox if it is still open. Nothing is sent.`}>Undo</Action> : null}
-        {!reviewable && (d.review === "okay" || d.review === "not-okay") ? (
-          <span className={`cr-verdict cr-verdict--${d.review}`}>{d.review === "okay" ? "Okay" : "Not okay"}</span>
-        ) : null}
-        {reviewable ? (
-          <DecisionReview decision={d.ref} verdict={d.review} reviewMessage={d.reviewMessage} notification={d.notification} run={run} />
-        ) : null}
         <button className="cr-iconbtn cr-caret" aria-label={`Show all of ${d.ref}`} aria-expanded={full} onClick={() => setFull(!full)}>
           <Glyph name="down" />
         </button>
       </div>
-      {!reviewable && d.reviewMessage && full ? <p className="cr-review-message">{d.reviewMessage}</p> : null}
     </article>
+  );
+}
+
+const decisionFilters = [["all", "All"], ["agent", "Agents"], ["user", "Yours"]] as const;
+/** The full record of choices, newest first, separable by who made them; read-only. */
+function Archive({ o, run }: { o: Overview; run: Run }) {
+  const [filter, setFilter] = useState<(typeof decisionFilters)[number][0]>("all");
+  const answers = new Map(o.answered.map(a => [a.ref, a]));
+  const shown = [...o.decisions].reverse().filter(d => filter === "all" || d.madeBy === filter);
+  return (
+    <section className="cr-decisions" aria-label="Archive">
+      <div className="cr-toolbar">
+        <p className="cr-lede">Earlier decisions, facts and closed questions. Standing rules live on the Rules tab.</p>
+        <div className="project-usage-filter" role="group" aria-label="Who made the decision">
+          {decisionFilters.map(([id, label]) => (
+            <button key={id} aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {o.historyLoaded === false ? <p role="status" className="project-muted">Loading all decisions…</p> : null}
+      {shown.length ? shown.map(d => <DecisionItem key={d.ref} d={d} run={run} answer={answers.get(d.ref)} />) : o.historyLoaded === false ? null : (
+        <p className="cr-empty">{o.decisions.length ? "None in this view." : "No decisions recorded."}</p>
+      )}
+      {o.closedQuestions.length ? <details className="cr-fold">
+        <summary>Closed questions · {o.closedQuestions.length}</summary>
+        {o.closedQuestions.map(q => <article className="cr-decision" key={q.ref}>
+          <p className="project-meta">{q.ref} · {q.withdrawn ? "Withdrawn by the coordinator" : "Closed quietly"} · No answer recorded</p>
+          <Markdown content={q.question} />
+          {q.note ? <Markdown content={q.note} /> : null}
+          <Age at={q.closedAt} />
+        </article>)}
+      </details> : null}
+    </section>
+  );
+}
+
+function TaskEdit({ task, run }: { task: { ref: string; title: string; summary: string }; run: Run }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [summary, setSummary] = useState(task.summary);
+  return open ? (
+    <div>
+      <label className="project-field">
+        Task title
+        <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />
+      </label>
+      <label className="project-field">
+        Task summary
+        <AutoTextarea value={summary} onChange={(e) => setSummary(e.target.value)} maxLength={2000} />
+      </label>
+      <div className="project-actions">
+        {title.trim() ? (
+          <Action
+            run={run}
+            command={{ action: "task-update", task: task.ref, title: title.trim(), ...(summary.trim() ? { summary: summary.trim() } : {}) }}
+          >
+            Save task
+          </Action>
+        ) : (
+          <button disabled>Save task</button>
+        )}
+        <button onClick={() => setOpen(false)}>Done</button>
+      </div>
+    </div>
+  ) : (
+    <button className="cr-link" onClick={() => setOpen(true)}>Edit task</button>
   );
 }
 
@@ -1669,85 +1849,6 @@ function BlockerAnswerStatus({ d, answer, run }: { d: DecisionRow; answer: NonNu
       ) : null}
     </div>
   );
-}
-
-type AcceptDecisionsState = { eligible: boolean; busy: boolean; error: string | null; accept: () => Promise<void> };
-function useAcceptAgentDecisions(o: Overview, run: Run): AcceptDecisionsState {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const pending = useRef(false);
-  const eligible = o.decisions.some(d => d.acceptEligible);
-  return { eligible, busy, error, accept: async () => {
-    if (pending.current || !eligible) return;
-    pending.current = true; setBusy(true); setError(null);
-    try { await run({ action: "decision-accept-all" }); }
-    catch (e) { setError(message(e)); }
-    finally { pending.current = false; setBusy(false); }
-  } };
-}
-function AcceptAgentDecisions({ state }: { state: AcceptDecisionsState }) {
-  return <div className="cr-accept-decisions">
-    <button disabled={state.busy || !state.eligible} onClick={() => void state.accept()}
-      title="Mark unchecked agent choices Okay without messages. Records, history and existing verdicts stay intact.">{state.busy ? "Accepting…" : "Accept all unchecked agent decisions"}</button>
-    {state.error ? <p role="alert" className="project-error">{state.error}</p> : null}
-  </div>;
-}
-
-const decisionFilters = [["all", "All"], ["agent", "Agents"], ["user", "Yours"]] as const;
-/** The full record of choices, newest first, separable by who made them. */
-function Decisions({ o, run, acceptDecisions }: { o: Overview; run: Run; acceptDecisions: AcceptDecisionsState }) {
-  const [filter, setFilter] = useState<(typeof decisionFilters)[number][0]>("all");
-  const answers = new Map(o.answered.map(a => [a.ref, a]));
-  const shown = [...o.decisions].reverse().filter(d => filter === "all" || d.madeBy === filter);
-  return (
-    <div className="cr-decisions">
-      <div className="cr-toolbar">
-        <AcceptAgentDecisions state={acceptDecisions} />
-        <div className="project-usage-filter" role="group" aria-label="Who made the decision">
-          {decisionFilters.map(([id, label]) => (
-            <button key={id} aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>
-          ))}
-        </div>
-      </div>
-      {o.historyLoaded === false ? <p role="status" className="project-muted">Loading all decisions…</p> : null}
-      {shown.length ? shown.map(d => <DecisionItem key={d.ref} d={d} run={run} answer={answers.get(d.ref)} />) : o.historyLoaded === false ? null : (
-        <p className="cr-empty">{o.decisions.length ? "None in this view." : "No decisions recorded."}</p>
-      )}
-      {o.closedQuestions.length ? <details className="cr-fold">
-        <summary>Closed questions · {o.closedQuestions.length}</summary>
-        {o.closedQuestions.map(q => <article className="cr-decision" key={q.ref}>
-          <p className="project-meta">{q.ref} · {q.withdrawn ? "Withdrawn by the coordinator" : "Closed quietly"} · No answer recorded</p>
-          <Markdown content={q.question} />
-          {q.note ? <Markdown content={q.note} /> : null}
-          <Age at={q.closedAt} />
-        </article>)}
-      </details> : null}
-    </div>
-  );
-}
-
-function DecisionReview({ decision, verdict, reviewMessage, notification, run }: {
-  decision: string; verdict: "pending" | "okay" | "not-okay" | null;
-  reviewMessage?: string | null; notification?: DecisionRecord["notification"]; run: Run;
-}) {
-  const [rejecting, setRejecting] = useState(false);
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  return <div className="cr-decision-review" aria-label={`Review ${decision}`}>
-    {reviewMessage ? <p className="cr-review-message">{reviewMessage}</p> : null}
-    {notification?.state === "uncertain" || notification?.state === "pending" ? <p role="status">Review saved. Coordinator notification unconfirmed; inspect its native thread before another send.</p> : notification?.state === "failed" ? <p role="alert">Review saved. Coordinator notification failed: {notification.detail}. Submit the message again to retry.</p> : notification?.state === "queued" ? <p className="project-meta">Message queued for the coordinator.</p> : notification?.state === "sent" ? <p className="project-meta">Coordinator notified.</p> : null}
-    {rejecting ? <form className="cr-decision-reject" onSubmit={async event => {
-      event.preventDefault(); if (!note.trim() || busy) return;
-      setBusy(true); setError(null);
-      try { await run({ action: "decision-review", decision, verdict: "not-okay", message: note.trim() }); setRejecting(false); setNote(""); }
-      catch (e) { setError(message(e)); } finally { setBusy(false); }
-    }}>
-      <label className="project-field">Message to coordinator<AutoTextarea value={note} onChange={e => setNote(e.target.value)} maxLength={2000} required autoFocus /></label>
-      <div className="project-actions"><button disabled={busy || !note.trim()}>{busy ? "Sending…" : "Send and mark not okay"}</button><button type="button" disabled={busy} onClick={() => setRejecting(false)}>Cancel</button></div>
-      {error ? <p role="alert" className="project-error">{error}</p> : null}
-    </form> : <><button className="cr-not-okay" title="Tell the coordinator what to change" onClick={() => setRejecting(true)}>Not okay</button><Action className="cr-okay" title="Mark as checked. Nobody is notified." run={run} command={{ action: "decision-review", decision, verdict: "okay", message: "" }}>Okay</Action></>}
-  </div>;
 }
 
 function Repositories({
@@ -1822,55 +1923,6 @@ function Repositories({
         Open files through the Editor's project picker.
       </p>
     </section>
-  );
-}
-function TaskEdit({
-  task,
-  run,
-}: {
-  task: Overview["remaining"][number];
-  run: Run;
-}) {
-  const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState(task.title);
-  const [summary, setSummary] = useState(task.summary);
-  return open ? (
-    <div>
-      <label className="project-field">
-        Task title
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          maxLength={200}
-        />
-      </label>
-      <label className="project-field">
-        Task summary
-        <AutoTextarea
-          value={summary}
-          onChange={(e) => setSummary(e.target.value)}
-          maxLength={2000}
-        />
-      </label>
-      {title.trim() && summary.trim() ? (
-        <Action
-          run={run}
-          command={{
-            action: "task-update",
-            task: task.ref,
-            title: title.trim(),
-            summary: summary.trim(),
-          }}
-        >
-          Save task
-        </Action>
-      ) : (
-        <button disabled>Save task</button>
-      )}
-      <button onClick={() => setOpen(false)}>Done</button>
-    </div>
-  ) : (
-    <button onClick={() => setOpen(true)}>Edit task</button>
   );
 }
 function UpdateForm({ run }: { run: Run }) {

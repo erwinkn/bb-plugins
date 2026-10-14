@@ -19,6 +19,8 @@ const task = (num: number, patch: Partial<TaskRecord> = {}): TaskRecord => ({
   summary: "s",
   brief: brief(),
   status: "planned",
+  statusReason: "no worker yet",
+  statusSetAt: null,
   priority: 2,
   dependsOn: [],
   workKind: "implementation",
@@ -158,7 +160,10 @@ describe("delegation eligibility (T136)", () => {
   });
 
   it("asks to reopen a closed task before more work on it", () => {
-    expect(delegationViolations(facts({ tasks: [task(1, { status: "done" })] }))).toEqual(["T1 is done. Reopen it first if it needs more work."]);
+    // v9 (D522): a computed status refuses nothing; only a hand-set cancel does.
+    expect(delegationViolations(facts({ tasks: [task(1, { status: "done" })] }))).toEqual([]);
+    expect(delegationViolations(facts({ tasks: [task(1, { status: "done", statusSetAt: 1 })] }))).toEqual([]);
+    expect(delegationViolations(facts({ tasks: [task(1, { status: "cancelled", statusSetAt: 1 })] }))).toEqual(["T1 was cancelled by hand. Ask the user, who can choose Follow the work on the Tasks tab."]);
   });
 
   it("gives a reviewer no more work, review or not; a review is a fresh reviewer's", () => {

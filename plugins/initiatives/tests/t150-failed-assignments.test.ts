@@ -49,7 +49,7 @@ describe("T150 a worker thread that fails without a retry", () => {
     await sweep(31_000);
     const a = f.store.assignment(project.id, 1)!;
     expect(a).toMatchObject({ state: "failed", report: null, stopReason: `Native thread failed, not retried: ${POLICY.replace(/\.$/, "")}.` });
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: "W1's thread failed on A1 without a report" });
+    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", statusReason: expect.stringContaining("W1: Native thread failed, not retried") });
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: "coordinator", mode: "queue-if-active" });
     expect(f.send.mock.calls[0][0]).not.toHaveProperty("senderThreadId");
@@ -64,7 +64,7 @@ describe("T150 a worker thread that fails without a retry", () => {
     // The overview shows the real state: nothing in flight, the task blocked with the cause.
     const overview = await f.overview(project.id, "full");
     expect(overview.inFlight).toEqual([]);
-    expect(overview.remaining.find(t => t.ref === task.ref)).toMatchObject({ status: "blocked", why: "W1's thread failed on A1 without a report" });
+    expect(overview.remaining.find(t => t.ref === task.ref)).toMatchObject({ status: "blocked", why: expect.stringContaining("W1: Native thread failed, not retried") });
     expect(overview.workers.current.find(x => x.ref === "W1")).toMatchObject({ runtime: "error" });
   });
 
@@ -153,26 +153,10 @@ describe("T150 failures BB retries, and reports after a retry", () => {
     const result = await tool(f, "initiative_report", { outcome: "done", summary: "Two issues found", report: REPORT }, w.threadId);
     expect(result.note).toBe("Report recorded and sent to the coordinator.");
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "reported", stopReason: null, report: { summary: "Two issues found" } });
-    expect(f.store.task(project.id, task.num)!.status).toBe("in_progress");
+    expect(f.store.task(project.id, task.num)!.status).toBe("done");
     expect(sentTexts(f)).toEqual([`Initiative · Search · W1\n\nW1 reported (done) on A1: Two issues found\n\n${REPORT}`]);
   });
 
-  it("records the retried turn's final message when the worker does not file a report", async () => {
-    const { f, project, w, sweep, fail } = await failing();
-    await fail();
-    await sweep(0);
-    await sweep(61_000);
-    // The user retries: the failed brief turn continues and completes with a final message.
-    const brief = f.store.assignment(project.id, 1)!.briefText;
-    const request = `creq_${++seq}`;
-    f.history.push({ type: "client/turn/requested", seq: ++seq, threadId: w.threadId, createdAt: Date.now(), data: { requestId: request, input: [{ type: "text", text: brief }] } });
-    f.history.push({ type: "turn/started", seq: ++seq, threadId: w.threadId, createdAt: Date.now() });
-    f.history.push({ type: "turn/input/accepted", seq: ++seq, threadId: w.threadId, createdAt: Date.now(), data: { clientRequestId: request } });
-    f.history.push({ type: "item/completed", seq: ++seq, threadId: w.threadId, createdAt: Date.now(), data: { item: { type: "agentMessage", id: `m${seq}`, text: REPORT } } });
-    f.history.push({ type: "turn/completed", seq: ++seq, threadId: w.threadId, createdAt: Date.now(), data: { status: "completed" } });
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "reported", stopReason: null, report: { finalMessage: REPORT } });
-  });
 
   it("a failed dispatch stays terminal: a late report does not reopen it", async () => {
     const { f, project, w } = await failing();

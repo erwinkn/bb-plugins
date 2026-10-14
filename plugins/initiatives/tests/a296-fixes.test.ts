@@ -29,20 +29,6 @@ describe("A296 P1: report capture is bound to a completed turn of that work", ()
     expect(await finalAgentMessage(f.service.sdk, "coordinator")).toBeNull();
   });
 
-  it("2: a late idle callback never copies the previous final message into newly delivered work", async () => {
-    const { f, project } = await projectFixture();
-    const [w] = await tool(f, "initiative_spawn", { label: "Work", purpose: "work", text: "First work" });
-    finish(f, "First batch complete");
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.store.assignment(project.id, 1)!.report!.finalMessage).toBe("First batch complete");
-    await tool(f, "initiative_message", { to: w.worker, work: true, text: "Second work" });
-    await f.runtime.onThreadIdle(f.threads.get(w.threadId)!);
-    expect(f.store.assignment(project.id, 2)!.report).toBeNull();
-    // Its own turn does report it.
-    finish(f, "Second batch complete");
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.store.assignment(project.id, 2)!.report!.finalMessage).toBe("Second batch complete");
-  });
 
 });
 
@@ -169,6 +155,7 @@ describe("A296 P2 and retained sessions", () => {
     const { f, project } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "First." });
     finish(f, "Done.");
+    await tool(f, "initiative_report", { outcome: "done", summary: "Done.", report: "Done." }, w.threadId);
     await f.runtime.onThreadIdle(f.idle(w.threadId));
     const r = await f.harness.runCli(["message", JSON.stringify({ to: "W1", text: "Second part.", work: true })], { threadId: "coordinator" });
     expect(r.exitCode).toBe(0);

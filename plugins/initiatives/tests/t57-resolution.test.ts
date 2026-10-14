@@ -55,15 +55,6 @@ describe("T57 question resolution and ownership", () => {
     await expect(f.harness.runCli(["command", JSON.stringify({ action: "question-close", decision: q.ref }), project.id], { threadId: "coordinator" })).resolves.toMatchObject({ exitCode: 1 });
   });
 
-  it("resolution cannot release another open question or an unrelated blocked reason", async () => {
-    const { f, project, task, q } = await question();
-    const second = f.service.recordQuestion(project.id, { title: "Scope", humanAttention: "needs-opinion", question: "Include archives?", context: "Scope", blocksTaskIds: [task.ref] }, coordinator);
-    await f.harness.callRpc("command", { projectId: project.id, command: answer(q.ref, false) });
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${second.ref}` });
-    f.store.updateTask(project.id, task.num, { progress: "Waiting for upstream SDK" });
-    await f.harness.callRpc("command", { projectId: project.id, command: { action: "question-close", decision: second.ref } });
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: "Waiting for upstream SDK" });
-  });
 
   it("coordinator chat answers stay quiet, worker chat answers propagate by default", async () => {
     const { f, project, q } = await question();
@@ -80,19 +71,6 @@ describe("T57 question resolution and ownership", () => {
     expect(f.send).toHaveBeenCalledTimes(1);
   });
 
-  it("current workers record explicit user choices with owner distinct from recorder", async () => {
-    const { f, project } = await question();
-    const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
-    const input = { action: "decision", decision: { description: "Erwin chose the Linux checkout.", madeBy: "user" } };
-    const result = JSON.parse(await f.harness.callAgentTool("initiative_decision", input, { threadId: worker.threadId! }) as string);
-    expect(result).toMatchObject({ madeBy: "user", review: null });
-    expect(f.store.decisionItem(project.id, Number(result.ref.slice(1)))!.provenance).toMatchObject({ author: "worker", threadId: worker.threadId });
-    const cli = await f.harness.runCli(["command", JSON.stringify(input), project.id], { threadId: worker.threadId! });
-    expect(cli.exitCode).toBe(0);
-    f.store.db.prepare("UPDATE workers SET state='retired' WHERE thread_id=?").run(worker.threadId);
-    await expect(f.harness.callAgentTool("initiative_decision", input, { threadId: worker.threadId! })).rejects.toThrow(/current/);
-    expect(f.send).not.toHaveBeenCalled();
-  });
 
   it("uncertain delivery stays recorded and identical retries never send twice", async () => {
     const { f, project, q } = await question();

@@ -29,6 +29,9 @@ export function mergeOverview(summary: Overview, past: Overview | null, full: Ov
     historyLoaded: true,
     done: past.done,
     workers: { current: summary.workers.current, retired: past.workers.retired },
+    // The summary lists every task that is not done or cancelled, so it stays authoritative for
+    // those; history adds the done and cancelled ones it doesn't list.
+    tasks: [...summary.tasks, ...past.tasks.filter((t) => ["done", "cancelled"].includes(t.status) && !summary.tasks.some((s) => s.ref === t.ref))],
   };
   if (newer(summary, past)) {
     const current = new Map(summary.decisions.map((d) => [d.ref, d]));

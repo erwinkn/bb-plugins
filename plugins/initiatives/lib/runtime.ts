@@ -63,10 +63,8 @@ export class Runtime {
     // only when no queued or background native work can still execute.
     if (membership.workerNum > 0) {
       await this.service.settleCancelledExecutions(thread);
-      // T136: the turn's final message is the worker's report.
-      await this.service.captureFinalMessage(thread).catch((error) =>
-        this.log.warn(`Final-message capture failed: ${errorMessage(error)}`),
-      );
+      // v9: only initiative_report finishes work; a turn end records nothing, so a worker can
+      // end its turn to wait for its reviewer.
     }
     // A former coordinator generation going quiet may be the last blocker a
     // pending parenting transfer was waiting on.
@@ -98,10 +96,8 @@ export class Runtime {
     // brief just like idle — subject to the same queued/background check.
     if (membership.workerNum > 0) {
       await this.service.settleCancelledExecutions(thread);
-      // A failed turn ends any short report's wait for its final message.
-      await this.service.captureFinalMessage(thread).catch((error) =>
-        this.log.warn(`Final-message capture failed: ${errorMessage(error)}`),
-      );
+      // v9: only initiative_report finishes work; a turn end records nothing, so a worker can
+      // end its turn to wait for its reviewer.
     }
     if (!membership.worker || membership.former) return;
     const { project, worker } = membership;
@@ -169,21 +165,6 @@ export class Runtime {
               ? open.stopReason
               : "Thread archived or deleted outside Initiatives",
         });
-        for (const num of open.taskNums) {
-          const task = this.store.task(project.id, num);
-          if (task?.status === "in_progress")
-            this.store.updateTask(project.id, num, {
-              status: "planned",
-              progress:
-                "Its native thread was archived or deleted; needs a new assignment",
-            });
-        }
-        if (open.state === "cancelled")
-          this.service.releaseCancelledTasks(
-            project.id,
-            open,
-            "settled",
-          );
       }
       this.store.closeGeneration(
         project.id,
@@ -267,11 +248,6 @@ export class Runtime {
           pendingIdentity: null,
         });
         dropped = true;
-        this.service.releaseCancelledTasks(
-          assignment.projectId,
-          assignment,
-          "never",
-        );
         this.store.log(
           assignment.projectId,
           "assignment",
@@ -296,14 +272,6 @@ export class Runtime {
         // it and the native title reverts to the ledger identity.
         pendingIdentity: null,
       });
-      for (const num of assignment.taskNums) {
-        const task = this.store.task(assignment.projectId, num);
-        if (task?.status === "in_progress")
-          this.store.updateTask(assignment.projectId, num, {
-            status: "planned",
-            progress: "Queued brief removed by you",
-          });
-      }
       this.store.log(
         assignment.projectId,
         "assignment",

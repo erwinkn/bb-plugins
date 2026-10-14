@@ -1,3 +1,4 @@
+import { preSwitchLine } from "./cutover";
 import { openBlockers } from "./blockers";
 import { redactCredentials as safe, redactDeep } from "./redact";
 import { taskRef, workerRef, type AssignmentRecord, type RefStatus, type Store, type TaskRecord } from "./store";
@@ -190,7 +191,7 @@ export function handoverPacket(store: Store, projectId: string, unsafeSnapshot: 
         `### ${w.ref} "${safe(w.label)}" · ${w.role} · ${safe(w.area)}`,
         `Thread ${w.threadId ?? "none"}; native status: ${native ? describeRead(native.status, s => `${s.status}${s.queued ? `, ${s.queued} queued` : ""}${s.background ? `, ${s.background} background` : ""}`) : "unavailable (not read)"}.`,
         current ? `Current work: ${current.ref} (${ASSIGNMENT_STATE[current.state] ?? current.state}, since ${iso(current.createdAt)})${current.taskNums.length ? ` on ${current.taskNums.map(taskRef).join(", ")}` : ""}.` : "No open work recorded.",
-        last ? `Latest report ${last.ref} (${outcomeOf(last)}, ${iso(last.reportedAt)}): ${headTail(reportText(last), Math.floor(perWorker * 0.5))}` : "No report yet.",
+        last ? `Latest report ${last.ref} (${outcomeOf(last)}, ${iso(last.reportedAt)}): ${headTail(reportText(last), Math.floor(perWorker * 0.5))}${preSwitchLine(last) ? `\n${preSwitchLine(last)}` : ""}` : "No report yet.",
         native?.pullRequest ? `Pull request of its branch: ${describeRead(native.pullRequest, pr => (pr ? `#${pr.number ?? "?"} ${pr.state}${pr.title ? ` "${pr.title}"` : ""} (read at capture)` : "none"))}.` : null,
         native ? `Its latest messages: ${describeRead(native.tail, ({ messages: tail, complete }) => (tail.length ? `\n${tail.map(m => `  - ${renderMessage(m, Math.floor(perWorker * 0.3), m.from === "coordinator" ? w.ref : who(m))}`).join("\n")}${complete ? "" : "\n  (earlier messages not scanned)"}` : complete ? "none" : "none in its latest events scanned"))}` : null,
       ].filter(Boolean);

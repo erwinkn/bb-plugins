@@ -15,7 +15,7 @@ async function queuedFixture() {
     tasks: [t1.ref],
   });
   await f.service.report(d.threadId!, report());
-  await f.service.closeTask(project.id, t1.ref, "done");
+  await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
   f.idle(d.threadId!);
   const worker = f.store.workers(project.id)[0]!;
   const t2 = f.task(project.id, "Next task");
@@ -53,7 +53,8 @@ describe("cancellation keeps the native receipt and reservation", () => {
       op: a.opState,
     }).toEqual({ state: "cancelled", queue: "own-q", op: "uncertain" });
     expect(f.queued.get(worker.threadId!)!.map((q) => q.id)).toEqual(["own-q"]);
-    expect(f.store.task(project.id, t2.num)!.status).toBe("blocked");
+    // v9: tasks keep no reservation; cancelled work leaves its task planned.
+    expect(f.store.task(project.id, t2.num)!.status).toBe("planned");
     // The reservation warns a replacement delegation while the row is runnable (T136).
     await expectWarned(f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref] }), /T2 is also with W1 \(A2, cancelled\)/);
   });
@@ -75,7 +76,8 @@ describe("cancellation keeps the native receipt and reservation", () => {
     expect(f.queued.get(worker.threadId!)).toHaveLength(0);
     expect(a.queuedMessageId).toBeNull();
     expect(a.opState).toBe("uncertain");
-    expect(f.store.task(project.id, t2.num)!.status).toBe("blocked");
+    // v9: tasks keep no reservation; cancelled work leaves its task planned.
+    expect(f.store.task(project.id, t2.num)!.status).toBe("planned");
   });
 
   it("does not accept a replacement assignment until the cancelled send is positively settled", async () => {
@@ -150,7 +152,8 @@ describe("terminal assignments never reopen on late reports", () => {
     await f.service.report(d.threadId!, report());
     const retry = await f.service.report(d.threadId!, report());
     expect(retry.state).toBe("cancelled");
-    expect(f.store.task(project.id, t.num)!.status).toBe("planned");
+    // v9: the late report is the work's last word: done, with no PR.
+    expect(f.store.task(project.id, t.num)!.status).toBe("done");
     expect(f.store.assignment(project.id, 1)!.stopReason).toMatch(/cancel/);
   });
 
@@ -174,9 +177,10 @@ describe("terminal assignments never reopen on late reports", () => {
     expect(a.state).toBe("cancelled");
     expect(a.report?.summary).toBe("Second send of the same result");
     expect(a.stopReason).toMatch(/cancel/);
-    expect(f.store.task(project.id, t.num)!.status).toBe("planned");
+    // v9: the late report is the work's last word: done, with no PR.
+    expect(f.store.task(project.id, t.num)!.status).toBe("done");
     // T136: closing is the coordinator's call; the cancelled report stays as filed.
-    await f.service.closeTask(project.id, t.ref, "done");
+    await f.service.setTaskStatus(project.id, t.ref, "done", "Closed as done.", "the user");
     expect(f.store.assignment(project.id, 1)!.state).toBe("cancelled");
   });
 
@@ -313,56 +317,6 @@ describe("reviewers are always fresh", () => {
   });
 });
 
-describe("closed review scopes stay history", () => {
-  it("keeps a reported review whose whole scope is decided out of acceptance", async () => {
-    const { f, project } = await projectFixture();
-    const t = f.task(project.id);
-    const [implementation] = await f.service.delegate(project.id, { route: "fresh", tasks: [t.ref] });
-    await f.service.report(implementation.threadId!, report());
-    f.idle(implementation.threadId!);
-    f.store.updateAssignment(project.id, 1, { state: "accepted" });
-    f.store.updateTask(project.id, t.num, {
-      status: "done",
-      result: "accepted implementation",
-    });
-    const [d] = await f.service.delegate(project.id, {
-      route: "fresh",
-      role: "review",
-      reviewOf: [t.ref],
-    });
-    await f.service.report(d.threadId!, report());
-    f.idle(d.threadId!);
-    await f.service.retireWorker(project.id, d.worker, "old review completed");
-    const o = await f.overview(project.id);
-    expect(o.awaitingAcceptance).toHaveLength(0);
-    expect(o.counts.awaitingAcceptance).toBe(0);
-  });
-
-  it("still counts a reported review while part of its scope is open", async () => {
-    const { f, project } = await projectFixture();
-    const t1 = f.task(project.id);
-    const t2 = f.task(project.id, "Second task");
-    const [implementation] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref, t2.ref] });
-    await f.service.report(implementation.threadId!, report());
-    f.idle(implementation.threadId!);
-    f.store.updateAssignment(project.id, 1, { state: "accepted" });
-    f.store.updateTask(project.id, t1.num, {
-      status: "done",
-      result: "accepted implementation",
-    });
-    f.store.updateTask(project.id, t2.num, { status: "in_progress" });
-    const [d] = await f.service.delegate(project.id, {
-      route: "fresh",
-      role: "review",
-      reviewOf: [t1.ref, t2.ref],
-    });
-    await f.service.report(d.threadId!, report());
-    f.idle(d.threadId!);
-    const o = await f.overview(project.id);
-    expect(o.awaitingAcceptance).toHaveLength(1);
-    expect(o.awaitingAcceptance[0]!.role).toBe("review");
-  });
-});
 
 describe("handover carries a durable environment override", () => {
   it("accepts an environment on coordinator-handover", async () => {

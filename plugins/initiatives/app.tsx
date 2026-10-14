@@ -17,16 +17,16 @@ import {
   type NewThreadRequest,
   useRpc,
   useRealtime,
-  useRealtimeConnectionState,
   experimental_useSidebarThreads as useSidebarThreads,
   type PluginNavPanelProps,
   type PluginThreadPanelProps,
   type PluginThreadHeaderActionProps,
 } from "@get-bb/plugin-sdk/app";
-import type { projectsContract, ProjectSummary } from "./lib/contract";
+import type { projectsContract } from "./lib/contract";
 import { PROJECT_DETAILS_CONFLICT } from "./lib/project-context";
 import type { Command } from "./lib/commands";
 import { appReads } from "./lib/dashboard-data";
+import { useData } from "./use-data";
 import { applyCommitted } from "./lib/committed-result";
 import { mergeOverview } from "./lib/overview-merge";
 import type { Overview, OpinionItem } from "./lib/overview";
@@ -37,7 +37,7 @@ import {
 } from "./lib/schema";
 import "./app.css";
 import { ProjectsSettings } from "./settings-view";
-import { AutoTextarea, ControlRoom, isTab, type Tab } from "./control-room";
+import { AutoTextarea, ControlRoom, toTab, type Tab } from "./control-room";
 import { useRemembered } from "./ui-memory";
 import { sendWrite } from "./lib/write-timeout";
 import { MergeQueueView } from "./merge-queue-view";
@@ -63,63 +63,6 @@ const rememberedNote = (id: string) => {
     return null;
   }
 };
-
-/**
- * Shared by key across the app session; route changes synchronously select
- * their own data. A passive read only follows its key: another read keeps it
- * current (the panel read seeds its Initiative's summary overview).
- */
-function useData<T>(key: string, fetchData: (seed: (key: string, data: unknown) => void) => Promise<T>, enabled = true, passive = false) {
-  const cache = appReads;
-  const [, render] = useState(0);
-  const refresh = useCallback(() => enabled ? cache.refresh(key, fetchData) : Promise.resolve(), [cache, key, enabled]);
-  useEffect(() => {
-    if (!enabled) return;
-    const unsubscribe = cache.subscribe(key, () => render(n => n + 1));
-    if (!passive) void refresh();
-    return unsubscribe;
-  }, [cache, key, enabled, passive, refresh]);
-  const schedule = () => cache.schedule(key, fetchData);
-  useRealtime("initiatives-changed", payload => {
-    const id = (payload as { projectId?: string } | null)?.projectId;
-    if (!enabled || passive || key === "inventory") return;
-    const scoped = ["overview:", "details:", "compose:"].some(prefix => key.startsWith(prefix));
-    const data = cache.entry(key).data as { projectId?: string; membership?: { projectId?: string } | null } | null;
-    const membershipId = data?.projectId ?? data?.membership?.projectId;
-    if (!id || scoped && key.endsWith(`:${id}`) || !scoped && (!membershipId || membershipId === id)) schedule();
-  });
-  const connection = useRealtimeConnectionState();
-  const previousConnection = useRef(connection);
-  const connectedOnce = useRef(connection === "connected");
-  useEffect(() => {
-    if (connection === "connected") {
-      if (enabled && !passive && connectedOnce.current && previousConnection.current !== "connected") schedule();
-      connectedOnce.current = true;
-    }
-    previousConnection.current = connection;
-  }, [connection, cache, key, enabled]);
-  useEffect(() => {
-    if (!enabled || passive) return;
-    const interval = setInterval(() => { if (document.visibilityState !== "hidden") schedule(); }, 15000);
-    // A tab coming back or a network returning reads at once instead of on
-    // the next poll, which a hidden tab skipped.
-    const visible = () => { if (document.visibilityState !== "hidden") schedule(); };
-    document.addEventListener("visibilitychange", visible);
-    window.addEventListener("online", schedule);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", visible);
-      window.removeEventListener("online", schedule);
-    };
-  }, [cache, key, enabled, passive]);
-  const rpc = useRpc<typeof projectsContract>();
-  useEffect(() => {
-    cache.reporter = report => void rpc.call("reportReadTimeout", report).catch(() => {});
-  }, [cache, rpc]);
-  const entry = cache.entry(key);
-  return { data: entry.data as T | null, error: entry.error, loaded: entry.loaded, refresh,
-    schedule, begin: () => cache.begin(key) };
-}
 
 function ErrorNotice({
   message,
@@ -786,7 +729,9 @@ export function Dashboard({
   const api = useRpc<typeof projectsContract>();
   const navigate = useBbNavigate();
   // The open tab survives leaving and coming back: the page keeps it in its route, both remember it.
-  const [rememberedTab, rememberTab] = useRemembered<Tab>(`initiatives:tab:${projectId}`, "inbox", isTab);
+  // A tab remembered before v9 (Threads, Decisions, Context, Log) opens the view that replaced it.
+  const [storedTab, rememberTab] = useRemembered<string>(`initiatives:tab:${projectId}`, "inbox", (value): value is string => typeof value === "string");
+  const rememberedTab = toTab(storedTab) ?? "inbox";
   const showTab = (tab: Tab) => {
     rememberTab(tab);
     const routed = tab === "inbox" ? undefined : tab;
@@ -900,15 +845,23 @@ export function Dashboard({
         <ControlRoom
           key={projectId}
           overview={o}
-          initialTab={isTab(routeTab) ? routeTab : rememberedTab}
-          onTab={tab => { showTab(tab); if (tab === "decisions") setHistoryNeeded(true); if (["threads", "usage", "log"].includes(tab)) { setDetailsNeeded(true); } if (["threads", "context"].includes(tab)) void loadInventory(); }}
-          detailNotice={detailsNeeded && !details.loaded ? "Loading thread details…" : details.error}
+          initialTab={toTab(routeTab) ?? rememberedTab}
+          onTab={tab => {
+            showTab(tab);
+            // Tasks folds the done and cancelled ones, which come with the history tier.
+            if (tab === "archive" || tab === "tasks") setHistoryNeeded(true);
+            // Workers needs retired workers and token totals; Activity lists coordinator generations.
+            if (["workers", "usage", "activity"].includes(tab)) setDetailsNeeded(true);
+            if (tab === "rules") void loadInventory();
+          }}
+          detailNotice={detailsNeeded && !details.loaded ? "Loading worker details…" : details.error}
           inventory={inventory}
           run={command}
           readHandoff={async (ref) => {
             const result = (await api.call("read", { projectId, view: "assignments", refs: [ref], detailed: true, fields: ["standardHandoff"] })) as { items: { standardHandoff?: string | null }[] };
             return result.items[0]?.standardHandoff ?? null;
           }}
+          loadChildren={(threadId, offset) => api.call("childPage", { projectId, threadId, offset })}
           refresh={refresh}
           mergeQueue={{
             count: queue.data?.pullRequests.length ?? 0,
@@ -924,7 +877,6 @@ export function Dashboard({
             ),
           }}
           openThread={(id) => navigate.toThread(id)}
-          newThread={() => navigate.toPluginPanel("initiatives", { subPath: `${projectId}/compose` })}
           notice={
             <>
               <ErrorNotice
@@ -996,7 +948,7 @@ function NewTask({ run }: { run: (command: Command) => Promise<unknown> }) {
     }
   };
   return (
-    <details className="project-details">
+    <details className="project-details cr-new-task">
       <summary>Add a task</summary>
       <form onSubmit={submit}>
         <label className="project-field">
@@ -1205,84 +1157,22 @@ export function InitiativeCompose({ projectId }: { projectId: string }) {
   </div>;
 }
 
+/**
+ * D536: the route of one Initiative's dashboard (`<id>`, `<id>/<tab>`) and of its composer. There
+ * is no Initiatives overview: the sidebar lists the Initiatives and creates them. BB still draws
+ * this page's sidebar entry (a nav panel has no route without one), so its bare route says where
+ * they went.
+ */
 export function ProjectsPage({ subPath }: PluginNavPanelProps) {
-  const api = useRpc<typeof projectsContract>();
-  const navigate = useBbNavigate();
-  const [creationNote, setCreationNote] = useState<string | null>(null);
   const id = subPath.replace(/^\/+|\/+$/g, "");
   // `<id>` or `<id>/<tab>`: the dashboard's tab is part of its route.
   const [projectId, routeTab] = id.split("/");
-
-  const open = (id: string) =>
-    navigate.toPluginPanel("initiatives", { subPath: id });
   return (
     <div className="project-page">
-      {id.endsWith("/compose") ? <InitiativeCompose projectId={id.slice(0, -8)} /> : id === "new" ? (
-        <>
-          <button className="project-back" onClick={() => open("")}>
-            ← Initiatives
-          </button>
-          <CreateProject
-            created={(id, note) => {
-              setCreationNote(note);
-              open(id);
-            }}
-          />
-        </>
-      ) : id ? (
-        <>
-          <button className="project-back" onClick={() => open("")}>
-            ← Initiatives
-          </button>
-          <Dashboard key={projectId} projectId={projectId!} routeTab={routeTab} creationNote={creationNote} />
-        </>
-      ) : (
-        <Catalog open={open} />
-      )}
+      {id.endsWith("/compose") ? <InitiativeCompose projectId={id.slice(0, -8)} />
+        : id ? <Dashboard key={projectId} projectId={projectId!} routeTab={routeTab} />
+        : <p className="bb-projects project-muted">Initiatives are listed in the sidebar: open one there, or start one with its +.</p>}
     </div>
-  );
-}
-function Catalog({ open }: { open: (id: string) => void }) {
-  const api = useRpc<typeof projectsContract>();
-  const list = useData("projects", () => api.call("list", null));
-  return (
-        <main className="bb-projects">
-          <header className="project-header">
-            <div>
-              <p className="project-eyebrow">Initiative mode</p>
-              <h1>Initiatives</h1>
-            </div>
-            <button className="project-primary" onClick={() => open("new")}>
-              New initiative
-            </button>
-          </header>
-          <ErrorNotice message={list.error} retry={() => void list.refresh()} />
-          {list.data?.length === 0 && (
-            <p className="project-muted">
-              Start an initiative or adopt a coordinator from its Initiative
-              panel.
-            </p>
-          )}
-          {list.data?.map((p: ProjectSummary) => (
-            <button
-              className="project-catalog-card"
-              key={p.id}
-              onClick={() => open(p.id)}
-            >
-              <h2>
-                {p.name}
-                {p.paused && <span className="project-badge">Paused</span>}
-              </h2>
-              <p>{p.objective}</p>
-              <span className="project-meta">
-                {/* What waits on the user leads; older trees have no needsYou. */}
-                {(p.needsYou ?? p.opinions) ? <strong className="project-needs-you">{p.needsYou ?? p.opinions} need{(p.needsYou ?? p.opinions) === 1 ? "s" : ""} you · </strong> : null}
-                {p.inFlight} in flight · {p.remaining} remaining
-                {p.revisit ? ` · ${p.revisit} decision${p.revisit === 1 ? "" : "s"} to check` : ""}
-              </span>
-            </button>
-          ))}
-        </main>
   );
 }
 /**
@@ -1375,7 +1265,7 @@ type ThreadGroupTabsSlot = (registration: {
 
 /**
  * D446 (T149): the header of an Initiative's coordinator and of each of its discussions shows them
- * as tabs: "Coordinator" pinned first, then the discussions oldest first by their thread titles, then
+ * as tabs: the coordinator pinned first, then the discussions oldest first by their thread titles, then
  * "+" for a new discussion. It reads the same panel request as the header's Initiative button. D483:
  * archiving and restoring only change what the tabs show: BB's sidebar list says which discussions
  * are archived or deleted, and those are hidden except in their own header.
@@ -1394,7 +1284,8 @@ export function useInitiativeTabs({ threadId }: { threadId: string }): ThreadGro
       id === threadId || (sidebar.status === "error" || (sidebar.status === "ready" && listed.has(id) && !listed.get(id)!.isArchived));
     return {
       tabs: [
-        { threadId: tabs.coordinatorThreadId, label: "Coordinator", pinned: true },
+        // Tab labels are thread titles (v9 §9): BB shows the coordinator's own title.
+        { threadId: tabs.coordinatorThreadId, pinned: true },
         ...tabs.discussionThreadIds.filter(shown).map((id) => ({ threadId: id })),
       ],
       create: {

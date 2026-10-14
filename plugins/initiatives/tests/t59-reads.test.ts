@@ -63,7 +63,8 @@ describe("T59 selective agent reads", () => {
     const task = f.task(project.id);
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
     await f.service.report(worker.threadId!, report());
-    const decision = JSON.parse(await f.harness.callAgentTool("initiative_decision", { action: "user-choice", description: "Keep the 5m TTL." }, { threadId: "coordinator" }) as string);
+    // v9: no agent writes decisions any more; an older record stays readable.
+    const decision = f.service.recordDecision(project.id, { decision: { madeBy: "user", description: "Keep the 5m TTL." } }, { author: "coordinator", threadId: "coordinator", assignment: null });
     const result = JSON.parse(await f.harness.callAgentTool("initiative_read", { refs: [worker.worker, decision.ref, "D999"], fields: ["report", "body", "resolution"] }, { threadId: "coordinator" }) as string);
     expect(result.items.map((i: any) => Object.keys(i))).toEqual([["ref", "view", "report"], ["ref", "view", "body", "resolution"]]);
     expect(result.items[0].report).toMatchObject({ ref: worker.assignment, summary: expect.stringMatching(/archived records/) });
@@ -172,6 +173,8 @@ describe("T59 selective agent reads", () => {
     f.history.push({ type: "turn/input/accepted", seq: 3, createdAt: Date.now(), data: { clientRequestId: "creq_1" } });
     f.history.push({ type: "item/completed", seq: 4, createdAt: Date.now(), data: { item: { type: "agentMessage", id: "m4", text: long } } });
     f.history.push({ type: "turn/completed", seq: 5, createdAt: Date.now() + 1, data: { status: "completed" } });
+    // v9: only initiative_report finishes work; the report text is the final message kept.
+    await f.harness.callAgentTool("initiative_report", { outcome: "done", summary: "Done", report: long.trim() }, { threadId: w.threadId });
     await f.runtime.onThreadIdle(f.idle(w.threadId));
     const read = await tool("initiative_read", { refs: ["W1"], detailed: true, fields: ["report"] });
     expect(read.items).toEqual([{ ref: "W1", view: "workers", report: expect.objectContaining({ ref: "A1", outcome: "done", finalMessage: long.trim() }) }]);

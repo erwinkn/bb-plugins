@@ -3,7 +3,7 @@ import { projectFixture, report } from "./fake-native";
 import { OPEN_REVIEW_QUERY } from "../lib/store";
 
 // W228 (D440): a worker's thread context names the review pending or running of its latest
-// report, so the Account Pooler keeps its prompt cache warm for the fix round. The next round's
+// report (v9: legacy lead-spawned reviews; a worker's own running child is named too, see v9 tests), so the Account Pooler keeps its prompt cache warm for the fix round. The next round's
 // fresh reviewer renews it; the review's report and newer work for the worker end it.
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool = async (f: Fx, name: string, input: unknown, threadId = "coordinator") => JSON.parse(await f.harness.callAgentTool(name, input, { threadId }) as string);
@@ -18,6 +18,8 @@ async function turn(f: Fx, threadId: string, text: string) {
   f.history.push({ type: "turn/input/accepted", seq: ++seq, createdAt: Date.now(), data: { clientRequestId: requestId } });
   f.history.push({ type: "item/completed", seq: ++seq, createdAt: Date.now(), data: { item: { type: "agentMessage", text } } });
   f.history.push({ type: "turn/completed", seq: ++seq, createdAt: Date.now(), data: { status: "completed" } });
+  // v9: only initiative_report finishes work (a reviewer's turn included).
+  await tool(f, "initiative_report", { outcome: "done", summary: text, report: text }, threadId);
   await f.runtime.onThreadIdle(f.idle(threadId));
 }
 
@@ -28,23 +30,23 @@ describe("W228 review in the thread context", () => {
     await turn(f, w.threadId, "Done.");
     expect(await review(f, w.threadId)).toBeNull();
 
-    const [r] = await tool(f, "initiative_spawn", { role: "review", label: "Review", purpose: "review search", reviews: "W1", text: "Review it." });
+    const [r] = await f.service.delegate(f.store.projects()[0]!.id, { route: "fresh", role: "review", label: "Review", area: "review search", reviews: "W1", note: "Review it." });
     const first = f.store.assignment(project.id, 2)!;
     expect(await review(f, w.threadId)).toEqual({ ref: "A2", worker: "W2", phase: first.state === "running" ? "active" : "pending", since: first.createdAt });
     // Only the reviewed worker is marked; the coordinator and the reviewer are not.
-    expect(await review(f, r.threadId)).toBeNull();
+    expect(await review(f, r.threadId!)).toBeNull();
     expect(await review(f, "coordinator")).toBeNull();
     // The members route stays as it was.
     const members = (await get(f, `/context/v1/members?initiativeId=${project.id}`)).members;
     expect(members.every((m: Record<string, unknown>) => !("review" in m))).toBe(true);
 
-    await turn(f, r.threadId, "Two findings.");
+    await turn(f, r.threadId!, "Two findings.");
     expect(await review(f, w.threadId)).toBeNull();
 
     await tool(f, "initiative_message", { to: "W1", text: "Fix the findings.", work: true });
     await turn(f, w.threadId, "Fixed both.");
     expect(await review(f, w.threadId)).toBeNull();
-    const [again] = await tool(f, "initiative_spawn", { role: "review", label: "Review fixes", purpose: "review the fixes", reviews: "W1", handoffs: ["W2"], text: "Review the fixes." });
+    const [again] = await f.service.delegate(f.store.projects()[0]!.id, { route: "fresh", role: "review", label: "Review fixes", area: "review the fixes", reviews: "W1", handoffs: ["W2"], note: "Review the fixes." });
     const second = f.store.assignment(project.id, Number(again.assignment.slice(1)))!;
     expect(await review(f, w.threadId)).toMatchObject({ ref: second.ref, worker: "W3", since: second.createdAt });
 
@@ -58,7 +60,7 @@ describe("W228 review in the thread context", () => {
     const { f, project } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     await turn(f, w.threadId, "Done.");
-    await tool(f, "initiative_spawn", { role: "review", label: "Review", purpose: "review search", reviews: "W1", text: "Review it." });
+    await f.service.delegate(f.store.projects()[0]!.id, { route: "fresh", role: "review", label: "Review", area: "review search", reviews: "W1", note: "Review it." });
     expect(await review(f, w.threadId)).toMatchObject({ ref: "A2" });
     await f.service.stopAssignment(project.id, "A2", "Not needed.").catch(() => undefined);
     expect(f.store.assignment(project.id, 2)!.state).not.toMatch(/^(dispatching|queued|running)$/);
@@ -69,15 +71,15 @@ describe("W228 review in the thread context", () => {
     const { f, project } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     await turn(f, w.threadId, "Done.");
-    const [r] = await tool(f, "initiative_spawn", { role: "review", label: "Review", purpose: "review search", reviews: "W1", text: "Review it." });
+    const [r] = await f.service.delegate(f.store.projects()[0]!.id, { route: "fresh", role: "review", label: "Review", area: "review search", reviews: "W1", note: "Review it." });
     expect(await review(f, w.threadId)).toMatchObject({ ref: "A2" });
     const reported = f.store.assignment(project.id, 1)!.reportSeq;
     await f.service.report(w.threadId, { ...report(), summary: "Corrected after new evidence." } as never);
     expect(f.store.assignment(project.id, 1)!.reportSeq).toBeGreaterThan(reported);
     // A2 embeds the earlier filing of A1, so it is not a review of the latest report.
     expect(await review(f, w.threadId)).toBeNull();
-    await turn(f, r.threadId, "Reviewed the first filing.");
-    const [again] = await tool(f, "initiative_spawn", { role: "review", label: "Review again", purpose: "review the amended report", reviews: "W1", handoffs: ["W2"], text: "Review the amended report." });
+    await turn(f, r.threadId!, "Reviewed the first filing.");
+    const [again] = await f.service.delegate(f.store.projects()[0]!.id, { route: "fresh", role: "review", label: "Review again", area: "review the amended report", reviews: "W1", handoffs: ["W2"], note: "Review the amended report." });
     expect(await review(f, w.threadId)).toMatchObject({ ref: again.assignment, worker: "W3" });
   });
 

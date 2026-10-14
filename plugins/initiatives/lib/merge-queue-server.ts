@@ -92,7 +92,18 @@ export interface MergeQueueSources {
   assignedPrs(projectId: string): ReadonlyMap<string, PrWork>;
   /** Each PR's notes summary (D442), by canonical PR URL. */
   notes(projectId: string): ReadonlyMap<string, PrNotesSummary>;
+  /** v9 (§7): PR states for computed task status. Every open-list fetch marks what it lists open. */
+  prStates?: {
+    markOpen(urls: string[], at: number): void;
+    /** Tracked PRs to look up after a fetch: not listed, not MERGED, not checked in the last hour. */
+    toLookUp(listed: ReadonlySet<string>, at: number, limit: number): string[];
+    save(url: string, at: number, result: { state: "OPEN" | "MERGED" | "CLOSED"; mergedAt: number | null; closedAt: number | null } | { error: string }): void;
+  };
 }
+
+/** The lookup pass after each open-list fetch: at most this many PRs, this many at a time. */
+const LOOKUP_LIMIT = 10;
+const LOOKUP_PARALLEL = 2;
 
 /**
  * Server-side cache of each repository's open PRs by the `gh` user, shared
@@ -109,6 +120,8 @@ export class MergeQueueCache {
   private loginName: string | null = null;
   private repos = new Map<string, RepoEntry>();
   private remotes = new Map<string, { at: number; value: Promise<Remote>; last: Remote | null }>();
+  /** The running PR-state lookup pass, one at a time. */
+  private lookups: Promise<void> | null = null;
 
   constructor(
     private sources: MergeQueueSources,
@@ -250,9 +263,51 @@ export class MergeQueueCache {
       target.pullRequests = list.value;
       target.fetchedAt = this.now();
       target.error = null;
+      try {
+        this.sources.prStates?.markOpen(list.value.flatMap((pr) => canonicalPrUrl(pr.url) ?? []), this.now());
+      } catch { /* the states are a cache; the next fetch writes them again */ }
+      this.lookUp();
     } else target.error = message(list.reason);
     if (details.status === "fulfilled") target.details = { data: details.value, fetchedAt: this.now(), error: null };
     else target.details = { ...target.details, error: message(details.reason) };
+  }
+
+  /**
+   * v9 (§7): after a fetch, looks up the state of tracked PRs the open lists don't name (merged,
+   * closed, or someone else's), oldest check first, LOOKUP_PARALLEL at a time. Every lookup stamps
+   * its check time, so no PR hogs the pass; reads never wait for it.
+   */
+  private lookUp(): void {
+    const states = this.sources.prStates;
+    if (!states || this.lookups) return;
+    const listed = new Set([...this.repos.values()].flatMap((entry) => (entry.pullRequests ?? []).flatMap((pr) => canonicalPrUrl(pr.url) ?? [])));
+    let urls: string[];
+    try {
+      urls = states.toLookUp(listed, this.now(), LOOKUP_LIMIT);
+    } catch {
+      return;
+    }
+    if (!urls.length) return;
+    const one = async (url: string) => {
+      try {
+        const out = JSON.parse(await this.gh(["pr", "view", url, "--json", "state,mergedAt,closedAt"])) as { state?: string; mergedAt?: string | null; closedAt?: string | null };
+        const state = out.state === "MERGED" || out.state === "CLOSED" || out.state === "OPEN" ? out.state : null;
+        if (!state) throw new Error(`unexpected state ${String(out.state)}`);
+        states.save(url, this.now(), { state, mergedAt: out.mergedAt ? Date.parse(out.mergedAt) : null, closedAt: out.closedAt ? Date.parse(out.closedAt) : null });
+      } catch (error) {
+        try { states.save(url, this.now(), { error: error instanceof Error ? error.message : String(error) }); } catch { /* a cache */ }
+      }
+    };
+    this.lookups = (async () => {
+      for (let i = 0; i < urls.length; i += LOOKUP_PARALLEL) await Promise.all(urls.slice(i, i + LOOKUP_PARALLEL).map(one));
+    })().finally(() => {
+      this.lookups = null;
+    });
+  }
+
+  /** Resolves once no PR-state lookup is running (tests). */
+  async lookupsSettled(): Promise<void> {
+    await this.lookups;
   }
 
   /**

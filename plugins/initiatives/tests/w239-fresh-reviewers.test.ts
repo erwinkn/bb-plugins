@@ -1,8 +1,9 @@
 import { expect, it } from "vitest";
 import { projectFixture } from "./fake-native";
 
-// W239: reviewers are never reused. Work for a reviewer is refused with the fresh reviewer to
-// spawn, and a review's report notice nudges the coordinator to retire its reviewer.
+// W239: reviewers are never reused. v9: leads no longer spawn reviewers (workers run their own),
+// but reviewers given out before the switch remain: work for one is refused with where its
+// findings go, and a review's report notice nudges the lead to retire its reviewer.
 
 type Fx=Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool=async(f:Fx,name:string,input:unknown,threadId="coordinator")=>JSON.parse(await f.harness.callAgentTool(name,input,{threadId}) as string);
@@ -16,16 +17,21 @@ async function finish(f:Fx,threadId:string,text:string){
  f.history.push({type:"turn/input/accepted",seq:++seq,createdAt:at,data:{clientRequestId:requestId}});
  f.history.push({type:"item/completed",seq:++seq,createdAt:at,data:{item:{type:"agentMessage",text}}});
  f.history.push({type:"turn/completed",seq:++seq,createdAt:at,data:{status:"completed"}});
+ // v9: only initiative_report finishes work.
+ await tool(f,"initiative_report",{outcome:"done",summary:text,report:text},threadId);
  await f.runtime.onThreadIdle(f.idle(threadId));
 }
+/** A review given out the old way: the service keeps the path for work from before the switch. */
+const review=async(f:Fx,input:{label:string;purpose:string;reviews:string;text:string;handoffs?:string[]})=>
+ f.service.delegate(f.store.projects()[0]!.id,{route:"fresh",role:"review",label:input.label,area:input.purpose,reviews:input.reviews,note:input.text,...(input.handoffs?{handoffs:input.handoffs}:{})});
 /** W1 implements, W2 reviews it (A2), W3 fixes the findings. */
 async function reviewedAndFixed(){
  const {f,project}=await projectFixture();
  const task=f.task(project.id);
  const [w]=await tool(f,"initiative_spawn",{label:"Implement",purpose:"implement",tasks:[task.ref],text:"Implement it"});
  await finish(f,w.threadId,"Original implementation");
- const [r]=await tool(f,"initiative_spawn",{role:"review",label:"Review",purpose:"review W1",reviews:w.worker,text:"Review it"});
- await finish(f,r.threadId,"Finding: off by one");
+ const [r]=await review(f,{label:"Review",purpose:"review W1",reviews:w.worker,text:"Review it"});
+ await finish(f,r.threadId!,"Finding: off by one");
  const [fix]=await tool(f,"initiative_spawn",{label:"Fix",purpose:"fix W2's findings",tasks:[task.ref],handoffs:[r.worker],text:"Fix the off by one"});
  await finish(f,fix.threadId,"Fixed the off by one");
  return{f,project,task,w,r,fix};
@@ -36,7 +42,7 @@ it("refuses work for a reviewer and names the fresh reviewer to spawn; a plain m
  const before=f.store.assignments(project.id).length;
  for (const extra of [{work:true},{tasks:[task.ref]}])
   await expect(tool(f,"initiative_message",{to:r.worker,text:"Re-review the fix",...extra})).rejects.toThrow(
-   'W2 is a reviewer, and reviews are not reused. Spawn a fresh reviewer instead: initiative_spawn {role:"review",reviews:"W1",handoffs:["A2"],label:"Review W1",purpose:"review the fixes",text:"<what changed, what to check>"}',
+   'W2 is a reviewer from before workers ran their own reviews, and reviews are not reused. Send its findings (A2) to the worker it reviewed as more work: initiative_message {"to":"W1","text":"<the findings>","work":true}; that worker runs its own fresh reviewer.',
   );
  expect(f.store.assignments(project.id)).toHaveLength(before);
  await expect(tool(f,"initiative_message",{to:r.worker,text:"Which line was off by one?"})).resolves.toBeTruthy();
@@ -45,7 +51,7 @@ it("refuses work for a reviewer and names the fresh reviewer to spawn; a plain m
 
 it("the suggested fresh reviewer sees the fix worker's report and the earlier findings",async()=>{
  const {f,project,r,fix}=await reviewedAndFixed();
- const [next]=await tool(f,"initiative_spawn",{role:"review",label:"Review the fix",purpose:"review the fixes",reviews:fix.worker,handoffs:["A2"],text:"Check the off by one is gone"});
+ const [next]=await review(f,{label:"Review the fix",purpose:"review the fixes",reviews:fix.worker,handoffs:["A2"],text:"Check the off by one is gone"});
  const a=f.store.assignment(project.id,Number(next.assignment.slice(1)))!;
  expect(a.handoffSources!.map(h=>h.assignment)).toEqual(["A3","A2"]);
  expect(a.briefText).toContain("Fixed the off by one");
@@ -58,12 +64,12 @@ it("a review's report notice ends with the nudge to retire its reviewer; a work 
  const {f}=await projectFixture();
  const [w]=await tool(f,"initiative_spawn",{label:"Implement",purpose:"implement",text:"Implement it"});
  await tool(f,"initiative_report",{outcome:"done",summary:"Implemented",report:"Implemented it."},w.threadId);
- const [r]=await tool(f,"initiative_spawn",{role:"review",label:"Review",purpose:"review W1",reviews:w.worker,text:"Review it"});
- await tool(f,"initiative_report",{outcome:"done",summary:"One finding",report:"Off by one in the pager."},r.threadId);
+ const [r]=await review(f,{label:"Review",purpose:"review W1",reviews:w.worker,text:"Review it"});
+ await tool(f,"initiative_report",{outcome:"done",summary:"One finding",report:"Off by one in the pager."},r.threadId!);
  const [implemented,reviewed]=notices(f);
  expect(implemented).not.toContain("Retire");
  expect(reviewed).toBe("Initiative · "+f.store.projects()[0]!.name+" · W2\n\nW2 reported (done) on A2: One finding\n\nOff by one in the pager.\n\nRetire W2 once read; reviews are not reused.");
- const [b]=await tool(f,"initiative_spawn",{role:"review",label:"Review again",purpose:"review W1",reviews:w.worker,text:"Review it"});
- await tool(f,"initiative_report",{outcome:"blocked",summary:"Which branch?",question:"Which branch should I review?",report:"Which branch should I review?"},b.threadId);
+ const [b]=await review(f,{label:"Review again",purpose:"review W1",reviews:w.worker,text:"Review it"});
+ await tool(f,"initiative_report",{outcome:"blocked",summary:"Which branch?",question:"Which branch should I review?",report:"Which branch should I review?"},b.threadId!);
  expect(notices(f).at(-1)).not.toContain("Retire");
 });

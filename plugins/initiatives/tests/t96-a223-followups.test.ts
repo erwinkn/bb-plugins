@@ -38,7 +38,7 @@ describe("F1: every record page carries a token of the full rendered text", () =
     const url = `/context/v1/record?initiativeId=${project.id}&ref=A1&part=handoff`;
     const before = await page(f, url);
     const a1 = f.store.assignment(project.id, 1)!;
-    f.store.updateTask(project.id, t1.num, { status: "blocked" });
+    f.store.setTaskStatus(project.id, t1.num, "cancelled");
     const status = await page(f, url);
     f.store.updateWorker(project.id, 1, { label: "Search renamed" });
     const label = await page(f, url);
@@ -56,7 +56,7 @@ describe("F1: every record page carries a token of the full rendered text", () =
 describe("A223 probe P4 as a regression", () => {
   it("P4: a continue may embed a related handoff into the retained context", async () => {
     const { f, project, t1 } = await reported();
-    await f.service.closeTask(project.id, t1.ref, "done");
+    await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
     const t2 = f.service.createTask(project.id, { title: "Fix", summary: "Fix.", brief: brief("proj_a", ["search"]), dependsOn: [t1.ref] }, "coordinator");
     const [r] = await f.service.delegate(project.id, { route: "continue", worker: "W1", tasks: [t2.ref], handoffs: ["A1"] });
     expect(r).toMatchObject({ assignment: "A2", worker: "W1" });

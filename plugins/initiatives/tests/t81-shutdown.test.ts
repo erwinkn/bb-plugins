@@ -106,7 +106,7 @@ async function lostQueuedSend() {
   const t1 = f.task(project.id);
   const [d] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref] });
   await f.service.report(d.threadId!, report());
-  await f.service.closeTask(project.id, t1.ref, "done");
+  await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
   f.idle(d.threadId!);
   const worker = f.store.workers(project.id)[0]!;
   const t2 = f.task(project.id, "Next task");
@@ -246,7 +246,8 @@ describe("T81 responsive initiatives-sweep shutdown", () => {
     expect(del.settled).toBe(true);
     expect(a.queuedMessageId).toBeNull(); // the settled delete's receipt is kept
     expect(a.opState).toBe("uncertain"); // never dropped; a later sweep settles it
-    expect(f.store.task(project.id, t2.num)!.status).toBe("blocked");
+    // v9: tasks keep no reservation; the cancelled work leaves it planned.
+    expect(f.store.task(project.id, t2.num)!.status).toBe("planned");
     expect(io.after()).toEqual([]);
   });
 

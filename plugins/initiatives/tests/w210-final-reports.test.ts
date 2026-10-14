@@ -21,23 +21,19 @@ function finishTurn(f: Fx, text: string, status = "completed") {
   f.history.push({ type: "item/completed", seq: ++seq, createdAt: Date.now(), data: { item: { type: "agentMessage", id: `m${seq}`, text } } });
   f.history.push({ type: "turn/completed", seq: ++seq, createdAt: Date.now() + 1, data: { status } });
 }
-async function spawned(role: "work" | "review" = "work") {
+async function spawned() {
   const { f, project } = await projectFixture();
   const task = f.task(project.id, "Archived search");
   const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it.", tasks: [task.ref] });
-  if (role === "work") return { f, project, task, w };
-  await tool(f, "initiative_report", { outcome: "done", summary: "Search covers archives", report: REPORT }, w.threadId);
-  f.send.mockClear();
-  const [r] = await tool(f, "initiative_spawn", { label: "Review", purpose: "review search", text: "Review it.", role: "review", reviews: "W1" });
-  return { f, project, task, w: r };
+  return { f, project, task, w };
 }
 const sentTexts = (f: Fx) => f.send.mock.calls.map(([args]) => args.input[0].text as string);
 
 describe("W210 spawning workers with final-reports-only notices", () => {
-  it("work and review workers are spawned explicit, under the coordinator", async () => {
-    const { f, w } = await spawned("review");
+  it("workers are spawned explicit, under the coordinator", async () => {
+    const { f, w } = await spawned();
     for (const [args] of f.spawn.mock.calls) expect(args).toMatchObject({ parentThreadId: "coordinator", parentNotices: "explicit" });
-    expect(f.spawn).toHaveBeenCalledTimes(2);
+    expect(f.spawn).toHaveBeenCalledTimes(1);
     expect(f.threads.get(w.threadId)).toMatchObject({ parentNotices: "explicit" });
     expect(f.update.mock.calls.filter(([args]) => "parentNotices" in args)).toHaveLength(0);
   });
@@ -123,43 +119,9 @@ describe("W210 report delivery", () => {
     expect(sentTexts(f)).toEqual([`Initiative · Search · W1\n\nW1 reported (done) on A1: Done\n\n${REPORT}`]);
   });
 
-  it("without initiative_report, the final message is recorded for the dashboard and not sent", async () => {
-    const { f, project, w } = await spawned();
-    finishTurn(f, REPORT);
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "reported", report: { outcome: "succeeded", summary: "Done", finalMessage: REPORT } });
-    expect(f.send).not.toHaveBeenCalled();
-  });
 
   // W212: a capture is not the worker's filing, so filing the same text still sends it.
-  it("a worker's own filing of a captured report's text is sent", async () => {
-    const { f, project, w } = await spawned();
-    finishTurn(f, REPORT);
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.send).not.toHaveBeenCalled();
-    const { summary } = f.store.assignment(project.id, 1)!.report!;
-    await tool(f, "initiative_report", { outcome: "done", summary, report: REPORT }, w.threadId);
-    expect(f.send).toHaveBeenCalledTimes(1);
-    expect(f.store.assignment(project.id, 1)!.report).not.toHaveProperty("captured");
-  });
 
-  it("a captured final message never replaces a report filed while capture was reading", async () => {
-    const { f, project, w } = await spawned();
-    finishTurn(f, "Captured final");
-    let release!: () => void, reached!: () => void, held = false;
-    const at = new Promise<void>(r => (reached = r)), gate = new Promise<void>(r => (release = r));
-    // Hold capture's read of where the brief entered the thread.
-    f.intercept(async (path, args, call) => {
-      if (path === "threads.events.list" && !held && args.types?.[0] === "turn/input/accepted" && args.order === "desc") { held = true; reached(); await gate; }
-      return call();
-    });
-    const capture = f.runtime.onThreadIdle(f.idle(w.threadId));
-    await at;
-    await tool(f, "initiative_report", { outcome: "done", summary: "Filed", report: REPORT }, w.threadId);
-    release(); await capture;
-    expect(f.store.assignment(project.id, 1)!.report).toMatchObject({ summary: "Filed", finalMessage: REPORT });
-    expect(f.send).toHaveBeenCalledTimes(1);
-  });
 
   it("a blocked report steers the coordinator and waits in the Inbox as before", async () => {
     const { f, project, w } = await spawned();
@@ -169,12 +131,6 @@ describe("W210 report delivery", () => {
     expect((await f.overview(project.id, "summary")).blockers.map(b => b.question)).toEqual(["Which staging key?"]);
   });
 
-  it("a reviewer reports the same way", async () => {
-    const { f, project, w } = await spawned("review");
-    await tool(f, "initiative_report", { outcome: "done", summary: "Two findings", report: "1. Ranking ignores archives.\n2. No test for empty queries." }, w.threadId);
-    expect(f.store.assignment(project.id, 2)!.report!.finalMessage).toContain("Ranking ignores archives");
-    expect(sentTexts(f)).toEqual(["Initiative · Search · W2\n\nW2 reported (done) on A2: Two findings\n\n1. Ranking ignores archives.\n2. No test for empty queries.\n\nRetire W2 once read; reviews are not reused."]);
-  });
 });
 
 describe("W210 stuck workers", () => {
@@ -380,8 +336,8 @@ describe("W210 stuck workers", () => {
 describe("W210 guidance", () => {
   it("defaults say how to report; the previous shipped defaults upgrade to them", async () => {
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report {outcome, summary, report}.");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Stop background servers first.");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain('A "stopped without reporting" message means a worker is stuck; read its thread.');
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Ending a turn reports nothing.");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("A worker reports once: done (clean review) or blocked");
     const before = { coordinator: PREVIOUS_DEFAULTS.coordinator.find(text => text.includes("Read it, send fixes back"))!, worker: PREVIOUS_DEFAULTS.worker.find(text => text.includes("Your final message is your report"))! };
     const f = fixture({ coordinatorInstructions: before.coordinator, workerInstructions: before.worker });
     f.store.setFlag(GUIDANCE_RESET_FLAG);

@@ -12,7 +12,7 @@ export interface PrCaller {
   author: string;
   /** Set for a worker: it may only add notes, to the PRs `owns` admits. */
   worker: { ref: string; owns: (url: string) => boolean } | null;
-  /** D480: a discussion adds notes and closes questions, on any PR, and changes nothing else. */
+  /** Historical (D480): a discussion is a lead since v9 and sets everything. */
   discussion?: boolean;
   /** The caller's thread: a note's link when it gives none. */
   threadId: string | null;
@@ -36,18 +36,19 @@ export function recordPrs(
   at: number,
   caller: PrCaller = COORDINATOR,
 ) {
-  // Workers and discussions only write notes; a discussion also answers questions (D480).
-  const own = caller.worker ? ["url", "notes"] : caller.discussion ? ["url", "notes", "answered"] : null;
+  // v9: a worker keeps its own PRs' stage and notes; every other field is a lead's. Leads
+  // (the coordinator and discussions) set everything.
+  const own = caller.worker ? ["url", "stage", "note", "notes"] : null;
   if (own) {
     const fields = [...new Set(input.rename ? ["rename"] : (input.prs ?? []).flatMap((pr) => Object.keys(pr).filter((k) => !own.includes(k))))];
-    const is = `${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} the coordinator's to set`;
+    const is = `${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} a lead's to set`;
     if (fields.length)
-      throw new ProjectError(caller.worker ? `Workers only add notes ({prs:[{url,notes}]}); ${is}.` : `A discussion only adds notes and answers questions ({prs:[{url,notes,answered}]}); ${is}: message it.`);
+      throw new ProjectError(`Workers set their PRs' stage and add notes ({prs:[{url,stage,notes}]}); ${is}.`);
   }
   if (caller.worker) {
     const foreign = (input.prs ?? []).filter((pr) => !caller.worker!.owns(canonicalPrUrl(pr.url)!)).map((pr) => pr.url);
     if (foreign.length)
-      throw new ProjectError(`${caller.worker.ref} notes only PRs its assignments name or its branch opened, not ${foreign.join(", ")}. Tell the coordinator instead.`);
+      throw new ProjectError(`${caller.worker.ref} keeps only PRs its assignments name or its branch opened, not ${foreign.join(", ")}. Tell your lead instead.`);
   }
   const categories = () => new Set([...store.prRecords(projectId).values()].flatMap((r) => (r.category ? [r.category] : [])));
   // A failure rolls the whole call back: name the categories as they were before it.

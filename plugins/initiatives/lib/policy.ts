@@ -137,9 +137,11 @@ export function delegationViolations(facts: DelegationFacts): string[] {
     reasons.push("The Initiative is paused. Resume it before giving out new work.");
   if (!facts.project.memberProjectIds.includes(facts.bbProjectId))
     reasons.push(`BB project ${facts.bbProjectId} is not a member of this Initiative. Add it to the Initiative first.`);
+  // v9 (D522): only a task cancelled by hand refuses work; a computed status refuses nothing,
+  // and new work clears a hand-set planned or done.
   for (const task of facts.tasks)
-    if (task.status === "done" || task.status === "cancelled")
-      reasons.push(`${task.ref} is ${task.status}. Reopen it first if it needs more work.`);
+    if (task.status === "cancelled" && task.statusSetAt !== null)
+      reasons.push(`${task.ref} was cancelled by hand. Ask the user, who can choose Follow the work on the Tasks tab.`);
   const worker = facts.worker;
   if (facts.route === "fresh" && worker)
     reasons.push("A spawn creates a new worker; message the existing one instead.");

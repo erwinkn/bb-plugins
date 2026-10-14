@@ -6,7 +6,7 @@ import { memoryStore } from "./helpers";
 import { buildOverview } from "../lib/overview";
 
 // T98: a question the coordinator withdrew leaves the Inbox and stays visible in
-// Decisions history as a withdrawal, distinct from the user's quiet close.
+// the Archive as a withdrawal, distinct from the user's quiet close.
 installTestPluginRuntime();
 const app = await loadPluginApp(() => import("../app"));
 const mounted: ReturnType<typeof renderSlot>[] = [];
@@ -31,7 +31,7 @@ function overview() {
   return o;
 }
 
-it("shows a withdrawal honestly in Decisions history and keeps only open questions in the Inbox", async () => {
+it("shows a withdrawal honestly in the Archive and keeps only open questions in the Inbox", async () => {
   const o = overview();
   expect(o.opinionNeeded.map(q => q.question)).toEqual(["Ship Friday?"]);
   const command = vi.fn();
@@ -39,7 +39,8 @@ it("shows a withdrawal honestly in Decisions history and keeps only open questio
   mounted.push(slot);
   await slot.findAllByText("Ship Friday?");
   expect(slot.queryByText("Which component kit?")).toBeNull();
-  fireEvent.click(slot.getByRole("tab", { name: /Decisions/ }));
+  fireEvent.click(slot.getByRole("button", { name: "More views" }));
+  fireEvent.click(slot.getByRole("button", { name: "Archive" }));
   fireEvent.click(await slot.findByText("Closed questions · 2"));
   const row = slot.getByText("D1 · Withdrawn by the coordinator · No answer recorded").closest("article")!;
   expect(within(row).getByText("Which component kit?")).toBeTruthy();

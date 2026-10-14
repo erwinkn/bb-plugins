@@ -218,8 +218,8 @@ describe("reports and acceptance", () => {
     await f.service.report(d.threadId!, report());
     const a = f.store.assignments(project.id)[0]!;
     expect(a.state).toBe("reported");
-    // T136: a report never closes a task; the coordinator does.
-    expect(f.store.task(project.id, t1.num)!.status).toBe("in_progress");
+    // v9: the task's status follows its work: a done report with no PR is done.
+    expect(f.store.task(project.id, t1.num)).toMatchObject({ status: "done", statusReason: "W1 reported done, no PR", statusSetAt: null });
     // D417: the worker's turn ends don't reach the coordinator ("explicit"), so the plugin sends the report.
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: "coordinator", senderThreadId: d.threadId });
@@ -246,9 +246,12 @@ describe("reports and acceptance", () => {
       detachNativeParent: true,
     });
     expect(adopted.worker.nativeParent).toBe(false);
-    await f.service.report("foreign-worker", report());
+    // v9: the adopted thread gets the worker loop first, then its report goes to its lead.
     expect(f.send).toHaveBeenCalledTimes(1);
-    expect(f.send.mock.calls[0]![0].threadId).toBe("coordinator");
+    expect(f.send.mock.calls[0]![0].threadId).toBe("foreign-worker");
+    await f.service.report("foreign-worker", report());
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(f.send.mock.calls[1]![0].threadId).toBe("coordinator");
   });
 
   it("closes a reported task without any acceptance and leaves retirement to an explicit action", async () => {
@@ -259,9 +262,8 @@ describe("reports and acceptance", () => {
       tasks: [t1.ref],
     });
     await f.service.report(d.threadId!, report());
-    const task = await f.service.closeTask(project.id, t1.ref, "done");
-    expect(task.status).toBe("done");
-    expect(task.acceptedAssignment).toBe(1);
+    const task = await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
+    expect(task).toMatchObject({ status: "done", statusReason: "set by hand" });
     // The report stays as filed: nothing is accepted.
     expect(f.store.assignments(project.id)[0]!.state).toBe("reported");
     // No automatic archive: the worker's thread stays live until the
@@ -279,7 +281,7 @@ describe("explicit retirement", () => {
       tasks: [t1.ref],
     });
     await f.service.report(d.threadId!, report());
-    await f.service.closeTask(project.id, t1.ref, "done");
+    await f.service.setTaskStatus(project.id, t1.ref, "done", "Closed as done.", "the user");
     return { f, project, worker: f.store.workers(project.id)[0]!, d };
   }
 
@@ -488,8 +490,9 @@ describe("overview", () => {
     // Only the still-open assignment is in flight; the delivered report waits
     // for acceptance instead — old accepted work never counts.
     expect(o.inFlight.map((i) => i.assignment)).toEqual(["A1"]);
-    expect(o.awaitingAcceptance.map((i) => i.assignment)).toEqual(["A2"]);
-    await f.service.closeTask(project.id, t2.ref, "done");
+    // v9: a done report with no PR closes its task's computed status; nothing awaits acceptance.
+    expect(o.awaitingAcceptance).toEqual([]);
+    await f.service.setTaskStatus(project.id, t2.ref, "done", "Closed as done.", "the user");
     const after = buildOverview(f.store, project.id, live, f.store.now());
     expect(after.inFlight.map((i) => i.assignment)).toEqual(["A1"]);
     expect(after.awaitingAcceptance).toHaveLength(0);

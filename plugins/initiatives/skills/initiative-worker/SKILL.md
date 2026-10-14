@@ -4,24 +4,34 @@ description: Work on a BB Initiative assignment using its editable guidance and 
 ---
 
 Your standing instructions come from the Initiatives plugin's Settings page (defaults in
-lib/guidance.ts) and arrive when your session starts. Each brief carries only the task,
-its context and the report instruction.
+lib/guidance.ts) and arrive when your session starts. Your brief ends with the reviewer
+command and the standing rules; every later work message ends with the whole loop (the
+current instructions, the reviewer command and the rules), which replaces anything earlier.
 
-- Finish with `initiative_report {outcome, summary, report}`. The coordinator gets
-  `summary` and reads `report` only when it needs to (a short report is sent whole), so
-  the summary stands on its own: outcome, PR URL and head, merge order, what you need.
-  `report` is your full report, written for someone who hasn't read the code: what you did, what you verified (commands
-  and results), what is left, and anything uncommitted or still running. Stop background
-  servers first.
-- Use outcome blocked, with your question, when you can't continue.
-- `initiative_pr {prs:[{url, notes:[{kind?:"note"|"question"|"comment", text}]}]}` puts
-  caveats and questions on a PR your assignment names or your branch opened, so they
-  outlive the chat. Your report's summary is added to the PRs it names by itself.
-- `initiative_message {to:"coordinator", text}` is for blockers, scope changes, or facts
-  another worker needs (`to:"W4"`). No progress pings. Reviewers talk to the coordinator.
-- The coordinator dispatches reviews and other workers. When your work calls for an
-  independent review or another agent, ask the coordinator for it instead of starting one.
-- `initiative_decision` records the user's explicit choices (user-choice) and your own
-  choices the user may want to veto (veto-request). Never consult the decision log for
-  your own work.
-- `initiative_read {refs:["W4"]}` reads a peer and its latest report.
+- You own your change to a clean review. Implement and verify it, then review it with the
+  code-review skill: each round a fresh reviewer from the other model family, started as a
+  BB child thread with the reviewer command in your brief (`--parent-self
+  --lifecycle-owner-thread "$BB_THREAD_ID"`, in your checkout). Copy the standing rules that
+  matter for its job into its brief. While it runs, end your turn: its final message wakes
+  you, and ending a turn reports nothing.
+- Fix the findings you agree with. A disagreement goes, with your evidence, into the next
+  reviewer's brief and a PR note; a standing rule settles a dispute it covers.
+- At most 4 review rounds. Report done when the last verdict is clean; still rejected after
+  round 4, report blocked with each open finding, your view and the options. Your lead may
+  grant 4 more rounds when a rule or the user's instruction settles the finding.
+- Finish with `initiative_report {outcome, summary, report}`, the only thing that ends your
+  work. It goes to your lead, the tab that gave you the work. The summary stands on its own:
+  outcome, PR URL and head, review rounds and last verdict, what you need. `report` is your
+  full report: what you did, what you verified (commands and results), what is left, and
+  anything uncommitted or still running.
+- `initiative_pr {prs:[{url, stage?, notes?:[{kind?:"note"|"question"|"comment", text}]}]}`
+  keeps your own PRs' stage (set `ready-for-erwin` after a clean review) and notes, on PRs
+  your assignment names or your branch opened. Your report's summary is added to the PRs it
+  names by itself.
+- `initiative_message {to:"lead", text}` is for blockers or facts your lead needs now;
+  `to:"W4"` reaches a peer. No progress pings. `to:"coordinator"` also reaches your lead.
+- `initiative_read {view:"rules"}` lists the standing rules; `{refs:["W4"]}` reads a peer
+  and its latest report.
+- An adopted thread whose tools predate the switch uses the shell until its session
+  restarts: `bb initiative report '<json>'`, `bb initiative pr '<json>'`,
+  `bb initiative message '<json>'`.

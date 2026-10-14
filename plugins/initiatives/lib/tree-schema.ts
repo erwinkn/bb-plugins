@@ -10,6 +10,8 @@ export const treeNodeSchema = z.object({
   parentWorker: z.string().nullable(),
   state: z.string(),
   bbProjectId: z.string(),
+  /** D532: set on discussion tabs (lead tabs), absent on user-attached threads. */
+  discussion: z.literal(true).optional(),
 });
 /**
  * Optional Initiative appearance, chosen by the user from a small palette:
@@ -54,6 +56,11 @@ export const treeSchema = z.object({
     projectSummarySchema.extend({
       nodes: z.array(treeNodeSchema),
       retired: z.number(),
+      /**
+       * D532: thread ids that belonged to the Initiative and are no longer nodes (retired
+       * workers, earlier coordinator and worker generations). Absent in trees from older builds.
+       */
+      formerThreadIds: z.array(z.string()).optional(),
     }),
   ),
 });

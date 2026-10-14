@@ -57,7 +57,7 @@ describe("T66 native ordinary fresh creation", () => {
     })).resolves.toBeDefined();
     expect(f.spawn).toHaveBeenCalledTimes(1); expect(f.send).not.toHaveBeenCalled();
   });
-  it("an agent-requested fresh reviewer binds actual implementation and preserves native/plugin/permission/profile provenance", async () => {
+  it("v9: an agent-requested fresh reviewer is refused at the command boundary; nothing is spawned", async () => {
     const { f, project } = await projectFixture(); const task = f.task(project.id);
     const [implementer] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
     await f.service.report(implementer.threadId!, report()); f.spawn.mockClear(); f.send.mockClear();
@@ -66,13 +66,8 @@ describe("T66 native ordinary fresh creation", () => {
       reviewTargets: [{ task: task.ref, assignment: "A1", revision: report().handoff.workspaceRevision }],
       permissionMode: "full",
     }), project.id], { threadId: "coordinator" });
-    expect(result.exitCode).toBe(0); expect(f.spawn).toHaveBeenCalledTimes(1);
-    const args = f.spawn.mock.calls[0][0];
-    expect(args).toMatchObject({ parentThreadId: "coordinator", origin: "plugin", originPluginId: "initiatives", permissionMode: "full", providerId: "codex", pluginMetadata: { projectId: project.id, role: "worker", worker: 2 } });
-    expect(args.prompt).toMatch(/^W2 "Independent review" \(Review\) · review · T1/); expect(args.prompt).toContain('Review W1 "Historical search" (A1 · T1, done');
-    expect(args).not.toHaveProperty("startedOnBehalfOf"); expect(args).not.toHaveProperty("originKind"); expect(args).not.toHaveProperty("senderThreadId");
-    expect(f.threads.get([...f.threads.keys()].at(-1)!)).toMatchObject({ parentThreadId: "coordinator", originKind: null, originPluginId: "initiatives" });
-    expect(f.send).not.toHaveBeenCalled();
+    expect(result.exitCode).not.toBe(0); expect(`${result.stdout}${result.stderr}`).toContain("Workers run their own reviews now");
+    expect(f.spawn).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
   });
   it("fresh agent delegation omits unsupported actor, keeps parent and issues one seed", async () => {
     const { f, project } = await projectFixture();

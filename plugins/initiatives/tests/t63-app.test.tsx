@@ -28,15 +28,17 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
     const { project, o } = await setup(); const pending = held<Overview>();
     const overview = vi.fn().mockResolvedValueOnce(o).mockImplementation(() => pending.promise);
     const inventory = vi.fn(async () => []); const slot = mount(project.id, { overview, inventory });
-    await slot.findByRole("tab", { name: "Decisions" }); await beat(); expect(overview).toHaveBeenCalledTimes(1); expect(inventory).not.toHaveBeenCalled();
+    await slot.findByRole("tab", { name: "Workers" }); await beat(); expect(overview).toHaveBeenCalledTimes(1); expect(inventory).not.toHaveBeenCalled();
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: "foreign" }); await beat(); expect(overview).toHaveBeenCalledTimes(1);
     for (let n = 0; n < 4; n++) await slot.behavior.emitRealtime("initiatives-changed", { projectId: project.id });
     await waitFor(() => expect(overview).toHaveBeenCalledTimes(2));
-    expect(slot.getByRole("tab", { name: "Decisions" })).toBeTruthy();
+    expect(slot.getByRole("tab", { name: "Workers" })).toBeTruthy();
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: project.id }); await beat(); expect(overview).toHaveBeenCalledTimes(2);
-    fireEvent.click(slot.getByRole("tab", { name: "Threads" }));
+    // Rules loads the repository inventory; Workers loads retired workers and token totals.
+    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
     await waitFor(() => expect(inventory).toHaveBeenCalledTimes(1));
-    expect(overview).toHaveBeenCalledTimes(3); expect(overview.mock.calls[0][0]).toEqual({ projectId: project.id, detail: "summary" });
+    fireEvent.click(slot.getByRole("tab", { name: "Workers" }));
+    await waitFor(() => expect(overview).toHaveBeenCalledTimes(3)); expect(overview.mock.calls[0][0]).toEqual({ projectId: project.id, detail: "summary" });
     // T125: the signal that landed during the held read may postdate it, so one read follows it.
     pending.resolve(o); await waitFor(() => expect(overview).toHaveBeenCalledTimes(4)); await beat(); expect(overview).toHaveBeenCalledTimes(4); slot.unmount();
     await slot.behavior.emitRealtime("initiatives-changed", {}); await beat(); expect(overview).toHaveBeenCalledTimes(4);
@@ -45,31 +47,12 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
   it("first realtime connection does not duplicate the mount; a genuine reconnect refreshes once", async () => {
     const { project, o } = await setup(); const overview = vi.fn(async () => o);
     const slot = mount(project.id, { overview }, "connecting");
-    await slot.findByRole("tab", { name: "Decisions" });
+    await slot.findByRole("tab", { name: "Workers" });
     await slot.behavior.setRealtimeConnectionState("connected"); await beat(); expect(overview).toHaveBeenCalledTimes(1);
     await slot.behavior.setRealtimeConnectionState("reconnecting"); await slot.behavior.setRealtimeConnectionState("connected");
     await waitFor(() => expect(overview).toHaveBeenCalledTimes(2));
   });
 
-  it.each(["failed", "queued", "uncertain"] as const)("acknowledges Not okay with visible %s receipt while refresh is held or rejected", async state => {
-    const { f, project, d, o } = await setup(); const refresh = held<Overview>();
-    const overview = vi.fn().mockResolvedValueOnce(o).mockImplementation(() => refresh.promise);
-    const command = vi.fn(async ({ command: input }) => {
-      const saved = await f.service.reviewDecision(project.id, d.ref, input.verdict, input.message);
-      return { ...saved, notification: { op: "test", state, coordinatorThreadId: "coordinator", ...(state === "failed" ? { detail: "Refused" } : {}) } };
-    });
-    const slot = mount(project.id, { overview, command: answersLikeServer(command) });
-    fireEvent.click(await slot.findByRole("button", { name: "Not okay" }));
-    fireEvent.change(slot.getByLabelText("Message to coordinator"), { target: { value: "Keep the draft" } });
-    fireEvent.click(slot.getByRole("button", { name: "Send and mark not okay" }));
-    await waitFor(() => expect(slot.queryByText("Sending…")).toBeNull());
-    expect(command).toHaveBeenCalledTimes(1); expect(slot.getByRole(state === "queued" ? "status" : "alert").textContent).toContain(`notification ${state}`);
-    fireEvent.click(slot.getByRole("tab", { name: "Decisions" }));
-    expect(slot.getByRole("article", { name: d.ref }).textContent).toContain("Not okay");
-    await waitFor(() => expect(overview).toHaveBeenCalledTimes(2));
-    await act(async () => { refresh.reject(new Error("Refresh unavailable")); });
-    await slot.findByText("Refresh unavailable"); expect(slot.container.textContent).toContain(`notification ${state}`);
-  });
 
   it("NewTask acknowledges its durable result without an overview gate", async () => {
     const { f, project, o } = await setup(); const refresh = held<Overview>();
@@ -105,59 +88,28 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
     expect(f.send).toHaveBeenCalledTimes(1); expect(f.send.mock.calls[0][0].mode).toBe("steer-if-active");
   });
 
-  it("bulk acceptance sends one command, commits its count while refresh is held, and pre-save snapshots cannot restore pending reviews", async () => {
-    const { f, project, d, o } = await setup();
-    f.service.recordDecision(project.id, { decision: { description: "User choice", madeBy: "user" } }, recorder);
-    const initial = await f.overview(project.id); const pre = held<Overview>(), post = held<Overview>();
-    // The summary and the Decisions history tier see the same held snapshots.
-    const tier = () => vi.fn().mockResolvedValueOnce(initial).mockImplementationOnce(() => pre.promise).mockImplementation(() => post.promise);
-    const summary = tier(), history = tier();
-    const overview = vi.fn((input: unknown) => (input as { detail?: string }).detail === "history" ? history() : summary());
-    const command = vi.fn((input: unknown) => f.harness.callRpc("command", input));
-    const slot = mount(project.id, { overview, command });
-    fireEvent.click(await slot.findByRole("tab", { name: "Decisions" }));
-    await slot.findByText("User choice");
-    await slot.behavior.emitRealtime("initiatives-changed", { projectId: project.id });
-    await waitFor(() => expect(history).toHaveBeenCalledTimes(2));
-    fireEvent.click(slot.getByRole("button", { name: "Accept all unchecked agent decisions" }));
-    await slot.findByText("1 agent decision accepted.");
-    expect(command).toHaveBeenCalledTimes(1); expect(command.mock.calls[0][0]).toEqual({ projectId: project.id, command: { action: "decision-accept-all" } });
-    for (let n = 0; n < 4; n++) await slot.behavior.emitRealtime("initiatives-changed", { projectId: project.id });
-    expect(slot.getByRole("article", { name: d.ref })).toBeTruthy(); expect(slot.queryByRole("button", { name: "Okay" })).toBeNull(); expect(slot.getByText("User choice")).toBeTruthy();
-    await act(async () => { pre.resolve(o); }); expect(slot.getByRole("article", { name: d.ref })).toBeTruthy(); expect(slot.queryByRole("button", { name: "Okay" })).toBeNull();
-    await waitFor(() => expect(history).toHaveBeenCalledTimes(3));
-    await act(async () => { post.reject(new Error("Refresh failed")); });
-    await slot.findAllByText("Refresh failed"); expect(slot.getByText("1 agent decision accepted.")).toBeTruthy(); expect(f.send).not.toHaveBeenCalled();
-  });
 
-  it("a failed bulk command keeps eligible decisions and clears busy state", async () => {
-    const { project, d, o } = await setup(); const command = vi.fn().mockRejectedValue(new Error("Save refused"));
-    const slot = mount(project.id, { overview: async () => o, command });
-    fireEvent.click(await slot.findByRole("tab", { name: "Decisions" })); fireEvent.click(slot.getByRole("button", { name: "Accept all unchecked agent decisions" }));
-    expect((await slot.findByRole("alert")).textContent).toContain("Save refused"); expect(slot.getByRole("article", { name: d.ref })).toBeTruthy();
-    expect((slot.getByRole("button", { name: "Accept all unchecked agent decisions" }) as HTMLButtonElement).disabled).toBe(false);
-    expect(slot.queryByText(/decisions accepted/)).toBeNull();
-  });
 
   it("route switch cannot show another Initiative's cache or old action receipt", async () => {
     const { project, o, d } = await setup(); const pending = held<Overview>(), save = held<unknown>();
     const second = { ...o, project: { ...o.project, id: "second", name: "Second Initiative" } };
     const overview = vi.fn(({ projectId }) => projectId === "second" ? pending.promise : Promise.resolve(o));
     const slot = mount(project.id, { overview, command: () => save.promise });
-    fireEvent.click(await slot.findByRole("button", { name: "Okay" }));
+    fireEvent.click(await slot.findByRole("button", { name: /Initiative menu/ }));
+    fireEvent.click(slot.getByRole("button", { name: "Pause" }));
     slot.rerender(createElement(Dashboard, { projectId: "second" }));
     expect(slot.queryByText(o.project.name)).toBeNull(); expect(slot.container.querySelector(`[data-project-id="second"]`)).not.toBeNull();
     await act(async () => { save.resolve({ ref: d.ref }); pending.resolve(second); });
-    await slot.findByText("Second Initiative"); expect(slot.queryByText(/review saved/)).toBeNull();
+    await slot.findByText("Second Initiative"); expect(slot.queryByText(/saved/)).toBeNull();
     await beat(); expect(overview.mock.calls.filter(([input]) => input.projectId === "second")).toHaveLength(1);
   });
 
-  it("catalog reads/subscriptions are absent on a dashboard and mounted only on the catalog", async () => {
-    const { project, o } = await setup(); const list = vi.fn(async () => []), overview = vi.fn(async () => o);
-    const slot = renderSlot({ component: ProjectsPage }, { subPath: project.id }, { rpc: { overview, list } }); slots.push(slot);
-    await slot.findByRole("tab", { name: "Decisions" }); await slot.behavior.emitRealtime("initiatives-changed", {}); await beat(); expect(list).not.toHaveBeenCalled();
-    slot.rerender(createElement(ProjectsPage, { subPath: "" })); await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-    slot.rerender(createElement(ProjectsPage, { subPath: project.id }));
-    await slot.findByRole("tab", { name: "Decisions" }); await slot.behavior.emitRealtime("initiatives-changed", {}); await beat(); expect(list).toHaveBeenCalledTimes(1);
+  it("D536: the bare route is no overview: it reads no Initiative list and points to the sidebar", async () => {
+    const list = vi.fn(async () => []);
+    const slot = renderSlot({ component: ProjectsPage }, { subPath: "" }, { rpc: { list } }); slots.push(slot);
+    await slot.findByText(/Initiatives are listed in the sidebar/);
+    await slot.behavior.emitRealtime("initiatives-changed", {}); await beat();
+    expect(list).not.toHaveBeenCalled();
+    expect(slot.queryByRole("button", { name: "New initiative" })).toBeNull();
   });
 });

@@ -1,10 +1,12 @@
 ---
 name: initiative-coordinator
-description: Coordinate a durable BB initiative using its native tools and editable guidance.
+description: Lead a durable BB initiative (coordinator or discussion tab) using its native tools and editable guidance.
 ---
 
 Your standing instructions come from the Initiatives plugin's Settings page (defaults in
-lib/guidance.ts) and arrive when your session starts. This skill only sums up the tools.
+lib/guidance.ts) and arrive when your session starts. Every tab of an Initiative, the
+coordinator's and each discussion, is a lead with these tools; the workers a tab gives work
+report back to it. This skill only sums up the tools.
 
 - `initiative_spawn` starts a worker: label, purpose and a complete brief (the task, the
   context it needs, explicit user instructions that matter, how to verify). Tasks are
@@ -12,28 +14,40 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   prototype, report options), `fast` (small, well-specified), `very-fast` (mechanical:
   lookups, scans, simple edits) or `explorer` (read lots and report; no building or running;
   `analyst` and `investigator` still work as aliases); Settings map each kind to a
-  model, and an explicit `profile` overrides it. A review is `role:"review", reviews:"W12"`; W12's latest report is embedded.
-  `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
+  model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
+  own review loop (a fresh reviewer from the other model family per round, at most 4 rounds)
+  and reports once. `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
-  more work, and the worker reports on it again. Reviewers are never reused: work for a
-  reviewer is refused. Each review round gets a fresh reviewer; after fixes, spawn one with
-  `reviews:"<the latest worker on the change>", handoffs:["<the previous review's A#>"]`.
-  Retire a reviewer once you have read its report, unless you first need to ask it a
-  clarifying question (a plain message still reaches it).
-  From you to a worker, a message steers by default, so corrections and new facts arrive
+  more work, and the worker reports on it again; the message carries the current worker
+  loop and rules. A blocked worker gets 4 more review rounds only when a standing rule or the
+  user's explicit instruction settles the open finding; otherwise ask the user
+  (`initiative_question`). More work for an idle worker whose large cache has gone cold is
+  refused with the rewrite cost; resend it with `resumeCold:true`, or spawn a fresh worker
+  with `handoffs:["W#"]`. From you to a worker, a message steers by default, so corrections and new facts arrive
   mid-turn in the order you sent them. Pass `mode:"queue"` only for what must wait until
   the worker's turn ends; a queued message is held back, and a later steer overtakes it.
 - A worker's report arrives as one message, "W12 reported (done) on A301: <summary>",
-  followed by the report itself when it is short. A longer one stays stored: the message
-  ends with `initiative_read {refs:["A301"],detailed:true,fields:["report"]}`; read it only
-  when the summary isn't enough. A "stopped without reporting" message means the worker is
-  stuck: read its thread. Nothing is accepted or rejected: send fixes to a fresh worker with
-  `handoffs` (only a tiny related fix goes back, while the worker is warm), close the task
-  (`initiative_task` close), and retire the worker (`initiative_worker` retire) after its PR.
-- `initiative_update` keeps the user informed. `initiative_decision` records the user's
-  explicit choices (user-choice), your choices the user may want to veto (veto-request),
-  and real questions. The decision log is the user's record; don't consult it to plan.
+  followed by the report itself when it is short. A done report that arrives while you work
+  usually waits in your queue for a turn of its own; a blocked one joins the turn you are in.
+  A longer report stays stored: read it with
+  `initiative_read {refs:["A301"],detailed:true,fields:["report"]}` only when the summary
+  isn't enough. A done report on a code change names its review rounds and last verdict; if
+  it doesn't, send it back to the same worker to review. A report on work given out before
+  the switch to worker-owned reviews says so. A "stopped without reporting" message means the
+  worker is stuck (a worker waiting on its own reviewer isn't): read its thread. Retire the
+  worker (`initiative_worker` retire) once its PR is merged or dropped; Stop stops it and its
+  running children.
+- `initiative_rule` keeps the standing rules every lead and worker follows
+  (`initiative_read {view:"rules"}`): add one when the user states a lasting choice; edit or
+  remove one only when the user asks. Each change is announced to the other lead tabs and to
+  workers with open work. A choice about one PR goes in its notes; mark choices the user may
+  reverse with "Reversible: …" in your update.
+- `initiative_question {question, context, options?, recommendation?}` asks the user a real
+  open choice; the answer comes back to the tab that asked.
+- Tasks are an optional backlog; their status follows their work and PRs. Only when the user
+  asks: `initiative_task {action:"status", task, status:"planned"|"cancelled"|"done"|"auto", reason}`.
+- `initiative_update` keeps the user informed.
 - `initiative_pr` keeps each PR's record for the dashboard's merge queue:
   `{prs:[{url, stage?, note?, category?, waitingOn?, changes?, decision?, worker?, assignment?, notes?, answered?}]}`.
   Stages: working, ready-for-review, in-review, ready-for-erwin, experiment or clear. Only
@@ -58,7 +72,7 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   back compact and marked `clipped:true` (e.g. 3 questions and "+22 more"); offset does
   not expand it.
 - `initiative_batch` runs several actions in one call, in order, and reports each:
-  `{actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"worker",action:"retire",worker:"W9"}]}`.
+  `{actions:[{tool:"rule",action:"add",text:"…"},{tool:"worker",action:"retire",worker:"W9"}]}`.
   Use it instead of chaining calls; one failure doesn't stop the rest.
 - Write tools answer with a short receipt (ref, new state, warnings, the new W# and
   thread), e.g. `{"tool":"task","ok":true,"ref":"T4","state":"done"}`. `initiative_read`
@@ -68,7 +82,7 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   `memory_zoom {id:64,n:32}` opens a line into its two halves (`n:1`: one message whole),
   each line starting with its time. Use them after a compaction, or whenever you need what
   your context no longer holds. The user's discussion threads share this memory: what was
-  said there is in it, and a discussion's message arrives as `From discussion "<title>"`.
+  said there is in it, and a discussion's message arrives as `From lead tab "<title>"`.
 - `initiative_manage` handover replaces you with a fresh coordinator once your turn ends.
   GPT-6 Luna High writes its first message from recent activity.
 
