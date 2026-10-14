@@ -202,7 +202,8 @@ describe("W225 builder edges (P2)", () => {
     const b = new TreeBuilder(store, emptyViews(), options(async () => (++calls === 1 ? ok("x".repeat(600)) : { ok: false, reason: "rate-limited", error: "429", retryAfterMs: 30_000 }), 1));
     await b.run(new AbortController().signal);
     expect(calls).toBe(2);
-    expect(nodes.get(key(0, 0))!.text).toHaveLength(600);
+    // Still over the limit: cut to fit, marked (W442).
+    expect(nodes.get(key(0, 0))!.text).toBe(`${"x".repeat(506)} [cut]`);
     expect(b.status.state).toBe("backoff");
     expect(b.status.until).toBeGreaterThan(Date.now() + 20_000);
   });

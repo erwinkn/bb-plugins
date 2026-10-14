@@ -16,6 +16,27 @@ export type NodeRef = [number, number];
 export type Nodes = Pick<ReadonlyMap<string, string>, "has" | "get">;
 
 export const bytes = (s: string) => Buffer.byteLength(s, "utf8");
+
+/** What ends a line cut to fit, so no reader takes it for the whole. */
+export const CUT = " [cut]";
+/** A cut backs up to the word's start only this far: a longer word (a hash, a path) is cut inside instead. */
+const WORD_BYTES = 64;
+/**
+ * A line of at most LIMIT bytes: the text if it fits, else its start up to the last word boundary
+ * that leaves room for CUT, then CUT. The only cut any line gets. Example: a 600-byte line ending
+ * "…; agent: ran migration 0042 on staging" becomes "…; agent: ran migration [cut]", never
+ * "…; agent: ran migr". A word longer than WORD_BYTES is cut at a character boundary instead.
+ */
+export function capLine(text: string) {
+  if (bytes(text) <= LIMIT) return text;
+  const buf = Buffer.from(text, "utf8");
+  let at = LIMIT - bytes(CUT);
+  while ((buf[at]! & 0xc0) === 0x80) at--; // not inside a multi-byte character
+  const head = buf.subarray(0, at).toString("utf8");
+  const atSpace = /^\s/.test(buf.subarray(at, at + 4).toString("utf8"));
+  const words = atSpace ? head : head.replace(/\S+$/, "");
+  return `${(at - bytes(words) <= WORD_BYTES ? words : head).trimEnd()}${CUT}`;
+}
 export const key = (l: number, i: number) => `${l}:${i}`;
 export const start = ([l, i]: NodeRef) => i * 2 ** l;
 export const span = ([l]: NodeRef) => 2 ** l;

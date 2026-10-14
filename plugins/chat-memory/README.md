@@ -172,9 +172,15 @@ call. The chat view (what an OptChat turn sees) is a 128→64 KB sawtooth merged
 by due = (T+1)/2^l − i; the memory view (`memory_read`, the context of every
 summarizer call) is it merged further, 32→16 KB. Both are saved, never rebuilt.
 GPT-6 Luna (`summarizerEffort`, high since D484) writes lines with the gist's
-compaction prompt and its 512-dash ruler; a line too long is asked again for at
-most 384 bytes, up to 5 tries, keeping the shortest (W315: Luna overshoots its
-ask, so asking again for 512 took 3.5 calls a line; asking for 384 takes 2.1).
+compaction prompt and its 512-dash ruler; a line too long is asked again once,
+for at most 384 bytes (W315: Luna overshoots its ask, so asking again for 512
+took 3.5 calls a line; asking for 384 fits 3 times in 4). If the shorter reply
+is still over 512 bytes, it is cut at the last word boundary and ends in
+` [cut]`, at most 512 bytes in all, and the log says so. When that boundary is
+more than 64 bytes back (a long hash or path), the cut falls on a character
+boundary inside the word instead. No new line is over 512 bytes, and none is
+cut without ` [cut]` (lines saved before this cap keep their length);
+both prompts tell the reader a `[cut]` line's rest is in what it was made from.
 Up to `summarizerConcurrency` (8) calls run at once across every scope,
 round-robin by scope, except that the lines an OptChat turn is waiting for, and
 their merges, take the next free call before any other scope's backlog (W315).
@@ -184,12 +190,13 @@ turn waits for runs on to the turn's deadline instead, so a reply at 65 s still
 makes a 90 s turn. A stopped turn stops waiting, and a call past its bound
 that no turn waits for any more gives up at once. A line whose call fails 3 times
 stays unsummarized and failed, never cut to fit (D458), unless every reply was empty
-(a retry gets the same): that line is built at once with its text cut to 512 bytes
-(its message, or its two lines joined; counted under "fallbacks"). A failed line holds no build slot,
+(a retry gets the same): that line is built at once from its input cut to fit with
+` [cut]` (its message, or its two lines joined; counted under "fallbacks"). A failed line holds no build slot,
 the pill shows it as a problem, an OptChat turn that needs it fails at once
 ("message 1234 could not be summarized (…)"), and it is tried again 30 minutes
-later. Lines Initiatives cut before T145 were imported as they are ("cut after
-failures" in the panel). A 429 pauses new calls with a growing backoff; an
+later. Lines built before the cap (some over 512 bytes, fallbacks ending in `…`)
+and lines Initiatives cut before T145 stay as they are: nodes are never rebuilt
+("cut after failures" in the panel counts fallbacks). A 429 pauses new calls with a growing backoff; an
 unavailable route pauses 10 minutes.
 
 Luna runs through the Account Pooler's isolated plugin route

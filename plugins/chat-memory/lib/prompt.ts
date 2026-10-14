@@ -22,7 +22,7 @@ const KINDS = `Each message has a kind:
 const TREE = `The summaries form a binary tree: each message is compressed into a line (a short message is its
 own line), then adjacent lines are merged in pairs, again and again. So recent lines cover one
 message each, and older lines cover more. A text too long for one message is split over several
-in a row.`;
+in a row. A line ending in [cut] was cut to fit: the rest is in what it was made from.`;
 
 export const COMPACTION_PROMPT = `You write the memory of an AI agent that works for one user in a chat that never ends. The chat
 may run in several threads of the same agent at once; their messages share one log, in order.

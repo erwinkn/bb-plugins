@@ -96,15 +96,16 @@ describe("W220 tree builder", () => {
     expect(b.views.fed).toBe(900);
   });
 
-  it("retries a line over 512 bytes in the same conversation and keeps the shortest", async () => {
+  it("retries a line over 512 bytes once in the same conversation, then cuts the shorter reply with [cut] (W442)", async () => {
     const { store, saved } = memoryStore(long(1));
     const requests: SummarizerRequest[] = [];
-    const sizes = [700, 600, 650, 610, 620];
+    const sizes = [700, 600, 650];
     const b = builder(store, async (r) => (requests.push(r), ok(line(r, sizes[requests.length - 1]))));
     await b.run(new AbortController().signal);
-    expect(requests).toHaveLength(5);
-    expect(saved.nodes.get(key(0, 0))).toMatchObject({ how: "model", tries: 5 });
-    expect(bytes(saved.nodes.get(key(0, 0))!.text)).toBe(600);
+    expect(requests).toHaveLength(2);
+    expect(saved.nodes.get(key(0, 0))).toMatchObject({ how: "model", tries: 2 });
+    expect(bytes(saved.nodes.get(key(0, 0))!.text)).toBeLessThanOrEqual(LIMIT);
+    expect(saved.nodes.get(key(0, 0))!.text).toMatch(/^L0\+1 x+ \[cut\]$/);
     const retry = requests[1]!.input;
     expect(retry).toHaveLength(3);
     expect(retry[1]).toMatchObject({ role: "assistant" });
@@ -206,7 +207,7 @@ describe("W220 tree builder", () => {
     const node = saved.nodes.get(key(0, 0))!;
     expect(node.how).toBe("fallback");
     expect(node.text.startsWith("user: éé")).toBe(true);
-    expect(node.text.endsWith("…")).toBe(true);
+    expect(node.text.endsWith(" [cut]")).toBe(true);
     expect(node.text).not.toContain("\uFFFD");
     expect(bytes(node.text)).toBeLessThanOrEqual(LIMIT);
     expect(b.failedLines()).toEqual([]);
@@ -226,7 +227,7 @@ describe("W220 tree builder", () => {
     const node = saved.nodes.get(key(1, 0))!;
     expect(node.how).toBe("fallback");
     expect(node.text.startsWith(`${saved.nodes.get(key(0, 0))!.text}\n`)).toBe(true);
-    expect(node.text.endsWith("…")).toBe(true);
+    expect(node.text.endsWith(" [cut]")).toBe(true);
     expect(bytes(node.text)).toBeLessThanOrEqual(LIMIT);
     expect(b.failedLines()).toEqual([]);
   });
