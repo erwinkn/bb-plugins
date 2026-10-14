@@ -21,13 +21,8 @@ import {
 } from "./audio-devices.ts";
 import { actionStatus } from "./session-events.ts";
 import { nativeUi } from "./native-ui.ts";
-import { currentSpace } from "./spaces-bridge.ts";
 import { TRANSCRIPTION_MODEL, type VoiceEngine } from "./models.ts";
 
-/** The saved space the Threads sidebar shows on this device, or null for all projects or no storage. */
-function currentSpaceName(): string | null {
-  try { return typeof window === "undefined" ? null : currentSpace(window.localStorage).id ? currentSpace(window.localStorage).name : null; } catch { return null; }
-}
 import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
 
 export type VoiceState = "idle" | "connecting" | "reconnecting" | "live" | "muted";
@@ -1831,7 +1826,7 @@ export class VoiceAgent {
           const view = nativeUi.snapshot();
           const context = await this.rpc("callStartContext", { nonce, conversationId: callConversationId,
             device: { platform: clientDescriptor.platform, mobile: clientDescriptor.mobile, browser: clientDescriptor.browser, runtime: clientDescriptor.runtime },
-            view: { threadId:view.threadId, projectId:view.projectId, space: currentSpaceName() } });
+            view: { threadId:view.threadId, projectId:view.projectId } });
           if(this.session!==session || this.nonce!==nonce || dc.readyState!=="open")return;
           if(session.engine==="live"){
             // Live has no conversation items: the context lands as thinking

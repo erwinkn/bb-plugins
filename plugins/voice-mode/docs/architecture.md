@@ -115,15 +115,6 @@ still list everything. `thread.unarchived` resolves unspoken archived notices,
 adds an unarchived milestone, and re-derives the task status. `message.cancelled`
 closes the matching voice operation as cancelled, refreshes the task's queued
 count, and adds one milestone per watching conversation.
-`spaces-bridge.ts` switches the Threads sidebar of the sidebar plugin:
-it reads that plugin's cached space catalog and client state from local storage,
-resolves a spoken name with the same ranked matching, writes `spaceId` the way the
-plugin does, and dispatches the plugin's same-window state event so its store
-re-reads. The library scope is a fixed `spaceId` sentinel (`LIBRARY_SCOPE_ID`),
-resolved from "the library" and its synonyms before space names. `control_ui`
-`switch_space` is a client effect; nothing is fetched, and a name that does not
-resolve changes nothing. A test pins the keys, the event name, and the sentinel
-to the activity plugin's exports.
 Workers default to BB's personal project and the primary machine; `server.ts` builds
 the call's tool schemas from the configured profiles so the model sees valid names.
 `machines.ts` reads `bb.sdk.system.config().primaryHostId` for deterministic
