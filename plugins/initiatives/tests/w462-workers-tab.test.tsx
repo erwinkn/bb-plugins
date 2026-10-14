@@ -99,11 +99,12 @@ describe("W462 grouping and rows", () => {
     expect(idle.getByRole("button", { name: "Retire all" })).toBeTruthy();
   });
 
-  it("a row reads label, then PR · status, model and age; the status is its description", async () => {
+  it("a row reads label, then ID · PR · status, model and age; the status is its description", async () => {
     const { slot } = await workersTab();
     const row = slot.getByRole("button", { name: "W3 #3058 fresh review" });
     expect(row.querySelector(".cr-w-label")!.textContent).toBe("#3058 fresh review");
-    expect(row.querySelector(".cr-w-meta")!.textContent).toBe("#3058No reportSol 6.1 · xhigh3d");
+    expect(row.querySelector(".cr-w-meta")!.textContent).toBe("W3#3058No reportSol 6.1 · xhigh3d");
+    expect(row.querySelector(".cr-w-meta-main > .cr-ref:first-child")!.textContent).toBe("W3");
     expect(document.getElementById(row.getAttribute("aria-describedby")!)!.textContent).toBe("No report");
     expect(modelLabel("claude-code / claude-opus-5-5 / high / tier unspecified")).toBe("Opus 5.5 · high");
     expect(modelLabel(null)).toBeNull();

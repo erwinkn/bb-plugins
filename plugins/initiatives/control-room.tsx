@@ -1262,6 +1262,7 @@ function WorkerRow({ projectId, v, selected, select, openThread, loadChildren, m
         </span>
         <span className="cr-w-meta">
           <span className="cr-w-meta-main cr-fade">
+            <span className="cr-ref">{w.ref}</span>
             {number ? <span className="cr-w-pr" title={pr!.stage ? pr!.stage.replaceAll("-", " ") : undefined}><Glyph name="pr" />#{number}</span> : null}
             {w.lead ? <span>from {w.lead}</span> : null}
             <span id={statusId}>{v.status}</span>
