@@ -25,7 +25,7 @@ async function turn(f: Fx, threadId: string, text: string) {
 describe("W259 coordinator guidance", () => {
   it("sizes work per worker, picks models by difficulty and sends fixes to a fresh worker", () => {
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per substantial PR (or a few small related ones), then retire it");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("claude-haiku-5-5 if mechanical, claude-sonnet-5-5 if bounded in an established pattern; complex work stays on Opus");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("very-fast (mechanical: lookups, scans, simple edits) or explorer (read lots and report; no building or running). Complex work stays on a worker (Opus).");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Fixes go to a fresh worker with handoffs; only a tiny related fix goes back to the original worker while it is warm.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).not.toContain("Send fixes to the same worker");

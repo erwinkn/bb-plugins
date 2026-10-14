@@ -251,7 +251,8 @@ records that upstream candidate; no issue was filed.
 | Work                                      | Default model          |
 | ----------------------------------------- | ---------------------- |
 | Coordination, implementation, experiments | Opus 5.5 High          |
-| Investigation                             | GPT-6.1 Sol High       |
+| Investigation (explorer)                  | GPT-6 Luna Extra High  |
+| Mechanical (very fast) work               | Haiku 5.5 High         |
 | Straightforward implementation            | GPT-6.1 Sol High       |
 | Review of Claude work                     | GPT-6 Astra Extra High |
 | Review of GPT work                        | Fable 5.1 Extra High   |
@@ -531,17 +532,18 @@ briefs never repeat them.
 
 Profiles are stored under their original JSON keys but named by role in
 Settings: `coordinator` (coordinator), `implementation` (worker),
-`experiment` (experimenter), `straightforward` (fast worker), `investigation`
-(analyst), `reviewOfClaude` and `reviewOfGpt` (the reviewer for work done by that
+`experiment` (experimenter), `straightforward` (fast worker), `mechanical`
+(very fast worker), `investigation` (explorer), `reviewOfClaude` and `reviewOfGpt` (the reviewer for work done by that
 model family, so a different family reviews by default). A coordinator picks a
 role on spawn with `kind`: `worker` (default, `implementation`: implement a known
 change), `experimenter` (`experiment`: prototypes and spikes that answer open
 questions by running code; reports options, doesn't ship), `fast`
-(`straightforward`: small, well-specified changes) or `analyst`
+(`straightforward`: small, well-specified changes), `very-fast` (`mechanical`:
+lookups, scans, renames and simple scripted checks) or `explorer`
 (`investigation`: reads threads, logs and docs and reports; read and report only,
-anything that builds or runs is an experimenter). `investigator` is still
-accepted as a deprecated alias for `analyst`, and a worker stored with it shows
-as analyst. Swapping a model is a settings change only. The kind is
+anything that builds or runs is an experimenter). `analyst` and `investigator`
+are still accepted as deprecated aliases for `explorer`, and a worker stored
+with either shows as explorer. Swapping a model is a settings change only. The kind is
 recorded on the worker and shown beside its W# in the dashboard. An explicit
 `profile` on spawn wins over `kind`; a user-chosen task profile still wins over
 the coordinator's; a work message keeps the worker's native model; a review

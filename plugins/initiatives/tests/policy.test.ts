@@ -82,8 +82,8 @@ describe("profiles", () => {
     });
     expect(DEFAULT_PROFILES.investigation).toEqual({
       providerId: "codex",
-      model: "gpt-6.1-sol",
-      reasoningLevel: "high",
+      model: "gpt-6-luna",
+      reasoningLevel: "xhigh",
     });
     expect(DEFAULT_PROFILES.straightforward).toEqual({
       providerId: "codex",

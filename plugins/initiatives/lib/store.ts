@@ -410,7 +410,7 @@ export const MIGRATIONS = [
     set_at INTEGER NOT NULL,
     PRIMARY KEY (project_id, url)
   )`,
-  // W206: the role a coordinator asked for on spawn (worker, experimenter, fast, analyst); null for reviewers and older workers.
+  // W206: the role a coordinator asked for on spawn (worker, experimenter, fast, very-fast, explorer); null for reviewers and older workers.
   `ALTER TABLE workers ADD COLUMN kind TEXT`,
   // W220 (D431): coordinator memory: mode, log, cursors, tree nodes and saved views. T145 moved
   // memory to the Chat memory plugin, which copies these tables once; they stay, unwritten, as its

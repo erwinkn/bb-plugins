@@ -33,6 +33,7 @@ export const WORK_KINDS = [
   "experiment",
   "investigation",
   "straightforward",
+  "mechanical",
 ] as const;
 export type WorkKind = (typeof WORK_KINDS)[number];
 
@@ -40,11 +41,11 @@ export type WorkKind = (typeof WORK_KINDS)[number];
  * What a coordinator asks for when it spawns work: a role, not a model. Settings map
  * each kind to a profile key, so swapping models is a settings change only.
  */
-export const WORKER_KINDS = ["worker", "experimenter", "fast", "analyst"] as const;
+export const WORKER_KINDS = ["worker", "experimenter", "fast", "very-fast", "explorer"] as const;
 export type WorkerKind = (typeof WORKER_KINDS)[number];
-/** The kind a coordinator may still pass: analyst was called investigator until W209. */
-export const DEPRECATED_WORKER_KINDS = { investigator: "analyst" } as const satisfies Record<string, WorkerKind>;
-/** Maps an alias to its kind; a stored "investigator" (no migration) reads back as analyst. */
+/** Kinds a coordinator may still pass: explorer was called investigator, then analyst (W209, W413). */
+export const DEPRECATED_WORKER_KINDS = { investigator: "explorer", analyst: "explorer" } as const satisfies Record<string, WorkerKind>;
+/** Maps an alias to its kind; a stored "investigator" or "analyst" (no migration) reads back as explorer. */
 export const canonicalWorkerKind = (kind: string): WorkerKind =>
   (DEPRECATED_WORKER_KINDS as Record<string, WorkerKind>)[kind] ?? (kind as WorkerKind);
 export const workerKindSchema = z
@@ -73,7 +74,8 @@ export const WORKER_KIND_PROFILE: Record<WorkerKind, WorkKind> = {
   worker: "implementation",
   experimenter: "experiment",
   fast: "straightforward",
-  analyst: "investigation",
+  "very-fast": "mechanical",
+  explorer: "investigation",
 };
 
 /** How Settings names each stored key; the JSON keys predate the roles and stay as they are. */
@@ -81,7 +83,8 @@ export const PROFILE_ROLE_LABELS: Record<ProfileKey, string> = {
   coordinator: "Coordinator",
   implementation: "Worker",
   straightforward: "Fast worker",
-  investigation: "Analyst (reads and reports)",
+  investigation: "Explorer (reads and reports)",
+  mechanical: "Very fast worker (mechanical)",
   reviewOfClaude: "Reviewer (of Claude work)",
   reviewOfGpt: "Reviewer (of GPT work)",
   experiment: "Experimenter (prototypes and spikes)",
@@ -104,15 +107,21 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
     model: "claude-opus-5-5",
     reasoningLevel: "high",
   },
-  // Fast: GPT Sol for investigations and straightforward work.
+  // Fast: GPT Luna for exploring (D419), GPT Sol for straightforward work.
   investigation: {
     providerId: "codex",
-    model: "gpt-6.1-sol",
-    reasoningLevel: "high",
+    model: "gpt-6-luna",
+    reasoningLevel: "xhigh",
   },
   straightforward: {
     providerId: "codex",
     model: "gpt-6.1-sol",
+    reasoningLevel: "high",
+  },
+  // Very fast: Haiku for lookups, scans, renames and simple scripted checks.
+  mechanical: {
+    providerId: "claude-code",
+    model: "claude-haiku-5-5",
     reasoningLevel: "high",
   },
   reviewOfClaude: {

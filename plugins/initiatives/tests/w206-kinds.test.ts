@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { delegateSchema } from "../lib/commands";
 import { workerKindProfile } from "../lib/policy";
-import { DEFAULT_PROFILES, DEFAULT_POLICY, WORKER_KIND_PROFILE, WORKER_KINDS, type Profile } from "../lib/schema";
+import { DEFAULT_PROFILES, DEFAULT_POLICY, WORKER_KIND_PROFILE, WORKER_KINDS, workerKindSchema, type Profile } from "../lib/schema";
 import { DEFAULT_COORDINATOR_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } from "../lib/guidance";
 import { buildOverview } from "../lib/overview";
 import { clearCatalogCache } from "../lib/bb";
 import { fixture, projectFixture, report } from "./fake-native";
 
-// W206/W209: a coordinator spawns a role (worker, experimenter, fast, analyst); Settings map it to a model.
+// W206/W209: a coordinator spawns a role (worker, experimenter, fast, very-fast, explorer); Settings map it to a model.
 const opus: Profile = { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" };
 const sonnet: Profile = { providerId: "claude-code", model: "claude-sonnet-5-5", reasoningLevel: "high" };
 const exp: Profile = { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "xhigh" };
+const haiku: Profile = { providerId: "claude-code", model: "claude-haiku-5-5", reasoningLevel: "high" };
 const luna: Profile = { providerId: "codex", model: "gpt-6-luna", reasoningLevel: "xhigh" };
 const sol: Profile = { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "xhigh" };
 const settings = { executionProfiles: JSON.stringify({ implementation: opus, straightforward: sonnet, experiment: exp, investigation: luna, reviewOfClaude: sol, reviewOfGpt: sol }) };
@@ -20,7 +21,7 @@ const tool = async (f: Fx, name: string, input: unknown) => JSON.parse(await f.h
 const spawnInput = (label: string, extra: Record<string, unknown> = {}) => ({ label, purpose: label, text: `Do ${label}.`, permissionMode: "full", ...extra });
 /** Lets every profile's model appear in the native catalog. */
 const available = (f: Fx) => {
-  for (const profile of [sonnet, luna, sol, exp]) f.execution.set(`probe-${profile.model}`, { model: profile.model, reasoningLevel: profile.reasoningLevel });
+  for (const profile of [sonnet, haiku, luna, sol, exp]) f.execution.set(`probe-${profile.model}`, { model: profile.model, reasoningLevel: profile.reasoningLevel });
   clearCatalogCache();
 };
 const spawned = (f: Fx) => f.spawn.mock.calls.at(-1)![0];
@@ -29,11 +30,11 @@ describe("W206 spawn by role", () => {
   it("maps each kind to its settings profile and records it on the worker", async () => {
     const { f, project } = await projectFixture(settings);
     available(f);
-    for (const [kind, expected] of [["worker", opus], ["experimenter", exp], ["fast", sonnet], ["analyst", luna]] as const) {
+    for (const [kind, expected] of [["worker", opus], ["experimenter", exp], ["fast", sonnet], ["very-fast", haiku], ["explorer", luna]] as const) {
       await tool(f, "initiative_spawn", spawnInput(kind, { kind }));
       expect(spawned(f)).toMatchObject(expected);
     }
-    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["worker", "experimenter", "fast", "analyst"]);
+    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["worker", "experimenter", "fast", "very-fast", "explorer"]);
   });
 
   it("defaults to a plain worker when kind is missing", async () => {
@@ -58,21 +59,44 @@ describe("W206 spawn by role", () => {
     f.store.updateProject(project.id, { policy: { profiles: { straightforward: sol } } });
     await tool(f, "initiative_spawn", spawnInput("override", { kind: "fast" }));
     expect(spawned(f)).toMatchObject(sol);
-    await tool(f, "initiative_spawn", spawnInput("other", { kind: "analyst" }));
+    await tool(f, "initiative_spawn", spawnInput("other", { kind: "explorer" }));
     expect(spawned(f)).toMatchObject(luna);
   });
 
-  it("investigator is a deprecated alias for analyst, and a stored investigator reads as analyst", async () => {
+  it.each(["analyst", "investigator"])("%s is a deprecated alias for explorer, and a stored %s reads as explorer", async (alias) => {
     const { f, project } = await projectFixture(settings);
     available(f);
-    await tool(f, "initiative_spawn", spawnInput("old", { kind: "investigator" }));
+    await tool(f, "initiative_spawn", spawnInput("old", { kind: alias }));
     expect(spawned(f)).toMatchObject(luna);
-    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["analyst"]);
-    f.store.db.prepare("UPDATE workers SET kind = 'investigator'").run();
-    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["analyst"]);
-    expect(buildOverview(f.store, project.id, new Map(), Date.now()).workers.current[0]!.kind).toBe("analyst");
+    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["explorer"]);
+    f.store.db.prepare("UPDATE workers SET kind = ?").run(alias);
+    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["explorer"]);
+    expect(buildOverview(f.store, project.id, new Map(), Date.now()).workers.current[0]!.kind).toBe("explorer");
     const run = (kind: string) => f.harness.runCli(["command", JSON.stringify({ action: "delegate", route: "fresh", label: "L", area: "A", note: "N", kind, permissionMode: "full" }), project.id]);
-    expect((await run("investigator")).exitCode).toBe(0);
+    expect((await run(alias)).exitCode).toBe(0);
+  });
+
+  it("explorer defaults to GPT-6 Luna xhigh and resolves through the investigation key", () => {
+    expect(DEFAULT_PROFILES.investigation).toEqual(luna);
+    expect(WORKER_KIND_PROFILE.explorer).toBe("investigation");
+    for (const kind of ["explorer", "analyst", "investigator"]) expect(workerKindProfile(DEFAULT_POLICY, workerKindSchema.parse(kind))).toEqual(luna);
+    expect(workerKindProfile({ profiles: { investigation: sol } }, "explorer")).toEqual(sol);
+  });
+
+  it("very-fast resolves to Haiku 5.5 high by default, and to a configured override", async () => {
+    expect(DEFAULT_PROFILES.mechanical).toEqual(haiku);
+    expect(workerKindProfile(DEFAULT_POLICY, "very-fast")).toEqual(haiku);
+    expect(workerKindProfile({ profiles: { mechanical: sol } }, "very-fast")).toEqual(sol);
+    // The shared settings above carry no mechanical key: the default fills in.
+    const defaulted = await projectFixture(settings);
+    available(defaulted.f);
+    await tool(defaulted.f, "initiative_spawn", spawnInput("vf", { kind: "very-fast" }));
+    expect(spawned(defaulted.f)).toMatchObject(haiku);
+    const custom = await projectFixture({ executionProfiles: JSON.stringify({ mechanical: sol }) });
+    available(custom.f);
+    await tool(custom.f, "initiative_spawn", spawnInput("vf", { kind: "very-fast" }));
+    expect(spawned(custom.f)).toMatchObject(sol);
+    expect(custom.f.store.workers(custom.project.id).map(w => w.kind)).toEqual(["very-fast"]);
   });
 
   it("a batch spawn takes kind", async () => {
@@ -80,17 +104,17 @@ describe("W206 spawn by role", () => {
     available(f);
     const result = await tool(f, "initiative_batch", { actions: [
       { tool: "spawn", ...spawnInput("quick", { kind: "fast" }) },
-      { tool: "spawn", ...spawnInput("digest", { kind: "analyst" }) },
+      { tool: "spawn", ...spawnInput("digest", { kind: "explorer" }) },
     ] });
     expect(result).toMatchObject({ succeeded: 2, failed: 0 });
-    expect(f.store.workers(project.id).map(w => [w.kind, w.model])).toEqual([["fast", "claude-sonnet-5-5"], ["analyst", "gpt-6-luna"]]);
+    expect(f.store.workers(project.id).map(w => [w.kind, w.model])).toEqual([["fast", "claude-sonnet-5-5"], ["explorer", "gpt-6-luna"]]);
   });
 
   it("the CLI command accepts kind and rejects an unknown one", async () => {
     const { f, project } = await projectFixture(settings);
     available(f);
     const run = (kind: string) => f.harness.runCli(["command", JSON.stringify({ action: "delegate", route: "fresh", label: "L", area: "A", note: "N", kind, permissionMode: "full" }), project.id]);
-    expect((await run("analyst")).exitCode).toBe(0);
+    expect((await run("explorer")).exitCode).toBe(0);
     expect(spawned(f)).toMatchObject(luna);
     expect((await run("implementation")).exitCode).not.toBe(0);
   });
@@ -122,19 +146,21 @@ describe("W206 spawn by role", () => {
   });
 
   it("every kind has a stored profile key", () => {
-    expect(WORKER_KINDS.map(kind => WORKER_KIND_PROFILE[kind])).toEqual(["implementation", "experiment", "straightforward", "investigation"]);
+    expect(WORKER_KINDS.map(kind => WORKER_KIND_PROFILE[kind])).toEqual(["implementation", "experiment", "straightforward", "mechanical", "investigation"]);
   });
 });
 
 describe("W206 coordinator guidance", () => {
   it("names the kinds instead of raw profiles", () => {
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Pick kind on spawn: worker (default; implement a known change), experimenter (try things, prototype, report options), fast (small, well-specified) or analyst (read lots and report; no building or running).");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Pick kind on spawn: worker (default; implement a known change), experimenter (try things, prototype, report options), fast (small, well-specified), very-fast (mechanical: lookups, scans, simple edits) or explorer (read lots and report; no building or running).");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).not.toContain("analyst");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).not.toContain("Pass profile");
   });
 
   it.each([
     ["the raw-profile line", "Pass profile {providerId"],
     ["the worker/fast/investigator kinds line", "or investigator (summarizing"],
+    ["the analyst kinds line with the Haiku/Sonnet sentence", "or analyst (read lots and report; no building or running). Fast work gets"],
   ])("a saved copy of the default with %s upgrades; edited text stays", async (_, needle) => {
     const previous = PREVIOUS_DEFAULTS.coordinator.find(text => text.includes(needle))!;
     expect(previous).toBeDefined();

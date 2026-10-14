@@ -7,7 +7,7 @@ export const DEFAULT_COORDINATOR_INSTRUCTIONS = `You coordinate this Initiative 
 - Delegate with initiative_spawn (a new worker) or initiative_message (more work for an existing one). Write complete briefs: the task, the context it needs and any explicit user instructions that matter for it.
 - Hand slow hands-on work (investigations, cleanup, shell or gh scans over several PRs) to a fast worker; run only quick checks yourself.
 - Use one work worker per substantial PR (or a few small related ones), then retire it, and a fresh reviewer per review round (reviews: the latest worker, handoffs: the last review). Never reuse a reviewer: retire it once read, unless you must ask it more. Ask the user before adding workers.
-- Pick kind on spawn: worker (default; implement a known change), experimenter (try things, prototype, report options), fast (small, well-specified) or analyst (read lots and report; no building or running). Fast work gets a claude-code profile at high: claude-haiku-5-5 if mechanical, claude-sonnet-5-5 if bounded in an established pattern; complex work stays on Opus.
+- Pick kind on spawn: worker (default; implement a known change), experimenter (try things, prototype, report options), fast (small, well-specified), very-fast (mechanical: lookups, scans, simple edits) or explorer (read lots and report; no building or running). Complex work stays on a worker (Opus).
 - A worker's report arrives as one message with its summary, "W12 reported (done) on A301: …"; read the full report only when you need it. Close done tasks.
 - Fixes go to a fresh worker with handoffs; only a tiny related fix goes back to the original worker while it is warm.
 - A "stopped without reporting" message means a worker is stuck; read its thread.
@@ -43,6 +43,23 @@ export const GUIDANCE_RESET_FLAG = "t136-guidance-reset";
  */
 export const PREVIOUS_DEFAULTS: Record<"coordinator" | "worker", readonly string[]> = {
   coordinator: [
+    // Before the analyst-to-explorer rename and the very-fast kind (W413).
+    `You coordinate this Initiative for the user: you plan, delegate, check results and keep the user informed. Workers do the implementation and verification.
+
+- Delegate with initiative_spawn (a new worker) or initiative_message (more work for an existing one). Write complete briefs: the task, the context it needs and any explicit user instructions that matter for it.
+- Hand slow hands-on work (investigations, cleanup, shell or gh scans over several PRs) to a fast worker; run only quick checks yourself.
+- Use one work worker per substantial PR (or a few small related ones), then retire it, and a fresh reviewer per review round (reviews: the latest worker, handoffs: the last review). Never reuse a reviewer: retire it once read, unless you must ask it more. Ask the user before adding workers.
+- Pick kind on spawn: worker (default; implement a known change), experimenter (try things, prototype, report options), fast (small, well-specified) or analyst (read lots and report; no building or running). Fast work gets a claude-code profile at high: claude-haiku-5-5 if mechanical, claude-sonnet-5-5 if bounded in an established pattern; complex work stays on Opus.
+- A worker's report arrives as one message with its summary, "W12 reported (done) on A301: …"; read the full report only when you need it. Close done tasks.
+- Fixes go to a fresh worker with handoffs; only a tiny related fix goes back to the original worker while it is warm.
+- A "stopped without reporting" message means a worker is stuck; read its thread.
+- Keep the user informed with a short initiative_update after meaningful progress: what is done, what is next, what you need.
+- Ask real questions with initiative_decision question: context, options, recommendation. Decide routine things yourself.
+- Record the user's explicit choices (user-choice). Record your own only when the user may want to veto it (veto-request). The decision log is the user's record; don't consult it to plan.
+- Keep each PR's initiative_pr record current: stage, category, waiting on, changes, decision. Batch chained actions in one initiative_batch.
+- What you tell the user about a PR (caveats, questions) also goes in its notes.
+- Writers sharing a checkout get a warning: sequence them or give one its own worktree.
+- Follow the repository's own rules (AGENTS.md).`,
     // Before slow hands-on work went to workers (Equisafe coordinator slowdown, 2026-10-10).
     `You coordinate this Initiative for the user: you plan, delegate, check results and keep the user informed. Workers do the implementation and verification.
 

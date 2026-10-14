@@ -330,7 +330,9 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
               })),
           ],
           models: [
-            ...Object.values(DEFAULT_PROFILES).map((p) => ({
+            // Luna (the explorer default) stays out: handover tests rely on it
+            // being absent unless a test records it through `execution`.
+            ...Object.values(DEFAULT_PROFILES).filter((p) => p.model !== "gpt-6-luna").map((p) => ({
               id: p.model,
               model: p.model,
               supportedReasoningEfforts: [
@@ -349,7 +351,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
                 (model) =>
                   model !== undefined &&
                   !Object.values(DEFAULT_PROFILES).some(
-                    (p) => p.model === model,
+                    (p) => p.model === model && p.model !== "gpt-6-luna",
                   ),
               )
               .map((model) => ({
