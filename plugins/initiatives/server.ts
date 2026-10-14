@@ -832,7 +832,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_message",
     parameters: jsonSchema(messageToolAdvertised),
-    description: 'One message to a worker (W#) or the coordinator: {to:"W4",text:"…"}. With tasks:["T41"] or work:true it gives the worker more work, and the worker reports again; a plain message corrects work in progress. Messages never resume a stopped or retired worker.',
+    description: 'One message to a worker (W#) or the coordinator: {to:"W4",text:"…"}. With tasks:["T41"] or work:true it gives the worker more work, and the worker reports again; a plain message corrects work in progress. From the coordinator to a worker a message steers by default (it arrives mid-turn, in order); mode:"queue" holds it until the turn ends. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return receipt(await sendMessage(raw, threadId));

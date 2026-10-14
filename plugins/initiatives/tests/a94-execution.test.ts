@@ -108,7 +108,7 @@ describe("A94 native execution and complete startup", () => {
     await f.service.delegate(project.id, { route: "continue", worker: d.worker, tasks: [task.ref], permissionMode: "full" });
     expect(f.spawn).toHaveBeenCalledTimes(1);
     expect(f.send).toHaveBeenCalledTimes(1);
-    expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: d.threadId, model: fast.model, reasoningLevel: "xhigh", serviceTier: "fast", permissionMode: "full", mode: "queue-if-active" });
+    expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: d.threadId, model: fast.model, reasoningLevel: "xhigh", serviceTier: "fast", permissionMode: "full", mode: "steer-if-active" });
     expect(f.store.assignment(project.id, 2)!.profile).toEqual({ ...fast, reasoningLevel: "xhigh" });
   });
 

@@ -76,6 +76,7 @@ describe("native queueing", () => {
       route: "continue",
       worker: worker.ref,
       tasks: [t2.ref],
+      delivery: "queue",
     });
     expect(d2.state).toBe("queued");
     const sent = f.send.mock.calls.at(-1)![0];

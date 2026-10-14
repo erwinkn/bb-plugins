@@ -2,6 +2,7 @@ import { z } from "zod";
 import { environmentSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
 import type { Command } from "./commands";
 import { ToolInputError } from "./tool-errors";
+import { MODE_HELP } from "./messaging";
 
 /**
  * T136: the agent tool surface. Each tool is one flat object (Claude's bridge blanks union
@@ -32,7 +33,7 @@ export const messageToolSchema = z.object({
   /** Older sessions' name for to; not advertised (messageToolAdvertised). */
   target: z.string().max(32).optional(),
   text: text(20000),
-  mode: z.enum(["steer", "queue"]).optional().describe("steer: urgent corrections and blockers; queue (default): everything else."),
+  mode: z.enum(["steer", "queue"]).optional().describe(MODE_HELP),
   tasks: z.array(ref).max(30).optional().describe("Coordinator only: give this worker more work on these tasks."),
   work: z.boolean().optional().describe("Coordinator only: this message is more work (the worker reports on it again), even without tasks. Refused for a reviewer: reviews are not reused, so spawn a fresh reviewer."),
 }).strict();
@@ -123,16 +124,19 @@ export const spawnCommand = (i: z.infer<typeof spawnToolSchema>): Command => ({
   ...(i.permissionMode ? { permissionMode: i.permissionMode } : {}),
 });
 
-/** A message with tasks or work:true gives work (route continue); otherwise it is one plain message. */
+/**
+ * A message with tasks or work:true gives work (route continue, always coordinator to worker, so steer by
+ * default); otherwise it is one plain message whose default sendInitiativeMessage picks from sender and target.
+ */
 export function messageCommand(i: z.infer<typeof messageToolSchema>): Command {
   const to = i.to ?? i.target;
   if (!to) throw new ToolInputError('Name the recipient: to:"W4" or to:"coordinator".');
   if (i.to && i.target && i.to !== i.target) throw new ToolInputError("Give the recipient once, as to.");
   if (i.tasks?.length || i.work) {
     if (to === "coordinator") throw new ToolInputError("Work goes to a worker (W#), not the coordinator.");
-    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "queue" };
+    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "steer" };
   }
-  return { action: "message", target: to as never, text: i.text, mode: i.mode ?? "queue" };
+  return { action: "message", target: to as never, text: i.text, ...(i.mode ? { mode: i.mode } : {}) };
 }
 
 export function taskCommand(i: z.infer<typeof taskToolSchema>): Command {

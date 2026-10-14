@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { projectFixture, report } from "./fake-native";
 import { messageSchema } from "../lib/messaging";
+import { messageCommand, messageToolSchema } from "../lib/agent-tools";
 import { readCollection, readOptionsSchema } from "../lib/read";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 const message = { target: "W2", text: "RPC contract is ready. No scope change.", mode: "queue" as const };
@@ -38,6 +39,38 @@ describe("T66 trusted thin native messaging", () => {
     await expect(f.harness.callRpc("command", { projectId: project.id, command: { action: "message", ...message } })).rejects.toThrow(/managed agent/);
     const foreign = await f.harness.runCli(["command", JSON.stringify({ action: "message", ...message }), "foreign"], { threadId: caller });
     expect(foreign.exitCode).toBe(1); expect(f.send).toHaveBeenCalledTimes(2);
+  });
+  describe("default mode", () => {
+    const plain = { target: "W2", text: "Interface fact." };
+    it("the coordinator steers a worker by default; an explicit queue still queues", async () => {
+      const { f, target } = await peers();
+      await f.service.message("coordinator", plain);
+      await f.service.message("coordinator", { ...plain, mode: "queue" });
+      expect(f.send.mock.calls.map(c => c[0])).toMatchObject([
+        { threadId: target, senderThreadId: "coordinator", mode: "steer-if-active" },
+        { threadId: target, senderThreadId: "coordinator", mode: "queue-if-active" },
+      ]);
+    });
+    it("a worker queues to the coordinator and to a peer by default; an explicit steer wins", async () => {
+      const { f, caller } = await peers();
+      await f.service.message(caller, { target: "coordinator", text: "Blocked?" });
+      await f.service.message(caller, plain);
+      await f.service.message(caller, { ...plain, mode: "steer" });
+      expect(f.send.mock.calls.map(c => c[0].mode)).toEqual(["queue-if-active", "queue-if-active", "steer-if-active"]);
+    });
+    it("a worker that has not started yet gets the default as a queue instead of a refusal", async () => {
+      const { f, target } = await peers();
+      f.threads.set(target, { ...f.threads.get(target)!, status: "pending" });
+      await f.service.message("coordinator", plain);
+      expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: target, mode: "queue-if-active" });
+      await expect(f.service.message("coordinator", { ...plain, mode: "steer" })).rejects.toThrow(/queue mode only/);
+    });
+    it("the tool leaves a plain message's mode to the sender/target rule and steers more work", () => {
+      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x" }))).toEqual({ action: "message", target: "W2", text: "x" });
+      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x", mode: "queue" }))).toMatchObject({ mode: "queue" });
+      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x", work: true }))).toMatchObject({ route: "continue", delivery: "steer" });
+      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x", tasks: ["T1"], mode: "queue" }))).toMatchObject({ delivery: "queue" });
+    });
   });
   it("T136: a worker that already reported can still send and receive messages", async () => {
     const { f, project, caller } = await peers();

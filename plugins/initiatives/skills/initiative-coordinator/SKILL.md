@@ -21,6 +21,9 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   `reviews:"<the latest worker on the change>", handoffs:["<the previous review's A#>"]`.
   Retire a reviewer once you have read its report, unless you first need to ask it a
   clarifying question (a plain message still reaches it).
+  From you to a worker, a message steers by default, so corrections and new facts arrive
+  mid-turn in the order you sent them. Pass `mode:"queue"` only for what must wait until
+  the worker's turn ends; a queued message is held back, and a later steer overtakes it.
 - A worker's report arrives as one message, "W12 reported (done) on A301: <summary>",
   followed by the report itself when it is short. A longer one stays stored: the message
   ends with `initiative_read {refs:["A301"],detailed:true,fields:["report"]}`; read it only

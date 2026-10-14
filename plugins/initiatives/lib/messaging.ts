@@ -2,12 +2,23 @@ import { z } from "zod";
 import type { Store, Membership } from "./store";
 import { ProjectError, errorMessage, isDefiniteRejection, textInput, type Sdk, type ThreadDto } from "./bb";
 
+/** The default depends on the pair (messageMode): the coordinator steers a worker, everyone else queues. */
+export const MODE_HELP = "Default: steer from the coordinator to a worker, so a correction or new fact arrives mid-turn in the order sent; queue otherwise. queue holds the message until the recipient's turn ends: use it only for what must wait.";
 export const messageSchema = z.object({
   target: z.union([z.literal("coordinator"), z.string().max(32).regex(/^W[1-9]\d*$/, "Use a current W# or coordinator.")]),
   text: z.string().trim().min(1).max(20000),
-  mode: z.enum(["steer", "queue"]).default("queue").describe("steer: urgent corrections and blockers; queue (default): everything else."),
+  mode: z.enum(["steer", "queue"]).optional().describe(MODE_HELP),
 }).strict();
 export type InitiativeMessage = z.infer<typeof messageSchema>;
+/**
+ * A queued message to a busy worker is held until its turn ends, so a later steer overtakes it and
+ * the stale one then starts a new turn on dropped work. The coordinator therefore steers by default;
+ * a recipient that has not started (pending) can only queue. An explicit mode always wins.
+ */
+export function messageMode(explicit: "steer" | "queue" | undefined, fromCoordinator: boolean, toWorker: boolean, targetStatus?: string): "steer" | "queue" {
+  if (explicit) return explicit;
+  return fromCoordinator && toWorker && targetStatus !== "pending" ? "steer" : "queue";
+}
 const activeStates = ["dispatching", "queued", "running", "idle_no_report", "stopped"];
 
 /** Cheap bounded assignment/task references, with no report or usage projection. */
@@ -74,12 +85,13 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
   if (fresh.id !== initial.id || fresh.generation !== initial.generation || fresh.from.assignment !== initial.from.assignment || fresh.to.assignment !== initial.to.assignment || fresh.from.m.worker?.generation !== initial.from.m.worker?.generation)
     throw new ProjectError("Caller, target or assignment changed while checking native state; read current membership before a new message.");
   if (sender.id !== caller || target.id !== fresh.id) throw new ProjectError("Native lookup did not confirm caller/target identity; no message sent.");
-  nativeAvailable(sender, fresh.from.m); nativeAvailable(target, fresh.to.m, input.mode === "queue");
+  const mode = messageMode(input.mode, fresh.from.m.kind === "coordinator", !!fresh.to.m.worker, target.status);
+  nativeAvailable(sender, fresh.from.m); nativeAvailable(target, fresh.to.m, mode === "queue");
   const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})`
     : fresh.from.m.discussion ? `discussion "${sender.title ?? caller}"` : "coordinator";
   try {
     const receipt = await sdk.threads.send({ threadId: fresh.id, senderThreadId: caller,
-      mode: input.mode === "steer" ? "steer-if-active" : "queue-if-active",
+      mode: mode === "steer" ? "steer-if-active" : "queue-if-active",
       input: textInput(`Initiative · ${fresh.from.m.project.name} · From ${identity}\n\n${input.text}`) });
     return { target: input.target, threadId: fresh.id, generation: fresh.generation, receipt };
   } catch (error) {

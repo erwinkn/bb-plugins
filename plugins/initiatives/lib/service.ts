@@ -4608,7 +4608,8 @@ export class ProjectsService {
         // it when the thread is free. The receipt lands on the assignment.
         const sent = await this.sdk.threads.send({
           threadId: worker.threadId!,
-          mode: input.delivery === "steer" ? "steer-if-active" : "queue-if-active",
+          // The coordinator steers by default: a queued brief would be overtaken by a later steer.
+          mode: input.delivery === "queue" ? "queue-if-active" : "steer-if-active",
           ...(project.coordinatorThreadId ? { senderThreadId: project.coordinatorThreadId } : {}),
           input: textInput(text),
           model: profile.model,
