@@ -10,7 +10,7 @@ The view switch toggles between Threads and Initiatives on this client. The
 Initiatives view has two sections:
 
 ```
-Initiatives                         +
+Initiatives
   ◇ Sidebar v2                 ⓘ   3m
   ◎ Initiatives v9             ◌  55m
   ◍ Equisafe onboarding            1d
@@ -37,32 +37,11 @@ order, so the list draws at once and the first read refreshes it in the
 background; only a confirmed read replaces it, and a read that finds
 Initiatives gone clears it.
 
-**New initiative.** The section's + (or "Start one" while the list is empty)
-opens a dialog: a name, what it should achieve, and its repositories, where the
-open thread's repository is preselected and the first checked one hosts the
-coordinator. It creates through the Initiatives plugin's own `command` RPC
-(`create`, with a new coordinator on the first repository's default checkout),
-like its create form. The dialog closes at once and the draft shows in the
-list as "Creating…" while Initiatives spawns the coordinator, so nothing waits
-on it; once created, the coordinator opens unless you have navigated away or
-switched views meanwhile. A failed draft stays in the list with its reason; Edit
-reopens it, and resending it unchanged reuses its idempotency key, so a create
-that did land but whose answer was lost is never made twice. Past 90 s without
-an answer the draft shows as unconfirmed, and a late answer still settles it.
-Sent drafts and their keys are kept in this client's storage, so a view switch
-or a reload keeps them; after a reload, drafts still waiting for an answer are
-sent again under their keys. Each send is its own storage entry, named by its
-key and holding only what that key's answers decided, so tabs sending at once
-never overwrite each other's, and every tab shows what another sent or
-settled. A send that got no answer shows as failed only in its own tab. Only an answer from
-Initiatives settles a key: when it refused the create, or cannot tell what an
-earlier send saved, the draft gets a new key and resending it is a new create,
-which you check and send on purpose. A key first sent over 7 days ago is never
-sent again, by a reload or by hand, because Initiatives keeps its receipt only
-a day longer: the draft stays listed with a warning, so you can check whether
-it was created before sending it as new. An Edit dialog always sends the
-draft's current key, even one that settled while it was open, and closes if
-the draft is created meanwhile.
+**Creating an Initiative.** The sidebar only lists them; there is no create
+button. Ask an agent or a coordinator to start one, or run
+`bb initiative command` (the Initiatives plugin's own `create` command). A
+`localStorage` key from the removed create-draft store may linger in a browser;
+it is harmless and needs no cleanup.
 
 **Threads.** Below the Initiatives, every thread outside them, with the Threads
 view's rows, pins, snoozes, drafts and archive. Its grouping and order are this

@@ -1331,7 +1331,6 @@ function ThreadListContent({
           <div className="px-2">
             <InitiativesSection
               activeThreadId={props.activeThreadId}
-              activeProjectId={props.activeProjectId || null}
               isCompactViewport={props.isCompactViewport}
               onNavigate={props.onNavigate}
             />

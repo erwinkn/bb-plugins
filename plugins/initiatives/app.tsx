@@ -1159,7 +1159,7 @@ export function InitiativeCompose({ projectId }: { projectId: string }) {
 
 /**
  * D536: the route of one Initiative's dashboard (`<id>`, `<id>/<tab>`) and of its composer. There
- * is no Initiatives overview: the sidebar lists the Initiatives and creates them. BB still draws
+ * is no Initiatives overview: the sidebar lists the Initiatives. BB still draws
  * this page's sidebar entry (a nav panel has no route without one), so its bare route says where
  * they went.
  */
@@ -1171,7 +1171,7 @@ export function ProjectsPage({ subPath }: PluginNavPanelProps) {
     <div className="project-page">
       {id.endsWith("/compose") ? <InitiativeCompose projectId={id.slice(0, -8)} />
         : id ? <Dashboard key={projectId} projectId={projectId!} routeTab={routeTab} />
-        : <p className="bb-projects project-muted">Initiatives are listed in the sidebar: open one there, or start one with its +.</p>}
+        : <p className="bb-projects project-muted">Initiatives are listed in the sidebar: open one there. To start one, ask an agent or coordinator, or use `bb initiative command`.</p>}
     </div>
   );
 }

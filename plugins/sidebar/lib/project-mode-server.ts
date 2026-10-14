@@ -9,7 +9,6 @@ import { initiativeThreadIds, withDescendants } from "./initiative-threads";
 import { withReadTimeout } from "./read-timeout";
 import { treeSchema } from "./project-tree-schema";
 import {
-  createReplySchema,
   projectModeContract,
   threadCreateResultSchema,
 } from "./project-mode-contract";
@@ -228,43 +227,6 @@ export function registerProjectMode(bb: BbPluginApi) {
         },
         outputSchema: threadCreateResultSchema,
       });
-    },
-    createInitiative: async ({ name, objective, memberProjectIds, key }) => {
-      await requireRunning(bb);
-      const reply = await bb.sdk.plugins.callRpc({
-        pluginId: INITIATIVES_PLUGIN_ID,
-        method: "command",
-        input: {
-          command: {
-            action: "create",
-            name,
-            objective,
-            memberProjectIds,
-            coordinator: {
-              kind: "new",
-              bbProjectId: memberProjectIds[0],
-              environment: { type: "project-default" },
-            },
-          },
-          key,
-        },
-        outputSchema: createReplySchema,
-      });
-      // A settled refusal is an answer, not an error: the client renews the
-      // key only for those.
-      if ("write" in reply && reply.write !== "done")
-        return { write: reply.write, message: reply.message };
-      const created = "write" in reply ? reply.answer : reply;
-      // The Initiatives plugin announces the new Initiative itself; this
-      // also covers a reply that lands before its signal.
-      bb.realtime.publish(INITIATIVES_CHANGED, {});
-      refreshSnapshot(true);
-      return {
-        write: "done" as const,
-        projectId: created.project.id,
-        coordinatorThreadId: created.project.coordinatorThreadId ?? null,
-        note: created.note ?? null,
-      };
     },
     initiativesChanged: (payload) => {
       bb.realtime.publish(INITIATIVES_CHANGED, payload);

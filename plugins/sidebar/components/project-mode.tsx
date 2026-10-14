@@ -42,7 +42,6 @@ import { useReorderDnd } from "../lib/use-reorder-dnd";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { moveItem } from "../lib/spaces";
-import { projectLabel } from "../lib/project-schema";
 import { relativeAge } from "../lib/time";
 import { StatusIcon } from "./status-icon";
 import { appearanceHueStep, appearanceIcon } from "../lib/project-hue";
@@ -50,18 +49,7 @@ import { ProjectAppearanceEditor, type AppearancePatch } from "./project-appeara
 import { HostIcon } from "../lib/host-icon";
 import { ThreadDragOverlay } from "./thread-drag-overlay";
 import { menuItemClass } from "./menus";
-import { SectionHeader, sectionActionClass } from "./section-header";
-import { CreateInitiativeDialog } from "./create-initiative";
-import {
-  dismissNotice,
-  dismissSubmission,
-  newDraft,
-  resumeSubmissions,
-  submitDraft,
-  useSubmissions,
-  type CreateInitiative,
-  type InitiativeDraft,
-} from "../lib/initiative-submissions";
+import { SectionHeader } from "./section-header";
 import { cacheTree, cachedTree } from "../lib/initiative-tree-cache";
 import { ReadTimeoutError, claimReport, withReadTimeout } from "../lib/read-timeout";
 
@@ -97,13 +85,11 @@ type TreeProject = ProjectTree["projects"][number];
 
 /**
  * The Initiatives list at the top of the Initiatives view: one dense row per
- * Initiative (icon, name, status, last activity), a + that opens the New
- * initiative dialog, and drag reordering. The last tree is cached, so the list
+ * Initiative (icon, name, status, last activity) and drag reordering. The last tree is cached, so the list
  * draws at once and refreshes in the background.
  */
 export function InitiativesSection(props: {
   activeThreadId: string | null;
-  activeProjectId: string | null;
   isCompactViewport: boolean;
   onNavigate: () => void;
 }) {
@@ -234,56 +220,6 @@ export function InitiativesSection(props: {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
-  const memberChoices = useMemo(
-    () =>
-      native.projects
-        .filter((project) => !project.isPersonal)
-        .map((project) => ({ id: project.id, name: projectLabel(project) }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [native.projects],
-  );
-  const [editing, setEditing] = useState<InitiativeDraft | null>(null);
-  const { submissions, notice } = useSubmissions();
-  // A listed draft's dialog closes once it is created or dismissed, here or
-  // in another tab: there is nothing left to send.
-  const dialogDraft =
-    editing && (editing.key === null || submissions.some((s) => s.key === editing.key))
-      ? editing
-      : null;
-  const openCreate = () =>
-    setEditing(
-      newDraft(
-        memberChoices.some((p) => p.id === props.activeProjectId)
-          ? props.activeProjectId
-          : null,
-      ),
-    );
-  // The dialog closes at once; the draft shows in the list while Initiatives
-  // creates it. A failed one stays there with its reason until sent again or
-  // dismissed, and sending it again unchanged keeps its key, so it cannot
-  // duplicate. Drafts a reload cut off are sent again once, without opening.
-  const create: CreateInitiative = (input) =>
-    apiRef.current.call("createInitiative", input);
-  useEffect(() => resumeSubmissions(create, schedule), []);
-  const submit = (draft: InitiativeDraft) => {
-    setEditing(null);
-    const from = window.location.pathname;
-    submitDraft(draft, create, (created) => {
-      schedule();
-      // Open its coordinator unless the user has moved on meanwhile, to
-      // another page or view. Without one yet the new row and the note say
-      // what happened.
-      if (
-        !created.coordinatorThreadId ||
-        !mounted.current ||
-        window.location.pathname !== from
-      )
-        return;
-      navigate.toThread(created.coordinatorThreadId);
-      props.onNavigate();
-    });
-  };
-
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const displayIds = useMemo(
@@ -340,22 +276,7 @@ export function InitiativesSection(props: {
 
   return (
     <section aria-label="Initiatives" data-project-mode="" className="mt-2">
-      <SectionHeader
-        title="Initiatives"
-        trailing={
-          available !== false && (
-            <button
-              type="button"
-              aria-label="New initiative"
-              title="New initiative"
-              onClick={openCreate}
-              className={sectionActionClass}
-            >
-              <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
-            </button>
-          )
-        }
-      />
+      <SectionHeader title="Initiatives" />
       {error && (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}
@@ -372,14 +293,6 @@ export function InitiativesSection(props: {
           </button>
         </p>
       )}
-      {notice && (
-        <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
-          {notice}{" "}
-          <button className="underline" onClick={dismissNotice}>
-            Dismiss
-          </button>
-        </p>
-      )}
       {available === false && (
         <p className="px-2 py-1 text-xs text-muted-foreground">
           Install or enable the Initiatives plugin to list Initiatives here.
@@ -388,13 +301,8 @@ export function InitiativesSection(props: {
       {available === null && !error && (
         <p className="px-2 py-1 text-xs text-muted-foreground">Loading initiatives…</p>
       )}
-      {available && !projects.length && !submissions.length && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">
-          No initiatives yet.{" "}
-          <button type="button" className="underline" onClick={openCreate}>
-            Start one
-          </button>
-        </p>
+      {available && !projects.length && (
+        <p className="px-2 py-1 text-xs text-muted-foreground">No initiatives yet.</p>
       )}
       <DndContext {...dnd.dndContextProps}>
         <ul
@@ -467,54 +375,6 @@ export function InitiativesSection(props: {
               />
             );
           })}
-          {submissions.map(({ key, draft, error: failure }) => (
-            <li
-              key={key}
-              data-initiative-submission={failure ? "failed" : "pending"}
-              className="flex min-h-7 items-center gap-2 rounded-md px-2 py-1 text-[13px] leading-5"
-            >
-              <span aria-hidden="true" className="flex size-4 shrink-0 items-center justify-center text-[var(--subtle-foreground)]">
-                <HostIcon
-                  name={failure ? "AlertCircle" : "Loading"}
-                  fallback="Circle"
-                  className={`size-3.5 ${failure ? "text-destructive" : "animate-spin"}`}
-                />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-muted-foreground">
-                  {draft.name}
-                </span>
-                {failure && (
-                  <span role="alert" className="block text-xs text-destructive">
-                    {failure}
-                  </span>
-                )}
-              </span>
-              {failure ? (
-                <>
-                  <button
-                    type="button"
-                    className="shrink-0 text-xs underline"
-                    onClick={() => setEditing({ key, ...draft })}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Dismiss ${draft.name}`}
-                    className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() => dismissSubmission(key)}
-                  >
-                    <HostIcon name="X" className="size-3.5" />
-                  </button>
-                </>
-              ) : (
-                <span className="shrink-0 text-xs text-[var(--subtle-foreground)]">
-                  Creating…
-                </span>
-              )}
-            </li>
-          ))}
         </ul>
         <DragOverlay dropAnimation={null}>
           {dragId ? (
@@ -526,12 +386,6 @@ export function InitiativesSection(props: {
           ) : null}
         </DragOverlay>
       </DndContext>
-      <CreateInitiativeDialog
-        draft={dialogDraft}
-        projects={memberChoices}
-        onSubmit={submit}
-        onClose={() => setEditing(null)}
-      />
     </section>
   );
 }
