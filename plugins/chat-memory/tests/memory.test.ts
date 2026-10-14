@@ -65,6 +65,24 @@ describe("T145 scopes", () => {
     expect((await f.memory.status("initiatives:prj_1")).tree.nodes).toBeGreaterThan(0);
   });
 
+  // D527: BB runs several queued agent messages as one turn; senderThreadId names only the first.
+  it("names every sender of a turn that carries several agents' messages", async () => {
+    const f = fixture();
+    f.thread("a", { title: "Coordinator" });
+    f.thread("v", { title: "W11 Fix the lexer — lexer" });
+    f.thread("w", { title: "W12 Fix the parser — parser" });
+    await f.attach("initiatives", "prj_1", "a");
+    const group = (sender: string, text: string) => [{ type: "text", text: `[bb message from thread:${sender}; sent 2026-10-14T14:02:11Z]\n\n${text}` }];
+    const inputGroups = [group("v", "done: lexer fixed"), group("w", "done: parser fixed")];
+    f.say("a", "", { initiator: "agent", senderThreadId: "v", input: inputGroups.flat(), inputGroups });
+    f.done("a");
+    await f.idle("a");
+    expect(f.store.messages("initiatives:prj_1").map((m) => `${m.threadId} ${m.kind}: ${m.text}`)).toEqual([
+      "a work: [W11 Fix the lexer — lexer] done: lexer fixed",
+      "a work: [W12 Fix the parser — parser] done: parser fixed",
+    ]);
+  });
+
   it("logs a plugin's brief as a note, skips /compact, tags BB notices, and marks a stopped turn", async () => {
     const f = fixture();
     await f.attach("initiatives", "prj_1", f.thread("c", { originPluginId: "initiatives" }));

@@ -1,4 +1,5 @@
 import { bytes } from "./tree";
+import { senderParts } from "./sender-parts";
 
 /**
  * D431: a scope's append-only memory log, one row per message across all of its threads. It is
@@ -80,8 +81,12 @@ export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts
     // A retry re-submits a request that is logged already, or says "Please continue." after it.
     if (!text || d.retryOfRequestId) return [];
     if (d.initiator === "agent") {
-      const sender = typeof d.senderThreadId === "string" ? facts.sender(d.senderThreadId) : "thread";
-      return entry("work", `[${sender}] ${text.replace(/^\[bb message from thread:\S+\]\s*/, "")}`);
+      // One entry per sender: a turn may carry several agents' queued messages.
+      return senderParts(d).flatMap(({ sender, input, batched }) => {
+        const part = inputText(input).trim();
+        const body = batched ? part : part.replace(/^\[bb message from thread:\S+\]\s*/, "");
+        return entry("work", `[${sender === null ? "thread" : facts.sender(sender)}] ${body}`);
+      });
     }
     if (d.initiator === "system") return entry("work", `[bb] ${text.replace(/^\[bb system\]\s*/, "")}`);
     // BB's /compact is the compaction itself, logged as a note when its summary appears.

@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Store } from "./store";
 import { SECRET_COMMAND } from "./redact";
+import { senderParts } from "./sender-parts";
 import { available, unavailable, type CheckoutState, type ConversationMessage, type CoordinatorAction, type HandoverSnapshot, type NativeChild, type Read, type WorkerLive } from "./handover-packet";
 
 /**
@@ -50,32 +51,37 @@ async function attempt<T>(what: string, read: () => Promise<T>): Promise<Read<T>
   }
 }
 
-/** One event as a conversation message, or null. Identity is the event, never its text. */
-export function toMessage(row: EventRow): ConversationMessage | null {
+/**
+ * One event as conversation messages: a turn request gives one per sender, an item at most one.
+ * Identity is the event, and the sender's part of it, never its text.
+ */
+export function toMessages(row: EventRow): ConversationMessage[] {
   const at = timeOf(row);
   if (row.type === "client/turn/requested") {
-    let text = inputText(row.data?.input).trim();
-    if (!text) return null;
     const initiator = row.data?.initiator;
-    const from = initiator === "user" ? "user" : initiator === "agent" ? "agent" : "system";
-    // BB's own envelope lines carry no content.
-    text = text.replace(/^\[bb (?:message from thread:\S+|system)\]\s*/, "");
-    const id = typeof row.data?.requestId === "string" ? `request:${row.data.requestId}` : `event:${row.id ?? row.seq}`;
-    return { id, seq: row.seq, at, from, sender: typeof row.data?.senderThreadId === "string" ? row.data.senderThreadId : null, text };
+    const from: ConversationMessage["from"] = initiator === "user" ? "user" : initiator === "agent" ? "agent" : "system";
+    const request = typeof row.data?.requestId === "string" ? `request:${row.data.requestId}` : `event:${row.id ?? row.seq}`;
+    return senderParts(row.data).flatMap(({ sender, input, batched }, i) => {
+      const text = inputText(input).trim();
+      if (!text) return [];
+      // BB's own envelope lines carry no content; a batch's parts come without them.
+      const body = batched ? text : text.replace(/^\[bb (?:message from thread:\S+|system)\]\s*/, "");
+      return [{ id: i === 0 ? request : `${request}#${i}`, seq: row.seq, at, from, sender, text: body }];
+    });
   }
   if (row.type === "item/completed") {
     const item = row.data?.item as Record<string, unknown> | undefined;
-    if (!item || item.parentToolCallId) return null;
+    if (!item || item.parentToolCallId) return [];
     const id = typeof item.id === "string" ? `item:${item.id}` : `event:${row.id ?? row.seq}`;
     // Some providers also record the user's input as a userMessage item.
     if (item.type === "userMessage") {
       const text = inputText(item.content).trim();
-      return text ? { id, seq: row.seq, at, from: "user", sender: null, text } : null;
+      return text ? [{ id, seq: row.seq, at, from: "user", sender: null, text }] : [];
     }
-    if (item.type !== "agentMessage" || typeof item.text !== "string" || !item.text.trim()) return null;
-    return { id, seq: row.seq, at, from: "coordinator", sender: null, text: item.text.trim() };
+    if (item.type !== "agentMessage" || typeof item.text !== "string" || !item.text.trim()) return [];
+    return [{ id, seq: row.seq, at, from: "coordinator", sender: null, text: item.text.trim() }];
   }
-  return null;
+  return [];
 }
 
 /**
@@ -106,8 +112,7 @@ async function pageBack(sdk: Sdk, threadId: string, type: string, pages: number,
     const older = rows.filter(r => r.type === type && (before === null || r.seq < before));
     for (const row of [...older].sort((a, b) => b.seq - a.seq)) {
       onRow(row);
-      const m = toMessage(row);
-      if (m && keep(m, messages.length)) messages.push(m);
+      for (const m of toMessages(row)) if (keep(m, messages.length)) messages.push(m);
     }
     if (older.length) oldestSeq = Math.min(...older.map(r => r.seq));
     if (rows.length < PAGE || !older.length) return { messages, complete: true, oldestSeq };

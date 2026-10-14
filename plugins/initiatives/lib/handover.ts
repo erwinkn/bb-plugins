@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Profile } from "./schema";
+import { senderParts } from "./sender-parts";
 
 /**
  * T136: a replacement coordinator's first message is a handover written by GPT-6 Luna High
@@ -126,8 +127,8 @@ export async function messagesSince(sdk: Sdk, threadId: string, since: number, n
   for (let page = 0; page < MESSAGE_PAGES; page++) {
     const rows = await list(sdk, { threadId, types: ["client/turn/requested"], order: "desc", limit: String(MESSAGE_PAGE), ...(beforeSeq === undefined ? {} : { beforeSeq: String(beforeSeq) }) });
     for (const row of rows) {
-      const sender = row.data?.senderThreadId, at = timeOf(row) ?? 0;
-      if (typeof sender === "string" && !latest.has(sender)) latest.set(sender, at);
+      const at = timeOf(row) ?? 0;
+      for (const { sender } of senderParts(row.data)) if (sender !== null && !latest.has(sender)) latest.set(sender, at);
       reached = Math.min(reached, at);
     }
     if (rows.length < MESSAGE_PAGE) reached = -Infinity;

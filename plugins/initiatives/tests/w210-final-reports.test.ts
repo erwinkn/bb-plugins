@@ -240,6 +240,16 @@ describe("W210 stuck workers", () => {
     expect(stuckSends(f)).toHaveLength(0);
   });
 
+  // D527: BB runs several queued agent messages as one turn; the event's senderThreadId names only the first.
+  it("counts a worker's message carried second in a batched turn", async () => {
+    const { f, w, inputAt, check } = await stopped();
+    const group = (sender: string, text: string) => [{ type: "text", text: `[bb message from thread:${sender}; sent 2026-10-14T14:02:11Z]\n\n${text}` }];
+    const inputGroups = [group("other", "Report from another worker"), group(w.threadId, "Waiting for CI.")];
+    f.history.push({ type: "client/turn/requested", seq: ++seq, threadId: "coordinator", createdAt: inputAt + 300, data: { requestId: `creq_${seq}`, initiator: "agent", senderThreadId: "other", input: inputGroups.flat(), inputGroups } });
+    await check();
+    expect(stuckSends(f)).toHaveLength(0);
+  });
+
   it("pages the coordinator's inputs back past the worker's latest input", async () => {
     const { f, w, inputAt, check } = await stopped();
     delivered(f, w.threadId, inputAt + 300);

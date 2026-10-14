@@ -12,6 +12,7 @@ import type { Summarizer } from "./summarizer";
 import { NodeCache, children, end, label, nodeAt, renderLine, start, viewBytes } from "./tree";
 import { WHOLE_BYTES, turnView } from "./turn";
 import type { NodeRef } from "./tree";
+import { senderParts } from "./sender-parts";
 
 export const PLUGIN_ID = "chat-memory";
 export const zoomToolSchema = z.object({ id: z.number().int().min(0), n: z.number().int().min(1) }).strict();
@@ -436,7 +437,7 @@ export class ChatMemory {
   /** What turnEntries needs for a page of a thread's events: whether a plugin spawned the thread, and its senders' names. */
   private async logFacts(threadId: string, rows: readonly EventRow[]) {
     const facts = await this.threadFacts(threadId);
-    const senders = [...new Set(rows.flatMap((r) => (typeof r.data?.senderThreadId === "string" ? [r.data.senderThreadId as string] : [])))];
+    const senders = [...new Set(rows.flatMap((r) => senderParts(r.data).flatMap((p) => (p.sender === null ? [] : [p.sender]))))];
     const names = new Map(
       await Promise.all(senders.map(async (id) => [id, senderName(await this.threadFacts(id).catch(() => null), id)] as const)),
     );

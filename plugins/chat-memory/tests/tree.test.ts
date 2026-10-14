@@ -283,6 +283,95 @@ describe("W220 log entries from BB events", () => {
     expect(entries(turn({ initiator: "user", input: [{ type: "text", text: "/compact" }] }))).toEqual([]);
   });
 
+  // D527: BB runs several queued agent messages as one turn; senderThreadId names only the first.
+  it("maps a turn carrying several agents' messages to one entry per sender", () => {
+    const group = (sender: string, text: string) => [{ type: "text", text: `[bb message from thread:${sender}; sent 2026-10-14T14:02:11Z]\n\n${text}` }];
+    const inputGroups = [group("thr_v", "V reported"), group("thr_w", "W12 reported")];
+    expect(entries(turn({ initiator: "agent", senderThreadId: "thr_v", input: inputGroups.flat(), inputGroups }))).toEqual(["work: [thr_v] V reported", "work: [W12 Parser — parser] W12 reported"]);
+  });
+
+  // A fork's first turn: BB puts the fork's agent-only seed, which may read like a header, ahead of the first group's header.
+  it("never reads a fork's seed as a sender", () => {
+    const seed = { type: "text", text: "[bb message from thread:thr_parent]\n\nParent's fork context.", mentions: [], visibility: "agent-only" };
+    const header = (sender: string, text: string) => ({ type: "text", text: `[bb message from thread:${sender}]\n\n${text}`, mentions: [] });
+    // What unpatched BB (e3adcc83e) records for a peer's two-row manual group as the fork's first turn: logged as before.
+    const one = [header("thr_w", "Peer instruction 0"), header("thr_w", "Peer instruction 1")];
+    const unpatched = turn({ initiator: "agent", senderThreadId: "thr_w", input: [seed, one[0], { type: "text", text: "\n\n", mentions: [] }, one[1]], inputGroups: [[seed, one[0]], [one[1]]] });
+    expect(entries(unpatched)).toEqual([
+      "work: [W12 Parser — parser] Parent's fork context.\n[bb message from thread:thr_w]\n\nPeer instruction 0\n\n\n\n[bb message from thread:thr_w]\n\nPeer instruction 1",
+    ]);
+    const sent = (sender: string, text: string) => ({ type: "text", text: `[bb message from thread:${sender}; sent 2026-10-14T14:02:11Z]\n\n${text}`, mentions: [] });
+    const inputGroups = [[seed, sent("thr_w", "a")], [sent("thr_v", "b")]];
+    const batched = turn({ initiator: "agent", senderThreadId: "thr_w", input: inputGroups.flat(), inputGroups });
+    expect(entries(batched).map((e) => e.slice(0, e.indexOf("]") + 1))).toEqual(["work: [W12 Parser — parser]", "work: [thr_v]"]);
+  });
+
+  // W423: a fork's context may quote an earlier report of the parent that now sends the first group.
+  // The quote is the fork's agent-only context block; BB's own header is on the message's block.
+  // Nothing tells the two apart (see the public /send case below), so both stay as written.
+  it("keeps a fork's quote of the first sender's earlier batch header", () => {
+    const quote = { type: "text", text: "[bb message from thread:thr_w; sent 2026-10-14T14:00:00Z]\n\nEarlier report", mentions: [], visibility: "agent-only" };
+    const sent = (sender: string, text: string) => ({ type: "text", text: `[bb message from thread:${sender}; sent 2026-10-14T14:02:11Z]\n\n${text}`, mentions: [] });
+    const seeded = (second: string) => {
+      const inputGroups = [[quote, sent("thr_w", "Next step")], [sent(second, "b")]];
+      return turn({ initiator: "agent", senderThreadId: "thr_w", input: [...inputGroups[0]!, { type: "text", text: "\n\n", mentions: [] }, ...inputGroups[1]!], inputGroups });
+    };
+    expect(entries(seeded("thr_v"))).toEqual([
+      "work: [W12 Parser — parser] [bb message from thread:thr_w; sent 2026-10-14T14:00:00Z]\n\nEarlier report\n[bb message from thread:thr_w; sent 2026-10-14T14:02:11Z]\n\nNext step",
+      "work: [thr_v] b",
+    ]);
+    expect(entries(seeded("thr_w"))).toEqual([
+      "work: [W12 Parser — parser] [bb message from thread:thr_w; sent 2026-10-14T14:00:00Z]\n\nEarlier report\n[bb message from thread:thr_w; sent 2026-10-14T14:02:11Z]\n\nNext step\n\n\n\nb",
+    ]);
+  });
+
+  // A616: a public /send may start with an agent-only block and quote the sender's earlier header
+  // in its visible text. BB writes its header on the agent-only block. As group 0 this reads like
+  // a fork's context followed by a message, so neither header is taken and the quote survives.
+  it("keeps a sent message's quote after its own agent-only block", () => {
+    const quote = "[bb message from thread:thr_w; sent 2026-10-14T14:00:00Z]\n\nEarlier report\n\n";
+    const sent = (q: string) => {
+      const own = [
+        { type: "text", text: "[bb message from thread:thr_w; sent 2026-10-14T14:02:11Z]\n\nBackground", mentions: [], visibility: "agent-only" },
+        { type: "text", text: `${q}Next step`, mentions: [] },
+      ];
+      const inputGroups = [own, [{ type: "text", text: "[bb message from thread:thr_v; sent 2026-10-14T14:02:12Z]\n\nb", mentions: [] }]];
+      return turn({ initiator: "agent", senderThreadId: "thr_w", input: inputGroups.flat(), inputGroups });
+    };
+    expect(entries(sent(quote))).toEqual([
+      `work: [W12 Parser — parser] [bb message from thread:thr_w; sent 2026-10-14T14:02:11Z]\n\nBackground\n${quote}Next step`,
+      "work: [thr_v] b",
+    ]);
+    // With no quote, BB's header is the only one, and it goes.
+    expect(entries(sent(""))).toEqual(["work: [W12 Parser — parser] Background\nNext step", "work: [thr_v] b"]);
+  });
+
+  // W421: on unpatched BB the log must read exactly as 3d46353 did, for every content shape. These rows were
+  // recorded by unpatched BB (e3adcc83e) through its real send and queue paths.
+  it("logs every request unpatched BB records exactly as before", () => {
+    const seed = { type: "text", text: "[bb message from thread:thr_parent; DO NOT deploy]\n\nFork context", mentions: [], visibility: "agent-only" };
+    const peer = (n: number) => ({ type: "text", text: `[bb message from thread:thr_j2ir7ujpru]\n\nPeer instruction ${n}`, mentions: [] });
+    const native = {
+      user: { initiator: "user", senderThreadId: null, input: [{ type: "text", text: "[bb message from thread:thr_parent; DO NOT deploy]", mentions: [] }] },
+      seededUser: { initiator: "user", senderThreadId: null, input: [{ type: "text", text: "unused seed", mentions: [], visibility: "agent-only" }, { type: "text", text: "first", mentions: [] }] },
+      seededGroup: { initiator: "agent", senderThreadId: "thr_j2ir7ujpru", input: [seed, peer(0), { type: "text", text: "\n\n", mentions: [] }, peer(1)], inputGroups: [[seed, peer(0)], [peer(1)]] },
+      attachmentOnly: { initiator: "agent", senderThreadId: "thr_w", input: [{ type: "text", text: "[bb message from thread:thr_w]", mentions: [] }, { type: "image", url: "https://example.com/a.png" }] },
+      system: { initiator: "system", senderThreadId: null, input: [{ type: "text", text: "[bb system]\n\nW3 is now a child of this thread.", mentions: [] }] },
+    };
+    // eventEntries' request branch as of 3d46353, before D527.
+    const before = (d: Record<string, any>) => {
+      const text = (d.input as { text?: unknown }[]).filter((c) => typeof c?.text === "string").map((c) => c.text as string).join("\n").trim();
+      const entry = (kind: string, t: string) => (t.trim() ? [`${kind}: ${t.trim()}`] : []);
+      if (!text) return [];
+      if (d.initiator === "agent") return entry("work", `[${facts.sender(d.senderThreadId)}] ${text.replace(/^\[bb message from thread:\S+\]\s*/, "")}`);
+      if (d.initiator === "system") return entry("work", `[bb] ${text.replace(/^\[bb system\]\s*/, "")}`);
+      return entry("user", text);
+    };
+    for (const [name, data] of Object.entries(native)) expect([name, entries(turn(data))]).toEqual([name, before(data)]);
+    expect(entries(turn(native.user))).toEqual(["user: [bb message from thread:thr_parent; DO NOT deploy]"]);
+    expect(entries(turn(native.seededGroup))[0]).toMatch(/^work: \[thr_j2ir7ujpru\] \[bb message from thread:thr_parent; DO NOT deploy\]\n\nFork context\n/);
+  });
+
   it("maps items: replies, tool calls with their echo, commands; never thoughts", () => {
     expect(entries(item({ type: "agentMessage", text: "Done." }))).toEqual(["agent: Done."]);
     expect(entries(item({ type: "reasoning", content: ["secret"] }))).toEqual([]);

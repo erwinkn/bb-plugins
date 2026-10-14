@@ -140,6 +140,45 @@ export function authority(
   return sender === parent ? "parent" : "peer";
 }
 
+/** The header BB writes on each message of a batched turn, with the message's send time. */
+const BATCH_HEADER = /^\[bb message from thread:([^;\]\s]+); sent \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\]/;
+
+/**
+ * A turn request's input, one entry per sender. BB runs several queued agent
+ * messages as one turn: each is its own input group, and senderThreadId names
+ * the first group's sender. Every later group starts with BB's own
+ * "[bb message from thread:<id>; sent <time>]" header, ahead of any agent text.
+ * The first group is never read for a header: BB may put a fork's agent-only
+ * context before it. A request with one sender, including every older event,
+ * is one entry: older BB never writes that header.
+ */
+export function senderParts(d: Record<string, any>): Array<{ sender: string | null; parts: Array<Record<string, any>> }> {
+  const sender: string | null = d.senderThreadId ?? null;
+  const input = (Array.isArray(d.input) ? d.input : []) as Array<Record<string, any>>;
+  const groups = (d.initiator === "agent" && Array.isArray(d.inputGroups) ? d.inputGroups : []) as Array<Array<Record<string, any>>>;
+  const headers = groups.slice(1).map((parts) => BATCH_HEADER.exec(String(parts.find((p) => p.type === "text")?.text ?? "")));
+  if (!headers.length || !headers.every(Boolean)) return [{ sender, parts: input }];
+  const split = groups.map((parts, i) => ({ sender: i === 0 ? sender : headers[i - 1]![1]!, parts }));
+  return split.some((x) => x.sender !== sender) ? split : [{ sender, parts: input }];
+}
+
+/** Row keys of one request: its id, then "<id>#<n>" for each later sender's part. */
+function partKey(rid: string, part: number): string {
+  return part === 0 ? rid : `${rid}#${part}`;
+}
+
+/** The part index a row key names: 0 for "<id>", n for "<id>#<n>". */
+function partOf(key: string): number {
+  const m = /#(\d+)$/.exec(key);
+  return m ? Number(m[1]) : 0;
+}
+
+/** The judge's name for a request, or for one sender's part of it. */
+function refOf(key: string, r: RequestRow): string {
+  const part = partOf(key);
+  return part === 0 ? `R:${r.seq}` : `R:${r.seq}.${part}`;
+}
+
 function receiptId(row: EventRow): string {
   return row.type === "turn/input/accepted" ? row.data.clientRequestId : row.data.requestId;
 }
@@ -185,6 +224,13 @@ export class Requests {
 
   drained(atTip: boolean): void {
     this.owner.anchorOk = atTip;
+  }
+
+  /** Every row of one request: one per sender, all settled by its one receipt. */
+  private requestRows(rid: string): RequestRow[] {
+    const out: RequestRow[] = [];
+    for (let r = this.rows.get(rid); r !== undefined; r = this.rows.get(partKey(rid, out.length))) out.push(r);
+    return out;
   }
 
   /** Refresh context, then ingest one drain batch in seq order (A160 F2). */
@@ -250,19 +296,21 @@ export class Requests {
     } else if (t === "client/turn/requested") {
       const rid = d.requestId as string;
       if (!this.rows.has(rid)) {
-        const parts = (Array.isArray(d.input) ? d.input : []) as Array<Record<string, any>>;
-        this.rows.set(rid, {
-          seq: row.seq,
-          sender: d.senderThreadId ?? null,
-          initiator: d.initiator ?? null,
-          source: d.source ?? null,
-          parts,
-          text: parts.filter((p) => p.type === "text").map((p) => String(p.text ?? "")).join(""),
-          state: "requested",
-          settledSeq: null,
-          seenAt: nowMin,
-          createdAt: typeof row.createdAt === "number" ? row.createdAt : null,
-        });
+        const split = senderParts(d);
+        split.forEach(({ sender, parts }, i) =>
+          this.rows.set(partKey(rid, i), {
+            seq: row.seq,
+            sender,
+            initiator: d.initiator ?? null,
+            source: d.source ?? null,
+            parts,
+            text: parts.filter((p) => p.type === "text").map((p) => String(p.text ?? "")).join(""),
+            state: "requested",
+            settledSeq: null,
+            seenAt: nowMin,
+            createdAt: typeof row.createdAt === "number" ? row.createdAt : null,
+          }),
+        );
         const receipt = this.orphans.get(rid);
         if (receipt) {
           // its receipt was read first (seed window, sweep or drain order)
@@ -273,11 +321,12 @@ export class Requests {
       }
     } else if ((RECEIPT_TYPES as readonly string[]).includes(t)) {
       const rid = receiptId(row);
-      const r = this.rows.get(rid);
-      if (r === undefined) {
+      const rs = this.requestRows(rid);
+      if (rs.length === 0) {
         this.orphanReceipts.push(row.seq); // its request lies in an unscanned range, or is read later
         if (!this.orphans.has(rid)) this.orphans.set(rid, row);
-      } else if (r.state === "requested") {
+      }
+      for (const r of rs.filter((x) => x.state === "requested")) {
         r.state = t === "turn/input/accepted" ? "accepted" : "rejected";
         r.settledSeq = row.seq;
       }
@@ -321,7 +370,7 @@ export class Requests {
     const hi = low!;
     if (hi - lo > 1) this.gaps.push(`requests-#${lo + 1}-#${hi - 1}-not-scanned`);
     const fid = first.data.requestId as string;
-    if (this.rows.get(fid)!.state !== "requested") return;
+    if (this.rows.get(fid)!.state !== "requested") return; // one receipt settles every part
     const sweep = await readPages(
       src,
       { types: RECEIPT_TYPES },
@@ -336,7 +385,7 @@ export class Requests {
       this.ingest(receipt);
       return;
     }
-    this.rows.get(fid)!.seedUnsettled = true; // never pending: it predates the whole watch
+    for (const r of this.requestRows(fid)) r.seedUnsettled = true; // never pending: it predates the whole watch
     this.gaps.push(`request-#${lo}-settlement-not-found`);
     if (sweep.status !== "complete" && sweep.status !== "stopped") this.gaps.push(`receipt-sweep-${sweep.status}`);
   }
@@ -359,15 +408,18 @@ export class Requests {
       .map(([k]) => k);
   }
 
-  private accepted(): RequestRow[] {
-    return [...this.rows.values()].filter((r) => r.state === "accepted").sort((a, b) => a.seq - b.seq);
+  /** In request order, a request's parts by number ("q#10" after "q#2"), however the rows were loaded. */
+  private accepted(): Array<[string, RequestRow]> {
+    return [...this.rows.entries()]
+      .filter(([, r]) => r.state === "accepted")
+      .sort(([ka, a], [kb, b]) => a.seq - b.seq || partOf(ka) - partOf(kb));
   }
 
   requirements(): Requirement[] {
     const out: Requirement[] = [];
-    for (const r of this.accepted()) {
+    for (const [key, r] of this.accepted()) {
       const [k, proof] = this.klass(r);
-      if (CURRENT.has(k) || HISTORIC.has(k)) out.push({ ref: `R:${r.seq}`, class: k, proof, text: r.text });
+      if (CURRENT.has(k) || HISTORIC.has(k)) out.push({ ref: refOf(key, r), class: k, proof, text: r.text });
     }
     return out;
   }
@@ -375,7 +427,7 @@ export class Requests {
   /** Accepted requests the judge never sees, shown honestly on the panel. */
   panelHistory(): Array<{ ref: string; sender: string | null; class: RequirementClass }> {
     return this.accepted()
-      .map((r) => ({ ref: `R:${r.seq}`, sender: r.sender, class: this.klass(r)[0] }))
+      .map(([key, r]) => ({ ref: refOf(key, r), sender: r.sender, class: this.klass(r)[0] }))
       .filter((x) => !CURRENT.has(x.class) && !HISTORIC.has(x.class));
   }
 
