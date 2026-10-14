@@ -51,7 +51,7 @@ describe("R1/R9/R10 Workers tab child threads", () => {
   it("a failed read says so with Retry, and More reads the next page until the last", async () => {
     const o = base();
     o.workers.current = [worker("W1")];
-    o.workerWaiting = { W1: { on: null, checked: true } };
+    o.workerWaiting = { W1: { on: null, checked: true, children: 3 } };
     let fail = true;
     const childPage = vi.fn((input: unknown) => {
       const { offset = 0 } = input as { offset?: number };

@@ -173,7 +173,7 @@ describe("R9 a child read that fails is a failure, never a complete empty tree",
     const [w] = await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     childOf(f, "helper", w.threadId, "idle");
     const o = (await f.harness.callRpc("overview", { projectId: project.id })) as { workerWaiting: Record<string, unknown> };
-    expect(o.workerWaiting.W1).toEqual({ on: null, checked: false });
+    expect(o.workerWaiting.W1).toEqual({ on: null, checked: false, children: null });
     f.intercept((path, args, call) => path === "threads.list" && args?.parentThreadId === w.threadId ? Promise.reject(new Error("BB unavailable")) : call());
     expect(await settledChildPage(f.harness, { projectId: project.id, threadId: w.threadId })).toEqual({ status: "failed", error: expect.stringMatching(/BB unavailable/) });
     // A failed sweep listing keeps what the last good one said.
@@ -182,7 +182,7 @@ describe("R9 a child read that fails is a failure, never a complete empty tree",
     f.intercept((path, args, call) => path === "threads.list" && args?.parentThreadId === w.threadId ? Promise.reject(new Error("BB unavailable")) : call());
     await f.service.associateNativeChildren(project.id).catch(() => undefined);
     const after = (await f.harness.callRpc("overview", { projectId: project.id })) as { workerWaiting: Record<string, unknown> };
-    expect(after.workerWaiting.W1).toEqual({ on: null, checked: true });
+    expect(after.workerWaiting.W1).toEqual({ on: null, checked: true, children: 1 });
   });
 });
 

@@ -56,7 +56,8 @@ describe("v9 tabs", () => {
 
   it("shows model names and token totals compactly", () => {
     expect(modelName("claude-code / claude-opus-5-5 / high / tier unspecified")).toBe("Opus 5.5");
-    expect(modelName("codex / gpt-6.1-sol / high / fast")).toBe("gpt-6.1-sol");
+    expect(modelName("codex / gpt-6.1-sol / high / fast")).toBe("Sol 6.1");
+    expect(modelName("codex / gpt-5-codex / high / fast")).toBe("gpt-5-codex");
     expect(modelName(null)).toBeNull();
     expect([3_100_000, 18_420_000, 950_000, 420].map(tokenCount)).toEqual(["3.1M", "18.4M", "950k", "420"]);
   });
@@ -74,7 +75,7 @@ describe("v9 Workers tab", () => {
     ];
     o.workerWaiting = {
       W1420: { on: { threadId: "thr_r3", title: "Review r3 #2631", running: "active", since: NOW - 6 * 60_000 }, checked: true },
-      W1373: { on: null, checked: true },
+      W1373: { on: null, checked: true, children: 2 },
     };
     o.tasks = [{ ref: "T163", title: "Human-steps query double-counts", status: "in_progress", statusReason: "W1420 on A1641", setByHand: false, summary: "", workers: ["W1420", "W1425"], updatedAt: NOW }];
     return o;
@@ -95,19 +96,18 @@ describe("v9 Workers tab", () => {
     expect(within(needs).getByText("Thread failed: provider 529")).toBeTruthy();
     expect(within(needs).getByText("#2500")).toBeTruthy();
     const working = slot.getByRole("region", { name: "Working" });
-    expect(within(working).getByText("Running · W1425 purpose")).toBeTruthy();
+    expect(within(working).getByText("Running")).toBeTruthy();
     expect(within(working).getByText("from Wallet audit")).toBeTruthy();
     const waiting = slot.getByRole("region", { name: "Waiting" });
     expect(within(waiting).getByText("Waiting on “Review r3 #2631” (running 6m)")).toBeTruthy();
-    expect(within(waiting).getByText("Opus 5.5")).toBeTruthy();
-    expect(within(waiting).getByText("3.1M")).toBeTruthy();
+    expect(within(waiting).getByText("Opus 5.5 · high")).toBeTruthy();
   });
 
   it("opens each worker's thread and each child's thread from its row; only a waiting worker shows its children open", async () => {
     const { slot, command } = mount(fleet());
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
     slot.navigateCalls.length = 0;
-    fireEvent.click(slot.getByRole("button", { name: "Open W1420's thread" }));
+    fireEvent.click(slot.getByRole("button", { name: "W1420 Human-steps SQL fix" }));
     fireEvent.click(await slot.findByRole("button", { name: "Open Review r3 #2631" }));
     fireEvent.click(slot.getByRole("button", { name: "Open Review r2 #2631" }));
     expect(slot.navigateCalls).toEqual([
@@ -127,7 +127,8 @@ describe("v9 Workers tab", () => {
   it("the detail shows status, report, PRs, tasks and children, and stops or retires the worker", async () => {
     const { slot, command } = mount(fleet());
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
-    fireEvent.click(slot.getByRole("button", { name: "W1420 Human-steps SQL fix" }));
+    fireEvent.contextMenu(slot.getByRole("button", { name: "W1420 Human-steps SQL fix" }));
+    fireEvent.click(slot.getByRole("menuitem", { name: "Details" }));
     const detail = slot.getByRole("region", { name: "W1420 details" });
     expect(within(detail).getByRole("heading", { name: "Human-steps SQL fix" })).toBeTruthy();
     expect(within(detail).getByText("Waiting on “Review r3 #2631” (running 6m)")).toBeTruthy();
@@ -163,7 +164,8 @@ describe("v9 Workers tab", () => {
     fireEvent.click(slot.getByText("Earlier"));
     expect(earlier.open).toBe(true);
     expect(within(slot.getByRole("region", { name: "Earlier" })).getByRole("button", { name: "W1302 Clerk follow-up" })).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "W1406 PDF Worker perf" }));
+    fireEvent.contextMenu(slot.getByRole("button", { name: "W1406 PDF Worker perf" }));
+    fireEvent.click(slot.getByRole("menuitem", { name: "Details" }));
     const detail = slot.getByRole("region", { name: "W1406 details" });
     expect(within(detail).getByText("Pages or a queue?")).toBeTruthy();
     expect(within(detail).getByText("Given out before the switch to v9.")).toBeTruthy();

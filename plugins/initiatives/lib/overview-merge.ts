@@ -29,6 +29,8 @@ export function mergeOverview(summary: Overview, past: Overview | null, full: Ov
     historyLoaded: true,
     done: past.done,
     workers: { current: summary.workers.current, retired: past.workers.retired },
+    // Retired workers' child counts come with the history; the summary's are newer for the rest.
+    workerWaiting: { ...past.workerWaiting, ...summary.workerWaiting },
     // The summary lists every task that is not done or cancelled, so it stays authoritative for
     // those; history adds the done and cancelled ones it doesn't list.
     tasks: [...summary.tasks, ...past.tasks.filter((t) => ["done", "cancelled"].includes(t.status) && !summary.tasks.some((s) => s.ref === t.ref))],

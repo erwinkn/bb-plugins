@@ -253,9 +253,10 @@ describe("project dashboard", () => {
     db.close();
     const slot = mount({ list: () => [], overview: () => o });
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
-    fireEvent.click(slot.getByRole("button", { name: "W1 Search" }));
+    fireEvent.contextMenu(slot.getByRole("button", { name: "W1 Search" }));
+    fireEvent.click(slot.getByRole("menuitem", { name: "Details" }));
     const detail = slot.getByRole("region", { name: "W1 details" });
-    expect(within(detail).getByText(/gpt-6\.1-sol/).textContent).toContain("gpt-6.1-sol");
+    expect(within(detail).getByText(/Sol 6\.1 · high/).getAttribute("title")).toBe("codex / gpt-6.1-sol / high / fast");
     expect(within(slot.getByRole("region", { name: "Working" })).getByTitle("codex / gpt-6.1-sol / high / fast")).toBeTruthy();
   });
 

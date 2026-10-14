@@ -38,7 +38,8 @@ it("worker details copy the latest handoff text and the delegate field without a
   const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview: () => o, read, command } });
   mounted.push(slot);
   fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
-  fireEvent.click(slot.getByRole("button", { name: "W1 Search" }));
+  fireEvent.contextMenu(slot.getByRole("button", { name: "W1 Search" }));
+  fireEvent.click(slot.getByRole("menuitem", { name: "Details" }));
   await slot.findByText("Latest handoff: A1. Later related work can start a fresh worker with it.");
   fireEvent.click(slot.getByRole("button", { name: "Copy handoff" }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("Prior handoff A1 · W1 …"));

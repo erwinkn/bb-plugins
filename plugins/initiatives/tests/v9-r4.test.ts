@@ -77,7 +77,7 @@ describe("F2 waiting discovery reaches through an archived helper nobody claimed
     childOf(f, "grandchild", "helper", "active");
     realChildListing(f);
     const waiting = async () => ((await f.harness.callRpc("overview", { projectId: project.id })) as { workerWaiting: Record<string, unknown> }).workerWaiting.W1;
-    expect(await waiting()).toEqual({ on: null, checked: false });
+    expect(await waiting()).toEqual({ on: null, checked: false, children: null });
     await f.service.associateNativeChildren(project.id);
     expect(await waiting()).toMatchObject({ on: { threadId: "grandchild", running: "active" }, checked: true });
     expect(f.store.membership("helper", true)).toBeNull();

@@ -204,8 +204,17 @@ export default function plugin(bb: BbPluginApi) {
       result.notDelivered = [];
     }
     // v9: what each live worker's descendants are doing, from the cache events and the sweep keep;
-    // no native read, so no first paint waits on a walk. The Workers tab opens a tree by childPage.
-    result.workerWaiting = Object.fromEntries(result.workers.current.flatMap((w) => w.threadId ? [[w.ref, service.runningChildren.waitingOn(w.threadId)]] : []));
+    // no native read, so no first paint waits on a walk. The Workers tab opens a tree by childPage,
+    // and offers to only when the cache knows a child there: retired workers (the history tier)
+    // are listed too once the cache knows their count.
+    const cache = service.runningChildren;
+    result.workerWaiting = Object.fromEntries([
+      ...result.workers.current.flatMap((w) => w.threadId ? [[w.ref, { ...cache.waitingOn(w.threadId), children: cache.childCount(w.threadId) }]] : []),
+      ...result.workers.retired.flatMap((w) => {
+        const children = w.threadId ? cache.childCount(w.threadId) : null;
+        return children === null ? [] : [[w.ref, { ...cache.waitingOn(w.threadId!), children }]];
+      }),
+    ]);
     if (result.project.coordinatorThreadId) {
       const threadId = result.project.coordinatorThreadId;
       try {

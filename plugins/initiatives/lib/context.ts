@@ -179,6 +179,11 @@ export class RunningChildren {
   isListed(parentThreadId: string) {
     return this.byParent.get(parentThreadId)?.listed === true;
   }
+  /** How many children the cache knows under a thread; null while it has neither listed nor seen one. */
+  childCount(parentThreadId: string): number | null {
+    const set = this.byParent.get(parentThreadId);
+    return set && (set.listed || set.children.size) ? set.children.size : null;
+  }
   /** The newest running child of a thread, if any. */
   of(parentThreadId: string): { threadId: string; title: string; since: number } | null {
     const children = [...(this.byParent.get(parentThreadId)?.children ?? new Map<string, Child>()).entries()].filter(([, c]) => c.running);

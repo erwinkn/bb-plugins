@@ -240,6 +240,8 @@ export interface WorkerWaiting {
   on: WaitingOn | null;
   /** False while part of its tree has never been listed (just after a reload): no answer yet. */
   checked: boolean;
+  /** Its own child threads as the cache knows them; null (or absent) before a listing says. */
+  children?: number | null;
 }
 
 /** v9: a task with its shown status and why (computed unless set by hand). */

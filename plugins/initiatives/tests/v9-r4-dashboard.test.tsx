@@ -36,7 +36,7 @@ describe("F3 an open child tree refreshes with the dashboard", () => {
   it("a helper started after the tree opened shows on the next announcement, and opened pages stay", async () => {
     const o = base();
     o.workers.current = [worker("W1")];
-    o.workerWaiting = { W1: { on: null, checked: true } };
+    o.workerWaiting = { W1: { on: null, checked: true, children: 1 } };
     let pages: Record<number, { rows: WorkerChild[]; next: number | null }> = { 0: { rows: [child(1, "active")], next: 1 }, 1: { rows: [child(2)], next: null } };
     const childPage = vi.fn((input: unknown) => ({ status: "ready", value: pages[(input as { offset?: number }).offset ?? 0] }));
     const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview: () => o, command: vi.fn(), childPage } });

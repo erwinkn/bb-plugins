@@ -36,7 +36,7 @@ describe("F2 More child threads survives a realtime refresh", () => {
   it("an announcement right after More reads both pages and shows the second", async () => {
     const o = base();
     o.workers.current = [worker("W1")];
-    o.workerWaiting = { W1: { on: null, checked: true } };
+    o.workerWaiting = { W1: { on: null, checked: true, children: 1 } };
     const pages: Record<number, { rows: WorkerChild[]; next: number | null }> = { 0: { rows: [child(1)], next: 1 }, 1: { rows: [child(2)], next: null } };
     const childPage = vi.fn((input: unknown) => ({ status: "ready", value: pages[(input as { offset?: number }).offset ?? 0] }));
     const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview: () => o, command: vi.fn(), childPage } });
