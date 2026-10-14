@@ -46,3 +46,26 @@ export function thread(
     ...overrides,
   };
 }
+
+/** A known-empty Initiative thread set, so the list renders at first paint. */
+export function seedInitiativeCache(ids: string[] = []) {
+  window.localStorage.setItem(
+    "bb-plugin-sidebar:initiative-threads-cache",
+    JSON.stringify(ids),
+  );
+}
+
+export type ThreadLink = { id: string; parent: string; archived?: boolean };
+/** A host thread store: `threads.list` filters the links by parent and, when given, archive flag. */
+export const threadsList =
+  (links: ThreadLink[]) =>
+  async (
+    q: { parentThreadId?: string; archived?: boolean; limit?: number; offset?: number } = {},
+  ) =>
+    links
+      .filter(
+        (link) =>
+          link.parent === q.parentThreadId && (q.archived === undefined || !!link.archived === q.archived),
+      )
+      .slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 200))
+      .map((link) => ({ id: link.id }));

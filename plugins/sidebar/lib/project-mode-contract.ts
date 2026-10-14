@@ -56,6 +56,24 @@ export const projectModeContract = defineRpcContract({
       orderError: z.string().nullable(),
     }),
   },
+  /**
+   * The ids of every thread the Threads view hides: the ones the Initiatives
+   * tree names (coordinators, workers, reviewers, member threads) and all
+   * their descendants, archived or not. Answers at once from the server's
+   * last snapshot and refreshes it in the background (a change is announced
+   * on INITIATIVE_THREADS_CHANGED). `status` is "loading" until the first
+   * read finishes, "failed" when that first read failed (no snapshot exists;
+   * the client must not treat it as an answer), and "ready" once a snapshot
+   * exists. `available` is false when Initiatives is confirmed not running.
+   */
+  initiativeThreads: {
+    input: z.null(),
+    output: z.object({
+      available: z.boolean(),
+      threadIds: z.array(z.string().min(1).max(80)),
+      status: z.enum(["loading", "failed", "ready"]),
+    }),
+  },
   // Compare-and-swap on the stored revision; a stale revision rejects so a
   // reorder cannot silently overwrite another client's.
   saveProjectOrder: {

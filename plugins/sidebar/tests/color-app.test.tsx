@@ -10,7 +10,7 @@ import { parseState, updateState } from "../lib/client-state";
 import { projectHueStep } from "../lib/project-hue";
 import { STATUS_COLOR_CLASS } from "../components/status-icon";
 import { pullRequestColorClass } from "../components/pull-request";
-import { thread } from "./fixtures";
+import { thread, seedInitiativeCache } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 const mountedSlots: ReturnType<typeof renderSdkSlot>[] = [];
@@ -76,6 +76,7 @@ let finePointer = false;
 const originalMatchMedia = window.matchMedia;
 beforeEach(() => {
   window.localStorage.clear();
+  seedInitiativeCache();
   updateState(() => parseState(null));
   vi.clearAllMocks();
   finePointer = false;

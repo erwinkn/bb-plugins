@@ -65,6 +65,8 @@ import { StatusIcon } from "./components/status-icon";
 import { ArchiveIcon } from "./components/archive-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
 import { useFinePointer } from "./lib/use-fine-pointer";
+import { hiddenInitiativeThreads } from "./lib/initiative-threads";
+import { useInitiativeThreadIds } from "./lib/use-initiative-threads";
 import {
   buildThreadTree,
   familyStatus,
@@ -313,6 +315,14 @@ function ThreadListContent(props: PluginThreadListProps) {
         : hostThreads,
     [hostThreads, parentOverrides],
   );
+  // Initiative threads and everything they spawned live in the Initiative
+  // panel, not here. Ids come from the server's complete snapshot (cached,
+  // refreshed in the background).
+  const threadKey = useMemo(
+    () => threads.map((thread) => thread.id).join("|"),
+    [threads],
+  );
+  const initiativeIds = useInitiativeThreadIds(threadKey);
   const spaces = useSpaces();
   const library = useLibrary();
   const snoozes = useSnooze();
@@ -345,6 +355,16 @@ function ThreadListContent(props: PluginThreadListProps) {
   const archives = useArchives(
     state.showArchives && scope.kind !== "library",
   );
+  // Archived rows (when loaded) supply parent links the active list lacks;
+  // live rows come last so they win.
+  const initiativeHidden = useMemo(
+    () =>
+      hiddenInitiativeThreads(
+        archives.threads.length ? [...archives.threads, ...threads] : threads,
+        initiativeIds ?? new Set(),
+      ),
+    [threads, archives.threads, initiativeIds],
+  );
   const archived = useMemo(
     () =>
       state.showArchives
@@ -361,7 +381,7 @@ function ThreadListContent(props: PluginThreadListProps) {
   // rows get the same chip when the archive list is open.
   const branchPrEligible = useBranchPullRequestEligibility(
     useMemo(
-      () => [...threads, ...archives.threads].map((thread) => thread.id),
+      () => [...archives.threads, ...threads].map((thread) => thread.id),
       [threads, archives.threads],
     ),
   );
@@ -497,6 +517,7 @@ function ThreadListContent(props: PluginThreadListProps) {
         .filter(
           (candidate) =>
             !candidate.isArchived &&
+            !initiativeHidden.has(candidate.id) &&
             candidate.id !== threadId &&
             candidate.id !== source.parentThreadId &&
             !isThreadWithinSubtree(dndLookup, threadId, candidate.id),
@@ -507,7 +528,7 @@ function ThreadListContent(props: PluginThreadListProps) {
           title: threadTitle(candidate),
         }));
     },
-    [threads, dndLookup],
+    [threads, dndLookup, initiativeHidden],
   );
   const projectNames = new Map(
     projects.map((project) => [project.id, projectLabel(project)]),
@@ -519,7 +540,7 @@ function ThreadListContent(props: PluginThreadListProps) {
     providers.map((provider) => [provider.id, provider]),
   );
   const titles = new Map(
-    [...threads, ...archives.threads].map((thread) => [
+    [...archives.threads, ...threads].map((thread) => [
       thread.id,
       threadTitle(thread),
     ]),
@@ -551,12 +572,12 @@ function ThreadListContent(props: PluginThreadListProps) {
   );
   const inView = useCallback(
     (thread: (typeof threads)[number]) =>
-      thread.isArchived
+      thread.isArchived || initiativeHidden.has(thread.id)
         ? false
         : scope.kind === "library"
           ? saved.has(thread.id)
           : !saved.has(thread.id) && inScope(scope, thread.projectId),
-    [scope, saved],
+    [scope, saved, initiativeHidden],
   );
   const withStatus = useCallback(
     (thread: (typeof threads)[number]) => ({
@@ -971,7 +992,7 @@ function ThreadListContent(props: PluginThreadListProps) {
             onKeyDown={dnd.onEscape}
             className={`px-2 pb-3 ${props.isCompactViewport ? "" : "min-h-0 flex-1 overflow-y-auto"}`}
           >
-            {status === "loading" || scopePending ? (
+            {status === "loading" || scopePending || initiativeIds === null ? (
               <p role="status" className="p-2 text-sm text-muted-foreground">
                 {scopePending
                   ? scope.kind === "library"

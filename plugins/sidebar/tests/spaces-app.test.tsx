@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState } from "../lib/client-state";
 import type { Space, SpaceCatalog } from "../lib/space-schema";
-import { thread, visibleStatus } from "./fixtures";
+import { thread, visibleStatus, seedInitiativeCache } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 const localStorage = window.localStorage;
@@ -195,6 +195,7 @@ const rows = (slot: ReturnType<typeof renderSlot>) =>
 
 beforeEach(() => {
   localStorage.clear();
+  seedInitiativeCache();
   updateState(() => parseState(null));
   vi.clearAllMocks();
 });

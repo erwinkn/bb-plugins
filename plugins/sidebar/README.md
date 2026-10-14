@@ -8,7 +8,8 @@ window, automatically archive threads, or run cleanup jobs.
 
 The view switch toggles between Threads and Initiatives on this client. With the
 Initiatives plugin enabled, each Initiative is one colored row that opens its
-coordinator. Children remain accessible in Threads view and the Initiative overview.
+coordinator. Workers and their children are reached from the Initiative overview
+and the Initiative's own thread list; the Threads view does not list them (see below).
 Metadata shows work in flight, remaining tasks and decisions needing attention.
 
 Status prioritizes an unread coordinator reply or a decision/input needing you,
@@ -81,6 +82,48 @@ against the same fixture in both plugins' tests. If Initiatives is disabled, the
 explains how to enable it and the switch returns to Threads. Overview and composer links close
 the mobile drawer before navigating. Composer links use `UrlLink` for BB's
 internal navigation; older overview links remain ordinary anchors.
+
+## Initiative threads stay out of the Threads view
+
+The Threads view hides every thread the Initiatives tree names (coordinators,
+workers, reviewers and the Initiative's other member threads, which include
+discussions) and every descendant of one, archived or not. Reviewer and fixer
+children that Initiatives never records are therefore hidden too, even under an
+archived or unlisted intermediate thread. A thread with the same shape (a child of a plain thread) is
+untouched. Pinned Initiative threads are hidden as well, so one rule holds
+everywhere: the Pinned section, the Status and Project groups, the Library
+scope, and the **Make child of…** targets all skip them. Archived handling is
+unchanged: archived Initiative threads still show in Archived.
+
+The ids come from the `initiativeThreads` RPC. The server keeps one snapshot
+for all clients and answers at once from it, announcing a change on its own
+realtime channel. A walk reads the Initiatives tree, then the host's parent
+links (active and archived in one read per parent, 8 reads at a time, 60 s
+deadline) to collect every descendant, so the client needs no ancestry walk of
+its own for threads the server has seen. At most one walk runs, walks start at
+least 30 s apart however often the snapshot is read, and Initiatives ledger
+changes in between are coalesced into the next allowed walk. A walk that times
+out or fails cancels its reads before the next may start. `status` is `loading` until the first read
+finishes, `failed` when that first read failed (no snapshot exists, and a
+failure is never reported as a confirmed empty set), and `ready` otherwise.
+The client keeps the last confirmed set in `localStorage` and caches every
+confirmed answer, even one equal to the set in memory. With a cache the list
+renders at once and a refresh never blocks it; on a cache miss the Threads list
+shows "Loading threads…" until the first answer (a failed or timed-out first
+read also ends the wait, with nothing hidden and nothing cached until a read
+succeeds). A client that has a set keeps it and its cache through any failed or
+slow read; only a confirmed answer replaces it, and an Initiatives plugin that
+is not running hides nothing. Each read has a 30 s deadline and late answers
+are ignored, so a stalled request cannot stop later refreshes. The set is read
+again on connection, on Initiatives and snapshot change signals, when the host
+thread list gains or loses a thread, and every 15 s while the tab is visible.
+For a thread newer than the snapshot, the client also follows the live parent
+links, using loaded archived rows too; a named parent hides its children even
+when its own row is missing from the list.
+
+Limits: the tree names only current threads, so the thread of a retired worker
+or a former generation shows again in the Threads view. The tree does not mark
+discussions apart from other member threads, so all member threads are hidden.
 
 ## Status rules
 

@@ -12,7 +12,7 @@ import {
   renderSlot as renderSdkSlot,
 } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState, recordDraft } from "../lib/client-state";
-import { thread, visibleStatus } from "./fixtures";
+import { thread, visibleStatus, seedInitiativeCache } from "./fixtures";
 
 const splitOverride = vi.hoisted(() => ({ enabled: false, drag: vi.fn() }));
 const renameOverride = vi.hoisted(() => ({ handler: null as null | ((id: string, title: string) => Promise<void>) }));
@@ -97,6 +97,7 @@ function touch(target: Element, type: string, pointerType = "touch") {
 }
 beforeEach(() => {
   localStorage.clear();
+  seedInitiativeCache();
   updateState(() => parseState(null));
   vi.clearAllMocks();
   renameOverride.handler = null;
