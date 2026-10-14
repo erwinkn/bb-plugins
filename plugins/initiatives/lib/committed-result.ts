@@ -5,6 +5,14 @@ import type { DecisionRecord } from "./store";
 
 /** Project only durable RPC results; never claim success before the save. */
 export function applyCommitted(o: Overview, command: Command, result: unknown): Overview {
+  if (command.action === "inbox-dismiss-all") {
+    // W460: closed questions show at once, as Close quietly does; a close is final, so even a
+    // resend's replayed receipt is current. Dismissals are not projected: a replayed receipt can
+    // predate an Undo made since, and nothing tells it apart, so the read after it shows them.
+    let next = o;
+    for (const d of (result as { closed: DecisionRecord[] }).closed) next = applyCommitted(next, { action: "question-close", decision: d.ref, note: "" }, d);
+    return next;
+  }
   const next = { ...o, counts: { ...o.counts } };
   if (command.action === "decision-accept-all") {
     const refs = new Set((result as { refs: string[] }).refs);

@@ -704,6 +704,9 @@ export function ControlRoom({
         >
           <KeepTab current={tab} id="inbox">
             <div className="cr-inbox">
+              {o.opinionNeeded.length || o.blockers.length
+                ? <DismissAll questions={o.opinionNeeded} blockers={o.blockers} left={undelivered.length + held.length} run={run} />
+                : null}
               {o.opinionNeeded.length ? (
                 <section aria-label="Questions" onKeyDown={moveBetweenFolds}>
                   <h2 className="cr-section-heading">Questions <span className="cr-count">{o.opinionNeeded.length}</span></h2>
@@ -1483,6 +1486,51 @@ function moveBetweenFolds(event: React.KeyboardEvent<HTMLElement>) {
   next.focus();
 }
 
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/**
+ * W460: Dismiss all, for an Inbox already settled elsewhere. Every question shown closes
+ * quietly and every blocker is dismissed without a message, as their own buttons do. The
+ * confirm counts what is on screen and only those items are sent; anything arriving
+ * meanwhile stays. Not delivered items have no quiet close (each needs a send, a retry or
+ * a removal), so they stay too.
+ */
+function DismissAll({ questions, blockers, left, run }: { questions: OpinionItem[]; blockers: BlockerItem[]; left: number; run: Run }) {
+  const [seen, setSeen] = useState<Extract<Command, { action: "inbox-dismiss-all" }> | null>(null);
+  const write = useWrite();
+  if (!seen) return (
+    <div className="cr-toolbar cr-inbox-tools">
+      <button type="button" onClick={() => setSeen({
+        action: "inbox-dismiss-all",
+        questions: questions.map((q) => q.ref),
+        blockers: blockers.map(({ assignment, question, context }) => ({ assignment, question, context })),
+      })}>Dismiss all</button>
+    </div>
+  );
+  const what = [
+    seen.questions.length ? `close ${count(seen.questions.length, "question")} quietly` : null,
+    seen.blockers.length ? `dismiss ${count(seen.blockers.length, "blocker")}` : null,
+  ].filter(Boolean).join(" and ");
+  return (
+    <div className="project-card cr-dismiss-all" role="group" aria-label="Dismiss all">
+      <p>{what[0]!.toUpperCase() + what.slice(1)}? No answers are recorded and nothing is sent.</p>
+      <p className="project-hint">{[
+        seen.questions.length ? "Closed questions cannot be reopened." : null,
+        seen.blockers.length ? "A dismissed blocker comes back with Undo in Archive." : null,
+        left ? `${count(left, "undelivered item")} ${left === 1 ? "stays" : "stay"}: each needs its own send, retry or removal.` : null,
+      ].filter(Boolean).join(" ")}</p>
+      <div className="project-actions">
+        <button type="button" className="project-primary" disabled={write.busy}
+          onClick={async () => { if ((await write.run(() => run(seen))).ok) setSeen(null); }}>
+          {write.busy ? "Saving…" : "Dismiss all"}
+        </button>
+        <button type="button" disabled={write.busy} onClick={() => { write.setError(null); setSeen(null); }}>Cancel</button>
+      </div>
+      {write.slow ? <p role="status" className="project-muted">{WRITE_SLOW_MESSAGE}</p> : null}
+      {write.error ? <p role="alert" className="project-error">{write.error}</p> : null}
+    </div>
+  );
+}
 
 /** One message BB still holds: what it says, why it is held, and the user's two ways out. */
 function HeldMessage({ m, run, openThread }: { m: NonNullable<Overview["notDelivered"]>[number]; run: Run; openThread: (threadId: string) => void }) {

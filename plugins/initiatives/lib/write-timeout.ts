@@ -47,7 +47,7 @@ export function withWriteTimeout<T>(write: Promise<T>, ms = WRITE_UNCONFIRMED_MS
 const KEYED = new Set([
   "create", "message", "thread-create", "delegate", "task-create", "adopt", "decision", "question",
   "update", "answer", "blocker-answer", "decision-review", "queued-message", "handover-draft",
-  "replace-coordinator", "coordinator-handover",
+  "replace-coordinator", "coordinator-handover", "inbox-dismiss-all",
 ]);
 export const keyedWrite = (command: { action: string; cancel?: boolean; verdict?: string }) =>
   KEYED.has(command.action) &&

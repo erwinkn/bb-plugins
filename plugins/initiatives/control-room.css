@@ -198,6 +198,11 @@
 .cr-owner { color: var(--cr-ink-secondary); }
 .cr-owner--user { color: var(--primary); font-weight: 600; }
 .cr-inbox > section + section { margin-top: 6px; }
+/* W460: Dismiss all sits above the first section, whose heading drops its top margin. */
+.cr-inbox-tools { justify-content: flex-end; margin: 6px 0 0; }
+.cr-inbox-tools + section > .cr-section-heading { margin-top: 0; }
+.cr-dismiss-all { margin: 10px 0 4px; }
+.cr-dismiss-all p { margin: 0 0 6px; }
 .cr-verdict { font-size: 11px; }
 .cr-decisions > .cr-toolbar { margin: 6px 0 2px; flex-wrap: wrap; }
 .cr-decisions .project-usage-filter button { font-family: inherit; font-size: 11.5px; padding: 1px 9px; }

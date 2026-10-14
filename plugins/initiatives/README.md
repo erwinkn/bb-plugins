@@ -1298,6 +1298,22 @@ default; the worker is the default only when there is no coordinator. **Dismiss*
 sends nothing; its menu's **Dismiss and tell coordinator…** opens the note field.
 The worker label (W#) in the card's header links the worker's thread. Native navigation, queues and authority guards remain BB's.
 
+**Dismiss all** at the top of the Inbox (W460) is for an Inbox already settled
+elsewhere. Its confirm counts what is shown, for example "Close 2 questions quietly
+and dismiss 1 blocker?", and sends only those items in one user-only
+`inbox-dismiss-all` command (`{questions: [refs], blockers: [{assignment, question,
+context}]}`); anything arriving meanwhile stays. Each item is its own quiet close
+(`question-close`, `blocker-dismiss` with `notify: false`), saved on its own: one
+refusal, such as a question answered meanwhile or a blocker that changed, leaves the
+rest closed and is named with its reason in the result notice. Nothing is sent, and
+a silent dismissal never retries another dismissal's failed coordinator notice. A
+closed question cannot be reopened; a dismissal has its usual Undo in Archive. The
+command is keyed like other appending writes, so a resend after a lost answer replays
+its receipt. Closed questions leave the view at once; dismissed blocker cards leave
+with the read that follows, because a replayed receipt can predate an Undo. Not
+delivered items have no quiet close (each needs a send, a retry or a removal), so
+they stay and the confirm says so.
+
 A command returns after its durable save and any required native receipt, without
 awaiting optional dashboard or Sidebar refreshes. The UI displays that committed
 result and receipt immediately; refresh failures leave it visible. Okay remains

@@ -3828,7 +3828,7 @@ export class ProjectsService {
    * T128: the user dismisses a worker's blocker without answering it. It
    * leaves the Inbox and Needs you for as long as the worker re-files the same
    * question and context. Silent sends nothing; notify sends the coordinator
-   * one message with the note. Dismissing again only retries a failed notice.
+   * one message with the note. Dismissing again with notify only retries a failed notice.
    */
   async dismissBlocker(projectId: string, ref: string, seen: { question: string; context: string }, input: { notify: boolean; note: string }) {
     const project = this.requireProject(projectId);
@@ -3836,7 +3836,8 @@ export class ProjectsService {
     const key = blockerKey(assignment.num, blocker);
     const previous = this.store.decisions(project.id).find((item) =>
       item.status === "active" && item.body.blocker && item.body.dismissal && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
-    if (previous && !(previous.body.dismissal!.notify && previous.notification?.state === "failed")) return previous;
+    // Only a dismissal that tells the coordinator retries a failed notice; a silent one (Dismiss all) never sends.
+    if (previous && !(input.notify && previous.body.dismissal!.notify && previous.notification?.state === "failed")) return previous;
     const worker = this.store.worker(project.id, assignment.workerNum)!;
     const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
     const op = newOpId();
@@ -3893,6 +3894,24 @@ export class ProjectsService {
       this.store.log(project.id, "decision", `You closed ${item.ref} quietly; no answer recorded${note.trim() ? `: ${note.trim()}` : ""}`);
       return result;
     });
+  }
+
+  /**
+   * W460: the Inbox's Dismiss all, in one pass over the items the user saw. Each one is
+   * the item's own quiet close (closeQuestion, a silent dismissBlocker), saved on its own,
+   * so one refusal (already answered, a changed blocker) leaves the others closed and is
+   * reported with its reason. Nothing is sent; a dismissal is undone from Archive as usual.
+   */
+  async dismissInbox(projectId: string, seen: { questions: string[]; blockers: { assignment: string; question: string; context: string }[] }) {
+    this.requireProject(projectId);
+    const closed: DecisionRecord[] = [], dismissed: DecisionRecord[] = [], failed: { ref: string; error: string }[] = [];
+    const attempt = async (ref: string, close: () => DecisionRecord | Promise<DecisionRecord>, into: DecisionRecord[]) => {
+      try { into.push(await close()); } catch (e) { failed.push({ ref, error: e instanceof Error ? e.message : String(e) }); }
+    };
+    for (const ref of seen.questions) await attempt(ref, () => this.closeQuestion(projectId, ref, ""), closed);
+    for (const b of seen.blockers)
+      await attempt(b.assignment, () => this.dismissBlocker(projectId, b.assignment, b, { notify: false, note: "" }), dismissed);
+    return { closed, dismissed, failed };
   }
 
   /**

@@ -314,6 +314,15 @@ export const closeQuestionSchema = z.object({
   action: z.literal("question-close"), decision: ref,
   note: z.string().trim().max(4000).default(""),
 }).strict();
+/**
+ * W460: the Inbox's Dismiss all. Only the items the user saw: each question closed quietly, each
+ * blocker dismissed without telling anyone, exactly as their own Close quietly and Dismiss do.
+ */
+export const inboxDismissAllSchema = z.object({
+  action: z.literal("inbox-dismiss-all"),
+  questions: z.array(ref).max(500).default([]),
+  blockers: z.array(blockerDismissSchema.pick({ assignment: true, question: true, context: true })).max(500).default([]),
+}).strict();
 /** D340: the current coordinator withdraws its own open question; never an answer. */
 export const questionWithdrawSchema = z.object({
   action: z.literal("question-withdraw"), decision: ref,
@@ -356,6 +365,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   blockerDismissSchema,
   blockerDismissUndoSchema,
   closeQuestionSchema,
+  inboxDismissAllSchema,
   questionWithdrawSchema,
   decisionReviewSchema,
   acknowledgeSchema,
@@ -538,6 +548,9 @@ export async function runCommand(
       if (author !== "user") throw new ProjectError("Only the user closes a question quietly.");
       return service.closeQuestion(projectId, c.decision, c.note);
     }
+    case "inbox-dismiss-all":
+      if (author !== "user") throw new ProjectError("Only the user dismisses the Inbox, from the Initiative panel.");
+      return service.dismissInbox(projectId, c);
     case "question-withdraw":
       return service.withdrawQuestion(projectId, c.decision, c.reason, provenance);
     case "acknowledge": {

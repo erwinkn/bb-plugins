@@ -234,6 +234,21 @@ function Opinion({
   );
 }
 
+type DismissAllResult = { closed: unknown[]; dismissed: unknown[]; failed: { ref: string; error: string }[] };
+/** W460: what Dismiss all saved, and each item it left open with the reason. */
+function dismissAllNotice({ closed, dismissed, failed }: DismissAllResult) {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const done = [
+    closed.length ? `${plural(closed.length, "question")} closed quietly` : null,
+    dismissed.length ? `${plural(dismissed.length, "blocker")} dismissed` : null,
+  ].filter(Boolean).join(" and ");
+  const open = failed.map((f) => f.error.includes(f.ref) ? f.error : `${f.ref}: ${f.error}`).join(" ");
+  return {
+    urgent: failed.length > 0,
+    text: `${done ? `Inbox: ${done}; nothing sent.` : "Inbox: nothing closed."}${failed.length ? ` ${plural(failed.length, "item")} left open. ${open}` : ""}`,
+  };
+}
+
 function CoordinatorSwitch({
   project,
   command,
@@ -822,7 +837,7 @@ export function Dashboard({
       const record = "decision" in command ? command.decision : "task" in command ? command.task : (result as { ref?: string } | null)?.ref;
       const notification = (result as { notification?: { state: string; detail?: string } } | null)?.notification;
       const meaningful = !!notification || command.action === "decision-accept-all" || command.action === "answer" || command.action === "question-close" || !!record && command.action !== "decision-review" && command.action !== "acknowledge";
-      setAnswerNotice(meaningful ? { projectId, urgent: !!notification && ["failed", "uncertain", "pending"].includes(notification.state), text: `${record ? `${record}: ` : ""}${command.action === "decision-accept-all" ? `${(result as { accepted: number }).accepted} agent decision${(result as { accepted: number }).accepted === 1 ? "" : "s"} accepted` : command.action === "answer" ? "answer saved" : command.action === "decision-review" ? "review saved" : command.action === "question-close" ? "closed quietly; no answer recorded" : "saved"}.${notification ? ` Coordinator notification ${notification.state === "pending" ? "unconfirmed" : notification.state}${notification.detail ? `: ${notification.detail}` : "."}` : ""}` } : null);
+      setAnswerNotice(command.action === "inbox-dismiss-all" ? { projectId, ...dismissAllNotice(result as DismissAllResult) } : meaningful ? { projectId, urgent: !!notification && ["failed", "uncertain", "pending"].includes(notification.state), text: `${record ? `${record}: ` : ""}${command.action === "decision-accept-all" ? `${(result as { accepted: number }).accepted} agent decision${(result as { accepted: number }).accepted === 1 ? "" : "s"} accepted` : command.action === "answer" ? "answer saved" : command.action === "decision-review" ? "review saved" : command.action === "question-close" ? "closed quietly; no answer recorded" : "saved"}.${notification ? ` Coordinator notification ${notification.state === "pending" ? "unconfirmed" : notification.state}${notification.detail ? `: ${notification.detail}` : "."}` : ""}` } : null);
       return result;
     } finally {
       end(); endHistory(); endDetails();

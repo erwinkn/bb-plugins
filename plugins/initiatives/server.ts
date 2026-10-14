@@ -1258,7 +1258,7 @@ export default function plugin(bb: BbPluginApi) {
           const command = parseCommandInput(JSON.parse(value));
           if (
             ctx.threadId &&
-            ["acknowledge", "decision-review", "question-close"].includes(command.action)
+            ["acknowledge", "decision-review", "question-close", "inbox-dismiss-all"].includes(command.action)
           )
             throw new ProjectError(
               "This action needs the user in the Initiative panel.",
