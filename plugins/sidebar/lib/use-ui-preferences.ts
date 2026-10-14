@@ -17,14 +17,10 @@ import {
   useClientState,
   type ClientState,
 } from "./client-state";
-import type { SortBy, SortDirection } from "./status";
 
-// The plugin-side view of the BB preferences it mirrors. Status grouping,
-// hidden statuses, archive visibility, spaces, and the library stay local.
+// The plugin-side view of the BB preferences it mirrors. Grouping, order,
+// hidden statuses, and archive visibility stay local.
 interface Mirror {
-  groupBy: ClientState["groupBy"];
-  sortBy: SortBy;
-  sortDirection: SortDirection;
   pinnedCollapsed: boolean;
   collapsedProjects: string[];
 }
@@ -33,9 +29,6 @@ const PROJECT_PREFIX = "project:";
 
 function projectionOf(state: ClientState): Mirror {
   return {
-    groupBy: state.groupBy,
-    sortBy: state.sortBy,
-    sortDirection: state.sortDirection,
     pinnedCollapsed: state.collapsed.includes("pinned"),
     collapsedProjects: state.collapsed
       .filter((key) => key.startsWith(PROJECT_PREFIX))
@@ -44,22 +37,8 @@ function projectionOf(state: ClientState): Mirror {
   };
 }
 
-// BB's project mode is the plugin's Project grouping. Chronological and
-// machine modes have no plugin equivalent, so both show Status grouping.
-function mirrorOf(host: SyncedPreferences, current: ClientState): Mirror {
-  const sort = host["sidebar.chronologicalSort"].value;
+function mirrorOf(host: SyncedPreferences): Mirror {
   return {
-    groupBy:
-      host["sidebar.organizationMode"].value === "project"
-        ? "project"
-        : "status",
-    // Alphabetical and manual orders are not offered here; keep the local
-    // date sort until the user picks one.
-    sortBy: sort === "created" || sort === "updated" ? sort : current.sortBy,
-    sortDirection:
-      host["sidebar.sortDirection"].value === "ascending"
-        ? "ascending"
-        : "descending",
     pinnedCollapsed: host["sidebar.collapsedSections"].value.includes("pinned"),
     collapsedProjects: [...host["sidebar.collapsedProjects"].value].sort(),
   };
@@ -72,13 +51,7 @@ function applyMirror(current: ClientState, mirror: Mirror): ClientState {
   if (mirror.pinnedCollapsed) collapsed.push("pinned");
   for (const id of mirror.collapsedProjects)
     collapsed.push(`${PROJECT_PREFIX}${id}`);
-  return {
-    ...current,
-    groupBy: mirror.groupBy,
-    sortBy: mirror.sortBy,
-    sortDirection: mirror.sortDirection,
-    collapsed,
-  };
+  return { ...current, collapsed };
 }
 
 // One local change becomes one BB write, computed against the latest known
@@ -92,16 +65,6 @@ function writeFor(
 ): SyncedPreferenceWrite {
   const expectedRevision = host[key].revision;
   switch (key) {
-    case "sidebar.organizationMode":
-      return {
-        key,
-        expectedRevision,
-        value: next.groupBy === "project" ? "project" : "chronological",
-      };
-    case "sidebar.chronologicalSort":
-      return { key, expectedRevision, value: next.sortBy };
-    case "sidebar.sortDirection":
-      return { key, expectedRevision, value: next.sortDirection };
     case "sidebar.collapsedSections": {
       const rest = host[key].value.filter((id) => id !== "pinned");
       return {
@@ -127,10 +90,6 @@ function writeFor(
 
 function changedKeys(previous: Mirror, next: Mirror): SyncedKey[] {
   const keys: SyncedKey[] = [];
-  if (previous.groupBy !== next.groupBy) keys.push("sidebar.organizationMode");
-  if (previous.sortBy !== next.sortBy) keys.push("sidebar.chronologicalSort");
-  if (previous.sortDirection !== next.sortDirection)
-    keys.push("sidebar.sortDirection");
   if (previous.pinnedCollapsed !== next.pinnedCollapsed)
     keys.push("sidebar.collapsedSections");
   if (previous.collapsedProjects.join() !== next.collapsedProjects.join())
@@ -149,18 +108,6 @@ function mergeSnapshot(
 ): SyncedPreferences {
   if (!current) return next;
   return {
-    "sidebar.organizationMode": newer(
-      current["sidebar.organizationMode"],
-      next["sidebar.organizationMode"],
-    ),
-    "sidebar.chronologicalSort": newer(
-      current["sidebar.chronologicalSort"],
-      next["sidebar.chronologicalSort"],
-    ),
-    "sidebar.sortDirection": newer(
-      current["sidebar.sortDirection"],
-      next["sidebar.sortDirection"],
-    ),
     "sidebar.collapsedSections": newer(
       current["sidebar.collapsedSections"],
       next["sidebar.collapsedSections"],
@@ -176,12 +123,6 @@ function mergeSnapshot(
 // keep their local value on top of any host snapshot until then.
 function advanceMirror(ack: Mirror, key: SyncedKey, next: Mirror): Mirror {
   switch (key) {
-    case "sidebar.organizationMode":
-      return { ...ack, groupBy: next.groupBy };
-    case "sidebar.chronologicalSort":
-      return { ...ack, sortBy: next.sortBy };
-    case "sidebar.sortDirection":
-      return { ...ack, sortDirection: next.sortDirection };
     case "sidebar.collapsedSections":
       return { ...ack, pinnedCollapsed: next.pinnedCollapsed };
     case "sidebar.collapsedProjects":
@@ -196,8 +137,8 @@ function pendingMirror(ack: Mirror, pending: Map<SyncedKey, Mirror>): Mirror {
 }
 
 /**
- * Keeps grouping, date sort, sort direction, and the collapsed Pinned and
- * project groups in step with BB's synced sidebar preferences. BB is the
+ * Keeps the collapsed Pinned and project groups in step with BB's synced
+ * sidebar preferences. BB is the
  * source of truth once read; localStorage stays the cache and the fallback
  * while the server is unreachable. Reads happen on mount, on reconnect, and
  * when the window regains focus, since BB's own clients write these keys
@@ -261,7 +202,7 @@ export function useUiPreferences(onError: (error: unknown) => void) {
               // Realtime already delivered a newer revision while this
               // acknowledgement was in flight: reconcile to the retained
               // snapshot instead of rolling host and UI back.
-              const agreed = mirrorOf(host.current, stateRef.current);
+              const agreed = mirrorOf(host.current);
               mirror.current = agreed;
               updateState((current) =>
                 applyMirror(current, pendingMirror(agreed, pending.current)),
@@ -295,7 +236,7 @@ export function useUiPreferences(onError: (error: unknown) => void) {
       const merged = mergeSnapshot(host.current, next);
       host.current = merged;
       updateState((current) => {
-        const agreed = mirrorOf(merged, current);
+        const agreed = mirrorOf(merged);
         mirror.current = agreed;
         return applyMirror(current, pendingMirror(agreed, pending.current));
       });

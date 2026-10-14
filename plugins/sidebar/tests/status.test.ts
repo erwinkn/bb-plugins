@@ -129,39 +129,98 @@ describe("client storage boundary", () => {
   it("loads old preferences without retaining the removed project filter", () => {
     const state = parseState(
       JSON.stringify({
-        groupBy: "project",
+        listing: { groupBy: "project" },
         projectId: "old-project",
         collapsed: ["status:done"],
         drafts: ["thread:1"],
       }),
     );
-    expect(state.sortBy).toBe("updated");
-    expect(state.groupBy).toBe("project");
+    expect(state.listing.sortBy).toBe("updated");
+    expect(state.listing.groupBy).toBe("project");
     expect(state.collapsed).toEqual(["status:done"]);
     expect(state.drafts).toEqual(["thread:1"]);
     expect(state).not.toHaveProperty("projectId");
   });
+  it("reads a legacy stored initiativesListing as the listing", () => {
+    expect(
+      parseState(
+        JSON.stringify({
+          initiativesListing: {
+            groupBy: "status",
+            sortBy: "created",
+            sortDirection: "ascending",
+          },
+        }),
+      ).listing,
+    ).toEqual({
+      groupBy: "status",
+      sortBy: "created",
+      sortDirection: "ascending",
+    });
+  });
+  it("prefers listing over a legacy initiativesListing", () => {
+    expect(
+      parseState(
+        JSON.stringify({
+          listing: { groupBy: "project" },
+          initiativesListing: { groupBy: "status" },
+        }),
+      ).listing.groupBy,
+    ).toBe("project");
+  });
+  it("drops leftover mode, grouping, order and space fields", () => {
+    const state = parseState(
+      JSON.stringify({
+        mode: "initiatives",
+        groupBy: "project",
+        sortBy: "created",
+        sortDirection: "ascending",
+        spaceId: "space-1",
+        showArchives: true,
+      }),
+    );
+    expect(state.listing).toEqual({
+      groupBy: "none",
+      sortBy: "updated",
+      sortDirection: "descending",
+    });
+    expect(state.showArchives).toBe(true);
+    for (const key of ["mode", "groupBy", "sortBy", "sortDirection", "spaceId"])
+      expect(state).not.toHaveProperty(key);
+  });
   it.each([null, "bad", 123])(
     "uses updated date for an invalid sort value: %s",
     (sortBy) => {
-      expect(parseState(JSON.stringify({ sortBy })).sortBy).toBe("updated");
+      expect(
+        parseState(JSON.stringify({ listing: { sortBy } })).listing.sortBy,
+      ).toBe("updated");
     },
   );
   it.each([null, "bad", "default"])(
     "uses newest first for an invalid sort direction: %s",
     (sortDirection) => {
-      expect(parseState(JSON.stringify({ sortDirection })).sortDirection).toBe(
-        "descending",
-      );
+      expect(
+        parseState(JSON.stringify({ listing: { sortDirection } })).listing
+          .sortDirection,
+      ).toBe("descending");
+    },
+  );
+  it.each([null, "bad", 123])(
+    "uses no grouping for an invalid grouping: %s",
+    (groupBy) => {
+      expect(
+        parseState(JSON.stringify({ listing: { groupBy } })).listing.groupBy,
+      ).toBe("none");
     },
   );
   it("keeps an ascending sort direction", () =>
     expect(
-      parseState(JSON.stringify({ sortDirection: "ascending" })).sortDirection,
+      parseState(JSON.stringify({ listing: { sortDirection: "ascending" } }))
+        .listing.sortDirection,
     ).toBe("ascending"));
   it.each([null, "{", "null", "42"])(
     "accepts missing or corrupt storage: %s",
-    (raw) => expect(parseState(raw).groupBy).toBe("status"),
+    (raw) => expect(parseState(raw).listing.groupBy).toBe("none"),
   );
   it("validates fields and discards unknown statuses and draft keys", () => {
     expect(
@@ -170,13 +229,11 @@ describe("client storage boundary", () => {
           hidden: ["done", "bad", "done", null],
           drafts: ["thread:1", "secret", 2],
           collapsed: false,
-          groupBy: "bad",
-          initiativesListing: { groupBy: "bad", sortBy: "created", sortDirection: 1 },
+          listing: { groupBy: "bad", sortBy: "created", sortDirection: 1 },
         }),
       ),
     ).toEqual({
-      mode: "threads",
-      initiativesListing: {
+      listing: {
         groupBy: "none",
         sortBy: "created",
         sortDirection: "descending",
@@ -187,10 +244,6 @@ describe("client storage boundary", () => {
       drafts: ["thread:1"],
       collapsed: [],
       expandedArchives: [],
-      groupBy: "status",
-      sortBy: "updated",
-      sortDirection: "descending",
-      spaceId: null,
     });
   });
 });

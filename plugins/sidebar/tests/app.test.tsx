@@ -44,9 +44,12 @@ const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
     rpc: {
       listArchived: async () => [],
       archiveTree: async () => ({ ok: true }),
-      getLibrary: async () => ({ revision: 0, ids: [] }),
-      save: async () => ({ revision: 0, ids: [] }),
-      remove: async () => ({ revision: 0, ids: [] }),
+      projectMode: async () => ({
+        available: true,
+        tree: { version: 1, projects: [] },
+        order: null,
+        orderError: null,
+      }),
       ...options?.rpc,
     },
   });
@@ -80,6 +83,11 @@ const threads = [
   }),
   thread({ id: "archived", title: "Archived", isArchived: true }),
 ];
+// The Initiatives section is a region too; group assertions look past it.
+const groupRegions = (scope: Pick<ReturnType<typeof renderSdkSlot>, "queryAllByRole">) =>
+  scope
+    .queryAllByRole("region")
+    .filter((region) => region.getAttribute("aria-label") !== "Initiatives");
 const mount = () =>
   renderSlot(app.threadLists[0], props, {
     sidebarThreads: { threads, projects },
@@ -98,7 +106,10 @@ function touch(target: Element, type: string, pointerType = "touch") {
 beforeEach(() => {
   localStorage.clear();
   seedInitiativeCache();
-  updateState(() => parseState(null));
+  updateState(() => ({
+    ...parseState(null),
+    listing: { ...parseState(null).listing, groupBy: "status" },
+  }));
   vi.clearAllMocks();
   renameOverride.handler = null;
 });
@@ -169,7 +180,7 @@ describe("activity sidebar", () => {
   it.each(["status", "project"] as const)(
     "keeps pins above %s groups, including children and filtered statuses",
     (groupBy) => {
-      updateState((state) => ({ ...state, groupBy, hidden: ["done"] }));
+      updateState((state) => ({ ...state, listing: { ...state.listing, groupBy }, hidden: ["done"] }));
       const slot = renderSlot(app.threadLists[0], props, {
         sidebarThreads: {
           projects,
@@ -196,7 +207,7 @@ describe("activity sidebar", () => {
           ],
         },
       });
-      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe(
+      expect(groupRegions(slot)[0].getAttribute("aria-label")).toBe(
         "Pinned",
       );
       const pins = slot.getByRole("list", { name: "Pinned threads" });
@@ -214,10 +225,13 @@ describe("activity sidebar", () => {
       act(() =>
         updateState((state) => ({
           ...state,
-          groupBy: groupBy === "status" ? "project" : "status",
+          listing: {
+            ...state.listing,
+            groupBy: groupBy === "status" ? "project" : "status",
+          },
         })),
       );
-      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe(
+      expect(groupRegions(slot)[0].getAttribute("aria-label")).toBe(
         "Pinned",
       );
     },
@@ -226,7 +240,7 @@ describe("activity sidebar", () => {
   it.each(["status", "project"] as const)(
     "keeps a pinned family together across filters and pin changes in %s view",
     (groupBy) => {
-      updateState((state) => ({ ...state, groupBy, hidden: ["done", "working"] }));
+      updateState((state) => ({ ...state, listing: { ...state.listing, groupBy }, hidden: ["done", "working"] }));
       const threads = [
         thread({ id: "grandchild", parentThreadId: "child", isPinned: true }),
         thread({ id: "child", title: "child", parentThreadId: "pin", projectId: "project-2", indicator: "runtime" }),
@@ -265,7 +279,7 @@ describe("activity sidebar", () => {
   it("lists No project last, above Archived, in Project view", async () => {
     updateState((state) => ({
       ...state,
-      groupBy: "project",
+      listing: { ...state.listing, groupBy: "project" },
       showArchives: true,
     }));
     const slot = renderSlot(app.threadLists[0], props, {
@@ -285,14 +299,12 @@ describe("activity sidebar", () => {
     });
     await slot.findByRole("region", { name: "Archived" });
     expect(
-      slot
-        .getAllByRole("region")
-        .map((region) => region.getAttribute("aria-label")),
+      groupRegions(slot).map((region) => region.getAttribute("aria-label")),
     ).toEqual(["Alpha", "Zeta", "No project", "Archived"]);
   });
 
   it("uses a single-line row under No project", () => {
-    updateState((state) => ({ ...state, groupBy: "project" }));
+    updateState((state) => ({ ...state, listing: { ...state.listing, groupBy: "project" } }));
     const environment = {
       id: "env",
       name: "Local",
@@ -352,7 +364,7 @@ describe("activity sidebar", () => {
     expect(slot.queryByRole("button", { name: "Archived" })).toBeNull();
 
     fireEvent.keyDown(
-      slot.getByRole("button", { name: "Threads display options" }),
+      slot.getByRole("button", { name: "Thread list options" }),
       { key: "Enter" },
     );
     await act(async () => {
@@ -400,7 +412,7 @@ describe("activity sidebar", () => {
     async (groupBy) => {
       updateState((state) => ({
         ...state,
-        groupBy,
+        listing: { ...state.listing, groupBy },
         hidden: ["done"],
         showArchives: true,
       }));
@@ -625,7 +637,7 @@ describe("activity sidebar", () => {
   it.each(["updated", "created"] as const)(
     "pages projects independently with %s sorting",
     (sortBy) => {
-      updateState((state) => ({ ...state, groupBy: "project", sortBy }));
+      updateState((state) => ({ ...state, listing: { ...state.listing, groupBy: "project", sortBy } }));
       const slot = renderSlot(app.threadLists[0], props, {
         sidebarThreads: {
           projects,
@@ -692,7 +704,7 @@ describe("activity sidebar", () => {
   it.each([1, 10])(
     "removes root paging controls when an expanded project shrinks to a thread count of %i",
     (count) => {
-      updateState((state) => ({ ...state, groupBy: "project" }));
+      updateState((state) => ({ ...state, listing: { ...state.listing, groupBy: "project" } }));
       const threads = Array.from({ length: 12 }, (_, i) =>
         thread({ id: `root-${i}` }),
       );
@@ -725,7 +737,7 @@ describe("activity sidebar", () => {
   it("keeps a selected family visible beyond a thousand project roots and counts new drafts in the page", () => {
     updateState((state) => ({
       ...state,
-      groupBy: "project",
+      listing: { ...state.listing, groupBy: "project" },
       drafts: ["new:project-2"],
     }));
     const slot = renderSlot(
@@ -775,7 +787,7 @@ describe("activity sidebar", () => {
     (groupBy) => {
       updateState((state) => ({
         ...state,
-        groupBy,
+        listing: { ...state.listing, groupBy },
         drafts: ["new:missing-project", "new:"],
       }));
       const slot = renderSlot(app.threadLists[0], props, {
@@ -802,7 +814,7 @@ describe("activity sidebar", () => {
 
       act(() => updateState((state) => ({ ...state, hidden: ["draft"] })));
       expect(slot.queryByText("New thread draft")).toBeNull();
-      expect(slot.queryByRole("region")).toBeNull();
+      expect(groupRegions(slot)).toHaveLength(0);
       act(() => updateState((state) => ({ ...state, hidden: [] })));
       expect(slot.getAllByText("New thread draft")).toHaveLength(1);
 
@@ -827,7 +839,7 @@ describe("activity sidebar", () => {
   );
 
   it("keeps unmatched projects and their selected children visible in Project view", () => {
-    updateState((state) => ({ ...state, groupBy: "project" }));
+    updateState((state) => ({ ...state, listing: { ...state.listing, groupBy: "project" } }));
     const slot = renderSlot(
       app.threadLists[0],
       { ...props, activeThreadId: "missing-child" },
@@ -1015,7 +1027,7 @@ describe("activity sidebar", () => {
   it.each(["status", "project"] as const)(
     "does not add a root control at the exact limit in %s view",
     (groupBy) => {
-      updateState((state) => ({ ...state, groupBy }));
+      updateState((state) => ({ ...state, listing: { ...state.listing, groupBy } }));
       const slot = renderSlot(app.threadLists[0], props, {
         sidebarThreads: {
           projects,
@@ -1034,7 +1046,7 @@ describe("activity sidebar", () => {
   it.each(["status", "project"] as const)(
     "reveals three more children at a time and can shorten the list in %s view",
     (groupBy) => {
-      updateState((state) => ({ ...state, groupBy }));
+      updateState((state) => ({ ...state, listing: { ...state.listing, groupBy } }));
       const slot = renderSlot(app.threadLists[0], props, {
         sidebarThreads: {
           projects,
@@ -1245,10 +1257,10 @@ describe("activity sidebar", () => {
         { sidebarThreads: { threads, projects } },
       );
       const root = slot.container.querySelector("[data-activity-sidebar]")!;
-      const groups = root.querySelector("[data-activity-thread-groups]")!;
+      const view = root.querySelector("[data-sidebar-view]")!;
       const styles = root.querySelector("[data-activity-mobile-scroll]");
       expect(root.hasAttribute("data-mobile-scroll")).toBe(isCompactViewport);
-      expect(groups.classList.contains("overflow-y-auto")).toBe(
+      expect(view.classList.contains("overflow-y-auto")).toBe(
         !isCompactViewport,
       );
       expect(root.classList.contains("h-full")).toBe(!isCompactViewport);
@@ -1666,7 +1678,7 @@ describe("activity sidebar", () => {
   it.each(["status", "project"] as const)(
     "uses the same status markers for children and parents in %s view",
     (groupBy) => {
-      updateState((state) => ({ ...state, groupBy }));
+      updateState((state) => ({ ...state, listing: { ...state.listing, groupBy } }));
       const slot = renderSlot(app.threadLists[0], props, {
         sidebarThreads: {
           projects,
@@ -1765,7 +1777,7 @@ describe("activity sidebar", () => {
       recordDraft("thread:done", true);
       recordDraft("new:project-1", true);
     });
-    for (const group of slot.getAllByRole("region")) {
+    for (const group of groupRegions(slot)) {
       const header = group.querySelector("[data-group-header] button")!;
       // The accessible name stays the plain label: glyph and count are decorative.
       expect(slot.getByRole("button", { name: group.getAttribute("aria-label")! })).toBe(header);
@@ -1874,9 +1886,7 @@ describe("activity sidebar", () => {
   it("nests children in their family's priority group, excludes archives, and preserves shortcuts", () => {
     const slot = mount();
     expect(
-      slot
-        .getAllByRole("region")
-        .map((region) => region.getAttribute("aria-label")),
+      groupRegions(slot).map((region) => region.getAttribute("aria-label")),
     ).toEqual(["Needs Attention", "Unread", "Done"]);
     const children = slot.getByRole("list", {
       name: "Children of Running parent",
@@ -1908,7 +1918,7 @@ describe("activity sidebar", () => {
     expect(props.onNavigate).toHaveBeenCalledOnce();
   });
   it("nests mixed-status children in Project view and preserves child actions", async () => {
-    updateState((state) => ({ ...state, groupBy: "project" }));
+    updateState((state) => ({ ...state, listing: { ...state.listing, groupBy: "project" } }));
     const slot = renderSlot(app.threadLists[0], props, {
       sidebarThreads: {
         projects,
@@ -1978,7 +1988,7 @@ describe("activity sidebar", () => {
   it("shows Threads without filters and ignores the old saved project selector", () => {
     updateState(() => parseState(JSON.stringify({ projectId: "project-1" })));
     const slot = mount();
-    expect(slot.getByRole("button", { name: "Threads: All projects" })).toBeTruthy();
+    expect(slot.getByRole("heading", { name: "Threads" })).toBeTruthy();
     expect(slot.queryByRole("textbox")).toBeNull();
     expect(slot.queryByRole("combobox")).toBeNull();
     expect(slot.getByText("New reply")).toBeTruthy();
@@ -1992,7 +2002,7 @@ describe("activity sidebar", () => {
     const empty = renderSlot(app.threadLists[0], props, {
       sidebarThreads: { projects, threads: [] },
     });
-    expect(empty.queryAllByRole("region")).toHaveLength(0);
+    expect(groupRegions(empty)).toHaveLength(0);
     expect(empty.getByText("No matching threads.")).toBeTruthy();
   });
   it("shows an instant, structured info card with no native tooltips", async () => {
@@ -2150,7 +2160,7 @@ describe("activity sidebar", () => {
     );
   });
   it("drops the project name from rows under a project header", () => {
-    updateState((state) => ({ ...state, groupBy: "project" }));
+    updateState((state) => ({ ...state, listing: { ...state.listing, groupBy: "project" } }));
     const slot = renderSlot(app.threadLists[0], props, {
       sidebarThreads: {
         projects,
@@ -2352,7 +2362,7 @@ describe("activity sidebar", () => {
   it("supports keyboard menus, status filters, and project grouping", async () => {
     const slot = mount();
     fireEvent.keyDown(
-      slot.getByRole("button", { name: "Threads display options" }),
+      slot.getByRole("button", { name: "Thread list options" }),
       { key: "Enter" },
     );
     await act(async () => {
@@ -2377,6 +2387,13 @@ describe("activity sidebar", () => {
     expect(
       slot.container.querySelector('section[aria-label="Done"]'),
     ).toBeNull();
+    fireEvent.keyDown(
+      slot.getByRole("menuitem", { name: /Grouping/, hidden: true }),
+      { key: "ArrowRight" },
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     fireEvent.click(
       slot.getByRole("menuitemradio", { name: "Project", hidden: true }),
     );
@@ -2384,15 +2401,13 @@ describe("activity sidebar", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(
-      slot
-        .getAllByRole("region")
-        .map((region) => region.getAttribute("aria-label")),
+      groupRegions(slot).map((region) => region.getAttribute("aria-label")),
     ).toEqual(["One", "Two"]);
   });
   it.each(["status", "project"] as const)(
     "sorts by created or updated date in %s view and keeps the choice",
     async (groupBy) => {
-      updateState((current) => ({ ...current, groupBy }));
+      updateState((current) => ({ ...current, listing: { ...current.listing, groupBy } }));
       const fixture = [
         thread({
           id: "new-created",
@@ -2424,8 +2439,15 @@ describe("activity sidebar", () => {
         ).map((row) => row.getAttribute("data-sidebar-thread-id"));
       const chooseSort = async (name: string) => {
         fireEvent.keyDown(
-          slot.getByRole("button", { name: "Threads display options" }),
+          slot.getByRole("button", { name: "Thread list options" }),
           { key: "Enter" },
+        );
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        fireEvent.keyDown(
+          slot.getByRole("menuitem", { name: /Ordering/, hidden: true }),
+          { key: "ArrowRight" },
         );
         await act(async () => {
           await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2448,7 +2470,8 @@ describe("activity sidebar", () => {
       );
       expect(rowTime.getAttribute("aria-label")).toMatch(/^Created /);
       expect(
-        parseState(localStorage.getItem("bb-plugin-sidebar:v1")).sortBy,
+        parseState(localStorage.getItem("bb-plugin-sidebar:v1")).listing
+          .sortBy,
       ).toBe("created");
       slot.unmount();
       slot = renderSlot(app.threadLists[0], props, {

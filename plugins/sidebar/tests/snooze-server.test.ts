@@ -442,14 +442,14 @@ describe("bb sidebar CLI", () => {
     }
   });
 
-  it("still exports and imports spaces", async () => {
+  it("no longer offers the removed spaces commands", async () => {
     const h = host();
     plugin(h.bb);
     try {
       const { behavior } = h.harness;
       const exported = await behavior.runCli(["spaces-export"]);
-      expect(JSON.parse(exported.stdout)).toEqual({ revision: 0, spaces: [] });
-      expect(await behavior.runCli(["spaces-import", "{not json"])).toMatchObject({ exitCode: 2 });
+      expect(exported).toMatchObject({ exitCode: 2, stderr: expect.stringMatching(/^Usage:/) });
+      expect(exported.stderr).not.toMatch(/spaces/);
     } finally {
       await h.harness.lifecycle.dispose();
     }

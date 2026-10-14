@@ -22,9 +22,10 @@ coordinator) one chat that never ends: every message logged, a GPT-6 Luna summar
 tree, `memory_read` and `memory_zoom`, and Regular, Hybrid or OptChat mode,
 switched from the thread's Memory pill. See [Chat memory](plugins/chat-memory/README.md).
 
-`sidebar` adds a status-first thread list: Needs Attention, Unread,
-Working, Draft, and Done. It also supports project grouping and spaces, named
-project selections shared by every client, plus an Initiatives view with one colored row per Initiative that opens its coordinator. See
+`sidebar` replaces BB's thread list with one view: the Initiatives, one
+colored row per Initiative that opens its coordinator, with a + to start one,
+then every other thread, recent first or grouped by status (Needs Attention,
+Unread, Working, Draft, Done) or project. See
 [Sidebar](plugins/sidebar/README.md) for local installation and draft limits.
 
 `editor` adds a Pierre file editor: a Files panel with a file tree,
@@ -282,15 +283,14 @@ commit. Update that clone explicitly for each preview. After merge, return it
 to `main` and rebuild, or move it back to its recorded normal path. A managed
 Git source switch still needs the upstream API described below.
 
-`sidebar` stores its space catalog in `bb.storage.kv` (table
-`plugin_kv` in `bb.db`), so before changing its source, run
-`bb sidebar spaces-export` and keep the JSON; after the new source is
-running, compare it with a fresh export and restore it with
-`bb sidebar spaces-import '<json>'` if needed. Observed on BB 0.42.1:
-`bb plugin remove` left `plugin_kv` rows and `~/.bb/plugins/<id>/data.db` of
-removed plugins in place, matching its documented scope (settings, secrets,
-schedules). Treat that as a courtesy, not a guarantee; the export is the
-safety net.
+`sidebar` stores its snoozes, snooze presets and Initiative order in
+`bb.storage.kv` (table `plugin_kv` in `bb.db`), together with the unused space
+catalog and library list of its removed Spaces and Library. It has no export
+command, so prefer a `path:` source switch, which keeps that data. Observed on
+BB 0.42.1: `bb plugin remove` left `plugin_kv` rows and
+`~/.bb/plugins/<id>/data.db` of removed plugins in place, matching its
+documented scope (settings, secrets, schedules). Treat that as a courtesy, not
+a guarantee.
 
 
 ## Desired upstream changes
@@ -996,21 +996,6 @@ restored and verified. This was an explicit exception, not an in-place switch.
 
 Status: no upstream issue filed. Suggested issue title:
 `Allow changing a plugin Git ref while preserving plugin data`.
-File the request in [BB issues](https://github.com/get-bb/bb/issues).
-
-
-### Project groups as a native sidebar scope
-
-The Threads plugin's spaces filter only its own list. BB's composer project
-picker, notifications, search, and the native sidebar do not know about them,
-and the plugin cannot add a new project to the selected space because the SDK
-has no project-creation event that identifies the originating client. A native
-project-group concept, or at least a client-aware `project.created` event and
-a way for a thread-list plugin to scope BB's new-thread project picker, would
-let the feature cover the whole product.
-
-Status: no upstream issue filed. Suggested issue title:
-`Native project groups (spaces) for sidebar and composer scoping`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 

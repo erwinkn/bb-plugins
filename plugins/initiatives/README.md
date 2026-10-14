@@ -82,8 +82,8 @@ What changed from v8 (the previous build, `3d46353`):
   them. Its `childPage` RPC never waits on BB: it answers from a cache a background read fills
   (loading until the first read lands), and the open trees refresh with the dashboard,
   re-reading every page they opened.
-- **No Initiatives overview (D536)**: the sidebar lists the Initiatives; create one
-  by asking an agent or coordinator, or with `bb initiative command` (`create`, keyed). The nav entry stays because a BB nav panel has no route
+- **No Initiatives overview (D536)**: the sidebar lists the Initiatives and creates them
+  (`command` `create`, keyed). The nav entry stays because a BB nav panel has no route
   without one, and the dashboard (`/plugins/initiatives/initiatives/<id>`) and composer live
   on that route; its bare page only points to the sidebar. Hide the entry with BB's
   **Hide from sidebar**.
@@ -243,8 +243,8 @@ bb plugin reload initiatives
 ```
 
 Open an Initiative from the sidebar's Initiatives list, or Initiative from a thread's panel
-menu. Start one by asking an agent or coordinator, or with `bb initiative command` (`create`: a new
-coordinator in the first repository's checkout), or adopt the current thread from its Initiative panel. Adoption
+menu. Start one from the + on the sidebar's Initiatives header (a new coordinator in the first repository's checkout),
+or adopt the current thread from its Initiative panel. Adoption
 preserves its runtime; tools activate at the next natural session construction.
 The CLI works immediately. Replace coordinator opens a live model picker and
 the handover GPT-6 Luna High writes from recent activity, then starts a fresh
@@ -267,7 +267,7 @@ in that gap runs to its own end rather than holding anything; the predecessor's
 work is preserved, not rolled back.
 Edit in Context sets the purpose, vision, current objectives and ideas. Edits are recorded in Initiative activity and read by the coordinator on
 its next turn — there is no separate notification channel.
-The Threads plugin also offers an Initiatives view switch: one colored row per Initiative
+The Threads sidebar lists the Initiatives above its threads: one colored row per Initiative
 opens its coordinator, with attention, working and draft status aggregated across
 its threads.
 

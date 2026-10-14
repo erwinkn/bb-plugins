@@ -16,7 +16,6 @@ const Component = app.threadLists[0].component;
 const slots: ReturnType<typeof renderSlot>[] = [];
 beforeEach(() => {
   localStorage.clear();
-  updateState(() => ({ ...parseState(null), mode: "initiatives" }));
 });
 afterEach(() => {
   for (const s of slots.splice(0)) s.unmount();
@@ -189,9 +188,7 @@ function mount(
         ),
         status: "ready",
       }),
-      getSpaces: async () => ({ revision: 0, spaces: [] }),
       listArchived: async () => [],
-      getLibrary: async () => ({ revision: 0, ids: [] }),
       ...overrides.rpc,
     },
     openUrl: () => true,
@@ -425,16 +422,16 @@ describe("Projects sidebar mode", () => {
     expect(prevented).toBe(false);
     expect(slot.inspection.navigateCalls).toHaveLength(0);
   });
-  it("offers a return to Threads when Initiatives is disabled", async () => {
-    const slot = mount(false);
+  it("explains that Initiatives is unavailable, and still lists the threads below", async () => {
+    const slot = mount(false, { threads: [thread({ id: "plain" })] });
     await waitFor(() =>
       expect(
         slot.getByText(/Install or enable the Initiatives plugin/),
       ).toBeTruthy(),
     );
-    expect(
-      slot.getByRole("button", { name: "Switch to Threads view" }),
-    ).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Switch to Threads view" })).toBeNull();
+    expect(slot.container.querySelector('[data-section-header="Threads"]')).toBeTruthy();
+    await waitFor(() => expect(listedThreads(slot)).toEqual(["plain"]));
   });
   it.each([false, true])(
     "uses whole-sidebar scrolling only in compact mode: %s",
@@ -877,14 +874,15 @@ describe("Projects sidebar mode", () => {
         projects: [{ ...tree.projects[0], id: initiativeId }],
       },
     });
-    const link = await slot.findByRole("link", { name: "New thread in Useful search" });
+    const menu = await openContextMenu(slot, "Useful search");
+    const link = within(menu).getByRole("menuitem", { name: "New thread" });
     expect(link.getAttribute("href")).toBe(
       "/plugins/initiatives/initiatives/p%2Fwith%20space%3F%23/compose",
     );
     expectNativeComposerLink(slot, link, initiativeId, onNavigate);
   });
   it.each([false, true])(
-    "opens the native composer with one row action, compact=%s",
+    "draws no hover '+' on a row; its menu still opens the native composer, compact=%s",
     async (isCompactViewport) => {
       const onNavigate = vi.fn();
       const slot = mount(true, {
@@ -893,15 +891,16 @@ describe("Projects sidebar mode", () => {
         threads: richThreads,
       });
       await slot.findByRole("link", { name: "Open Second push" });
-      // On touch the row stays one dense line; its menu offers New thread.
-      const link = slot.queryByRole("link", { name: "New thread in Second push" });
-      if (isCompactViewport) {
-        expect(link).toBeNull();
-        return;
-      }
-      expect(link!.className.includes("opacity-0")).toBe(true);
-      expectNativeComposerLink(slot, link!, "p2", onNavigate);
-      // The sibling action leaves the coordinator link and ordering alone.
+      expect(slot.queryByRole("link", { name: "New thread in Second push" })).toBeNull();
+      expect(slot.container.querySelector("[data-initiative-new-thread]")).toBeNull();
+      const menu = await openContextMenu(slot, "Second push");
+      expectNativeComposerLink(
+        slot,
+        within(menu).getByRole("menuitem", { name: "New thread" }),
+        "p2",
+        onNavigate,
+      );
+      // The menu action leaves the coordinator link and ordering alone.
       expect(rowAnchor(slot, "Second push").getAttribute("href")).toBe(
         "/projects/project-2/threads/c2",
       );

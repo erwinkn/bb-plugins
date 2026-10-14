@@ -21,7 +21,6 @@ const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
       listArchived: async () => [],
       archiveTree: async () => ({ ok: true }),
       restoreThread: async () => ({ ok: true }),
-      getLibrary: async () => ({ revision: 0, ids: [] }),
       ...options?.rpc,
     },
   });
@@ -77,7 +76,11 @@ const originalMatchMedia = window.matchMedia;
 beforeEach(() => {
   window.localStorage.clear();
   seedInitiativeCache();
-  updateState(() => parseState(null));
+  // Most tests read the status groups; the default listing is ungrouped.
+  updateState(() => {
+    const state = parseState(null);
+    return { ...state, listing: { ...state.listing, groupBy: "status" } };
+  });
   vi.clearAllMocks();
   finePointer = false;
   window.matchMedia = ((query: string) =>
@@ -96,6 +99,8 @@ afterEach(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });
+const group = (groupBy: "none" | "status" | "project") =>
+  act(() => updateState((current) => ({ ...current, listing: { ...current.listing, groupBy } })));
 const mount = (options: Parameters<typeof renderSlot>[2] = {}) =>
   renderSlot(app.threadLists[0], props, {
     sidebarThreads: { threads, projects },
@@ -201,7 +206,7 @@ describe("project identity color", () => {
     expect(wrapper(slot, "unread").querySelector("[data-project-accent]")?.getAttribute("data-project-hue")).toBe(String(projectHueStep("Two")));
     expect(projectHueStep("One")).not.toBe(projectHueStep("Two"));
     expect(slot.container.querySelector("style[data-project-hue-style]")?.textContent).toContain('[data-project-hue="0"]');
-    act(() => updateState((current) => ({ ...current, groupBy: "project" })));
+    group("project");
     const header = slot.getByRole("button", { name: "One" });
     const glyph = header.querySelector("[data-project-glyph]")!;
     expect(glyph.getAttribute("data-project-hue")).toBe(String(projectHueStep("One")));
@@ -211,7 +216,7 @@ describe("project identity color", () => {
     const personal = slot.getByRole("button", { name: "No project" }).querySelector("[data-project-glyph]")!;
     expect(personal.hasAttribute("data-project-hue")).toBe(false);
     // Pinned rows show the project again, and so the accent.
-    act(() => updateState((current) => ({ ...current, groupBy: "status" })));
+    group("status");
   });
 });
 
@@ -240,20 +245,20 @@ describe("group headers", () => {
     const pinned = slot.getByRole("button", { name: "Pinned" });
     expect(pinned.querySelector("[data-group-count]")?.textContent).toBe("1");
     expect(pinned.querySelector("[data-group-icon] [data-icon='Pin']")).not.toBeNull();
-    act(() => updateState((current) => ({ ...current, groupBy: "project" })));
+    group("project");
     for (const name of ["One", "Two", "No project"]) {
       const header = slot.getByRole("button", { name });
       expect(header.querySelector("[data-group-count]")).toBeNull();
       expect(header.querySelector("[data-group-icon] [data-icon='Folder']")).not.toBeNull();
     }
     // Status groups keep their chips.
-    act(() => updateState((current) => ({ ...current, groupBy: "status" })));
+    group("status");
     expect(slot.getByRole("button", { name: "Done" }).querySelector("[data-group-count]")).not.toBeNull();
   });
 });
 
 describe("project header new thread", () => {
-  const project = () => act(() => updateState((current) => ({ ...current, groupBy: "project" })));
+  const project = () => group("project");
   const headerLine = (slot: { container: HTMLElement }, id: string) =>
     slot.container.querySelector(`[data-group-header="project:${id}"]`) as HTMLElement;
   const plus = (slot: { container: HTMLElement }, id: string) =>

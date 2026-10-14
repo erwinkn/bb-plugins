@@ -44,9 +44,7 @@ const rows = (slot: ReturnType<typeof renderSlot>) =>
     (node) => node.getAttribute("data-sidebar-thread-id"),
   );
 const base = {
-  getSpaces: async () => ({ revision: 0, spaces: [] }),
   listArchived: async () => [],
-  getLibrary: async () => ({ revision: 0, ids: [] }),
 };
 
 beforeEach(() => {

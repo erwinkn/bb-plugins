@@ -3,22 +3,17 @@ import { registerProjectMode } from "./lib/project-mode-server";
 import { archiveContract } from "./lib/archive-contract";
 import { archiveTree } from "./lib/archive-tree";
 import { threadTitle } from "./lib/status";
-import { registerLibrary } from "./lib/library-store";
 import { registerProjects } from "./lib/projects-rpc";
 import { registerSnoozes } from "./lib/snooze-store";
 import { registerSidebarCli } from "./lib/sidebar-cli";
-import { registerSpaces } from "./lib/spaces-store";
 import { registerUiPreferences } from "./lib/ui-preferences-store";
 import { registerBranchPullRequests } from "./lib/branch-pull-request-server";
 import { nestingContract } from "./lib/nesting-contract";
 
 export default function plugin(bb: BbPluginApi) {
   registerProjectMode(bb);
-  const spaces = registerSpaces(bb);
-  registerLibrary(bb);
   const snoozes = registerSnoozes(bb);
-  // One `bb sidebar` namespace per plugin: spaces and snooze share it.
-  registerSidebarCli(bb, { spaces, snoozes });
+  registerSidebarCli(bb, { snoozes });
   registerProjects(bb);
   registerUiPreferences(bb);
   registerBranchPullRequests(bb);

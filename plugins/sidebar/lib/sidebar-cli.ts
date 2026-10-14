@@ -10,7 +10,6 @@ import {
 } from "./snooze-presets";
 import { isSleeping, isWoke, type SnoozeDoc } from "./snooze-schema";
 import { SnoozeError, type SnoozeStore } from "./snooze-store";
-import { runSpacesCli, type SpacesStore } from "./spaces-store";
 
 const presetNames = (presets: readonly SnoozePreset[]) =>
   presets.map((preset) => preset.id).join(", ");
@@ -21,8 +20,6 @@ export const sidebarCliUsage = (presets: readonly SnoozePreset[]) =>
     "  bb sidebar unsnooze [threadId]",
     "  bb sidebar snoozes [--json]",
     "  bb sidebar presets",
-    "  bb sidebar spaces-export",
-    "  bb sidebar spaces-import '<json>'",
     `Presets: ${presetNames(presets)} (edit them in the Threads settings section).`,
     "Durations: 45m, 2h, 3d, 1w. The thread defaults to the invoking thread.",
     "",
@@ -71,12 +68,11 @@ const describe = (doc: SnoozeDoc, now: number) =>
 
 export function registerSidebarCli(
   bb: BbPluginApi,
-  stores: { spaces: SpacesStore; snoozes: SnoozeStore },
+  stores: { snoozes: SnoozeStore },
 ) {
   bb.cli.register({
     name: "sidebar",
-    summary:
-      "Threads sidebar: snooze threads until later and manage shared spaces",
+    summary: "Threads sidebar: snooze threads until later",
     commands: [
       {
         name: "snooze",
@@ -100,24 +96,11 @@ export function registerSidebarCli(
         summary: "List the snooze preset names and what they resolve to",
         usage: "bb sidebar presets [--json]",
       },
-      {
-        name: "spaces-export",
-        summary: "Print the space catalog as JSON",
-        usage: "bb sidebar spaces-export",
-      },
-      {
-        name: "spaces-import",
-        summary: "Replace the space catalog with a JSON document",
-        usage: "bb sidebar spaces-import '<json from spaces-export>'",
-      },
     ],
     async run(
       argv: string[],
       ctx: PluginCliContext,
     ): Promise<PluginCliResult> {
-      const action = argv[0];
-      if (action === "spaces-export" || action === "spaces-import")
-        return runSpacesCli(stores.spaces, argv);
       const { presets } = await stores.snoozes.readPresets();
       const usage = sidebarCliUsage(presets);
       try {

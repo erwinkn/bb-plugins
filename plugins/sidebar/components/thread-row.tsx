@@ -24,7 +24,6 @@ import {
   type SortBy,
 } from "../lib/status";
 import type { archiveContract } from "../lib/archive-contract";
-import type { libraryContract } from "../lib/library-contract";
 import type { snoozeContract } from "../lib/snooze-contract";
 import { formatWakeTime, type SnoozePreset } from "../lib/snooze-presets";
 import {
@@ -93,7 +92,6 @@ export function ThreadRow({
   now,
   sortBy,
   singleLine = false,
-  libraryAction,
   nesting,
   branchPullRequestEligible = true,
   snooze,
@@ -122,12 +120,6 @@ export function ThreadRow({
   active: boolean;
   now: number;
   sortBy: SortBy;
-  /**
-   * "save" offers Save to Library, "remove" offers Remove from Library, and
-   * null hides the entry — e.g. a child shown in the library only through a
-   * saved ancestor.
-   */
-  libraryAction: "save" | "remove" | null;
   nesting?: ThreadRowNesting;
   /**
    * False hides BB's environment branch PR: on a shared project checkout or
@@ -141,7 +133,6 @@ export function ThreadRow({
   onError: (error: unknown) => void;
 }) {
   const rpc = useRpc<typeof archiveContract>();
-  const libraryRpc = useRpc<typeof libraryContract>();
   const snoozeRpc = useRpc<typeof snoozeContract>();
   const navigate = useBbNavigate();
   const nested = depth > 0;
@@ -731,23 +722,6 @@ export function ThreadRow({
                       onSelect={() => nesting.onSetParent(null)}
                     >
                       Move to top level
-                    </Menu.Item>
-                  )}
-                  {libraryAction && (
-                    <Menu.Item
-                      className={menuItemClass}
-                      onSelect={() => {
-                        void libraryRpc
-                          .call(
-                            libraryAction === "save" ? "save" : "remove",
-                            { threadId: thread.id },
-                          )
-                          .catch(onError);
-                      }}
-                    >
-                      {libraryAction === "save"
-                        ? "Save to Library"
-                        : "Remove from Library"}
                     </Menu.Item>
                   )}
                   <Menu.Separator className="my-1 h-px bg-border" />

@@ -4,17 +4,17 @@ A status-first BB sidebar. It replaces only the thread list, not the rest of
 the sidebar. It uses the public Plugin SDK. It does not use a six-hour activity
 window, automatically archive threads, or run cleanup jobs.
 
-## Initiatives view
+## Layout
 
-The view switch toggles between Threads and Initiatives on this client. The
-Initiatives view has two sections:
+The sidebar is one view with two sections: the Initiatives, then every other
+thread.
 
 ```
-Initiatives
+Initiatives                         +
   ◇ Sidebar v2                 ⓘ   3m
   ◎ Initiatives v9             ◌  55m
   ◍ Equisafe onboarding            1d
-Threads                             ≡
+Threads                           ≡ +
   Fix flaky snooze test            ◌
   bb-plugins · fix-snooze         2m
   KYC webhook retries              •
@@ -37,23 +37,44 @@ order, so the list draws at once and the first read refreshes it in the
 background; only a confirmed read replaces it, and a read that finds
 Initiatives gone clears it.
 
-**Creating an Initiative.** The sidebar only lists them; there is no create
-button. Ask an agent or a coordinator to start one, or run
-`bb initiative command` (the Initiatives plugin's own `create` command). A
-`localStorage` key from the removed create-draft store may linger in a browser;
-it is harmless and needs no cleanup.
+**New initiative.** The section's + (or "Start one" while the list is empty)
+opens a dialog: a name, what it should achieve, and its repositories, where the
+open thread's repository is preselected and the first checked one hosts the
+coordinator. It creates through the Initiatives plugin's own `command` RPC
+(`create`, with a new coordinator on the first repository's default checkout),
+like its create form. The dialog closes at once and the draft shows in the
+list as "Creating…" while Initiatives spawns the coordinator, so nothing waits
+on it; once created, the coordinator opens unless you have navigated away
+meanwhile. A failed draft stays in the list with its reason; Edit
+reopens it, and resending it unchanged reuses its idempotency key, so a create
+that did land but whose answer was lost is never made twice. Past 90 s without
+an answer the draft shows as unconfirmed, and a late answer still settles it.
+Sent drafts and their keys are kept in this client's storage, so a reload
+keeps them; after a reload, drafts still waiting for an answer are
+sent again under their keys. Each send is its own storage entry, named by its
+key and holding only what that key's answers decided, so tabs sending at once
+never overwrite each other's, and every tab shows what another sent or
+settled. A send that got no answer shows as failed only in its own tab. Only an answer from
+Initiatives settles a key: when it refused the create, or cannot tell what an
+earlier send saved, the draft gets a new key and resending it is a new create,
+which you check and send on purpose. A key first sent over 7 days ago is never
+sent again, by a reload or by hand, because Initiatives keeps its receipt only
+a day longer: the draft stays listed with a warning, so you can check whether
+it was created before sending it as new. An Edit dialog always sends the
+draft's current key, even one that settled while it was open, and closes if
+the draft is created meanwhile.
 
-**Threads.** Below the Initiatives, every thread outside them, with the Threads
-view's rows, pins, snoozes, drafts and archive. Its grouping and order are this
-client's own (they default to no grouping, most recent first) and never follow
-the open Initiative. The header names what the groups are ("Threads", or
-"Projects" when grouped by project); its options button holds Grouping (None,
-Status, Project) and Ordering (date updated or created, newest or oldest
-first) submenus that name the current choice, then the same Show options as
-the Threads view (statuses, Snoozed, Archived). Ungrouped, new-thread drafts
-lead the list and 25 threads show before Show more; under a Pinned group the
-list gets a "Recent" title so it does not read as pinned. The Threads view
-keeps BB's synced grouping and order, and its own display menu.
+**Threads.** Below the Initiatives, every thread outside them, with pins,
+snoozes, drafts and archive. Its grouping and order are this client's own
+(they default to no grouping, most recent first) and never follow the open
+Initiative. The header names what the groups are ("Threads", or "Projects"
+when grouped by project). Its options button holds Grouping (None, Status,
+Project) and Ordering (date updated or created, newest or oldest first)
+submenus that name the current choice, then Show options for each status,
+Snoozed and Archived. Its + opens BB's new-thread composer in the open
+thread's project. Ungrouped, new-thread drafts lead the list and 25 threads
+show before Show more; under a Pinned group the list gets a "Recent" title so
+it does not read as pinned.
 
 Initiative order is fixed until you change it: activity, selection, polling and
 reloads never move a row. Drag a row to reorder it — the whole row is the
@@ -110,21 +131,21 @@ stored document that fails to parse is surfaced as an error and left
 untouched.
 
 The sidebar builds independently of Initiatives; its versioned RPC schema is checked
-against the same fixture in both plugins' tests. If Initiatives is disabled, the view
-explains how to enable it, the thread list below still works, and the switch returns to Threads. Composer links close
+against the same fixture in both plugins' tests. If Initiatives is disabled, the
+Initiatives section explains how to enable it and the thread list below still works. Composer links close
 the mobile drawer before navigating. Composer links use `UrlLink` for BB's
 internal navigation; the row menu's overview link remains an ordinary anchor.
 
-## Initiative threads stay out of the thread lists
+## Initiative threads stay out of the thread list
 
-Both views' thread lists hide every thread the Initiatives tree names (coordinators,
+The thread list hides every thread the Initiatives tree names (coordinators,
 workers, reviewers and the Initiative's other member threads, which include
 discussions) and every descendant of one, archived or not. Reviewer and fixer
 children that Initiatives never records are therefore hidden too, even under an
 archived or unlisted intermediate thread. A thread with the same shape (a child of a plain thread) is
 untouched. Pinned Initiative threads are hidden as well, so one rule holds
-everywhere: the Pinned section, the Status and Project groups, the Library
-scope, Archived, and the **Make child of…** targets all skip them. Initiative
+everywhere: the Pinned section, the Recent list, the Status and Project
+groups, Archived, and the **Make child of…** targets all skip them. Initiative
 threads live only in the Initiatives list and its panel.
 
 The ids come from the `initiativeThreads` RPC. The server keeps one snapshot
@@ -159,15 +180,15 @@ discussions apart from other member threads, so all member threads are hidden.
 
 ## Status rules
 
-Groups appear in this order. Each thread appears in exactly one group.
-Empty groups are hidden.
+Grouped by status, groups appear in this order. Each thread appears in exactly
+one group. Empty groups are hidden.
 
-Status view initially shows five top-level threads per group, except Done,
+Status grouping initially shows five top-level threads per group, except Done,
 which shows ten. Show more reveals another five or ten; Show less restores
 the initial limit. Children do not count toward this limit. New-thread drafts
 share the Draft limit with existing threads. The selected thread's family stays
 visible even beyond the limit, so a group can show one extra top-level thread.
-Expansion resets when a group closes or the view reloads. Project view initially
+Expansion resets when a group closes or the view reloads. Project grouping initially
 shows ten top-level threads per project, with ten more per Show more action.
 It uses the same selected-family exception and includes new-thread drafts in
 the limit.
@@ -190,11 +211,11 @@ Pinned threads keep all available descendants beneath them, regardless of status
 project, or a descendant's own pin. Status filters do not hide these families.
 A pinned child appears as a root here only when it has no available pinned ancestor.
 Each thread appears once. Child previews and Show more work as in other families.
-Archived threads stay hidden until you enable Archived in Threads display options.
-The display menu offers **Date updated**
-(the default) and **Date created**, and an **Order** of **Newest first** (the
+Archived threads stay hidden until you enable Archived in the list options.
+The list options' **Ordering** offers **Date updated**
+(the default) and **Date created**, and **Newest first** (the
 default) or **Oldest first**. The choice applies in
-both Status and Project views and stays when you switch views or reload.
+every grouping and stays when you reload.
 The sort uses BB's `updatedAt` or `createdAt`, not attention events. Pinned
 threads lead their group in both orders.
 Children appear below their parent, with an inset arrow inside each child row
@@ -205,7 +226,7 @@ Expansion stays only while the family is mounted, not across reloads or group co
 Indentation stops at two levels below a root: children and grandchildren.
 Deeper descendants appear at the second level in family order, with their actual
 parent still shown in the info card. Hidden descendants still contribute to the
-family's status. In Status view, a family appears in its highest-priority
+family's status. Grouped by status, a family appears in its highest-priority
 category using the group order above. Each row keeps its own status.
 All status markers sit at the right end of the title line, in one column for
 root, child, and grandchild rows.
@@ -215,10 +236,10 @@ Rows never show status text below the title. Child rows
 use the same status markers as parent rows, with no extra status text: a green
 spinner for Working, a blue dot for Unread, an amber alert for Needs Attention,
 a violet dashed circle for Draft, and no marker for Done.
-Project view nests children within the same project.
+Project grouping nests children within the same project.
 If a parent is missing, archived, or hidden by a status filter, its visible
 children appear as separate roots. Cross-project children appear under their
-own project in Project view. Parent names appear in the hover info card.
+own project when grouped by project. Parent names appear in the hover info card.
 
 Rows can be nested by dragging, mirroring BB's own sidebar: after a short
 movement (4 px with a mouse, a 200 ms hold with touch), holding a row over the
@@ -237,39 +258,36 @@ group. BB's personal project, which holds threads outside any project, is
 shown as **No project** everywhere in the plugin.
 Each missing project keeps its own group until BB supplies its name.
 
-The display menu switches between Status and Project grouping and shows or hides
-each status. **Snoozed** and **Archived** close the **Show statuses** list,
-below **Done**.
+The list options switch between no grouping, Status and Project grouping and
+show or hide each status. **Snoozed** and **Archived** close the **Show**
+list, below **Done**.
 Status groups keep the order above. Project groups sort by
 name, except **No project**, which always closes the list above Archived. Pins, roots, and siblings follow the selected date sort.
 Children in each family stay below their parent. A child's timestamp or pin does not
 move its parent. New-thread drafts have no thread timestamp and appear after dated
 threads in their group. Groups can collapse. There is no thread search field.
-Old saved project filters from before spaces are ignored.
+Old saved project filters and space selections are ignored.
 Sorting and grouping do not change thread state.
 
-Grouping, the date sort, the order, and the collapsed state of the Pinned
-group and of each project group follow BB's synced sidebar preferences, so
-they match the native sidebar and every other client:
+The collapsed state of the Pinned group and of each project group follows
+BB's synced sidebar preferences, so it matches the native sidebar and every
+other client:
 
 | Plugin setting | BB preference |
 | --- | --- |
-| Group by Project / Status | `sidebar.organizationMode` `project` / `chronological` |
-| Date updated / Date created | `sidebar.chronologicalSort` `updated` / `created` |
-| Newest first / Oldest first | `sidebar.sortDirection` `descending` / `ascending` |
 | Pinned group collapsed | `pinned` in `sidebar.collapsedSections` |
 | Project group collapsed | the project id in `sidebar.collapsedProjects` |
 
-BB's chronological and machine modes both show Status grouping. An
-alphabetical or manual BB sort keeps the plugin's last date sort until you
-pick one here. The plugin reads the preferences when the list mounts, when the
+BB's grouping and sort preferences (`sidebar.organizationMode`,
+`sidebar.chronologicalSort`, `sidebar.sortDirection`) are neither read nor
+written: the list's grouping and order are this client's own. The plugin reads the preferences when the list mounts, when the
 connection returns, and when the window regains focus, because BB's own
 clients write them without a signal that reaches a plugin. Each change here is
 written through with BB's per-key revision; a write that races another client
 is retried once against the fresh value, and a second failure is reported.
 Entries the plugin does not show, such as other collapsed projects or the
-Threads section, are preserved. Hidden statuses, collapsed status groups,
-archive visibility, expanded archives, spaces, and the library stay on this
+Threads section, are preserved. Grouping, order, hidden statuses, collapsed
+status groups, archive visibility, and expanded archives stay on this
 client. localStorage remains the cache and the fallback while BB is
 unreachable.
 If browser storage rejects a write, this tab keeps its unsaved preferences and
@@ -347,10 +365,16 @@ header menu's **New thread**, without collapsing the group. On a mouse or
 trackpad (`pointer: fine`) the button appears only while the header line is
 hovered or focused; touch viewports always show it. Its accessible name is
 "New thread in" followed by the project name. Unknown projects have no button.
+Right-click or long-press a project header for **New thread**, **Rename…** and
+**Remove…** (inline forms under the header). Both go through BB's own project
+API, so every client sees the change. **Remove…** says how many active
+threads the project has and requires typing its name; BB then deletes the
+project with all of its threads. Files on disk are untouched. The personal
+project offers only New thread.
 The status menu retains its colored icons. Archived has a neutral archive-box
 icon in the menu and the row's right-aligned status position. The layout uses BB's theme tokens.
 
-Active rows use BB's native open, split, rename, pin, read, and archive actions plus the plugin's library save and remove. The plugin also keeps
+Active rows use BB's native open, split, rename, pin, read, and archive actions. The plugin also keeps
 the attributes needed for BB's thread navigation shortcuts. Right-click a row
 on desktop or hold it for 450 ms on mobile to open its actions. Scrolling,
 releasing early, or cancelling the touch cancels the hold. With keyboard focus
@@ -375,117 +399,22 @@ This is not atomic: children created or moved during the operation can escape
 the collected tree. BB's other archive buttons and keyboard shortcut keep their
 native behavior. No bulk read or delete actions are added.
 
-## Spaces and project management
+## Removed: Spaces and the Library
 
-A space is a named selection of projects. The Threads heading is the scope
-selector: it reads **All projects**, a space name, or **Library**. Its menu
-lists All projects, each saved space, then Library — the saved-thread
-collection described below — and **Manage spaces…**, which goes to the
-plugin's **Spaces** page. The page also has its own row in BB's sidebar
-navigation (route
-`/plugins/sidebar/spaces`). There are no dialogs; every edit is a form
-on the page, and on phones the page shows one column at a time with a back
-link so it works like any other BB page.
+Earlier versions had a second Threads view, a scope menu over it with saved
+**spaces** (named project selections, managed on a Spaces page with project
+add, re-folder and reorder forms) and a **Library** (Save to Library hid a
+thread family from the list until removed). All of it is gone; BB's own
+project settings manage projects, and snooze covers "later".
 
-- The Spaces page lists every space with its project count beside the
-  selected space's projects. On desktop the list stays visible and the first
-  space opens by default; on phones the list is the first screen and each row
-  opens the space. **Manage spaces…** opens the current space when
-  one is selected, the list otherwise, and All projects when no space exists
-  yet. Selecting a space on the page does not change the Threads scope.
-- **New space…** on the page opens a form
-  with a name and a checklist of every BB project. Create saves the space and
-  opens it. Names are trimmed, limited to 60 characters, and unique ignoring
-  case. An empty space shows a **Choose projects** link into its page.
-- A space's page shows a checkbox per project for membership, and a heading
-  menu with **Rename…** and **Delete…** (inline forms; on phones also Move up
-  and Move down). Deleting a space never touches projects or threads and
-  returns to the list. A member project BB no longer lists appears as
-  *Unavailable project* so it can be removed. Right-click or long-press a
-  space in the list for Rename…, Move up, Move down, and Delete…; on desktop
-  a space row can also be dragged onto another row to take its place.
-- **All projects** at the bottom of the list shows every BB project without
-  membership checkboxes; use it to manage projects before any space exists.
-- Project lists with six or more entries get a **Filter projects** field that
-  matches names and folders, in both the New space checklist and a space's
-  page. Reordering is off while a filter is active.
-- Each project row shows its folder (and a host badge when more than one host
-  is connected) and has a `…` menu: **Rename…**, **Change folder…**, **Move
-  up**, **Move down**, and **Remove…**, each an inline form under the row. The
-  personal project has no menu. These go through BB's own project API, so BB's
-  new-thread panel and every client see the same list. **Remove…** says how
-  many active threads the project has and requires typing its name; BB then
-  deletes the project with all of its threads, and the plugin drops it from
-  every space. Files on disk are untouched. On desktop a project row can be
-  dragged onto another row to take its place.
-- **+ Add project…** opens a form with a folder path field with directory
-  completion (type `/Users/me/Co` and pick from the list; Tab or Enter accepts
-  the highlighted folder) or **Browse…** for the native folder dialog, and a
-  project name that defaults to the folder name. With more than one host, a
-  host selector comes first. On a space's page the new project joins that
-  space. Browse… opens the dialog on the machine that hosts the project; plugin
-  frontends do not know which host the client runs on, so on a remote host use
-  the path field.
-- In the by-project grouping, right-click or long-press a project header for
-  **New thread**, **Spaces ›**, **Rename…** and **Remove…** (inline forms under
-  the header), and **Manage spaces…**.
-- Another plugin in the same page may switch the selected space: it writes
-  `spaceId` in this client's stored state and dispatches the plugin's
-  `bb-plugin-sidebar:state` window event, after which the Threads list
-  re-reads the state. Voice Mode uses this for "switch to the mobile space".
-- Space definitions are shared by every client of one BB server and stored in
-  the plugin's key-value store as one document with a revision. A save that
-  races another client's save fails with an error, and the form keeps your
-  input; the catalog reloads so you can retry. Each client keeps its own
-  selection in local storage, together with a cached copy of the catalog for
-  the next load. Grouping, sorting, and status filters are shared across spaces.
-- Scope applies before pins, families, archives, and drafts. A pinned thread
-  outside the scope is hidden. A child outside the scope is hidden and does not
-  affect its family's status. An in-scope child of an out-of-scope parent is a
-  root, with its parent still named in the info card. Archiving a family still
-  archives every active descendant, including those outside the scope.
-- If the open thread is outside the scope, a notice offers **Show all
-  projects**; the thread stays open and the scope does not change. If the
-  selected space was deleted elsewhere, the list shows All projects with a
-  notice. A brand-new client with a selected space shows *Loading spaces…*
-  until the catalog arrives; if it cannot load, the list shows All projects
-  with a Retry action.
-- **New thread** uses the active project when it is in scope, otherwise the
-  space's only project, otherwise a menu of member projects. In All projects
-  it keeps BB's behavior.
-- Projects created outside Manage (BB's own panel, the CLI) are not added to
-  any space automatically. SDK 0.4.47 has no project-creation event that
-  identifies the originating client.
-- `bb sidebar spaces-export` prints the catalog. `bb sidebar spaces-import
-  '<json>'` replaces it and bumps the revision. Use them for backups and for
-  moving definitions between BB servers.
-
-## Library
-
-The library keeps threads for later without archiving them: no runtime
-cleanup runs and saved work keeps going. **Save to Library** in a row's
-actions marks the thread; **Remove from Library** unmarks it. Each save
-covers the whole family — children of a saved thread count as saved,
-including children created later — so one action keeps a family together.
-
-Each save is mirrored into the thread's plugin metadata as
-`{ saved: true, savedAt }` in the `sidebar` namespace, and the keys are removed
-when the thread leaves the library by unsave or archive (a deleted thread takes
-its metadata with it). The flag is informational for other plugins and agents
-that read thread metadata; the key-value list stays the index and the flag is
-never read back to rebuild it. Entries saved before the flag existed receive
-it once, on the first start after the upgrade. A failed metadata write is
-logged and does not affect the library.
-
-Saved threads leave the active view in every scope. The **Library** scope
-lists saved families instead, with live statuses, sorting, grouping, and
-Show more as usual; while another scope is selected, a status icon on the
-menu entry and the Threads heading reports saved threads needing attention
-or holding unread replies. Removing a member frees its family unless a
-descendant was saved on its own. Archiving or deleting drops the save, so a
-restore lands in the active view. The document lives in the plugin's
-key-value store, shared by all clients and cached locally for the next
-load.
+Their shared data is left in place, unused, so rolling back to the old code
+brings them back: the space catalog and the library list in the plugin's
+key-value store, the `{ saved, savedAt }` keys in threads' `sidebar` plugin
+metadata, and the spaces and library caches in this client's `localStorage`.
+The plugin no longer reads any of it, so previously saved threads show in the
+list again. This client's stored view, space selection, and Threads-view
+grouping and sort are ignored and dropped at its next preference write; the
+thread list's grouping and order carry over.
 
 ## Snooze
 
@@ -497,10 +426,10 @@ and opens the same presets in a small popover. A snoozed row's control and
 menu entry become **Unsnooze**.
 
 - A sleeping thread leaves the status groups and Pinned, together with its
-  descendants (the same family rule as the library). The **Snoozed** group,
+  descendants, including children created later. The **Snoozed** group,
   closed by default and placed before Archived, lists sleeping families
   soonest first, with the wake time in place of the age. Unchecking
-  **Snoozed** under **Show statuses** hides the group, like Archived;
+  **Snoozed** under **Show** hides the group, like Archived;
   sleeping threads stay hidden until they wake.
 - A pinned thread can be snoozed: the snooze unpins it and remembers the
   pin, and the pin returns when the snooze ends by any route.
@@ -578,10 +507,10 @@ Select **Threads** in **Settings → Appearance → Sidebar** if BB does not sel
 it automatically. The selection is per client. Use `bb plugin dev` for live
 development. To remove it, run `bb plugin remove sidebar`.
 
-Tests cover status precedence, date sorting in both views, synced preferences, navigation, storage validation,
-draft text and attachments, fallback UI, a disconnected realtime connection, space
-filtering and editing, the Spaces page, project management through BB's API,
-the space catalog RPC, and the spaces CLI.
+Tests cover status precedence, grouping and date sorting, synced collapsed
+groups, navigation, storage validation, draft text and attachments, fallback
+UI, a disconnected realtime connection, the Initiatives list and its create
+dialog, project rename and removal through BB's API, and the snooze CLI.
 They use the SDK's frontend harness. The live BB view still needs visual checks
 after SDK upgrades because the sidebar API is experimental.
 
@@ -593,8 +522,8 @@ release passes the menu tests.
 
 ## Archived threads
 
-Archived threads are hidden by default. Enable **Archived** under **Show statuses**
-in Threads display options to show them. Both views then have a single Archived
+Archived threads are hidden by default. Enable **Archived** under **Show** in
+the thread list options to show them. The list then has a single Archived
 section at the bottom of the list; its rows keep their project names. The
 section starts collapsed and remembers its state per client. Status filters do
 not hide archived
@@ -611,8 +540,7 @@ The backend reads visible archives in pages of 200 through BB's public SDK only
 while the setting is enabled. Hidden background threads stay hidden. The list
 refreshes on BB's archive, unarchive, and delete events, plugin restores,
 sidebar membership changes, and reconnection. A thread restored outside the
-plugin leaves the Archived section without a reload; it does not rejoin the
-library. Failed loads show a Retry button; active threads
+plugin leaves the Archived section without a reload. Failed loads show a Retry button; active threads
 remain available.
 
 ## Color
@@ -630,9 +558,8 @@ BB's `-text` tokens.
 
 Each project has an identity color: a deterministic hue from its name on an
 eight-step wheel (`lib/project-hue.tsx`). It tints the folder glyph on project
-headers and on the Spaces page project list, and draws a 2px accent at the left
-of a row wherever the row also shows the project name (status view, Pinned,
-Library). The color is BB's file blue with only the hue replaced through CSS
+headers, and draws a 2px accent at the left of a row wherever the row also
+shows the project name (the Recent list, status groups, Pinned). The color is BB's file blue with only the hue replaced through CSS
 relative color syntax, so lightness and chroma follow BB's light and dark
 palettes; browsers without relative colors keep the plain blue. Tailwind never
 sees these values, so no custom theme colors or literal oklch appear in

@@ -1,5 +1,5 @@
 import { DndContext, DragOverlay, useDroppable } from "@dnd-kit/core";
-import { InitiativesSection, ModeToggle } from "./components/project-mode";
+import { InitiativesSection } from "./components/project-mode";
 import {
   useCallback,
   useEffect,
@@ -14,7 +14,6 @@ import {
   experimental_useSidebarThreads,
   experimental_useSidebarThreadActions,
   experimental_useProviders,
-  useBbNavigate,
   useRealtimeConnectionState,
   useRpc,
   type PluginThreadListProps,
@@ -27,34 +26,22 @@ import {
   toggleValue,
   updateState,
   useClientState,
-  type ClientState,
   type ThreadListing,
 } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
-import { useLibrary } from "./lib/use-library";
 import { useSnooze, useSnoozePresets } from "./lib/use-snooze";
 import type { snoozeContract } from "./lib/snooze-contract";
 import { isSleeping, isWoke, type SnoozeEntry } from "./lib/snooze-schema";
 import { SnoozeSettings } from "./components/snooze-settings";
-import { useSpaces } from "./lib/use-spaces";
 import { useUiPreferences } from "./lib/use-ui-preferences";
 import { useBranchPullRequestEligibility } from "./lib/use-branch-pull-request-eligibility";
-import { savedThreadIds } from "./lib/library";
-import { inScope, LIBRARY_SCOPE_ID, resolveScope } from "./lib/spaces";
-import { DisplayMenu, ListingMenu } from "./components/menus";
-import { SectionHeader } from "./components/section-header";
+import { ListingMenu } from "./components/menus";
+import { SectionHeader, sectionActionClass } from "./components/section-header";
 import { ProjectHeaderMenu } from "./components/project-header-menu";
 import {
   ProjectRemoveForm,
   ProjectRenameForm,
 } from "./components/project-forms";
-import { ScopeMenu } from "./components/scope-menu";
-import {
-  ALL_PROJECTS_SUBPATH,
-  SPACES_PANEL_PATH,
-  SpacesPage,
-} from "./components/spaces-page";
-import { NewThreadButton } from "./components/new-thread-button";
 import {
   ThreadRow,
   fadeClass,
@@ -75,6 +62,7 @@ import { hiddenInitiativeThreads } from "./lib/initiative-threads";
 import { useInitiativeThreadIds } from "./lib/use-initiative-threads";
 import {
   buildThreadTree,
+  familyMemberIds,
   familyStatus,
   pinnedThreadIds,
   type ThreadNode,
@@ -269,40 +257,22 @@ function useStableArray<T>(value: readonly T[]): readonly T[] {
   return result;
 }
 
-function ThreadsList(props: PluginThreadListProps) {
-  const { mode } = useClientState();
-  // Remounts on a switch, so each view starts with its own Show more limits.
-  return <ThreadListContent key={mode} {...props} view={mode} />;
-}
-
 /** The thread list section's title: what its groups are. */
 function listingTitle(groupBy: ThreadListing["groupBy"]): string {
   return groupBy === "project" ? "Projects" : "Threads";
 }
 
 /**
- * Both views. Threads lists every non-Initiative thread, grouped and sorted by
- * BB's synced sidebar preferences. Initiatives puts the Initiatives list first,
- * then the same threads under their own header, grouped and sorted by this
- * client's Initiatives-view choices (no grouping, most recent first by
- * default); the open Initiative never changes that list.
+ * The Initiatives list first, then every thread outside the Initiatives under
+ * its own header, grouped and sorted by this client's choices (no grouping,
+ * most recent first by default); the open Initiative never changes that list.
  */
-function ThreadListContent({
-  view,
-  ...props
-}: PluginThreadListProps & { view: ClientState["mode"] }) {
+function ThreadsList(props: PluginThreadListProps) {
   const { status, threads: rawThreads, projects } =
     experimental_useSidebarThreads();
   const hostThreads = useStableArray(rawThreads);
   const state = useClientState();
-  const initiativesView = view === "initiatives";
-  const listing: ThreadListing = initiativesView
-    ? state.initiativesListing
-    : {
-        groupBy: state.groupBy,
-        sortBy: state.sortBy,
-        sortDirection: state.sortDirection,
-      };
+  const { listing } = state;
   const [error, setError] = useState<string | null>(null);
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
@@ -349,38 +319,15 @@ function ThreadListContent({
     [threads],
   );
   const initiativeIds = useInitiativeThreadIds(threadKey);
-  const spaces = useSpaces();
-  const library = useLibrary();
   const snoozes = useSnooze();
   const snoozePresets = useSnoozePresets();
   const snoozeRpc = useRpc<typeof snoozeContract>();
-  const scope = useMemo(
-    () => resolveScope(spaces.catalog, state.spaceId),
-    [spaces.catalog, state.spaceId],
-  );
-  const scopeKey =
-    scope.kind === "space" ? `space:${scope.space.id}` : scope.kind;
-  // Space and project management lives on the Spaces page.
-  const navigate = useBbNavigate();
-  const openSpacesPage = (subPath: string) =>
-    navigate.toPluginPanel(SPACES_PANEL_PATH, { subPath });
-  const openManage = () =>
-    openSpacesPage(
-      scope.kind === "space"
-        ? scope.space.id
-        : spaces.catalog.spaces.length
-          ? ""
-          : ALL_PROJECTS_SUBPATH,
-    );
   const [projectEdit, setProjectEdit] = useState<{
     kind: "rename" | "remove";
     id: string;
   } | null>(null);
   const projectRpc = useRpc<typeof projectContract>();
-  // The library holds active threads only; archives never join it.
-  const archives = useArchives(
-    state.showArchives && scope.kind !== "library",
-  );
+  const archives = useArchives(state.showArchives);
   // Archived rows (when loaded) supply parent links the active list lacks;
   // live rows come last so they win.
   const initiativeHidden = useMemo(
@@ -395,17 +342,13 @@ function ThreadListContent({
     () =>
       state.showArchives
         ? archives.threads
-            .filter(
-              (thread) =>
-                !initiativeHidden.has(thread.id) &&
-                inScope(scope, thread.projectId),
-            )
+            .filter((thread) => !initiativeHidden.has(thread.id))
             .map((thread) => ({
               thread,
               status: "done" as const,
             }))
         : [],
-    [state.showArchives, archives.threads, scope, initiativeHidden],
+    [state.showArchives, archives.threads, initiativeHidden],
   );
   // Branch-PR eligibility for every listed thread in one bulk call; archived
   // rows get the same chip when the archive list is open.
@@ -576,16 +519,10 @@ function ThreadListContent({
     ]),
   );
   const knownDrafts = useMemo(() => new Set(state.drafts), [state.drafts]);
-  // Saved threads and every descendant of a member stay out of the active
-  // view; the library scope inverts the same set to list saved families.
-  const saved = useMemo(
-    () => savedThreadIds(threads, new Set(library.doc.ids)),
-    [threads, library.doc],
-  );
-  // A sleeping snooze hides the thread and its descendants, like a save; a
-  // woke one keeps the thread in Needs Attention until it is opened. The 60 s
-  // tick only matters while entries exist, so an empty document does not
-  // rebuild the trees below on every tick.
+  // A sleeping snooze hides the thread and its descendants; a woke one keeps
+  // the thread in Needs Attention until it is opened. The 60 s tick only
+  // matters while entries exist, so an empty document does not rebuild the
+  // trees below on every tick.
   const snoozeTick = snoozes.doc.entries.length ? now : 0;
   const { sleeping, wokeIds } = useMemo(() => {
     const sleeping = new Map<string, SnoozeEntry>();
@@ -597,17 +534,13 @@ function ThreadListContent({
     return { sleeping, wokeIds };
   }, [snoozes.doc, snoozeTick]);
   const snoozedIds = useMemo(
-    () => savedThreadIds(threads, new Set(sleeping.keys())),
+    () => familyMemberIds(threads, new Set(sleeping.keys())),
     [threads, sleeping],
   );
   const inView = useCallback(
     (thread: (typeof threads)[number]) =>
-      thread.isArchived || initiativeHidden.has(thread.id)
-        ? false
-        : scope.kind === "library"
-          ? saved.has(thread.id)
-          : !saved.has(thread.id) && inScope(scope, thread.projectId),
-    [scope, saved, initiativeHidden],
+      !thread.isArchived && !initiativeHidden.has(thread.id),
+    [initiativeHidden],
   );
   const withStatus = useCallback(
     (thread: (typeof threads)[number]) => ({
@@ -620,9 +553,8 @@ function ThreadListContent({
     }),
     [knownDrafts, wokeIds],
   );
-  // Scope membership applies before pins and families: a pinned thread or a
-  // descendant outside the scope stays hidden, and an inside child whose
-  // parent is outside becomes a root. Titles stay unfiltered for parent labels.
+  // Archived and Initiative threads leave before pins and families; titles
+  // stay unfiltered for parent labels.
   const available = useMemo(
     () =>
       threads
@@ -630,7 +562,7 @@ function ThreadListContent({
         .map(withStatus),
     [threads, inView, snoozedIds, withStatus],
   );
-  // Snoozed families keep their scope and sort by wake time, soonest first.
+  // Snoozed families sort by wake time, soonest first.
   const snoozed = useMemo(
     () =>
       buildThreadTree(
@@ -676,17 +608,15 @@ function ThreadListContent({
   // threads and new drafts navigable until project metadata is available.
   const displayProjects = useMemo(() => {
     const display = new Map(
-      projects
-        .filter((project) => inScope(scope, project.id))
-        .map((project) => [
-          project.id,
-          {
-            id: project.id,
-            name: projectLabel(project),
-            isPersonal: project.isPersonal,
-            known: true,
-          },
-        ]),
+      projects.map((project) => [
+        project.id,
+        {
+          id: project.id,
+          name: projectLabel(project),
+          isPersonal: project.isPersonal,
+          known: true,
+        },
+      ]),
     );
     for (const { thread } of visible) {
       if (!display.has(thread.projectId)) {
@@ -701,11 +631,7 @@ function ThreadListContent({
     for (const key of knownDrafts) {
       if (!key.startsWith("new:")) continue;
       const projectId = key.slice(4);
-      if (
-        projectId &&
-        inScope(scope, projectId) &&
-        !display.has(projectId)
-      ) {
+      if (projectId && !display.has(projectId)) {
         display.set(projectId, {
           id: projectId,
           name: "Unknown project",
@@ -715,17 +641,15 @@ function ThreadListContent({
       }
     }
     return display;
-  }, [projects, scope, visible, knownDrafts]);
+  }, [projects, visible, knownDrafts]);
   const newDrafts = useMemo(
     () =>
-      scope.kind === "library"
-        ? []
-        : [...displayProjects.values()].filter(
-            (project) =>
-              knownDrafts.has(`new:${project.id}`) &&
-              !state.hidden.includes("draft"),
-          ),
-    [scope.kind, displayProjects, knownDrafts, state.hidden],
+      [...displayProjects.values()].filter(
+        (project) =>
+          knownDrafts.has(`new:${project.id}`) &&
+          !state.hidden.includes("draft"),
+      ),
+    [displayProjects, knownDrafts, state.hidden],
   );
   const families = useMemo(
     () =>
@@ -762,59 +686,9 @@ function ThreadListContent({
     actions.openNewThread({ projectId: id, focusPrompt: true });
     props.onNavigate();
   };
-  const scopeProjects = projects
-    .map((project) => ({ id: project.id, name: projectLabel(project) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const selectAll = () =>
-    updateState((current) => ({ ...current, spaceId: null }));
-  const selectSpace = (spaceId: string) =>
-    updateState((current) => ({ ...current, spaceId }));
-  const selectLibrary = () =>
-    updateState((current) => ({ ...current, spaceId: LIBRARY_SCOPE_ID }));
   const removeProject = async (projectId: string) => {
     await projectRpc.call("deleteProject", { projectId });
-    if (
-      spaces.catalog.spaces.some((space) =>
-        space.projectIds.includes(projectId),
-      )
-    )
-      await spaces.save((list) =>
-        list.map((space) => ({
-          ...space,
-          projectIds: space.projectIds.filter((id) => id !== projectId),
-        })),
-      );
   };
-  const activeThread = threads.find(
-    (thread) => thread.id === props.activeThreadId,
-  );
-  const activeOutside =
-    scope.kind === "library"
-      ? activeThread !== undefined && !saved.has(activeThread.id)
-      : scope.kind === "space" &&
-        activeThread !== undefined &&
-        !inScope(scope, activeThread.projectId);
-  // A saved family asking for input or holding an unread reply marks the
-  // Library scope entry without leaving the library.
-  let librarySignal: "attention" | "unread" | null = null;
-  for (const thread of threads) {
-    if (thread.isArchived || !saved.has(thread.id)) continue;
-    const status = statusOf(thread, knownDrafts.has(`thread:${thread.id}`));
-    if (status === "attention") {
-      librarySignal = "attention";
-      break;
-    }
-    if (status === "unread") librarySignal = "unread";
-  }
-  const spaceMissing =
-    state.spaceId !== null &&
-    state.spaceId !== LIBRARY_SCOPE_ID &&
-    scope.kind !== "space" &&
-    spaces.status === "ready";
-  const scopePending =
-    scope.kind === "library"
-      ? library.status === "loading"
-      : state.spaceId !== null && spaces.status === "loading";
   // Rows under a project header omit the project name, which would repeat it.
   const makeRow = (showProject: boolean, singleLine = false) => {
     const row = (
@@ -839,14 +713,6 @@ function ThreadListContent({
           thread.parentThreadId ? titles.get(thread.parentThreadId) : undefined
         }
         active={props.activeThreadId === thread.id}
-        libraryAction={
-          library.memberIds.has(thread.id) &&
-          !(thread.parentThreadId && saved.has(thread.parentThreadId))
-            ? "remove"
-            : scope.kind === "library"
-              ? null
-              : "save"
-        }
         nesting={{
           candidates: nestCandidatesFor(thread.id),
           onSetParent: (parentThreadId) =>
@@ -913,17 +779,6 @@ function ThreadListContent({
       thread.projectId,
       (threadCounts.get(thread.projectId) ?? 0) + 1,
     );
-  const toggleSpace = (spaceId: string, projectId: string) =>
-    spaces
-      .save((list) =>
-        list.map((space) =>
-          space.id === spaceId
-            ? { ...space, projectIds: toggleValue(space.projectIds, projectId) }
-            : space,
-        ),
-      )
-      .catch(report);
-  const scrollClass = "min-h-0 flex-1 overflow-y-auto";
   // No grouping: one list, newest drafts first.
   const recentRoots = (
     <ThreadRoots
@@ -940,29 +795,34 @@ function ThreadListContent({
   const threadSection = (
     <DndContext {...dnd.dndContextProps}>
       <ThreadDndContext.Provider value={status === "ready" ? dnd.state : null}>
-        {initiativesView && (
-          <div className="mt-4 px-2">
-            <SectionHeader
-              title={listingTitle(listing.groupBy)}
-              trailing={<ListingMenu />}
-            />
-          </div>
-        )}
+        <div className="mt-4 px-2">
+          <SectionHeader
+            title={listingTitle(listing.groupBy)}
+            trailing={
+              <>
+                <ListingMenu />
+                <button
+                  type="button"
+                  aria-label="New thread"
+                  title="New thread"
+                  onClick={() => openNew(props.activeProjectId || undefined)}
+                  className={sectionActionClass}
+                >
+                  <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
+                </button>
+              </>
+            }
+          />
+        </div>
         <div
-          // Remounting on a scope change resets every Show more limit.
-          key={scopeKey}
           data-activity-thread-groups=""
           onClickCapture={dnd.onClickCapture}
           onKeyDown={dnd.onEscape}
-          className={`px-2 pb-3 ${props.isCompactViewport || initiativesView ? "" : scrollClass}`}
+          className="px-2 pb-3"
         >
-          {status === "loading" || scopePending || initiativeIds === null ? (
+          {status === "loading" || initiativeIds === null ? (
             <p role="status" className="p-2 text-sm text-muted-foreground">
-              {scopePending
-                ? scope.kind === "library"
-                  ? "Loading the library…"
-                  : "Loading spaces…"
-                : "Loading threads…"}
+              Loading threads…
             </p>
           ) : status === "error" ? (
             // BB 0.45 no longer passes `Original` to thread lists, so the
@@ -992,7 +852,7 @@ function ThreadListContent({
               )}
               {state.hidden.length === STATUSES.length && (
                 <p className="p-2 text-xs text-muted-foreground">
-                  All statuses are hidden. Use Threads display options to show
+                  All statuses are hidden. Use the thread list options to show
                   them.
                 </p>
               )}
@@ -1097,14 +957,9 @@ function ThreadListContent({
                                 projectId={project.id}
                                 projectName={project.name}
                                 isPersonal={project.isPersonal}
-                                spaces={spaces.catalog.spaces}
-                                onToggleSpace={(spaceId) =>
-                                  toggleSpace(spaceId, project.id)
-                                }
                                 onAction={(action) => {
                                   if (action === "new-thread")
                                     openNew(project.id);
-                                  else if (action === "manage") openManage();
                                   else
                                     setProjectEdit({
                                       kind: action,
@@ -1201,24 +1056,7 @@ function ThreadListContent({
                 !pinned.length &&
                 !newDrafts.length && (
                   <p className="p-2 text-xs text-muted-foreground">
-                    {scope.kind === "space" && scope.projectIds.size === 0 ? (
-                      <>
-                        No projects in this space.{" "}
-                        <button
-                          type="button"
-                          className="underline"
-                          onClick={openManage}
-                        >
-                          Choose projects
-                        </button>
-                      </>
-                    ) : scope.kind === "library" ? (
-                      "No saved threads. Save one from a thread's actions to keep it here."
-                    ) : scope.kind !== "all" ? (
-                      "No matching threads in this space."
-                    ) : (
-                      "No matching threads."
-                    )}
+                    No matching threads.
                   </p>
                 )}
             </>
@@ -1246,61 +1084,7 @@ function ThreadListContent({
         </style>
       )}
       <ProjectHueStyle />
-      <div className="shrink-0 px-2 pt-2">
-        <div className="flex items-center gap-1">
-          <ModeToggle />
-          <ScopeMenu
-            scope={scope}
-            catalog={spaces.catalog}
-            librarySignal={librarySignal}
-            onSelectAll={selectAll}
-            onSelectSpace={selectSpace}
-            onSelectLibrary={selectLibrary}
-            onManage={openManage}
-          />
-          {/* The Initiatives view keeps these options on its list's header. */}
-          {!initiativesView && <DisplayMenu />}
-          <NewThreadButton
-            scope={scope}
-            activeProjectId={props.activeProjectId || null}
-            projects={scopeProjects}
-            onOpen={openNew}
-          />
-        </div>
-        {spaceMissing && (
-          <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
-            This space no longer exists. Showing all projects.
-            <button className="ml-2 underline" onClick={selectAll}>
-              Dismiss
-            </button>
-          </p>
-        )}
-        {spaces.status === "error" &&
-          state.spaceId !== null &&
-          scope.kind !== "library" && (
-            <div role="alert" className="mt-2 text-xs text-destructive">
-              Cannot load spaces. Showing all projects.
-              <button className="ml-2 underline" onClick={spaces.refresh}>
-                Retry
-              </button>
-            </div>
-          )}
-        {library.status === "error" && (
-          <div role="alert" className="mt-2 text-xs text-destructive">
-            Cannot load the library. Saved threads stay in the active list.
-            <button className="ml-2 underline" onClick={library.refresh}>
-              Retry
-            </button>
-          </div>
-        )}
-        {activeOutside && (
-          <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
-            The current thread is outside this scope.
-            <button className="ml-2 underline" onClick={selectAll}>
-              Show all projects
-            </button>
-          </p>
-        )}
+      <div className="shrink-0 px-2">
         {connection !== "connected" && (
           <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
             Reconnecting… Statuses can be out of date.
@@ -1323,35 +1107,26 @@ function ThreadListContent({
           </div>
         )}
       </div>
-      {initiativesView ? (
-        <div
-          data-initiatives-view=""
-          className={props.isCompactViewport ? "" : scrollClass}
-        >
-          <div className="px-2">
-            <InitiativesSection
-              activeThreadId={props.activeThreadId}
-              isCompactViewport={props.isCompactViewport}
-              onNavigate={props.onNavigate}
-            />
-          </div>
-          {threadSection}
+      <div
+        data-sidebar-view=""
+        className={
+          props.isCompactViewport ? "" : "min-h-0 flex-1 overflow-y-auto"
+        }
+      >
+        <div className="px-2">
+          <InitiativesSection
+            activeThreadId={props.activeThreadId}
+            activeProjectId={props.activeProjectId || null}
+            onNavigate={props.onNavigate}
+          />
         </div>
-      ) : (
-        threadSection
-      )}
+        {threadSection}
+      </div>
     </div>
   );
 }
 
 export default definePluginApp((app) => {
-  app.slots.navPanel({
-    id: "spaces",
-    title: "Spaces",
-    icon: "Layers",
-    path: SPACES_PANEL_PATH,
-    component: SpacesPage,
-  });
   app.slots.settingsSection({
     id: "snooze",
     title: "Snooze presets",
@@ -1361,7 +1136,7 @@ export default definePluginApp((app) => {
     id: "sidebar",
     title: "Threads",
     description:
-      "Threads grouped by status: Needs Attention, Unread, Working, Draft, Done.",
+      "Initiatives first, then every other thread, recent first or grouped by status or project.",
     component: ThreadsList,
   });
   app.composer.customize({

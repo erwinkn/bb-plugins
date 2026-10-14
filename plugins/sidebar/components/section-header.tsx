@@ -5,7 +5,7 @@ export const sectionActionClass =
   "relative flex size-4 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none before:absolute before:-inset-1.5 before:content-[''] hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground";
 
 /**
- * The muted title over a section of the Initiatives view (Initiatives, then
+ * The muted title over a section of the sidebar (Initiatives, then
  * the thread list) with its one action on the right.
  */
 export function SectionHeader({

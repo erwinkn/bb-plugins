@@ -108,3 +108,28 @@ export function familyStatus(node: ThreadNode): Status {
     return STATUSES.indexOf(next) < STATUSES.indexOf(highest) ? next : highest;
   }, node.status);
 }
+
+// A thread belongs to a family when it is a member or any ancestor is: a
+// snooze hides children created after it too. Missing or archived ancestors
+// end the walk.
+export function familyMemberIds(
+  threads: readonly PluginSidebarThread[],
+  memberIds: ReadonlySet<string>,
+): Set<string> {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const memo = new Map<string, boolean>();
+  const visit = (thread: PluginSidebarThread): boolean => {
+    const cached = memo.get(thread.id);
+    if (cached !== undefined) return cached;
+    memo.set(thread.id, false); // Cycle guard.
+    const parent = thread.parentThreadId
+      ? byId.get(thread.parentThreadId)
+      : undefined;
+    const member = memberIds.has(thread.id) || (parent ? visit(parent) : false);
+    memo.set(thread.id, member);
+    return member;
+  };
+  const members = new Set<string>();
+  for (const thread of threads) if (visit(thread)) members.add(thread.id);
+  return members;
+}

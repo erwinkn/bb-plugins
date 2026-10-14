@@ -14,11 +14,17 @@ const hostPreferences = {
   "sidebar.threadListProvider": entry("sidebar/sidebar"),
 };
 
-function host(set = async (args: { key: string; value: unknown; expectedRevision: number }) => ({
-  key: args.key,
-  revision: args.expectedRevision + 1,
-  value: args.value,
-})) {
+function host(
+  set = async (args: {
+    key: string;
+    value: unknown;
+    expectedRevision: number;
+  }) => ({
+    key: args.key,
+    revision: args.expectedRevision + 1,
+    value: args.value,
+  }),
+) {
   return createFakePluginHost({
     sdk: {
       system: {
@@ -32,16 +38,13 @@ function host(set = async (args: { key: string; value: unknown; expectedRevision
 }
 
 describe("synced UI preferences API", () => {
-  it("reads only the represented keys", async () => {
+  it("reads only the collapsed Pinned and project keys", async () => {
     const h = host();
     plugin(h.bb);
     try {
       await expect(
         h.harness.behavior.callRpc("uiPreferences.read", null),
       ).resolves.toEqual({
-        "sidebar.organizationMode": entry("project"),
-        "sidebar.chronologicalSort": entry("alpha"),
-        "sidebar.sortDirection": entry("default"),
         "sidebar.collapsedSections": entry(["threads"]),
         "sidebar.collapsedProjects": entry(["project-2"]),
       });
@@ -101,6 +104,13 @@ describe("synced UI preferences API", () => {
           expectedRevision: 1,
         }),
       ).rejects.toThrow();
+      await expect(
+        h.harness.behavior.callRpc("uiPreferences.write", {
+          key: "sidebar.sortDirection",
+          value: "ascending",
+          expectedRevision: 1,
+        }),
+      ).rejects.toThrow();
       expect(
         h.harness.inspection.sdk.callsTo("system.uiPreferences.set"),
       ).toEqual([]);
@@ -117,8 +127,8 @@ describe("synced UI preferences API", () => {
     try {
       await expect(
         h.harness.behavior.callRpc("uiPreferences.write", {
-          key: "sidebar.sortDirection",
-          value: "ascending",
+          key: "sidebar.collapsedSections",
+          value: ["pinned"],
           expectedRevision: 0,
         }),
       ).rejects.toThrow("Revision conflict");

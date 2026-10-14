@@ -6,11 +6,7 @@ import {
   type SortDirection,
 } from "./status";
 
-/**
- * Grouping and order of the threads under the Initiatives list. Local to this
- * client and separate from the Threads view's, which follows BB's synced
- * sidebar preferences.
- */
+/** Grouping and order of the threads under the Initiatives list, local to this client. */
 export interface ThreadListing {
   groupBy: "none" | "status" | "project";
   sortBy: SortBy;
@@ -18,47 +14,33 @@ export interface ThreadListing {
 }
 
 export interface ClientState {
-  mode: "threads" | "initiatives";
-  groupBy: "status" | "project";
-  initiativesListing: ThreadListing;
-  sortBy: SortBy;
-  sortDirection: SortDirection;
+  listing: ThreadListing;
   hidden: Status[];
   showArchives: boolean;
   showSnoozed: boolean;
   collapsed: string[];
   drafts: string[];
   expandedArchives: string[];
-  /** Selected saved space; an id missing from the catalog means All projects. */
-  spaceId: string | null;
 }
-/** Local-storage key of this client's state. Other plugins may write `spaceId` here. */
-export const CLIENT_STATE_KEY = "bb-plugin-sidebar:v1";
-const KEY = CLIENT_STATE_KEY;
 /**
- * Same-window change signal. A `storage` event only fires in other windows, so
- * a plugin that writes this state in the same page dispatches this event after
- * the write; the store re-reads storage and re-renders.
+ * Local-storage key of this client's state. Fields of removed features (the
+ * view switch's `mode`, the Threads view's grouping and order, `spaceId`)
+ * may linger in it; parsing drops them.
  */
-export const CLIENT_STATE_EVENT = "bb-plugin-sidebar:state";
+const KEY = "bb-plugin-sidebar:v1";
 export const DEFAULT_LISTING: ThreadListing = {
   groupBy: "none",
   sortBy: "updated",
   sortDirection: "descending",
 };
 const DEFAULT: ClientState = {
-  mode: "threads",
-  groupBy: "status",
-  initiativesListing: DEFAULT_LISTING,
-  sortBy: "updated",
-  sortDirection: "descending",
+  listing: DEFAULT_LISTING,
   hidden: [],
   showArchives: false,
   showSnoozed: true,
   collapsed: [],
   drafts: [],
   expandedArchives: [],
-  spaceId: null,
 };
 const strings = (value: unknown): string[] =>
   Array.isArray(value)
@@ -84,12 +66,8 @@ export function parseState(raw: string | null): ClientState {
     const value = JSON.parse(raw ?? "null");
     if (!value || typeof value !== "object") return DEFAULT;
     return {
-      mode: value.mode === "initiatives" ? "initiatives" : "threads",
-      groupBy: value.groupBy === "project" ? "project" : "status",
-      initiativesListing: parseListing(value.initiativesListing),
-      sortBy: value.sortBy === "created" ? "created" : "updated",
-      sortDirection:
-        value.sortDirection === "ascending" ? "ascending" : "descending",
+      // Stored as `initiativesListing` while it belonged to one of two views.
+      listing: parseListing(value.listing ?? value.initiativesListing),
       hidden: strings(value.hidden).filter((s): s is Status =>
         STATUSES.includes(s as Status),
       ),
@@ -100,10 +78,6 @@ export function parseState(raw: string | null): ClientState {
       drafts: strings(value.drafts).filter(
         (key) => key.startsWith("thread:") || key.startsWith("new:"),
       ),
-      spaceId:
-        typeof value.spaceId === "string" && value.spaceId
-          ? value.spaceId
-          : null,
     };
   } catch {
     return DEFAULT;
@@ -129,23 +103,12 @@ function onStorage(event: StorageEvent) {
     emit();
   }
 }
-function onExternalChange() {
-  if (pendingWrite) return;
-  state = readState(state);
-  emit();
-}
 function subscribe(listener: () => void) {
-  if (!listeners.size) {
-    window.addEventListener("storage", onStorage);
-    window.addEventListener(CLIENT_STATE_EVENT, onExternalChange);
-  }
+  if (!listeners.size) window.addEventListener("storage", onStorage);
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
-    if (!listeners.size) {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener(CLIENT_STATE_EVENT, onExternalChange);
-    }
+    if (!listeners.size) window.removeEventListener("storage", onStorage);
   };
 }
 export function useClientState() {

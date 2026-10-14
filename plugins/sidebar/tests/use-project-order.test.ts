@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { useProjectOrder } from "../lib/use-project-order";
+import { moveItem, useProjectOrder } from "../lib/use-project-order";
 import type { ProjectOrderDoc } from "../lib/project-order-schema";
 
 const doc = (revision: number, order: string[]): ProjectOrderDoc => ({
@@ -192,5 +192,15 @@ describe("useProjectOrder", () => {
     expect(h.result.current.order).toEqual(["new", "a", "b"]);
     expect(h.result.current.error).toBe("offline");
     h.unmount();
+  });
+});
+
+describe("moveItem", () => {
+  it("moves an item to a new index and ignores out-of-range moves", () => {
+    expect(moveItem(["a", "b", "c"], 0, 2)).toEqual(["b", "c", "a"]);
+    expect(moveItem(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+    expect(moveItem(["a", "b", "c"], 1, 1)).toEqual(["a", "b", "c"]);
+    expect(moveItem(["a", "b", "c"], 1, 3)).toEqual(["a", "b", "c"]);
+    expect(moveItem(["a", "b", "c"], -1, 0)).toEqual(["a", "b", "c"]);
   });
 });

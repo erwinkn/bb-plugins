@@ -48,9 +48,7 @@ function server(start: SnoozeDoc = initial) {
   let doc = start;
   const bump = (entries: SnoozeEntry[]) => (doc = { revision: doc.revision + 1, entries });
   const rpc = {
-    getSpaces: async () => ({ revision: 0, spaces: [] }),
     listArchived: async () => [],
-    getLibrary: async () => ({ revision: 0, ids: [] }),
     getSnoozes: async () => doc,
     getSnoozePresets: async () => ({ revision: 0, presets: DEFAULT_SNOOZE_PRESETS }),
     snooze: vi.fn(async (input: unknown) => {
@@ -113,7 +111,11 @@ let finePointer = false;
 const originalMatchMedia = window.matchMedia;
 beforeEach(() => {
   window.localStorage.clear();
-  updateState(() => parseState(null));
+  // Most tests read the status groups, where sleeping threads leave Done.
+  updateState(() => {
+    const state = parseState(null);
+    return { ...state, listing: { ...state.listing, groupBy: "status" } };
+  });
   vi.clearAllMocks();
   finePointer = false;
   window.matchMedia = ((query: string) =>

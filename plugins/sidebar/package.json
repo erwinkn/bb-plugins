@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Sidebar",
-    "description": "Threads grouped by status, with pending input separate from unread replies.",
+    "description": "Initiatives above your threads; each thread shows whether it needs you, is working, or has an unread reply.",
     "branding": {
       "icon": "Activity"
     },

@@ -32,8 +32,6 @@ const branchPullRequestEligibility = vi.fn(async (input: unknown) => {
   return { eligible };
 });
 const rpc = {
-  getSpaces: async () => ({ revision: 0, spaces: [] }),
-  getLibrary: async () => ({ revision: 0, ids: [] }),
   getSnoozes: async () => ({ revision: 0, entries: [] }),
   getSnoozePresets: async () => ({ revision: 0, presets: [] }),
   branchPullRequestEligibility,

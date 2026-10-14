@@ -52,9 +52,8 @@ function writeCache(key: string, doc: unknown) {
   }
 }
 
-// One revisioned KV document served over RPC and pushed over realtime, the
-// same shape as the library hook. Callers pass a module-level source so the
-// effect dependencies stay stable.
+// One revisioned KV document served over RPC and pushed over realtime.
+// Callers pass a module-level source so the effect dependencies stay stable.
 function useSyncedDoc<Doc extends { revision: number }>(
   source: SyncedDocSource<Doc>,
 ): SyncedDocState<Doc> {

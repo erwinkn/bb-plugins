@@ -76,16 +76,16 @@ export function orderingLabel(listing: ThreadListing): string {
 
 /**
  * The options of the thread list under the Initiatives list: Grouping and
- * Ordering submenus (each naming its current value), then the same Show
- * options as the Threads view. Choices stay on this client.
+ * Ordering submenus (each naming its current value), then which statuses,
+ * Snoozed and Archived show. Choices stay on this client.
  */
 export function ListingMenu() {
   const state = useClientState();
-  const listing = state.initiativesListing;
+  const listing = state.listing;
   const set = (patch: Partial<ThreadListing>) =>
     updateState((current) => ({
       ...current,
-      initiativesListing: { ...current.initiativesListing, ...patch },
+      listing: { ...current.listing, ...patch },
     }));
   const subTriggerClass = `${menuItemClass} data-[state=open]:bg-accent`;
   return (
@@ -207,105 +207,7 @@ export function ListingMenu() {
   );
 }
 
-export function DisplayMenu() {
-  const state = useClientState();
-  return (
-    <Menu.Root>
-      <Menu.Trigger
-        aria-label="Threads display options"
-        title="Group and sort threads"
-        className="rounded p-1.5 text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 20 20"
-          className="size-4"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <path d="M3 5h14M3 10h14M3 15h14" />
-          <path d="M7 3v4m6 1v4m-7 1v4" strokeWidth="3" />
-        </svg>
-      </Menu.Trigger>
-      <MenuContent>
-        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
-          Group by
-        </Menu.Label>
-        <Menu.RadioGroup
-          value={state.groupBy}
-          onValueChange={(groupBy) =>
-            updateState((current) => ({
-              ...current,
-              groupBy: groupBy === "project" ? "project" : "status",
-            }))
-          }
-        >
-          {(["status", "project"] as const).map((value) => (
-            <Menu.RadioItem key={value} value={value} className={menuItemClass}>
-              <span className="flex-1">
-                {value === "status" ? "Status" : "Project"}
-              </span>
-              <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
-            </Menu.RadioItem>
-          ))}
-        </Menu.RadioGroup>
-        <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
-          Sort by
-        </Menu.Label>
-        <Menu.RadioGroup
-          value={state.sortBy}
-          onValueChange={(sortBy) =>
-            updateState((current) => ({
-              ...current,
-              sortBy: sortBy === "created" ? "created" : "updated",
-            }))
-          }
-        >
-          {(["updated", "created"] as const).map((value) => (
-            <Menu.RadioItem key={value} value={value} className={menuItemClass}>
-              <span className="flex-1">
-                {value === "created" ? "Date created" : "Date updated"}
-              </span>
-              <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
-            </Menu.RadioItem>
-          ))}
-        </Menu.RadioGroup>
-        <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
-          Order
-        </Menu.Label>
-        <Menu.RadioGroup
-          value={state.sortDirection}
-          onValueChange={(sortDirection) =>
-            updateState((current) => ({
-              ...current,
-              sortDirection:
-                sortDirection === "ascending" ? "ascending" : "descending",
-            }))
-          }
-        >
-          {(["descending", "ascending"] as const).map((value) => (
-            <Menu.RadioItem key={value} value={value} className={menuItemClass}>
-              <span className="flex-1">
-                {value === "ascending" ? "Oldest first" : "Newest first"}
-              </span>
-              <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
-            </Menu.RadioItem>
-          ))}
-        </Menu.RadioGroup>
-        <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
-          Show statuses
-        </Menu.Label>
-        <ShowItems />
-      </MenuContent>
-    </Menu.Root>
-  );
-}
-
-/** Status, Snoozed and Archived visibility, shared by both views' menus. */
+/** Status, Snoozed and Archived visibility. */
 function ShowItems() {
   const state = useClientState();
   return (
