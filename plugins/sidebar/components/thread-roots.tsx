@@ -8,6 +8,7 @@ export function ThreadRoots({
   pageSize,
   nodes,
   drafts,
+  draftsFirst = false,
   activeThreadId,
   renderRow,
   renderDraft,
@@ -16,6 +17,11 @@ export function ThreadRoots({
   pageSize: number;
   nodes: ThreadNode[];
   drafts: DraftProject[];
+  /**
+   * New-thread drafts lead the list and stay outside the limit, as the newest
+   * entries of an ungrouped list; otherwise they follow the threads within it.
+   */
+  draftsFirst?: boolean;
   activeThreadId: string | null;
   renderRow: (node: ThreadNode) => ReactNode;
   renderDraft: (project: DraftProject) => ReactNode;
@@ -29,17 +35,22 @@ export function ThreadRoots({
   const shown = nodes.filter(
     (_, index) => index < limit || index === activeIndex,
   );
-  const shownDrafts = drafts.slice(0, Math.max(0, limit - nodes.length));
+  const shownDrafts = draftsFirst
+    ? drafts
+    : drafts.slice(0, Math.max(0, limit - nodes.length));
   const remaining =
     nodes.length + drafts.length - shown.length - shownDrafts.length;
-  const expanded = limit > pageSize && nodes.length + drafts.length > pageSize;
+  const expanded =
+    limit > pageSize &&
+    nodes.length + (draftsFirst ? 0 : drafts.length) > pageSize;
   const collapse = () => setLimit(pageSize);
   const buttonClass =
     "flex min-h-8 items-center gap-2 rounded px-2 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground active:bg-accent focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-11";
   return (
     <ul id={id} aria-label={`${label} threads`} className="m-0 list-none p-0">
+      {draftsFirst && shownDrafts.map(renderDraft)}
       {shown.map(renderRow)}
-      {shownDrafts.map(renderDraft)}
+      {!draftsFirst && shownDrafts.map(renderDraft)}
       {(remaining > 0 || expanded) && (
         <li className="flex flex-wrap items-center gap-x-1">
           <button

@@ -1,6 +1,5 @@
 import { DndContext, DragOverlay, useDroppable } from "@dnd-kit/core";
-import { ModeToggle, ProjectMode } from "./components/project-mode";
-import { AdvisorEntry } from "./components/advisor-entry";
+import { InitiativesSection, ModeToggle } from "./components/project-mode";
 import {
   useCallback,
   useEffect,
@@ -24,7 +23,13 @@ import type { projectContract } from "./lib/project-contract";
 import type { nestingContract } from "./lib/nesting-contract";
 import { projectLabel } from "./lib/project-schema";
 import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
-import { toggleValue, updateState, useClientState } from "./lib/client-state";
+import {
+  toggleValue,
+  updateState,
+  useClientState,
+  type ClientState,
+  type ThreadListing,
+} from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { useLibrary } from "./lib/use-library";
 import { useSnooze, useSnoozePresets } from "./lib/use-snooze";
@@ -36,7 +41,8 @@ import { useUiPreferences } from "./lib/use-ui-preferences";
 import { useBranchPullRequestEligibility } from "./lib/use-branch-pull-request-eligibility";
 import { savedThreadIds } from "./lib/library";
 import { inScope, LIBRARY_SCOPE_ID, resolveScope } from "./lib/spaces";
-import { DisplayMenu } from "./components/menus";
+import { DisplayMenu, ListingMenu } from "./components/menus";
+import { SectionHeader } from "./components/section-header";
 import { ProjectHeaderMenu } from "./components/project-header-menu";
 import {
   ProjectRemoveForm,
@@ -265,18 +271,38 @@ function useStableArray<T>(value: readonly T[]): readonly T[] {
 
 function ThreadsList(props: PluginThreadListProps) {
   const { mode } = useClientState();
-  return mode === "initiatives" ? (
-    <ProjectMode {...props} />
-  ) : (
-    <ThreadListContent {...props} />
-  );
+  // Remounts on a switch, so each view starts with its own Show more limits.
+  return <ThreadListContent key={mode} {...props} view={mode} />;
 }
 
-function ThreadListContent(props: PluginThreadListProps) {
+/** The thread list section's title: what its groups are. */
+function listingTitle(groupBy: ThreadListing["groupBy"]): string {
+  return groupBy === "project" ? "Projects" : "Threads";
+}
+
+/**
+ * Both views. Threads lists every non-Initiative thread, grouped and sorted by
+ * BB's synced sidebar preferences. Initiatives puts the Initiatives list first,
+ * then the same threads under their own header, grouped and sorted by this
+ * client's Initiatives-view choices (no grouping, most recent first by
+ * default); the open Initiative never changes that list.
+ */
+function ThreadListContent({
+  view,
+  ...props
+}: PluginThreadListProps & { view: ClientState["mode"] }) {
   const { status, threads: rawThreads, projects } =
     experimental_useSidebarThreads();
   const hostThreads = useStableArray(rawThreads);
   const state = useClientState();
+  const initiativesView = view === "initiatives";
+  const listing: ThreadListing = initiativesView
+    ? state.initiativesListing
+    : {
+        groupBy: state.groupBy,
+        sortBy: state.sortBy,
+        sortDirection: state.sortDirection,
+      };
   const [error, setError] = useState<string | null>(null);
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
@@ -369,13 +395,17 @@ function ThreadListContent(props: PluginThreadListProps) {
     () =>
       state.showArchives
         ? archives.threads
-            .filter((thread) => inScope(scope, thread.projectId))
+            .filter(
+              (thread) =>
+                !initiativeHidden.has(thread.id) &&
+                inScope(scope, thread.projectId),
+            )
             .map((thread) => ({
               thread,
               status: "done" as const,
             }))
         : [],
-    [state.showArchives, archives.threads, scope],
+    [state.showArchives, archives.threads, scope, initiativeHidden],
   );
   // Branch-PR eligibility for every listed thread in one bulk call; archived
   // rows get the same chip when the archive list is open.
@@ -607,8 +637,8 @@ function ThreadListContent(props: PluginThreadListProps) {
         threads
           .filter((thread) => inView(thread) && snoozedIds.has(thread.id))
           .map(withStatus),
-        state.sortBy,
-        state.sortDirection,
+        listing.sortBy,
+        listing.sortDirection,
       ).sort(
         (a, b) =>
           (sleeping.get(a.thread.id)?.until ?? 0) -
@@ -620,8 +650,8 @@ function ThreadListContent(props: PluginThreadListProps) {
       snoozedIds,
       withStatus,
       sleeping,
-      state.sortBy,
-      state.sortDirection,
+      listing.sortBy,
+      listing.sortDirection,
     ],
   );
   const pinnedIds = useMemo(() => pinnedThreadIds(available), [available]);
@@ -629,10 +659,10 @@ function ThreadListContent(props: PluginThreadListProps) {
     () =>
       buildThreadTree(
         available.filter(({ thread }) => pinnedIds.has(thread.id)),
-        state.sortBy,
-        state.sortDirection,
+        listing.sortBy,
+        listing.sortDirection,
       ),
-    [available, pinnedIds, state.sortBy, state.sortDirection],
+    [available, pinnedIds, listing.sortBy, listing.sortDirection],
   );
   const visible = useMemo(
     () =>
@@ -699,18 +729,18 @@ function ThreadListContent(props: PluginThreadListProps) {
   );
   const families = useMemo(
     () =>
-      buildThreadTree(visible, state.sortBy, state.sortDirection).map(
+      buildThreadTree(visible, listing.sortBy, listing.sortDirection).map(
         (node) => ({
           node,
           status: familyStatus(node),
         }),
       ),
-    [visible, state.sortBy, state.sortDirection],
+    [visible, listing.sortBy, listing.sortDirection],
   );
   // Project grouping builds one tree per project, only in that view.
   const projectTrees = useMemo(() => {
     const trees = new Map<string, ThreadNode[]>();
-    if (state.groupBy !== "project") return trees;
+    if (listing.groupBy !== "project") return trees;
     const byProject = new Map<string, typeof visible>();
     for (const row of visible) {
       const rows = byProject.get(row.thread.projectId);
@@ -720,13 +750,13 @@ function ThreadListContent(props: PluginThreadListProps) {
     for (const [id, rows] of byProject)
       trees.set(
         id,
-        buildThreadTree(rows, state.sortBy, state.sortDirection),
+        buildThreadTree(rows, listing.sortBy, listing.sortDirection),
       );
     return trees;
-  }, [state.groupBy, visible, state.sortBy, state.sortDirection]);
+  }, [listing.groupBy, visible, listing.sortBy, listing.sortDirection]);
   const archivedTree = useMemo(
-    () => buildThreadTree(archived, state.sortBy, state.sortDirection),
-    [archived, state.sortBy, state.sortDirection],
+    () => buildThreadTree(archived, listing.sortBy, listing.sortDirection),
+    [archived, listing.sortBy, listing.sortDirection],
   );
   const openNew = (id?: string) => {
     actions.openNewThread({ projectId: id, focusPrompt: true });
@@ -794,7 +824,7 @@ function ThreadListContent(props: PluginThreadListProps) {
       <ThreadRow
         key={thread.id}
         now={now}
-        sortBy={state.sortBy}
+        sortBy={listing.sortBy}
         thread={thread}
         status={status}
         depth={depth}
@@ -893,6 +923,317 @@ function ThreadListContent(props: PluginThreadListProps) {
         ),
       )
       .catch(report);
+  const scrollClass = "min-h-0 flex-1 overflow-y-auto";
+  // No grouping: one list, newest drafts first.
+  const recentRoots = (
+    <ThreadRoots
+      label="Recent"
+      pageSize={25}
+      nodes={families.map(({ node }) => node)}
+      drafts={newDrafts}
+      draftsFirst
+      activeThreadId={props.activeThreadId}
+      renderRow={(node) => row(node)}
+      renderDraft={draftRow}
+    />
+  );
+  const threadSection = (
+    <DndContext {...dnd.dndContextProps}>
+      <ThreadDndContext.Provider value={status === "ready" ? dnd.state : null}>
+        {initiativesView && (
+          <div className="mt-4 px-2">
+            <SectionHeader
+              title={listingTitle(listing.groupBy)}
+              trailing={<ListingMenu />}
+            />
+          </div>
+        )}
+        <div
+          // Remounting on a scope change resets every Show more limit.
+          key={scopeKey}
+          data-activity-thread-groups=""
+          onClickCapture={dnd.onClickCapture}
+          onKeyDown={dnd.onEscape}
+          className={`px-2 pb-3 ${props.isCompactViewport || initiativesView ? "" : scrollClass}`}
+        >
+          {status === "loading" || scopePending || initiativeIds === null ? (
+            <p role="status" className="p-2 text-sm text-muted-foreground">
+              {scopePending
+                ? scope.kind === "library"
+                  ? "Loading the library…"
+                  : "Loading spaces…"
+                : "Loading threads…"}
+            </p>
+          ) : status === "error" ? (
+            // BB 0.45 no longer passes `Original` to thread lists, so the
+            // error branch stands alone on every version.
+            <div role="alert" className="p-2 text-sm">
+              Cannot load threads.
+            </div>
+          ) : (
+            <>
+              {pinned.length > 0 && (
+                <Group
+                  id="pinned"
+                  title="Pinned"
+                  count={pinned.length}
+                  icon={
+                    <HostIcon
+                      name="Pin"
+                      fallback="Star"
+                      className="size-3.5 text-[var(--bbp-file,var(--timeline-accent))]"
+                    />
+                  }
+                >
+                  <ul aria-label="Pinned threads" className="m-0 list-none p-0">
+                    {pinned.map((entry) => row(entry))}
+                  </ul>
+                </Group>
+              )}
+              {state.hidden.length === STATUSES.length && (
+                <p className="p-2 text-xs text-muted-foreground">
+                  All statuses are hidden. Use Threads display options to show
+                  them.
+                </p>
+              )}
+              {listing.groupBy === "none" ? (
+                pinned.length > 0 ? (
+                  // Under Pinned, a title keeps the rest from reading as pinned.
+                  <Group
+                    id="recent"
+                    title="Recent"
+                    count={families.length + newDrafts.length}
+                  >
+                    {recentRoots}
+                  </Group>
+                ) : (
+                  recentRoots
+                )
+              ) : listing.groupBy === "status"
+                ? STATUSES.filter((s) => !state.hidden.includes(s)).map((s) => {
+                    const rows = families.filter((family) => family.status === s);
+                    const count =
+                      rows.length + (s === "draft" ? newDrafts.length : 0);
+                    if (!count) return null;
+                    return (
+                      <Group
+                        key={s}
+                        id={`status:${s}`}
+                        title={STATUS_LABEL[s]}
+                        count={count}
+                        attention={s === "attention"}
+                        icon={<StatusIcon status={s} size="small" />}
+                      >
+                        <ThreadRoots
+                          label={STATUS_LABEL[s]}
+                          pageSize={s === "done" ? 10 : 5}
+                          nodes={rows.map(({ node }) => node)}
+                          drafts={s === "draft" ? newDrafts : []}
+                          activeThreadId={props.activeThreadId}
+                          renderRow={(node) => row(node)}
+                          renderDraft={draftRow}
+                        />
+                      </Group>
+                    );
+                  })
+                : // No project closes the list, right above Archived.
+                  [...displayProjects.values()]
+                    .sort((a, b) =>
+                      a.isPersonal === b.isPersonal
+                        ? a.name.localeCompare(b.name)
+                        : a.isPersonal
+                          ? 1
+                          : -1,
+                    )
+                    .map((project) => {
+                      const rows = projectTrees.get(project.id) ?? [];
+                      const drafts = newDrafts.filter(
+                        (draft) => draft.id === project.id,
+                      );
+                      return rows.length || drafts.length ? (
+                        <Group
+                          key={project.id}
+                          id={`project:${project.id}`}
+                          title={project.name}
+                          icon={
+                            <ProjectGlyph
+                              name={project.name}
+                              neutral={project.isPersonal}
+                            />
+                          }
+                          trailing={
+                            project.known ? (
+                              <button
+                                type="button"
+                                data-project-new-thread={project.id}
+                                aria-label={`New thread in ${project.name}`}
+                                title="New thread"
+                                // Keep the press away from the header's long press.
+                                onPointerDown={(event) =>
+                                  event.stopPropagation()
+                                }
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openNew(project.id);
+                                }}
+                                // ::before widens the tap target to 28x28
+                                // while the painted box stays 16x16; it
+                                // stops 2px short of the chevron's slot.
+                                className="relative flex size-4 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none before:absolute before:-inset-1.5 before:content-[''] hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                              >
+                                <HostIcon
+                                  name="Plus"
+                                  fallback="FolderPlus"
+                                  className="size-3.5"
+                                />
+                              </button>
+                            ) : undefined
+                          }
+                          wrapHeader={(header) =>
+                            !project.known ? (
+                              header
+                            ) : (
+                              <ProjectHeaderMenu
+                                projectId={project.id}
+                                projectName={project.name}
+                                isPersonal={project.isPersonal}
+                                spaces={spaces.catalog.spaces}
+                                onToggleSpace={(spaceId) =>
+                                  toggleSpace(spaceId, project.id)
+                                }
+                                onAction={(action) => {
+                                  if (action === "new-thread")
+                                    openNew(project.id);
+                                  else if (action === "manage") openManage();
+                                  else
+                                    setProjectEdit({
+                                      kind: action,
+                                      id: project.id,
+                                    });
+                                }}
+                              >
+                                {header}
+                              </ProjectHeaderMenu>
+                            )
+                          }
+                          belowHeader={
+                            projectEdit?.id !==
+                            project.id ? null : projectEdit.kind === "rename" ? (
+                              <ProjectRenameForm
+                                project={project}
+                                onSubmit={async (name) => {
+                                  await projectRpc.call("renameProject", {
+                                    projectId: project.id,
+                                    name,
+                                  });
+                                }}
+                                onClose={() => setProjectEdit(null)}
+                              />
+                            ) : (
+                              <ProjectRemoveForm
+                                project={project}
+                                threadCount={threadCounts.get(project.id) ?? 0}
+                                onSubmit={() => removeProject(project.id)}
+                                onClose={() => setProjectEdit(null)}
+                              />
+                            )
+                          }
+                        >
+                          <ThreadRoots
+                            label={project.name}
+                            pageSize={10}
+                            nodes={rows}
+                            drafts={drafts}
+                            activeThreadId={props.activeThreadId}
+                            renderRow={(node) =>
+                              (project.isPersonal ? personalRow : projectRow)(
+                                node,
+                              )
+                            }
+                            renderDraft={draftRow}
+                          />
+                        </Group>
+                      ) : null;
+                    })}
+              {state.showSnoozed && snoozed.length > 0 && (
+                <Group
+                  id="snoozed"
+                  title="Snoozed"
+                  defaultClosed
+                  dropTarget={false}
+                  count={snoozed.length}
+                  icon={
+                    <HostIcon
+                      name="Clock"
+                      fallback="Circle"
+                      className="size-3.5 text-[var(--subtle-foreground)]"
+                    />
+                  }
+                >
+                  <ul aria-label="Snoozed threads" className="m-0 list-none p-0">
+                    {snoozed.map((entry) => row(entry))}
+                  </ul>
+                </Group>
+              )}
+              {archived.length > 0 && (
+                <Group
+                  id="archive"
+                  title="Archived"
+                  archive
+                  count={archived.length}
+                  icon={<ArchiveIcon />}
+                >
+                  <ThreadRoots
+                    label="Archived"
+                    pageSize={10}
+                    nodes={archivedTree}
+                    drafts={[]}
+                    activeThreadId={props.activeThreadId}
+                    renderRow={(node) => row(node)}
+                    renderDraft={draftRow}
+                  />
+                </Group>
+              )}
+              {state.hidden.length < STATUSES.length &&
+                !archived.length &&
+                (!state.showSnoozed || !snoozed.length) &&
+                !visible.length &&
+                !pinned.length &&
+                !newDrafts.length && (
+                  <p className="p-2 text-xs text-muted-foreground">
+                    {scope.kind === "space" && scope.projectIds.size === 0 ? (
+                      <>
+                        No projects in this space.{" "}
+                        <button
+                          type="button"
+                          className="underline"
+                          onClick={openManage}
+                        >
+                          Choose projects
+                        </button>
+                      </>
+                    ) : scope.kind === "library" ? (
+                      "No saved threads. Save one from a thread's actions to keep it here."
+                    ) : scope.kind !== "all" ? (
+                      "No matching threads in this space."
+                    ) : (
+                      "No matching threads."
+                    )}
+                  </p>
+                )}
+            </>
+          )}
+        </div>
+      </ThreadDndContext.Provider>
+      <DragOverlay dropAnimation={null}>
+        {dnd.activeThreadId && dnd.state.dragMoved ? (
+          <ThreadDragOverlay
+            title={titles.get(dnd.activeThreadId) ?? "Thread"}
+          />
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
   return (
     <div
       data-activity-sidebar=""
@@ -905,7 +1246,6 @@ function ThreadListContent(props: PluginThreadListProps) {
         </style>
       )}
       <ProjectHueStyle />
-      <AdvisorEntry onNavigate={props.onNavigate} />
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <ModeToggle />
@@ -918,7 +1258,8 @@ function ThreadListContent(props: PluginThreadListProps) {
             onSelectLibrary={selectLibrary}
             onManage={openManage}
           />
-          <DisplayMenu />
+          {/* The Initiatives view keeps these options on its list's header. */}
+          {!initiativesView && <DisplayMenu />}
           <NewThreadButton
             scope={scope}
             activeProjectId={props.activeProjectId || null}
@@ -982,280 +1323,24 @@ function ThreadListContent(props: PluginThreadListProps) {
           </div>
         )}
       </div>
-      <DndContext {...dnd.dndContextProps}>
-        <ThreadDndContext.Provider value={status === "ready" ? dnd.state : null}>
-          <div
-            // Remounting on a scope change resets every Show more limit.
-            key={scopeKey}
-            data-activity-thread-groups=""
-            onClickCapture={dnd.onClickCapture}
-            onKeyDown={dnd.onEscape}
-            className={`px-2 pb-3 ${props.isCompactViewport ? "" : "min-h-0 flex-1 overflow-y-auto"}`}
-          >
-            {status === "loading" || scopePending || initiativeIds === null ? (
-              <p role="status" className="p-2 text-sm text-muted-foreground">
-                {scopePending
-                  ? scope.kind === "library"
-                    ? "Loading the library…"
-                    : "Loading spaces…"
-                  : "Loading threads…"}
-              </p>
-            ) : status === "error" ? (
-              // BB 0.45 no longer passes `Original` to thread lists, so the
-              // error branch stands alone on every version.
-              <div role="alert" className="p-2 text-sm">
-                Cannot load threads.
-              </div>
-            ) : (
-              <>
-                {pinned.length > 0 && (
-                  <Group
-                    id="pinned"
-                    title="Pinned"
-                    count={pinned.length}
-                    icon={
-                      <HostIcon
-                        name="Pin"
-                        fallback="Star"
-                        className="size-3.5 text-[var(--bbp-file,var(--timeline-accent))]"
-                      />
-                    }
-                  >
-                    <ul aria-label="Pinned threads" className="m-0 list-none p-0">
-                      {pinned.map((entry) => row(entry))}
-                    </ul>
-                  </Group>
-                )}
-                {state.hidden.length === STATUSES.length && (
-                  <p className="p-2 text-xs text-muted-foreground">
-                    All statuses are hidden. Use Threads display options to show
-                    them.
-                  </p>
-                )}
-                {state.groupBy === "status"
-                  ? STATUSES.filter((s) => !state.hidden.includes(s)).map((s) => {
-                      const rows = families.filter((family) => family.status === s);
-                      const count =
-                        rows.length + (s === "draft" ? newDrafts.length : 0);
-                      if (!count) return null;
-                      return (
-                        <Group
-                          key={s}
-                          id={`status:${s}`}
-                          title={STATUS_LABEL[s]}
-                          count={count}
-                          attention={s === "attention"}
-                          icon={<StatusIcon status={s} size="small" />}
-                        >
-                          <ThreadRoots
-                            label={STATUS_LABEL[s]}
-                            pageSize={s === "done" ? 10 : 5}
-                            nodes={rows.map(({ node }) => node)}
-                            drafts={s === "draft" ? newDrafts : []}
-                            activeThreadId={props.activeThreadId}
-                            renderRow={(node) => row(node)}
-                            renderDraft={draftRow}
-                          />
-                        </Group>
-                      );
-                    })
-                  : // No project closes the list, right above Archived.
-                    [...displayProjects.values()]
-                      .sort((a, b) =>
-                        a.isPersonal === b.isPersonal
-                          ? a.name.localeCompare(b.name)
-                          : a.isPersonal
-                            ? 1
-                            : -1,
-                      )
-                      .map((project) => {
-                        const rows = projectTrees.get(project.id) ?? [];
-                        const drafts = newDrafts.filter(
-                          (draft) => draft.id === project.id,
-                        );
-                        return rows.length || drafts.length ? (
-                          <Group
-                            key={project.id}
-                            id={`project:${project.id}`}
-                            title={project.name}
-                            icon={
-                              <ProjectGlyph
-                                name={project.name}
-                                neutral={project.isPersonal}
-                              />
-                            }
-                            trailing={
-                              project.known ? (
-                                <button
-                                  type="button"
-                                  data-project-new-thread={project.id}
-                                  aria-label={`New thread in ${project.name}`}
-                                  title="New thread"
-                                  // Keep the press away from the header's long press.
-                                  onPointerDown={(event) =>
-                                    event.stopPropagation()
-                                  }
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    openNew(project.id);
-                                  }}
-                                  // ::before widens the tap target to 28x28
-                                  // while the painted box stays 16x16; it
-                                  // stops 2px short of the chevron's slot.
-                                  className="relative flex size-4 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none before:absolute before:-inset-1.5 before:content-[''] hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                                >
-                                  <HostIcon
-                                    name="Plus"
-                                    fallback="FolderPlus"
-                                    className="size-3.5"
-                                  />
-                                </button>
-                              ) : undefined
-                            }
-                            wrapHeader={(header) =>
-                              !project.known ? (
-                                header
-                              ) : (
-                                <ProjectHeaderMenu
-                                  projectId={project.id}
-                                  projectName={project.name}
-                                  isPersonal={project.isPersonal}
-                                  spaces={spaces.catalog.spaces}
-                                  onToggleSpace={(spaceId) =>
-                                    toggleSpace(spaceId, project.id)
-                                  }
-                                  onAction={(action) => {
-                                    if (action === "new-thread")
-                                      openNew(project.id);
-                                    else if (action === "manage") openManage();
-                                    else
-                                      setProjectEdit({
-                                        kind: action,
-                                        id: project.id,
-                                      });
-                                  }}
-                                >
-                                  {header}
-                                </ProjectHeaderMenu>
-                              )
-                            }
-                            belowHeader={
-                              projectEdit?.id !==
-                              project.id ? null : projectEdit.kind === "rename" ? (
-                                <ProjectRenameForm
-                                  project={project}
-                                  onSubmit={async (name) => {
-                                    await projectRpc.call("renameProject", {
-                                      projectId: project.id,
-                                      name,
-                                    });
-                                  }}
-                                  onClose={() => setProjectEdit(null)}
-                                />
-                              ) : (
-                                <ProjectRemoveForm
-                                  project={project}
-                                  threadCount={threadCounts.get(project.id) ?? 0}
-                                  onSubmit={() => removeProject(project.id)}
-                                  onClose={() => setProjectEdit(null)}
-                                />
-                              )
-                            }
-                          >
-                            <ThreadRoots
-                              label={project.name}
-                              pageSize={10}
-                              nodes={rows}
-                              drafts={drafts}
-                              activeThreadId={props.activeThreadId}
-                              renderRow={(node) =>
-                                (project.isPersonal ? personalRow : projectRow)(
-                                  node,
-                                )
-                              }
-                              renderDraft={draftRow}
-                            />
-                          </Group>
-                        ) : null;
-                      })}
-                {state.showSnoozed && snoozed.length > 0 && (
-                  <Group
-                    id="snoozed"
-                    title="Snoozed"
-                    defaultClosed
-                    dropTarget={false}
-                    count={snoozed.length}
-                    icon={
-                      <HostIcon
-                        name="Clock"
-                        fallback="Circle"
-                        className="size-3.5 text-[var(--subtle-foreground)]"
-                      />
-                    }
-                  >
-                    <ul aria-label="Snoozed threads" className="m-0 list-none p-0">
-                      {snoozed.map((entry) => row(entry))}
-                    </ul>
-                  </Group>
-                )}
-                {archived.length > 0 && (
-                  <Group
-                    id="archive"
-                    title="Archived"
-                    archive
-                    count={archived.length}
-                    icon={<ArchiveIcon />}
-                  >
-                    <ThreadRoots
-                      label="Archived"
-                      pageSize={10}
-                      nodes={archivedTree}
-                      drafts={[]}
-                      activeThreadId={props.activeThreadId}
-                      renderRow={(node) => row(node)}
-                      renderDraft={draftRow}
-                    />
-                  </Group>
-                )}
-                {state.hidden.length < STATUSES.length &&
-                  !archived.length &&
-                  (!state.showSnoozed || !snoozed.length) &&
-                  !visible.length &&
-                  !pinned.length &&
-                  !newDrafts.length && (
-                    <p className="p-2 text-xs text-muted-foreground">
-                      {scope.kind === "space" && scope.projectIds.size === 0 ? (
-                        <>
-                          No projects in this space.{" "}
-                          <button
-                            type="button"
-                            className="underline"
-                            onClick={openManage}
-                          >
-                            Choose projects
-                          </button>
-                        </>
-                      ) : scope.kind === "library" ? (
-                        "No saved threads. Save one from a thread's actions to keep it here."
-                      ) : scope.kind !== "all" ? (
-                        "No matching threads in this space."
-                      ) : (
-                        "No matching threads."
-                      )}
-                    </p>
-                  )}
-              </>
-            )}
-          </div>
-        </ThreadDndContext.Provider>
-        <DragOverlay dropAnimation={null}>
-          {dnd.activeThreadId && dnd.state.dragMoved ? (
-            <ThreadDragOverlay
-              title={titles.get(dnd.activeThreadId) ?? "Thread"}
+      {initiativesView ? (
+        <div
+          data-initiatives-view=""
+          className={props.isCompactViewport ? "" : scrollClass}
+        >
+          <div className="px-2">
+            <InitiativesSection
+              activeThreadId={props.activeThreadId}
+              activeProjectId={props.activeProjectId || null}
+              isCompactViewport={props.isCompactViewport}
+              onNavigate={props.onNavigate}
             />
-          ) : null}
-        </DragOverlay>
-      </DndContext>
+          </div>
+          {threadSection}
+        </div>
+      ) : (
+        threadSection
+      )}
     </div>
   );
 }

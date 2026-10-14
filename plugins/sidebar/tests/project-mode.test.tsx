@@ -181,6 +181,17 @@ function mount(
       },
       renameTreeProject: async () => ({}),
       branchPullRequestEligibility: async () => ({ eligible: {} }),
+      // The thread list below the Initiatives hides their threads.
+      initiativeThreads: async () => ({
+        available: true,
+        threadIds: (overrides.treeData ?? tree).projects.flatMap((p) =>
+          p.nodes.flatMap((n) => (n.threadId ? [n.threadId] : [])),
+        ),
+        status: "ready",
+      }),
+      getSpaces: async () => ({ revision: 0, spaces: [] }),
+      listArchived: async () => [],
+      getLibrary: async () => ({ revision: 0, ids: [] }),
       ...overrides.rpc,
     },
     openUrl: () => true,
@@ -199,6 +210,12 @@ const rowOrder = (slot: ReturnType<typeof renderSlot>) =>
   Array.from(
     slot.container.querySelectorAll("[data-project-row]"),
   ).map((row) => row.getAttribute("data-project-row"));
+/** The thread list's rows, in order. */
+const listedThreads = (slot: ReturnType<typeof renderSlot>) =>
+  Array.from(
+    slot.container.querySelectorAll("[data-activity-thread-groups] [data-sidebar-thread-id]"),
+    (row) => row.getAttribute("data-sidebar-thread-id"),
+  );
 const rowAnchor = (
   slot: ReturnType<typeof renderSlot>,
   name: string,
@@ -232,17 +249,17 @@ describe("Projects sidebar mode", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); }); expect(read).toHaveBeenCalledTimes(3);
   });
 
-  it("T125 lists a just-delegated worker when its signal lands during a read that predates it", async () => {
-    // The tree before the delegate recorded W1, and after.
-    const before = { ...tree, projects: [{ ...tree.projects[0], nodes: tree.projects[0].nodes.filter(n => n.role === "coordinator") }] };
+  it("T125 lists a just-created Initiative when its signal lands during a read that predates it", async () => {
+    // The tree before the second Initiative was recorded, and after.
+    const before = tree;
     const answers: ((value: unknown) => void)[] = [];
     const read = vi.fn((_input: unknown) => read.mock.calls.length === 1
       ? { available: true, tree: before, order: null, orderError: null }
       : new Promise(resolve => answers.push(resolve)));
     const slot = mount(true, { rpc: { projectMode: read } });
     await slot.findByRole("link", { name: "Open Useful search" });
-    expect(slot.queryByText("W1 Search reviewer")).toBeNull();
-    // BB lists the spawned thread first: a read starts before the ledger has W1.
+    expect(slot.queryByRole("link", { name: "Open Second push" })).toBeNull();
+    // BB lists the spawned thread first: a read starts before the ledger has it.
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
     // The delegate's own signal arrives while that read is still in flight.
@@ -251,17 +268,16 @@ describe("Projects sidebar mode", () => {
     await act(async () => { answers[0]!({ available: true, tree: before, order: null, orderError: null }); });
     // No reload and no 15 s poll: one more read lists the worker.
     await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
-    await act(async () => { answers[1]!({ available: true, tree, order: null, orderError: null }); });
-    expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
+    await act(async () => { answers[1]!({ available: true, tree: richTree, order: null, orderError: null }); });
+    expect(await slot.findByRole("link", { name: "Open Second push" })).toBeTruthy();
   });
 
   it("T129 a tree read that never answers times out instead of freezing the tree until reload", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      const before = { ...tree, projects: [{ ...tree.projects[0], nodes: tree.projects[0].nodes.filter(n => n.role === "coordinator") }] };
       const read = vi.fn((_input: unknown) => read.mock.calls.length === 1
-        ? { available: true, tree: before, order: null, orderError: null }
-        : read.mock.calls.length === 2 ? new Promise(() => {}) : { available: true, tree, order: null, orderError: null });
+        ? { available: true, tree, order: null, orderError: null }
+        : read.mock.calls.length === 2 ? new Promise(() => {}) : { available: true, tree: richTree, order: null, orderError: null });
       const slot = mount(true, { rpc: { projectMode: read } });
       await slot.findByRole("link", { name: "Open Useful search" });
       await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
@@ -271,7 +287,7 @@ describe("Projects sidebar mode", () => {
       await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
       await act(async () => { await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS); });
       await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
-      expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
+      expect(await slot.findByRole("link", { name: "Open Second push" })).toBeTruthy();
     } finally { vi.useRealTimers(); }
   });
 
@@ -364,22 +380,28 @@ describe("Projects sidebar mode", () => {
     expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "c" }));
   });
 
-  it("T106: puts the one Advisor entry right above the Initiatives header", async () => {
-    const slot = mount(true, { rpc: { advisorEntry: () => ({ available: true, summary: { unseen: 2, reviewing: true, initiatives: 1, threads: 3 } }) } });
-    const entry = await slot.findByRole("link", { name: "Advisor, 2 new findings" });
-    const header = slot.getAllByText("Initiatives").find((el) => el.tagName === "SPAN")!;
-    expect(entry.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(slot.container.querySelectorAll("[data-advisor-entry]")).toHaveLength(1);
+  it("draws no Advisor entry and no Overview link above the Initiatives", async () => {
+    const slot = mount();
+    await slot.findByRole("link", { name: "Open Useful search" });
+    expect(slot.queryByRole("link", { name: /Advisor/ })).toBeNull();
+    expect(slot.queryByRole("link", { name: "Overview" })).toBeNull();
+    expect(
+      slot.container.querySelector('a[href="/plugins/initiatives/initiatives"]'),
+    ).toBeNull();
+    expect(
+      slot.inspection.rpcCalls.some((call) => call.method === "advisorEntry"),
+    ).toBe(false);
   });
   it("renders one colored project row that opens its coordinator", async () => {
     const slot = mount();
     await waitFor(() => expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy());
-    expect(
-      slot.getByText(/1 needs you · 2 in flight · 3 remaining · 1 to revisit/),
-    ).toBeTruthy();
+    const row = slot.getByRole("link", { name: "Open Useful search" });
+    // One line: the counts move to the tooltip, under the objective.
+    expect(row.getAttribute("title")).toBe(
+      "Find historical work\n1 needs you · 2 in flight · 3 remaining · 1 to revisit",
+    );
     expect(slot.queryByText("Search reviewer")).toBeNull();
     expect(slot.queryByText("Coordinator")).toBeNull();
-    const row = slot.getByRole("link", { name: "Open Useful search" });
     expect(row.getAttribute("data-project-status")).toBe("attention");
     expect(within(row).getByLabelText("Needs you")).toBeTruthy();
     expect(row.querySelector("[data-project-hue]")).toBeTruthy();
@@ -429,100 +451,58 @@ describe("Projects sidebar mode", () => {
         );
     },
   );
-  it("lists the viewed project's current workers below the flat list", async () => {
+  it("lists the other threads under the Initiatives, ungrouped and most recent first", async () => {
     const slot = mount(true, {
       treeData: richTree,
-      threads: richThreads,
+      threads: [
+        ...richThreads,
+        thread({ id: "old", title: "Old plain", updatedAt: 100 }),
+        thread({ id: "new", title: "New plain", updatedAt: 900, projectId: "project-2" }),
+        thread({ id: "mid", title: "Mid plain", updatedAt: 500 }),
+      ],
     });
-    await waitFor(() =>
-      expect(
-        slot.getByRole("region", { name: "Threads in Useful search" }),
-      ).toBeTruthy(),
-    );
-    const section = slot.getByRole("region", {
-      name: "Threads in Useful search",
-    });
-    const ids = Array.from(
-      section.querySelectorAll("[data-sidebar-thread-id]"),
-      (row) => row.getAttribute("data-sidebar-thread-id"),
-    );
-    // The coordinator, its former generation, settled children, and other
-    // projects' threads are absent; a live child nests under its worker.
-    expect(ids).toEqual(["w", "run-child"]);
+    await slot.findByRole("link", { name: "Open Useful search" });
+    await waitFor(() => expect(listedThreads(slot)).toEqual(["new", "mid", "old"]));
+    // Initiatives first, then the list's own header, then its rows.
+    const header = slot.container.querySelector('[data-section-header="Threads"]')!;
     expect(
-      within(section).getByRole("list", {
-        name: "Children of Reviewer thread",
-      }),
-    ).toBeTruthy();
-    // Row order stays below the project rows in the same scroll area.
-    expect(
-      slot.getByRole("link", { name: "Open Useful search" })
-        .compareDocumentPosition(section) &
+      rowAnchor(slot, "Second push").compareDocumentPosition(header) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+    // No grouping: no status or project group headers.
+    expect(slot.container.querySelector("[data-group-header]")).toBeNull();
   });
-  it("opens a worker through the native thread action and closes the drawer", async () => {
+  it("keeps the thread list the same whichever Initiative is open", async () => {
     const onNavigate = vi.fn();
-    const slot = mount(true, {
-      props: { onNavigate },
-      treeData: richTree,
-      threads: richThreads,
-    });
-    const section = await slot.findByRole("region", {
-      name: "Threads in Useful search",
-    });
-    fireEvent.click(
-      within(section).getByRole("link", { name: /Reviewer thread/ }),
-    );
-    expect(slot.inspection.sidebarActionCalls).toContainEqual(
-      expect.objectContaining({ method: "open", threadId: "w" }),
-    );
-    expect(onNavigate).toHaveBeenCalled();
-  });
-  it("switches the listed threads with the viewed project", async () => {
-    const onNavigate = vi.fn();
+    const threads = [
+      ...richThreads,
+      thread({ id: "plain", title: "Plain", updatedAt: 300 }),
+      thread({ id: "other", title: "Other", updatedAt: 200, projectId: "project-2" }),
+    ];
     const slot = mount(true, {
       props: { activeThreadId: "c", onNavigate },
       treeData: richTree,
-      threads: richThreads,
+      threads,
     });
-    await waitFor(() =>
-      expect(
-        slot.getByRole("region", { name: "Threads in Useful search" }),
-      ).toBeTruthy(),
-    );
-    slot.rerender(
-      <Component
-        activeThreadId="w2"
-        activeProjectId="project-2"
-        isCompactViewport={false}
-        searchQuery=""
-        onNavigate={onNavigate}
-        Original={() => null}
-      />,
-    );
-    const section = await slot.findByRole("region", {
-      name: "Threads in Second push",
-    });
-    const ids = Array.from(
-      section.querySelectorAll("[data-sidebar-thread-id]"),
-      (row) => row.getAttribute("data-sidebar-thread-id"),
-    );
-    // The archived worker node is skipped; nothing from the previous project
-    // remains.
-    expect(ids).toEqual(["w2"]);
-    expect(
-      slot.queryByRole("region", { name: "Threads in Useful search" }),
-    ).toBeNull();
-  });
-  it("stays quiet when the selection has no current worker threads", async () => {
-    const slot = mount(true, {
-      props: { activeThreadId: null, activeProjectId: null },
-      treeData: richTree,
-      threads: richThreads,
-    });
-    await waitFor(() => expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy());
-    expect(slot.queryByRole("region")).toBeNull();
+    await waitFor(() => expect(listedThreads(slot)).toEqual(["plain", "other"]));
+    for (const [activeThreadId, activeProjectId] of [
+      ["c2", "project-2"],
+      ["w", "project-1"],
+      [null, null],
+    ] as const) {
+      slot.rerender(
+        <Component
+          activeThreadId={activeThreadId}
+          activeProjectId={activeProjectId}
+          isCompactViewport={false}
+          searchQuery=""
+          onNavigate={onNavigate}
+          Original={() => null}
+        />,
+      );
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(listedThreads(slot)).toEqual(["plain", "other"]);
+    }
   });
   it("lays rows out in the saved order, not the tree order", async () => {
     const slot = mount(true, {
@@ -912,9 +892,15 @@ describe("Projects sidebar mode", () => {
         treeData: richTree,
         threads: richThreads,
       });
-      const link = await slot.findByRole("link", { name: "New thread in Second push" });
-      expect(link.className.includes("opacity-0")).toBe(!isCompactViewport);
-      expectNativeComposerLink(slot, link, "p2", onNavigate);
+      await slot.findByRole("link", { name: "Open Second push" });
+      // On touch the row stays one dense line; its menu offers New thread.
+      const link = slot.queryByRole("link", { name: "New thread in Second push" });
+      if (isCompactViewport) {
+        expect(link).toBeNull();
+        return;
+      }
+      expect(link!.className.includes("opacity-0")).toBe(true);
+      expectNativeComposerLink(slot, link!, "p2", onNavigate);
       // The sibling action leaves the coordinator link and ordering alone.
       expect(rowAnchor(slot, "Second push").getAttribute("href")).toBe(
         "/projects/project-2/threads/c2",
@@ -937,7 +923,7 @@ describe("Projects sidebar mode", () => {
       onNavigate,
     );
   });
-  it("lists an adhoc project thread in the selected project section", async () => {
+  it("keeps an Initiative's threads and their descendants out of the thread list", async () => {
     const slot = mount(true, {
       treeData: {
         ...tree,
@@ -967,11 +953,12 @@ describe("Projects sidebar mode", () => {
           title: "Scratch investigation",
           projectId: "project-1",
         }),
+        thread({ id: "fixer", title: "Fixer", parentThreadId: "w" }),
+        thread({ id: "plain", title: "Plain" }),
       ],
     });
-    await waitFor(() =>
-      expect(slot.getByText("Scratch investigation")).toBeTruthy(),
-    );
+    await waitFor(() => expect(listedThreads(slot)).toEqual(["plain"]));
+    expect(slot.queryByText("Scratch investigation")).toBeNull();
   });
   it("opens the native composer from a stationary mobile long press instead of dragging", async () => {
     const onNavigate = vi.fn();
@@ -1138,7 +1125,7 @@ describe("Projects sidebar mode", () => {
     });
     expect(rowOrder(slot)).toEqual(["p2", "p1"]);
   });
-  it("refreshes logical worker labels on the Projects change signal", async () => {
+  it("refreshes Initiative names on the Initiatives change signal", async () => {
     let calls = 0;
     let treeData = richTree;
     const slot = mount(true, {
@@ -1155,22 +1142,18 @@ describe("Projects sidebar mode", () => {
         },
       },
     });
-    await waitFor(() => expect(calls).toBe(1));
-    expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
+    await slot.findByRole("link", { name: "Open Useful search" });
     treeData = {
       ...richTree,
-      projects: richTree.projects.map((project) => ({
-        ...project,
-        nodes: project.nodes.map((node) =>
-          node.threadId === "w" ? { ...node, label: "Queue reviewer" } : node,
-        ),
-      })),
+      projects: richTree.projects.map((project) =>
+        project.id === "p1" ? { ...project, name: "Better search" } : project,
+      ),
     };
     // The republished signal refreshes immediately, without polling timers.
     await slot.emitRealtime("initiatives-changed", {});
     await waitFor(() => expect(calls).toBeGreaterThan(1));
-    await waitFor(() => expect(slot.getByText("W1 Queue reviewer")).toBeTruthy());
-    expect(slot.queryByText("W1 Search reviewer")).toBeNull();
+    await slot.findByRole("link", { name: "Open Better search" });
+    expect(slot.queryByRole("link", { name: "Open Useful search" })).toBeNull();
   });
   it("reorders by dragging a row and does not navigate on drop", async () => {
     const saves: { expectedRevision: number; order: string[] }[] = [];

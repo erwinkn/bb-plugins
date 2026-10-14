@@ -6,9 +6,21 @@ import {
   type SortDirection,
 } from "./status";
 
+/**
+ * Grouping and order of the threads under the Initiatives list. Local to this
+ * client and separate from the Threads view's, which follows BB's synced
+ * sidebar preferences.
+ */
+export interface ThreadListing {
+  groupBy: "none" | "status" | "project";
+  sortBy: SortBy;
+  sortDirection: SortDirection;
+}
+
 export interface ClientState {
   mode: "threads" | "initiatives";
   groupBy: "status" | "project";
+  initiativesListing: ThreadListing;
   sortBy: SortBy;
   sortDirection: SortDirection;
   hidden: Status[];
@@ -29,9 +41,15 @@ const KEY = CLIENT_STATE_KEY;
  * the write; the store re-reads storage and re-renders.
  */
 export const CLIENT_STATE_EVENT = "bb-plugin-sidebar:state";
+export const DEFAULT_LISTING: ThreadListing = {
+  groupBy: "none",
+  sortBy: "updated",
+  sortDirection: "descending",
+};
 const DEFAULT: ClientState = {
   mode: "threads",
   groupBy: "status",
+  initiativesListing: DEFAULT_LISTING,
   sortBy: "updated",
   sortDirection: "descending",
   hidden: [],
@@ -47,6 +65,20 @@ const strings = (value: unknown): string[] =>
     ? [...new Set(value.filter((v): v is string => typeof v === "string"))]
     : [];
 
+function parseListing(value: unknown): ThreadListing {
+  if (!value || typeof value !== "object") return DEFAULT_LISTING;
+  const listing = value as Record<string, unknown>;
+  return {
+    groupBy:
+      listing.groupBy === "status" || listing.groupBy === "project"
+        ? listing.groupBy
+        : "none",
+    sortBy: listing.sortBy === "created" ? "created" : "updated",
+    sortDirection:
+      listing.sortDirection === "ascending" ? "ascending" : "descending",
+  };
+}
+
 export function parseState(raw: string | null): ClientState {
   try {
     const value = JSON.parse(raw ?? "null");
@@ -54,6 +86,7 @@ export function parseState(raw: string | null): ClientState {
     return {
       mode: value.mode === "initiatives" ? "initiatives" : "threads",
       groupBy: value.groupBy === "project" ? "project" : "status",
+      initiativesListing: parseListing(value.initiativesListing),
       sortBy: value.sortBy === "created" ? "created" : "updated",
       sortDirection:
         value.sortDirection === "ascending" ? "ascending" : "descending",

@@ -3,9 +3,8 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { expectWarned } from "./helpers";
 import { projectFixture, report } from "./fake-native";
 import {
-  currentProjectThreads,
   projectStatus,
-  selectedProject,
+  projectThreads,
 } from "../../sidebar/lib/project-mode-status";
 
 /**
@@ -349,8 +348,10 @@ const asSidebar = (t: any) => ({
   activity: {},
   updatedAt: 100,
 });
-const flatten = (rows: any[]): string[] =>
-  rows.flatMap((r) => [r.thread.id, ...flatten(r.children)]);
+const members = (project: any, threads: any[]): string[] =>
+  projectThreads(project, threads)
+    .map((t) => t.id)
+    .filter((id) => id !== project.coordinatorThreadId);
 
 describe("nested native children carry lightweight membership", () => {
   it("shows nested active children and hides archived or deleted roots", async () => {
@@ -364,16 +365,9 @@ describe("nested native children carry lightweight membership", () => {
       parentThreadId: parent.id,
     });
     await f.runtime.sweep();
+    // The threads behind the Initiative's row, besides its coordinator.
     const rows = () =>
-      flatten(
-        currentProjectThreads(
-          f.tree().projects[0]!,
-          [...f.threads.values()].map(asSidebar),
-          [],
-          "updated",
-          "descending",
-        ),
-      );
+      members(f.tree().projects[0]!, [...f.threads.values()].map(asSidebar));
     expect(rows()).toEqual([parent.id, nested.id]);
     f.threads.set(nested.id, { ...nested, archivedAt: Date.now() });
     expect(rows()).toEqual([parent.id]);
@@ -385,7 +379,7 @@ describe("nested native children carry lightweight membership", () => {
     expect(f.send).not.toHaveBeenCalled();
   });
 
-  it("selecting a nested child keeps its durable project when membership overlaps", async () => {
+  it("a nested child counts toward its durable project when membership overlaps", async () => {
     const { f, project } = await projectFixture();
     f.threads.set(
       "coordinator-b",
@@ -415,26 +409,11 @@ describe("nested native children carry lightweight membership", () => {
       all.find((p) => p.id === project.id)!,
       all.find((p) => p.id === other.id)!,
     ];
-    // Both projects share proj_a, so memberProjectIds alone cannot pick.
-    expect(
-      flatten(
-        currentProjectThreads(
-          ordered[1]!,
-          [...f.threads.values()].map(asSidebar),
-          [],
-          "updated",
-          "descending",
-        ),
-      ),
-    ).toContain(nested.id);
-    expect(
-      selectedProject(
-        ordered,
-        [...f.threads.values()].map(asSidebar),
-        nested.id,
-        "proj_a",
-      )?.id,
-    ).toBe(other.id);
+    // Both projects share proj_a, so memberProjectIds alone cannot pick:
+    // the nested child counts toward its durable project's row only.
+    const threads = [...f.threads.values()].map(asSidebar);
+    expect(members(ordered[1]!, threads)).toContain(nested.id);
+    expect(members(ordered[0]!, threads)).not.toContain(nested.id);
     expect(f.store.membership(nested.id)?.project.id).toBe(other.id);
   });
 

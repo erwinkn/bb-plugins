@@ -171,10 +171,16 @@ describe("client storage boundary", () => {
           drafts: ["thread:1", "secret", 2],
           collapsed: false,
           groupBy: "bad",
+          initiativesListing: { groupBy: "bad", sortBy: "created", sortDirection: 1 },
         }),
       ),
     ).toEqual({
       mode: "threads",
+      initiativesListing: {
+        groupBy: "none",
+        sortBy: "created",
+        sortDirection: "descending",
+      },
       hidden: ["done"],
       showArchives: false,
       showSnoozed: true,

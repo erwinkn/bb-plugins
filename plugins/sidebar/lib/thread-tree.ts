@@ -11,12 +11,6 @@ export interface ThreadNode {
   thread: PluginSidebarThread;
   status: Status;
   children: ThreadNode[];
-  /**
-   * The Initiatives ledger identity for managed worker threads (e.g. "W1" plus
-   * its logical label); the row shows it as the stable title and keeps the
-   * native title as secondary metadata.
-   */
-  identity?: { worker: string; label: string } | null;
 }
 
 export const CHILD_PAGE_SIZE = 3;

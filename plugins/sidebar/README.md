@@ -6,18 +6,77 @@ window, automatically archive threads, or run cleanup jobs.
 
 ## Initiatives view
 
-The view switch toggles between Threads and Initiatives on this client. With the
-Initiatives plugin enabled, each Initiative is one colored row that opens its
-coordinator. Workers and their children are reached from the Initiative overview
-and the Initiative's own thread list; the Threads view does not list them (see below).
-Metadata shows work in flight, remaining tasks and decisions needing attention.
+The view switch toggles between Threads and Initiatives on this client. The
+Initiatives view has two sections:
 
-Status prioritizes an unread coordinator reply or a decision/input needing you,
-then any working thread (including native descendants), then an observed unsent
-text or attachment draft. Routine unread worker reports wait for the coordinator.
-The Initiative color follows the same theme-aware palette as Threads view.
+```
+Initiatives                         +
+  ◇ Sidebar v2                 ⓘ   3m
+  ◎ Initiatives v9             ◌  55m
+  ◍ Equisafe onboarding            1d
+Threads                             ≡
+  Fix flaky snooze test            ◌
+  bb-plugins · fix-snooze         2m
+  KYC webhook retries              •
+  equisafe-market · kyc-retries  18m
+```
 
-Project order is fixed until you change it: activity, selection, polling and
+**Initiatives.** One dense line per Initiative: its icon in its color, its
+name (muted while paused), its status, and how long ago its threads last
+changed. The status prioritizes an unread coordinator reply or a
+decision/input needing you, then any working thread (including native
+descendants), then an observed unsent text or attachment draft. Routine
+unread worker reports wait for the coordinator. The counts that used to fill a
+second line (needs you, in flight, remaining, to revisit, paused) are in the
+row's tooltip, under the objective. A click opens the coordinator; workers,
+reviewers and discussions are reached from the Initiative's own panel, never
+from the sidebar (see below).
+
+The last tree this client confirmed is kept in `localStorage`, in its displayed
+order, so the list draws at once and the first read refreshes it in the
+background; only a confirmed read replaces it, and a read that finds
+Initiatives gone clears it.
+
+**New initiative.** The section's + (or "Start one" while the list is empty)
+opens a dialog: a name, what it should achieve, and its repositories, where the
+open thread's repository is preselected and the first checked one hosts the
+coordinator. It creates through the Initiatives plugin's own `command` RPC
+(`create`, with a new coordinator on the first repository's default checkout),
+like its create form. The dialog closes at once and the draft shows in the
+list as "Creating…" while Initiatives spawns the coordinator, so nothing waits
+on it; once created, the coordinator opens unless you have navigated away or
+switched views meanwhile. A failed draft stays in the list with its reason; Edit
+reopens it, and resending it unchanged reuses its idempotency key, so a create
+that did land but whose answer was lost is never made twice. Past 90 s without
+an answer the draft shows as unconfirmed, and a late answer still settles it.
+Sent drafts and their keys are kept in this client's storage, so a view switch
+or a reload keeps them; after a reload, drafts still waiting for an answer are
+sent again under their keys. Each send is its own storage entry, named by its
+key and holding only what that key's answers decided, so tabs sending at once
+never overwrite each other's, and every tab shows what another sent or
+settled. A send that got no answer shows as failed only in its own tab. Only an answer from
+Initiatives settles a key: when it refused the create, or cannot tell what an
+earlier send saved, the draft gets a new key and resending it is a new create,
+which you check and send on purpose. A key first sent over 7 days ago is never
+sent again, by a reload or by hand, because Initiatives keeps its receipt only
+a day longer: the draft stays listed with a warning, so you can check whether
+it was created before sending it as new. An Edit dialog always sends the
+draft's current key, even one that settled while it was open, and closes if
+the draft is created meanwhile.
+
+**Threads.** Below the Initiatives, every thread outside them, with the Threads
+view's rows, pins, snoozes, drafts and archive. Its grouping and order are this
+client's own (they default to no grouping, most recent first) and never follow
+the open Initiative. The header names what the groups are ("Threads", or
+"Projects" when grouped by project); its options button holds Grouping (None,
+Status, Project) and Ordering (date updated or created, newest or oldest
+first) submenus that name the current choice, then the same Show options as
+the Threads view (statuses, Snoozed, Archived). Ungrouped, new-thread drafts
+lead the list and 25 threads show before Show more; under a Pinned group the
+list gets a "Recent" title so it does not read as pinned. The Threads view
+keeps BB's synced grouping and order, and its own display menu.
+
+Initiative order is fixed until you change it: activity, selection, polling and
 reloads never move a row. Drag a row to reorder it — the whole row is the
 handle on desktop; on touch, hold about a fifth of a second before moving so
 the sidebar still scrolls on a flick. On the keyboard, focus a row and press
@@ -25,28 +84,22 @@ Space to lift it, arrows to move it, Space or Enter to drop it. The release
 click after a drag never opens the Initiative.
 
 Each row keeps an options menu on right-click or a stationary long press
-(the same gesture on keyboard is ContextMenu/Shift+F10). **New thread** opens
-the Initiative's native BB composer in Initiatives immediately. The row's plus
-link opens the same composer in one click; it stays visible on mobile and
-appears on hover or keyboard focus on desktop. Navigation closes the mobile
+(the same gesture on keyboard is ContextMenu/Shift+F10): **New thread**,
+**Rename…**, **Icon and color…** and **Initiative overview** (that
+Initiative's dashboard). New thread opens the Initiative's native BB composer
+in Initiatives immediately. On desktop the same composer is one click away: a
+plus replaces the row's age on hover or keyboard focus. On touch the row stays
+one line and the menu's New thread stands in. Navigation closes the mobile
 drawer and does not create a thread or send input.
 
 Choose the member repository, model and checkout in the native composer.
 Initiatives validates the selected repository and creates the user-owned thread
 under the current coordinator when you submit, using the same flow as the
 Initiative dashboard. Sidebar has no separate first-message form or repository
-submenu. Rename and Initiative overview remain in the row menu.
+submenu.
 
-**Advisor.** One Advisor row sits above the Initiatives header (and at the top
-of the Threads view), on desktop and phones. It is drawn like an Initiative row
-(shared `components/entry-row.tsx`): a neutral icon tile, the title over one
-status line (`2 initiatives · 7 threads`, `Nothing watched`, or `Reviews off`),
-and the count of new findings as a badge. It opens the Advisor feed
-(`/plugins/advisor/advisor`) and shows as selected while that page is open. The
-summary is read once from the Advisor's read-only `unseen` RPC and then pushed by
-the Advisor on every change (republished here on `advisor-unseen`), so nothing
-polls. Without a running Advisor the row is not drawn. Hide the Advisor's own top-section row
-with BB's **Hide from sidebar** so this is the only entry.
+There is no Overview link and no Advisor entry: the Initiatives overview page
+and the Advisor are reached from BB's own sidebar entries, if at all.
 
 **Icon and color…**, next to Rename, swaps the row for a small picker: an
 automatic color (the hue from the name) or one of the eight identity hues, and
@@ -79,21 +132,21 @@ untouched.
 
 The sidebar builds independently of Initiatives; its versioned RPC schema is checked
 against the same fixture in both plugins' tests. If Initiatives is disabled, the view
-explains how to enable it and the switch returns to Threads. Overview and composer links close
+explains how to enable it, the thread list below still works, and the switch returns to Threads. Composer links close
 the mobile drawer before navigating. Composer links use `UrlLink` for BB's
-internal navigation; older overview links remain ordinary anchors.
+internal navigation; the row menu's overview link remains an ordinary anchor.
 
-## Initiative threads stay out of the Threads view
+## Initiative threads stay out of the thread lists
 
-The Threads view hides every thread the Initiatives tree names (coordinators,
+Both views' thread lists hide every thread the Initiatives tree names (coordinators,
 workers, reviewers and the Initiative's other member threads, which include
 discussions) and every descendant of one, archived or not. Reviewer and fixer
 children that Initiatives never records are therefore hidden too, even under an
 archived or unlisted intermediate thread. A thread with the same shape (a child of a plain thread) is
 untouched. Pinned Initiative threads are hidden as well, so one rule holds
 everywhere: the Pinned section, the Status and Project groups, the Library
-scope, and the **Make child of…** targets all skip them. Archived handling is
-unchanged: archived Initiative threads still show in Archived.
+scope, Archived, and the **Make child of…** targets all skip them. Initiative
+threads live only in the Initiatives list and its panel.
 
 The ids come from the `initiativeThreads` RPC. The server keeps one snapshot
 for all clients and answers at once from it, announcing a change on its own
@@ -122,7 +175,7 @@ links, using loaded archived rows too; a named parent hides its children even
 when its own row is missing from the list.
 
 Limits: the tree names only current threads, so the thread of a retired worker
-or a former generation shows again in the Threads view. The tree does not mark
+or a former generation shows again in the thread lists. The tree does not mark
 discussions apart from other member threads, so all member threads are hidden.
 
 ## Status rules

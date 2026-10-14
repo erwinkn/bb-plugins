@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeThreadResponse } from '@get-bb/plugin-sdk/testing';
 import { projectFixture, report } from './fake-native';
-import { currentProjectThreads, projectStatus, selectedProject } from '../../sidebar/lib/project-mode-status';
+import { projectStatus, projectThreads } from '../../sidebar/lib/project-mode-status';
 
 /**
  * A27 settlement boundaries. Failed premise under review: "absence in a
@@ -172,7 +172,6 @@ describe('A27 execution-settlement boundaries',()=>{
 });
 
 const asSidebar=(t:any)=>({...t,isArchived:t.archivedAt!==null,isUnread:false,isPinned:false,hasPendingInteraction:false,indicator:t.status==='active'?'runtime':'none',activity:{},updatedAt:100});
-const flatten=(rows:any[]):string[]=>rows.flatMap(r=>[r.thread.id,...flatten(r.children)]);
 describe('A27 association guard controls',()=>{
   it('control: foreign adhoc membership blocks coordinator replacement',async()=>{
     const {f,project}=await projectFixture();
@@ -193,7 +192,7 @@ describe('A27 association guard controls',()=>{
     await expect(f.service.replaceCoordinator(project.id,{reason:'promote fork',adoptThreadId:child.id})).rejects.toThrow(/immutable/);
     expect(f.store.membership(child.id)?.kind).toBe('adhoc');
   });
-  it('control: nested selection survives coordinator replacement with history intact',async()=>{
+  it('control: a nested child stays on its Initiative\'s row across coordinator replacement, history intact',async()=>{
     const {f,project}=await projectFixture();
     const child=await f.spawn({projectId:'proj_a',parentThreadId:'coordinator'});
     const nested=await f.spawn({projectId:'proj_a',parentThreadId:child.id});
@@ -202,7 +201,8 @@ describe('A27 association guard controls',()=>{
     await f.service.replaceCoordinator(project.id,{reason:'replace',adoptThreadId:'next'});
     expect(f.store.membership('coordinator')?.former).toBe(true);
     expect(f.store.membership(nested.id)?.project.id).toBe(project.id);
-    expect(selectedProject(f.tree().projects,[...f.threads.values()].map(asSidebar),nested.id,'proj_a')?.id).toBe(project.id);
+    const p=f.tree().projects.find(p=>p.id===project.id)!;
+    expect(projectThreads(p,[...f.threads.values()].map(asSidebar)).map(t=>t.id)).toContain(nested.id);
   });
   it.each(['archived','missing','deleted'] as const)('control: %s associated thread is hidden without exporting active state',async(mode)=>{
     const {f,project}=await projectFixture();const child=await f.spawn({projectId:'proj_a',parentThreadId:'coordinator'});
@@ -212,7 +212,7 @@ describe('A27 association guard controls',()=>{
     else f.threads.delete(child.id);
     const visible=[...f.threads.values()].filter(t=>t.archivedAt===null&&t.deletedAt===null).map(asSidebar);
     const p=f.tree().projects[0]!;
-    expect(flatten(currentProjectThreads(p,visible,[],'updated','descending'))).not.toContain(child.id);
+    expect(projectThreads(p,visible).map(t=>t.id)).not.toContain(child.id);
     expect(projectStatus(p,visible,[])).toBe('done');
     expect(p.nodes.find(n=>n.threadId===child.id)!.state).toBe('member');
     expect(f.store.projectThreads(project.id)).toHaveLength(1);

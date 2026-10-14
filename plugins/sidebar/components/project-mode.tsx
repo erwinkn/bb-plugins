@@ -6,7 +6,6 @@ import {
   useState,
   type FormEvent,
   type MouseEvent as ReactMouseEvent,
-  type ReactNode,
 } from "react";
 import {
   DndContext,
@@ -21,21 +20,18 @@ import {
   useRpc,
   useRealtime,
   useRealtimeConnectionState,
-  experimental_useProviders,
   experimental_useSidebarThreads,
-  type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import type { projectModeContract } from "../lib/project-mode-contract";
 import { INITIATIVES_CHANGED, INITIATIVES_PANEL } from "../lib/project-mode-names";
 import type { ProjectTree } from "../lib/project-tree-schema";
 import { updateState, useClientState } from "../lib/client-state";
 import {
-  currentProjectThreads,
+  lastActivity,
   needsYou,
   orderedProjects,
   projectStatus,
   projectThreads,
-  selectedProject,
 } from "../lib/project-mode-status";
 import {
   PROJECT_ORDER_CHANNEL,
@@ -47,20 +43,26 @@ import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { moveItem } from "../lib/spaces";
 import { projectLabel } from "../lib/project-schema";
-import { threadTitle } from "../lib/status";
-import type { ThreadNode } from "../lib/thread-tree";
-import { MOBILE_SIDEBAR_SCROLL_CSS } from "../lib/mobile-sidebar-scroll";
-import { useBranchPullRequestEligibility } from "../lib/use-branch-pull-request-eligibility";
+import { relativeAge } from "../lib/time";
 import { StatusIcon } from "./status-icon";
-import { ProjectHueStyle, appearanceHueStep, appearanceIcon } from "../lib/project-hue";
+import { appearanceHueStep, appearanceIcon } from "../lib/project-hue";
 import { ProjectAppearanceEditor, type AppearancePatch } from "./project-appearance";
 import { HostIcon } from "../lib/host-icon";
-import { ThreadRow, type ProviderIconRecord } from "./thread-row";
-import { ThreadChildren } from "./thread-children";
 import { ThreadDragOverlay } from "./thread-drag-overlay";
 import { menuItemClass } from "./menus";
-import { AdvisorEntry } from "./advisor-entry";
-import { EntryRowBody, entryRowClass } from "./entry-row";
+import { SectionHeader, sectionActionClass } from "./section-header";
+import { CreateInitiativeDialog } from "./create-initiative";
+import {
+  dismissNotice,
+  dismissSubmission,
+  newDraft,
+  resumeSubmissions,
+  submitDraft,
+  useSubmissions,
+  type CreateInitiative,
+  type InitiativeDraft,
+} from "../lib/initiative-submissions";
+import { cacheTree, cachedTree } from "../lib/initiative-tree-cache";
 import { ReadTimeoutError, claimReport, withReadTimeout } from "../lib/read-timeout";
 
 export function ModeToggle() {
@@ -93,13 +95,29 @@ export function ModeToggle() {
 
 type TreeProject = ProjectTree["projects"][number];
 
-export function ProjectMode(props: PluginThreadListProps) {
+/**
+ * The Initiatives list at the top of the Initiatives view: one dense row per
+ * Initiative (icon, name, status, last activity), a + that opens the New
+ * initiative dialog, and drag reordering. The last tree is cached, so the list
+ * draws at once and refreshes in the background.
+ */
+export function InitiativesSection(props: {
+  activeThreadId: string | null;
+  activeProjectId: string | null;
+  isCompactViewport: boolean;
+  onNavigate: () => void;
+}) {
   const navigate = useBbNavigate();
   const api = useRpc<typeof projectModeContract>();
   const native = experimental_useSidebarThreads();
   const connection = useRealtimeConnectionState();
-  const [tree, setTree] = useState<ProjectTree | null>(null);
-  const [available, setAvailable] = useState<boolean | null>(null);
+  // The cache stands in until the first read answers; only a read updates it.
+  const [cached] = useState(cachedTree);
+  const [tree, setTree] = useState<ProjectTree | null>(cached);
+  const [fresh, setFresh] = useState(false);
+  const [available, setAvailable] = useState<boolean | null>(
+    cached ? true : null,
+  );
   const [error, setError] = useState<string | null>(null);
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
@@ -129,6 +147,7 @@ export function ProjectMode(props: PluginThreadListProps) {
       misses.current = 0;
       if (mounted.current) {
         setAvailable(result.available);
+        setFresh(true);
         if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
         applyRef.current(result.order, result.orderError); setError(null);
       }
@@ -205,16 +224,65 @@ export function ProjectMode(props: PluginThreadListProps) {
     () => orderedProjects(projects, order.order),
     [projects, order.order],
   );
-  const selected = useMemo(
+  // Cache what is on screen, in its displayed order, once a read confirmed it.
+  useEffect(() => {
+    if (!fresh) return;
+    cacheTree(available && tree ? { ...tree, projects: displayed } : null);
+  }, [fresh, available, tree, displayed]);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const memberChoices = useMemo(
     () =>
-      selectedProject(
-        displayed,
-        native.threads,
-        props.activeThreadId,
-        props.activeProjectId,
-      ),
-    [displayed, native.threads, props.activeThreadId, props.activeProjectId],
+      native.projects
+        .filter((project) => !project.isPersonal)
+        .map((project) => ({ id: project.id, name: projectLabel(project) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [native.projects],
   );
+  const [editing, setEditing] = useState<InitiativeDraft | null>(null);
+  const { submissions, notice } = useSubmissions();
+  // A listed draft's dialog closes once it is created or dismissed, here or
+  // in another tab: there is nothing left to send.
+  const dialogDraft =
+    editing && (editing.key === null || submissions.some((s) => s.key === editing.key))
+      ? editing
+      : null;
+  const openCreate = () =>
+    setEditing(
+      newDraft(
+        memberChoices.some((p) => p.id === props.activeProjectId)
+          ? props.activeProjectId
+          : null,
+      ),
+    );
+  // The dialog closes at once; the draft shows in the list while Initiatives
+  // creates it. A failed one stays there with its reason until sent again or
+  // dismissed, and sending it again unchanged keeps its key, so it cannot
+  // duplicate. Drafts a reload cut off are sent again once, without opening.
+  const create: CreateInitiative = (input) =>
+    apiRef.current.call("createInitiative", input);
+  useEffect(() => resumeSubmissions(create, schedule), []);
+  const submit = (draft: InitiativeDraft) => {
+    setEditing(null);
+    const from = window.location.pathname;
+    submitDraft(draft, create, (created) => {
+      schedule();
+      // Open its coordinator unless the user has moved on meanwhile, to
+      // another page or view. Without one yet the new row and the note say
+      // what happened.
+      if (
+        !created.coordinatorThreadId ||
+        !mounted.current ||
+        window.location.pathname !== from
+      )
+        return;
+      navigate.toThread(created.coordinatorThreadId);
+      props.onNavigate();
+    });
+  };
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -271,167 +339,207 @@ export function ProjectMode(props: PluginThreadListProps) {
   );
 
   return (
-    <div
-      data-activity-sidebar=""
-      data-project-mode=""
-      data-mobile-scroll={props.isCompactViewport ? "" : undefined}
-      className={`flex flex-col text-foreground ${props.isCompactViewport ? "shrink-0" : "h-full min-h-0"}`}
-    >
-      {props.isCompactViewport && (
-        <style data-activity-mobile-scroll="">
-          {MOBILE_SIDEBAR_SCROLL_CSS}
-        </style>
-      )}
-      <ProjectHueStyle />
-      <AdvisorEntry onNavigate={props.onNavigate} alignWithInitiatives />
-      <div className="flex shrink-0 items-center gap-2 px-2 pt-2 pb-2">
-        <ModeToggle />
-        <span className="flex-1 text-xs font-medium">Initiatives</span>
-        <a
-          className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-          onClick={props.onNavigate}
-          href={INITIATIVES_PANEL}
-        >
-          Overview
-        </a>
-      </div>
-      <div
-        className={`${props.isCompactViewport ? "" : "min-h-0 overflow-y-auto"} px-2 pb-4`}
-      >
-        {error && (
-          <p role="alert" className="p-2 text-xs text-destructive">
-            {error}{" "}
-            <button className="underline" onClick={() => void refresh()}>
-              Retry
-            </button>
-          </p>
-        )}
-        {order.error && (
-          <p role="alert" className="p-2 text-xs text-destructive">
-            Could not save the initiative order: {order.error}{" "}
-            <button className="underline" onClick={order.dismissError}>
-              Dismiss
-            </button>
-          </p>
-        )}
-        {available === false && (
-          <p className="p-2 text-xs text-muted-foreground">
-            Install or enable the Initiatives plugin to use this view. Threads
-            remain available from the view switch.
-          </p>
-        )}
-        {available === null && !error && (
-          <p className="p-2 text-xs text-muted-foreground">Loading initiatives…</p>
-        )}
-        {available && !projects.length && (
-          <p className="p-2 text-xs text-muted-foreground">
-            No initiatives yet.{" "}
-            <a
-              className="underline"
-              onClick={props.onNavigate}
-              href={`${INITIATIVES_PANEL}/new`}
+    <section aria-label="Initiatives" data-project-mode="" className="mt-2">
+      <SectionHeader
+        title="Initiatives"
+        trailing={
+          available !== false && (
+            <button
+              type="button"
+              aria-label="New initiative"
+              title="New initiative"
+              onClick={openCreate}
+              className={sectionActionClass}
             >
-              Start an initiative
-            </a>
-          </p>
-        )}
-        <DndContext {...dnd.dndContextProps}>
-          <ul
-            aria-label="Initiatives"
-            className="m-0 list-none p-0"
-            onClickCapture={dnd.onClickCapture}
-            onKeyDown={dnd.onEscape}
-          >
-            {displayed.map((p, index) => {
-              const threads = projectThreads(p, native.threads);
-              const status = projectStatus(p, threads, client.drafts);
-              const coordinator = p.nodes.find(
-                (n) => n.role === "coordinator",
-              );
-              const active =
-                threads.some((t) => t.id === props.activeThreadId) ||
-                p.nodes.some((n) => n.threadId === props.activeThreadId);
-              const metadata = [
-                needsYou(p) ? `${needsYou(p)} need${needsYou(p) === 1 ? "s" : ""} you` : null,
-                p.inFlight ? `${p.inFlight} in flight` : null,
-                p.remaining ? `${p.remaining} remaining` : null,
-                p.revisit ? `${p.revisit} to revisit` : null,
-                p.paused ? "Paused" : null,
-              ]
-                .filter(Boolean)
-                .join(" · ");
-              return (
-                <ProjectRow
-                  key={p.id}
-                  project={p}
-                  href={
-                    p.coordinatorThreadId && coordinator
-                      ? `/projects/${coordinator.bbProjectId}/threads/${p.coordinatorThreadId}`
-                      : `${INITIATIVES_PANEL}/${p.id}`
-                  }
-                  canReorder={displayed.length > 1}
-                  active={active}
-                  status={status}
-                  metadata={metadata}
-                  dropTarget={overId === p.id && dragId !== p.id}
-                  onOpen={(event) => {
-                    if (
-                      event.metaKey ||
-                      event.ctrlKey ||
-                      event.shiftKey ||
-                      event.altKey ||
-                      event.button !== 0
-                    )
-                      return;
-                    if (dnd.consumeClickSuppression()) {
-                      event.preventDefault();
-                      return;
-                    }
-                    if (p.coordinatorThreadId) {
-                      event.preventDefault();
-                      navigate.toThread(p.coordinatorThreadId);
-                    }
-                    props.onNavigate();
-                  }}
-                  onOverview={props.onNavigate}
-                  onRename={(name) => renameProject(p.id, name)}
-                  onAppearance={(patch) => restyleProject(p.id, patch)}
-                  onNewThread={props.onNavigate}
-                  onMenuOpen={() => {
-                    dnd.consumeClickSuppression();
-                  }}
-                  isCompactViewport={props.isCompactViewport}
-                />
-              );
-            })}
-          </ul>
-          <DragOverlay dropAnimation={null}>
-            {dragId ? (
-              <ThreadDragOverlay
-                title={
-                  displayed.find((p) => p.id === dragId)?.name ?? "Initiative"
+              <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
+            </button>
+          )
+        }
+      />
+      {error && (
+        <p role="alert" className="px-2 py-1 text-xs text-destructive">
+          {error}{" "}
+          <button className="underline" onClick={() => void refresh()}>
+            Retry
+          </button>
+        </p>
+      )}
+      {order.error && (
+        <p role="alert" className="px-2 py-1 text-xs text-destructive">
+          Could not save the initiative order: {order.error}{" "}
+          <button className="underline" onClick={order.dismissError}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      {notice && (
+        <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
+          {notice}{" "}
+          <button className="underline" onClick={dismissNotice}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      {available === false && (
+        <p className="px-2 py-1 text-xs text-muted-foreground">
+          Install or enable the Initiatives plugin to list Initiatives here.
+        </p>
+      )}
+      {available === null && !error && (
+        <p className="px-2 py-1 text-xs text-muted-foreground">Loading initiatives…</p>
+      )}
+      {available && !projects.length && !submissions.length && (
+        <p className="px-2 py-1 text-xs text-muted-foreground">
+          No initiatives yet.{" "}
+          <button type="button" className="underline" onClick={openCreate}>
+            Start one
+          </button>
+        </p>
+      )}
+      <DndContext {...dnd.dndContextProps}>
+        <ul
+          aria-label="Initiatives"
+          className="m-0 list-none p-0"
+          onClickCapture={dnd.onClickCapture}
+          onKeyDown={dnd.onEscape}
+        >
+          {displayed.map((p) => {
+            const threads = projectThreads(p, native.threads);
+            const status = projectStatus(p, threads, client.drafts);
+            const coordinator = p.nodes.find(
+              (n) => n.role === "coordinator",
+            );
+            const active =
+              threads.some((t) => t.id === props.activeThreadId) ||
+              p.nodes.some((n) => n.threadId === props.activeThreadId);
+            const activity = lastActivity(threads);
+            const summary = [
+              needsYou(p) ? `${needsYou(p)} need${needsYou(p) === 1 ? "s" : ""} you` : null,
+              p.inFlight ? `${p.inFlight} in flight` : null,
+              p.remaining ? `${p.remaining} remaining` : null,
+              p.revisit ? `${p.revisit} to revisit` : null,
+              p.paused ? "Paused" : null,
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <ProjectRow
+                key={p.id}
+                project={p}
+                href={
+                  p.coordinatorThreadId && coordinator
+                    ? `/projects/${coordinator.bbProjectId}/threads/${p.coordinatorThreadId}`
+                    : `${INITIATIVES_PANEL}/${p.id}`
                 }
+                canReorder={displayed.length > 1}
+                active={active}
+                status={status}
+                summary={summary}
+                age={activity === null ? null : relativeAge(activity, now)}
+                dropTarget={overId === p.id && dragId !== p.id}
+                onOpen={(event) => {
+                  if (
+                    event.metaKey ||
+                    event.ctrlKey ||
+                    event.shiftKey ||
+                    event.altKey ||
+                    event.button !== 0
+                  )
+                    return;
+                  if (dnd.consumeClickSuppression()) {
+                    event.preventDefault();
+                    return;
+                  }
+                  if (p.coordinatorThreadId) {
+                    event.preventDefault();
+                    navigate.toThread(p.coordinatorThreadId);
+                  }
+                  props.onNavigate();
+                }}
+                onOverview={props.onNavigate}
+                onRename={(name) => renameProject(p.id, name)}
+                onAppearance={(patch) => restyleProject(p.id, patch)}
+                onNewThread={props.onNavigate}
+                onMenuOpen={() => {
+                  dnd.consumeClickSuppression();
+                }}
+                isCompactViewport={props.isCompactViewport}
               />
-            ) : null}
-          </DragOverlay>
-        </DndContext>
-        {selected && (
-          <ProjectThreads
-            project={selected}
-            threads={native.threads}
-            projects={native.projects}
-            activeThreadId={props.activeThreadId}
-            onNavigate={props.onNavigate}
-            onError={report}
-          />
-        )}
-      </div>
-    </div>
+            );
+          })}
+          {submissions.map(({ key, draft, error: failure }) => (
+            <li
+              key={key}
+              data-initiative-submission={failure ? "failed" : "pending"}
+              className="flex min-h-7 items-center gap-2 rounded-md px-2 py-1 text-[13px] leading-5"
+            >
+              <span aria-hidden="true" className="flex size-4 shrink-0 items-center justify-center text-[var(--subtle-foreground)]">
+                <HostIcon
+                  name={failure ? "AlertCircle" : "Loading"}
+                  fallback="Circle"
+                  className={`size-3.5 ${failure ? "text-destructive" : "animate-spin"}`}
+                />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-muted-foreground">
+                  {draft.name}
+                </span>
+                {failure && (
+                  <span role="alert" className="block text-xs text-destructive">
+                    {failure}
+                  </span>
+                )}
+              </span>
+              {failure ? (
+                <>
+                  <button
+                    type="button"
+                    className="shrink-0 text-xs underline"
+                    onClick={() => setEditing({ key, ...draft })}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Dismiss ${draft.name}`}
+                    className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => dismissSubmission(key)}
+                  >
+                    <HostIcon name="X" className="size-3.5" />
+                  </button>
+                </>
+              ) : (
+                <span className="shrink-0 text-xs text-[var(--subtle-foreground)]">
+                  Creating…
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        <DragOverlay dropAnimation={null}>
+          {dragId ? (
+            <ThreadDragOverlay
+              title={
+                displayed.find((p) => p.id === dragId)?.name ?? "Initiative"
+              }
+            />
+          ) : null}
+        </DragOverlay>
+      </DndContext>
+      <CreateInitiativeDialog
+        draft={dialogDraft}
+        projects={memberChoices}
+        onSubmit={submit}
+        onClose={() => setEditing(null)}
+      />
+    </section>
   );
 }
 
 /**
- * One flat project row. The row itself is the drag handle (mouse drag after a
+ * One dense Initiative row: icon in its hue, name, status, and the age of its
+ * last activity, which a New thread link replaces on hover. The row itself is
+ * the drag handle (mouse drag after a
  * few pixels, touch after a short hold with movement — a flick still scrolls,
  * a stationary long press opens the context menu instead). Right-click, the
  * ContextMenu/Shift+F10 keys, or the long press offer New thread, Rename and
@@ -443,7 +551,8 @@ function ProjectRow({
   canReorder,
   active,
   status,
-  metadata,
+  summary,
+  age,
   dropTarget,
   onOpen,
   onOverview,
@@ -458,7 +567,10 @@ function ProjectRow({
   canReorder: boolean;
   active: boolean;
   status: ReturnType<typeof projectStatus>;
-  metadata: string;
+  /** Counts for the tooltip: what needs you, what is in flight. */
+  summary: string;
+  /** Time since the Initiative's threads last changed, or null. */
+  age: string | null;
   dropTarget: boolean;
   onOpen: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
   onOverview: () => void;
@@ -532,7 +644,7 @@ function ProjectRow({
       ref={droppable.setNodeRef}
       data-project-row={project.id}
       data-drop-target={dropTarget ? "" : undefined}
-      className={`relative mb-1 rounded-lg ${dropTarget ? "ring-1 ring-ring" : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
+      className={`relative rounded-md ${dropTarget ? "ring-1 ring-ring" : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
     >
       <div className="group relative flex items-center gap-1">
         {editing ? (
@@ -614,7 +726,7 @@ function ProjectRow({
                 aria-haspopup="menu"
                 aria-current={active ? "page" : undefined}
                 data-project-status={status}
-                title={project.objective}
+                title={[project.objective, summary].filter(Boolean).join("\n")}
                 onPointerDown={(event) => {
                   suppressClick.current = false;
                   longPress.onPointerDown(event);
@@ -653,31 +765,50 @@ function ProjectRow({
                 // A held finger should start the drag, never the link callout
                 // or a text selection.
                 style={{ WebkitTouchCallout: "none" }}
-                className={entryRowClass(active)}
+                className={`flex min-h-7 min-w-0 flex-1 select-none items-center gap-2 rounded-md px-2 py-1 text-[13px] leading-5 no-underline outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-9 ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
               >
-                <EntryRowBody
-                  hue={hue}
-                  icon={appearanceIcon(project.appearance?.icon)}
-                  fallback="Folder"
-                  title={project.name}
-                  metadata={metadata}
+                <span
+                  aria-hidden="true"
+                  data-project-hue={hue}
+                  data-project-icon={appearanceIcon(project.appearance?.icon)}
+                  className="flex size-4 shrink-0 items-center justify-center"
                 >
-                  {status !== "done" && (
-                    <span
-                      aria-label={
-                        status === "attention"
-                          ? "Needs you"
-                          : status === "unread"
+                  <HostIcon
+                    name={appearanceIcon(project.appearance?.icon)}
+                    fallback="Folder"
+                    className="size-3.5"
+                  />
+                </span>
+                <span
+                  className={`min-w-0 flex-1 truncate ${project.paused ? "text-muted-foreground" : ""}`}
+                >
+                  {project.name}
+                </span>
+                {status !== "done" && (
+                  <span
+                    role="img"
+                    className="flex shrink-0 items-center"
+                    aria-label={
+                      status === "attention"
+                        ? "Needs you"
+                        : status === "unread"
                           ? "Unread"
                           : status === "working"
                             ? "Working"
                             : "Draft"
-                      }
-                    >
-                      <StatusIcon status={status} size="small" />
-                    </span>
-                  )}
-                </EntryRowBody>
+                    }
+                  >
+                    <StatusIcon status={status} size="small" />
+                  </span>
+                )}
+                {age && (
+                  <span
+                    data-initiative-age=""
+                    className={`w-7 shrink-0 text-right text-xs tabular-nums text-[var(--subtle-foreground)] ${isCompactViewport ? "" : "group-hover:invisible group-focus-within:invisible"}`}
+                  >
+                    {age}
+                  </span>
+                )}
               </a>
             </ContextMenu.Trigger>
             <ContextMenu.Portal>
@@ -734,151 +865,21 @@ function ProjectRow({
             </ContextMenu.Portal>
           </ContextMenu.Root>
         )}
-        {!editing && !styling && (
+        {!editing && !styling && !isCompactViewport && (
+          // Desktop only: on touch, the row menu's New thread stands in, so
+          // the row stays one dense line.
           <UrlLink
             href={composeHref}
             data-initiative-new-thread={project.id}
             aria-label={`New thread in ${project.name}`}
             title="New thread"
             onClick={onNewThread}
-            className={`flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring ${isCompactViewport ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}
+            className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 group-focus-within:opacity-100"
           >
-            <HostIcon name="Plus" fallback="FolderPlus" className="size-4" />
+            <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
           </UrlLink>
         )}
       </div>
     </li>
-  );
-}
-
-/**
- * The opened project's live worker threads, under the flat project list.
- * Native thread rows carry their real statuses and navigation; an empty
- * result renders nothing at all.
- */
-function ProjectThreads({
-  project,
-  threads,
-  projects,
-  activeThreadId,
-  onNavigate,
-  onError,
-}: {
-  project: ProjectTree["projects"][number];
-  threads: ReturnType<typeof experimental_useSidebarThreads>["threads"];
-  projects: ReturnType<typeof experimental_useSidebarThreads>["projects"];
-  activeThreadId: string | null;
-  onNavigate: () => void;
-  onError: (error: unknown) => void;
-}) {
-  const client = useClientState();
-  const { providers } = experimental_useProviders();
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  const nodes = useMemo(
-    () =>
-      currentProjectThreads(
-        project,
-        threads,
-        client.drafts,
-        client.sortBy,
-        client.sortDirection,
-      ),
-    [
-      project,
-      threads,
-      client.drafts,
-      client.sortBy,
-      client.sortDirection,
-    ],
-  );
-  const listedIds = useMemo(() => {
-    const ids: string[] = [];
-    const collect = (list: readonly ThreadNode[]) => {
-      for (const node of list) {
-        ids.push(node.thread.id);
-        collect(node.children);
-      }
-    };
-    collect(nodes);
-    return ids;
-  }, [nodes]);
-  const branchPrEligible = useBranchPullRequestEligibility(listedIds);
-  const providerNames = new Map(
-    providers.map((provider) => [provider.id, provider.displayName]),
-  );
-  const providerRecords = new Map<string, ProviderIconRecord>(
-    providers.map((provider) => [provider.id, provider]),
-  );
-  const projectNames = new Map(
-    projects.map((entry) => [entry.id, projectLabel(entry)]),
-  );
-  const titles = new Map(
-    threads.map((thread) => [thread.id, threadTitle(thread)]),
-  );
-  if (!nodes.length) return null;
-  const renderRow = (node: ThreadNode, depth = 0): ReactNode => (
-    <ThreadRow
-      key={node.thread.id}
-      now={now}
-      sortBy={client.sortBy}
-      thread={node.thread}
-      status={node.status}
-      title={
-        node.identity
-          ? `${node.identity.worker} ${node.identity.label}`
-          : undefined
-      }
-      depth={depth}
-      project={
-        projectNames.get(node.thread.projectId) ?? "Unknown project"
-      }
-      showProject
-      provider={
-        providerNames.get(node.thread.providerId) ?? node.thread.providerId
-      }
-      providerRecord={
-        providerRecords.get(node.thread.providerId) ?? {
-          id: node.thread.providerId,
-        }
-      }
-      parent={
-        node.thread.parentThreadId
-          ? titles.get(node.thread.parentThreadId)
-          : undefined
-      }
-      active={activeThreadId === node.thread.id}
-      libraryAction={null}
-      branchPullRequestEligible={branchPrEligible.get(node.thread.id)}
-      onNavigate={onNavigate}
-      onError={onError}
-    >
-      {node.children.length > 0 && (
-        <ThreadChildren
-          nodes={node.children}
-          parentTitle={threadTitle(node.thread)}
-          depth={depth + 1}
-          activeThreadId={activeThreadId}
-          renderRow={renderRow}
-        />
-      )}
-    </ThreadRow>
-  );
-  return (
-    <section
-      aria-label={`Threads in ${project.name}`}
-      data-project-threads={project.id}
-      className="mt-3 border-t border-border pt-2"
-    >
-      <p className="px-3 pb-1 text-xs font-medium text-[var(--subtle-foreground)]">
-        {project.name}
-      </p>
-      <ul className="m-0 list-none p-0">
-        {nodes.map((node) => renderRow(node))}
-      </ul>
-    </section>
   );
 }
