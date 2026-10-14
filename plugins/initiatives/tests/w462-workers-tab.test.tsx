@@ -57,7 +57,12 @@ function fleet() {
   ];
   o.workers.retired = [worker("W0", { label: "Clerk follow-up", state: "retired" })];
   o.workerWaiting = Object.fromEntries(o.workers.current.map((w) => [w.ref, { on: null, checked: true, children: 0 }]));
+  // W1's blocker is open in the Inbox: it needs the user.
+  o.blockers = [blocker("W1", "Pages or a queue?")];
   return o;
+}
+function blocker(ref: string, question: string, answer: Overview["blockers"][number]["answer"] = null): Overview["blockers"][number] {
+  return { assignment: "A9", role: "work", tasks: [], owner: { worker: ref, label: `${ref} label`, threadId: `thr_${ref}` }, question, context: "", reportedAt: NOW - 3_600_000, answer };
 }
 function mount(o: Overview, command = vi.fn().mockResolvedValue({}), overview = () => o) {
   const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview, command,
@@ -75,19 +80,22 @@ const sent = (command: ReturnType<typeof vi.fn>, n = 0) => command.mock.calls[n]
 const items = (slot: ReturnType<typeof renderSlot>) => slot.getAllByRole("menuitem").map((b) => b.textContent);
 
 describe("W462 grouping and rows", () => {
-  it("keeps what deserves a look in Needs you and moves quiet workers with nothing open to Idle", async () => {
+  it("keeps open blockers in Needs you, ended work in Stopped, and quiet workers with nothing open in Idle", async () => {
     const { slot } = await workersTab();
-    expect(slot.getByText("1 working · 2 need you · 1 done · 2 idle")).toBeTruthy();
+    expect(slot.getByText("1 working · 1 needs you · 1 done · 2 stopped · 1 idle")).toBeTruthy();
     const rows = (group: string) => within(slot.getByRole("region", { name: group })).getAllByRole("button", { name: /^W\d+ / }).map((b) => b.getAttribute("aria-label"));
-    expect(rows("Needs you")).toEqual(["W1 PDF perf", "W2 Stalled fix"]);
-    expect(rows("Idle · nothing open")).toEqual(["W3 #3058 fresh review", "W4 Old fixer"]);
+    expect(rows("Needs you")).toEqual(["W1 PDF perf"]);
+    expect(rows("Stopped")).toEqual(["W2 Stalled fix", "W4 Old fixer"]);
+    expect(rows("Idle · nothing open")).toEqual(["W3 #3058 fresh review"]);
     const needs = within(slot.getByRole("region", { name: "Needs you" }));
     expect(needs.getByText("Blocked: Pages or a queue?")).toBeTruthy();
-    expect(needs.getByText("Idle without a report")).toBeTruthy();
     expect(needs.queryByRole("button", { name: "Retire all" })).toBeNull();
+    const stopped = within(slot.getByRole("region", { name: "Stopped" }));
+    expect(stopped.getByText("Idle without a report")).toBeTruthy();
+    expect(stopped.getByText("Stopped: Superseded by W9")).toBeTruthy();
+    expect(stopped.getByRole("button", { name: "Retire all" })).toBeTruthy();
     const idle = within(slot.getByRole("region", { name: "Idle · nothing open" }));
     expect(idle.getByText("No report")).toBeTruthy();
-    expect(idle.getByText("Stopped: Superseded by W9")).toBeTruthy();
     expect(idle.getByRole("button", { name: "Retire all" })).toBeTruthy();
   });
 
@@ -150,7 +158,7 @@ describe("W462 row click and menu", () => {
     fireEvent.click(slot.getByRole("menuitem", { name: "Retire W3" }));
     await waitFor(() => expect(slot.queryByRole("menu")).toBeNull());
     expect(sent(command)).toEqual({ action: "worker-retire", worker: "W3", reason: "Retired from the Workers tab." });
-    expect(document.activeElement).toBe(row);
+    expect(slot.queryByRole("button", { name: "W3 #3058 fresh review" })).toBeNull();
 
     // A Stop BB partly refused says so and stays open.
     fireEvent.contextMenu(slot.getByRole("button", { name: "W5 Live work" }));
@@ -165,7 +173,7 @@ describe("W462 row click and menu", () => {
   it("a Stop warning stays shown when the stopped worker moves to another group", async () => {
     let o = fleet();
     const command = vi.fn(async () => {
-      // The turn ends but a child could not be checked: the refresh moves W5 from Working to Idle.
+      // The turn ends but a child could not be checked: the refresh moves W5 from Working to Stopped.
       o = { ...o, workers: { ...o.workers, current: o.workers.current.map((w) => w.ref === "W5" ? { ...w, runtime: "idle", open: null, stopReason: "Stopped from the Workers tab." } : w) } };
       return { worker: "W5", stoppedChildren: 0, unverified: "its child threads could not be listed (BB unavailable)" };
     });
@@ -173,9 +181,9 @@ describe("W462 row click and menu", () => {
     fireEvent.contextMenu(slot.getByRole("button", { name: "W5 Live work" }));
     fireEvent.click(slot.getByRole("menuitem", { name: "Stop…" }));
     fireEvent.click(slot.getByRole("menuitem", { name: "Stop W5" }));
-    const idle = () => within(slot.getByRole("region", { name: "Idle · nothing open" }));
-    await waitFor(() => expect(idle().getByRole("button", { name: "W5 Live work" })).toBeTruthy());
-    expect(idle().getByRole("alert").textContent).toBe("Some work may still run: not checked: its child threads could not be listed (BB unavailable).");
+    const stopped = () => within(slot.getByRole("region", { name: "Stopped" }));
+    await waitFor(() => expect(stopped().getByRole("button", { name: "W5 Live work" })).toBeTruthy());
+    expect(stopped().getByRole("alert").textContent).toBe("Some work may still run: not checked: its child threads could not be listed (BB unavailable).");
     expect(slot.queryByRole("region", { name: "Working" })).toBeNull();
   });
 
@@ -289,7 +297,7 @@ describe("W462 row click and menu", () => {
     expect(document.activeElement).toBe(idle().getByRole("button", { name: "W5 Live work" }));
   });
 
-  it("a Retire whose refresh folds the worker under a closed Earlier gives focus to Earlier", async () => {
+  it("a Retire whose refresh folds the worker under a closed Earlier leaves focus on the row before it", async () => {
     let o = fleet();
     const command = vi.fn(async () => {
       const w3 = o.workers.current.find((w) => w.ref === "W3")!;
@@ -303,7 +311,8 @@ describe("W462 row click and menu", () => {
     const earlier = () => slot.getByText("Earlier").closest("summary")!;
     await waitFor(() => expect(earlier().closest("details")!.querySelector('[data-worker="W3"]')).toBeTruthy());
     expect((earlier().closest("details") as HTMLDetailsElement).open).toBe(false);
-    expect(document.activeElement).toBe(earlier());
+    // W3 was the last row: the one before it keeps the focus, not Earlier's header.
+    expect(document.activeElement).toBe(slot.getByRole("button", { name: "W4 Old fixer" }));
   });
 
   it("a moved row does not take focus back once the reader has moved on", async () => {
@@ -440,7 +449,7 @@ describe("W462 child threads only where the cache knows some", () => {
     o.workerWaiting!.W6 = { on: null, checked: true, children: 2 };
     o.workerWaiting!.W3 = { on: null, checked: false, children: null };
     const { slot } = await workersTab(o);
-    const folds = slot.getAllByRole("button", { name: "Child threads" }).map((b) => b.closest("li")!.querySelector(".cr-w-row")!.getAttribute("aria-label"));
+    const folds = slot.getAllByRole("button", { name: "2 child threads" }).map((b) => b.closest("li")!.querySelector(".cr-w-row")!.getAttribute("aria-label"));
     expect(folds).toEqual(["W6 Enum cleanup"]);
     const details = (name: string, ref: string) => {
       fireEvent.contextMenu(slot.getByRole("button", { name }));
@@ -454,52 +463,56 @@ describe("W462 child threads only where the cache knows some", () => {
 });
 
 describe("W462 Retire all", () => {
-  it("confirms the count shown, retires that snapshot one by one, and reports each refusal", async () => {
+  it("confirms the count shown, retires that snapshot one by one, hides each retired row and reports each refusal", async () => {
     let o = fleet();
     let release!: () => void;
     const command = vi.fn(async (input: { command: { worker: string } }) => {
-      if (input.command.worker === "W3") {
-        // A worker that turns idle meanwhile is not part of the batch.
-        o = { ...o, workers: { ...o.workers, current: [...o.workers.current, worker("W8", { label: "Late idle" })] } };
+      if (input.command.worker === "W2") {
+        // A worker that stops meanwhile is not part of the batch.
+        o = { ...o, workers: { ...o.workers, current: [...o.workers.current, worker("W8", { label: "Late stop", stopReason: "Stopped: replaced" })] } };
         await new Promise<void>((resolve) => { release = resolve; });
         return {};
       }
       throw new Error("W4 cannot retire while an operation is unconfirmed.");
     });
     const { slot } = await workersTab(o, command, () => o);
-    const idle = () => within(slot.getByRole("region", { name: "Idle · nothing open" }));
-    fireEvent.click(idle().getByRole("button", { name: "Retire all" }));
-    expect(idle().getByText("Retire 2 workers? Their threads are archived.")).toBeTruthy();
-    fireEvent.click(idle().getByRole("button", { name: "Cancel" }));
-    fireEvent.click(idle().getByRole("button", { name: "Retire all" }));
-    fireEvent.click(idle().getByRole("button", { name: "Retire 2" }));
-    expect((await idle().findByRole("status")).textContent).toBe("Retiring 1 of 2…");
+    const stopped = () => within(slot.getByRole("region", { name: "Stopped" }));
+    fireEvent.click(stopped().getByRole("button", { name: "Retire all" }));
+    expect(stopped().getByText("Retire 2 workers? Their threads are archived.")).toBeTruthy();
+    fireEvent.click(stopped().getByRole("button", { name: "Cancel" }));
+    fireEvent.click(stopped().getByRole("button", { name: "Retire all" }));
+    expect(stopped().getByRole("group", { name: "Retire stopped workers" })).toBeTruthy();
+    fireEvent.click(stopped().getByRole("button", { name: "Retire 2" }));
+    expect((await stopped().findByRole("status")).textContent).toBe("Retiring 1 of 2…");
     release();
-    expect((await idle().findByRole("alert")).textContent).toBe("1 worker not retired: W4 (W4 cannot retire while an operation is unconfirmed.) Dismiss");
+    expect((await stopped().findByRole("alert")).textContent).toBe("1 worker not retired: W4 (W4 cannot retire while an operation is unconfirmed.) Dismiss");
     expect(command.mock.calls.map((call) => call[0].command)).toEqual([
-      { action: "worker-retire", worker: "W3", reason: "Idle with nothing open; retired in bulk from the Workers tab." },
-      { action: "worker-retire", worker: "W4", reason: "Idle with nothing open; retired in bulk from the Workers tab." },
+      { action: "worker-retire", worker: "W2", reason: "Stopped and not picked up; retired in bulk from the Workers tab." },
+      { action: "worker-retire", worker: "W4", reason: "Stopped and not picked up; retired in bulk from the Workers tab." },
     ]);
-    fireEvent.click(idle().getByRole("button", { name: "Dismiss" }));
-    expect(idle().queryByRole("alert")).toBeNull();
+    // W2 is still current in the dashboard, but its retire succeeded: its row is gone already.
+    expect(o.workers.current.some((w) => w.ref === "W2")).toBe(true);
+    expect(slot.queryByRole("button", { name: "W2 Stalled fix" })).toBeNull();
+    expect(stopped().getByRole("button", { name: "W4 Old fixer" })).toBeTruthy();
+    fireEvent.click(stopped().getByRole("button", { name: "Dismiss" }));
+    expect(stopped().queryByRole("alert")).toBeNull();
   });
 
   it("the report stays when the retired workers have left the Idle group", async () => {
     let o = fleet();
-    o.workers.current = o.workers.current.filter((w) => w.ref !== "W4");
     const command = vi.fn(async () => {
       // The worker opened work meanwhile: it leaves Idle, and the retire is refused.
-      o = { ...o, workers: { ...o.workers, current: o.workers.current.map((w) => w.ref === "W3" ? { ...w, open: { ref: "A30", state: "running", tasks: [] } } : w) } };
+      o = { ...o, workers: { ...o.workers, current: o.workers.current.map((w) => w.ref === "W3" ? { ...w, runtime: "active", open: { ref: "A30", state: "running", tasks: [] } } : w) } };
       throw new Error("W3 still has A30 open (running).");
     });
     const { slot } = await workersTab(o, command, () => o);
-    fireEvent.click(slot.getByRole("button", { name: "Retire all" }));
-    fireEvent.click(slot.getByRole("button", { name: "Retire 1" }));
-    await waitFor(() => expect(within(slot.getByRole("region", { name: "Needs you" })).getByRole("button", { name: "W3 #3058 fresh review" })).toBeTruthy());
-    const idle = within(slot.getByRole("region", { name: "Idle · nothing open" }));
-    expect(idle.getByRole("alert").textContent).toMatch(/^1 worker not retired: W3 \(W3 still has A30 open/);
-    expect(idle.queryByRole("button", { name: "Retire all" })).toBeNull();
-    fireEvent.click(idle.getByRole("button", { name: "Dismiss" }));
+    const idle = () => within(slot.getByRole("region", { name: "Idle · nothing open" }));
+    fireEvent.click(idle().getByRole("button", { name: "Retire all" }));
+    fireEvent.click(idle().getByRole("button", { name: "Retire 1" }));
+    await waitFor(() => expect(within(slot.getByRole("region", { name: "Working" })).getByRole("button", { name: "W3 #3058 fresh review" })).toBeTruthy());
+    expect(idle().getByRole("alert").textContent).toMatch(/^1 worker not retired: W3 \(W3 still has A30 open/);
+    expect(idle().queryByRole("button", { name: "Retire all" })).toBeNull();
+    fireEvent.click(idle().getByRole("button", { name: "Dismiss" }));
     expect(slot.queryByRole("region", { name: "Idle · nothing open" })).toBeNull();
   });
 });

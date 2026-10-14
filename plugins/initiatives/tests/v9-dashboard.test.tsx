@@ -30,7 +30,7 @@ const worker = (ref: string, over: Partial<WorkerItem> = {}): WorkerItem => ({
   lead: null, open: null, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
 });
 const child = (threadId: string, title: string, status: string, ago = 6): WorkerChild => ({
-  threadId, title, status, archived: false, running: status === "active" ? "active" : null, providerId: "codex", updatedAt: NOW - ago * 60_000,
+  threadId, title, status, archived: false, running: status === "active" ? "active" : null, providerId: "codex", updatedAt: NOW - ago * 60_000, children: 0,
 });
 // The live child pages childPage answers, by parent thread.
 const CHILDREN: Record<string, WorkerChild[]> = {
@@ -77,6 +77,8 @@ describe("v9 Workers tab", () => {
       W1420: { on: { threadId: "thr_r3", title: "Review r3 #2631", running: "active", since: NOW - 6 * 60_000 }, checked: true },
       W1373: { on: null, checked: true, children: 2 },
     };
+    o.blockers = [{ assignment: "A9", role: "work", tasks: [], owner: { worker: "W1406", label: "PDF Worker perf", threadId: "thr_W1406" },
+      question: "Split rendering into pages or move to a queue consumer?", context: "", reportedAt: NOW - 3_600_000, answer: null }];
     o.tasks = [{ ref: "T163", title: "Human-steps query double-counts", status: "in_progress", statusReason: "W1420 on A1641", setByHand: false, summary: "", workers: ["W1420", "W1425"], updatedAt: NOW }];
     return o;
   }
@@ -85,16 +87,18 @@ describe("v9 Workers tab", () => {
     const { slot } = mount(fleet());
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
     expect(slot.getByRole("tab", { name: /Workers/ }).textContent).toBe("Workers5");
-    expect(slot.getByText("1 working · 1 waiting on a child · 2 need you · 1 done · 7.9M tokens")).toBeTruthy();
+    expect(slot.getByText("1 working · 1 waiting on a child · 1 needs you · 1 done · 1 stopped · 7.9M tokens")).toBeTruthy();
     const rows = (group: string) => within(slot.getByRole("region", { name: group })).getAllByRole("button", { name: /^W\d+ / }).map((b) => b.getAttribute("aria-label"));
-    expect(rows("Needs you")).toEqual(["W1406 PDF Worker perf", "W1247 Catalog binding fixes"]);
+    expect(rows("Needs you")).toEqual(["W1406 PDF Worker perf"]);
+    expect(rows("Stopped")).toEqual(["W1247 Catalog binding fixes"]);
     expect(rows("Working")).toEqual(["W1425 Slot safety fixes"]);
     expect(rows("Waiting")).toEqual(["W1420 Human-steps SQL fix"]);
     expect(rows("Done · PR waiting")).toEqual(["W1373 Enum cleanup"]);
     const needs = slot.getByRole("region", { name: "Needs you" });
     expect(within(needs).getByText("Blocked: Split rendering into pages or move to a queue consumer?")).toBeTruthy();
-    expect(within(needs).getByText("Thread failed: provider 529")).toBeTruthy();
-    expect(within(needs).getByText("#2500")).toBeTruthy();
+    const stopped = slot.getByRole("region", { name: "Stopped" });
+    expect(within(stopped).getByText("Thread failed: provider 529")).toBeTruthy();
+    expect(within(stopped).getByText("#2500")).toBeTruthy();
     const working = slot.getByRole("region", { name: "Working" });
     expect(within(working).getByText("Running")).toBeTruthy();
     expect(within(working).getByText("from Wallet audit")).toBeTruthy();
@@ -118,7 +122,7 @@ describe("v9 Workers tab", () => {
     // W1373 reported done: its children are read when asked for.
     const done = slot.getByRole("region", { name: "Done · PR waiting" });
     expect(within(done).queryByRole("button", { name: "Open Review r1 #2544" })).toBeNull();
-    fireEvent.click(within(done).getByRole("button", { name: "Child threads" }));
+    fireEvent.click(within(done).getByRole("button", { name: "2 child threads" }));
     fireEvent.click(await within(done).findByRole("button", { name: "Open Review r1 #2544" }));
     expect(slot.navigateCalls.at(-1)).toEqual({ method: "toThread", threadId: "thr_r1" });
     expect(command).not.toHaveBeenCalled();

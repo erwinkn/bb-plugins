@@ -915,7 +915,7 @@ function HandoffActions({ assignment, readHandoff }: { assignment: string; readH
 
 // ---- Workers (v9 §10.1): the one place every worker and its child threads are reached.
 
-type WorkerGroup = "needs" | "working" | "waiting" | "done" | "idle" | "earlier";
+type WorkerGroup = "needs" | "working" | "waiting" | "done" | "stopped" | "idle" | "earlier";
 /** A worker as the Workers tab shows it: its group, and why, in words from its records. */
 interface WorkerView {
   w: WorkerItem;
@@ -937,33 +937,42 @@ const childStatus = (status: string) => (status === "active" ? "running" : statu
 const UNCHECKED = " · child threads not checked yet";
 
 /**
- * Needs you holds what deserves a look: a failed thread, a blocked or failed report, open work
- * whose thread went quiet without reporting. Idle holds the quiet rest, nothing open and no
- * report (or a stop): usually superseded workers nobody retired, safe to retire in bulk.
+ * Needs you holds only what waits on the user: a worker's open blocker they have neither answered
+ * nor dismissed, the rule the Inbox and its Needs you count follow (needsYouCount). Stopped holds
+ * work that ended without finishing and that nothing has picked up: a failed thread, stopped or
+ * cancelled work, open work whose thread went quiet without reporting, a failed report, a blocker
+ * already answered or dismissed. Idle holds the quiet rest, nothing open, no report and no stop.
+ * Both are usually superseded workers nobody retired, safe to retire in bulk.
  */
-function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: number | null): WorkerView {
+function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: number | null, blocker: BlockerItem | null): WorkerView {
   const report = w.latestReport;
   const live = waiting?.on ?? null;
   const unchecked = waiting && !waiting.checked ? UNCHECKED : "";
   const thread = w.runtime === "idle" ? "" : ` · thread ${w.runtime}`;
   const base = { w, waiting, since: openSince ?? w.since ?? report?.reportedAt ?? null, tone: null };
+  const stopped = w.stopReason ? `Stopped: ${w.stopReason.replace(/^Stopped: /, "")}` : null;
   if (w.state === "retired")
     return { ...base, group: "earlier", status: report ? `Retired · ${report.outcome}: ${firstLine(report.summary)}` : "Retired" };
-  if (FAILED_THREAD.has(w.runtime))
-    return { ...base, group: "needs", tone: "error", status: `Thread failed${w.stopReason ? `: ${w.stopReason}` : ""}` };
+  if (blocker && !blocker.answer)
+    return { ...base, group: "needs", tone: "warn", status: `Blocked: ${firstLine(blocker.question)}` };
   if (BUSY_THREAD.has(w.runtime))
     return { ...base, group: "working", status: "Running" };
   if (live)
     return { ...base, group: "waiting", status: `Waiting on “${live.title}” (${childStatus(live.running)} ${compactAge(live.since)})` };
-  if (!w.open && report?.outcome === "done")
-    return { ...base, group: "done", status: `Done: ${firstLine(report.summary)}${unchecked}` };
-  if (!w.open && report) {
-    const word = report.outcome === "failed" ? "Failed" : "Blocked";
-    return { ...base, group: "needs", tone: report.outcome === "failed" ? "error" : "warn", status: `${word}: ${firstLine(report.question ?? report.summary)}` };
-  }
+  if (FAILED_THREAD.has(w.runtime))
+    return { ...base, group: "stopped", tone: "error", status: `Thread failed${w.stopReason ? `: ${w.stopReason}` : ""}` };
   if (w.open)
-    return { ...base, group: "needs", tone: "warn", status: `${w.stopReason ? `Stopped: ${w.stopReason}` : "Idle without a report"}${thread}${unchecked}` };
-  return { ...base, group: "idle", status: `${w.stopReason ? `Stopped: ${w.stopReason}` : "No report"}${thread}${unchecked}` };
+    return { ...base, group: "stopped", tone: "warn", status: `${stopped ?? "Idle without a report"}${thread}${unchecked}` };
+  if (stopped)
+    return { ...base, group: "stopped", status: `${stopped}${thread}${unchecked}` };
+  if (report?.outcome === "done")
+    return { ...base, group: "done", status: `Done: ${firstLine(report.summary)}${unchecked}` };
+  if (report) {
+    const failed = report.outcome === "failed";
+    const answered = blocker ? " · answered" : "";
+    return { ...base, group: "stopped", tone: failed ? "error" : null, status: `${failed ? "Failed" : "Blocked"}: ${firstLine(report.question ?? report.summary)}${answered}${thread}${unchecked}` };
+  }
+  return { ...base, group: "idle", status: `No report${thread}${unchecked}` };
 }
 
 const prNumber = (url: string) => /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
@@ -992,9 +1001,14 @@ const GROUPS: [WorkerGroup, string][] = [
   ["working", "Working"],
   ["waiting", "Waiting"],
   ["done", "Done · PR waiting"],
+  ["stopped", "Stopped"],
   ["idle", "Idle · nothing open"],
 ];
-const BULK_REASON = "Idle with nothing open; retired in bulk from the Workers tab.";
+/** The groups that retire in bulk, with the reason each retirement records. */
+const BULK_REASON = {
+  stopped: "Stopped and not picked up; retired in bulk from the Workers tab.",
+  idle: "Idle with nothing open; retired in bulk from the Workers tab.",
+};
 
 function Workers({
   o,
@@ -1015,9 +1029,13 @@ function Workers({
 }) {
   const since = new Map<string, number>();
   for (const a of o.inFlight) since.set(a.owner.worker, Math.min(since.get(a.owner.worker) ?? Infinity, a.since));
+  const blockers = new Map(o.blockers.map((b) => [b.owner.worker, b]));
   const views = [...o.workers.current, ...o.workers.retired].map((w) =>
-    workerView(w, o.workerWaiting?.[w.ref] ?? null, since.get(w.ref) ?? null));
-  const by = (group: WorkerGroup) => views.filter((v) => v.group === group);
+    workerView(w, o.workerWaiting?.[w.ref] ?? null, since.get(w.ref) ?? null, blockers.get(w.ref) ?? null));
+  const menus = useRowMenus(run);
+  // A worker retired here leaves its group at once; the refresh that follows moves it to Earlier.
+  const listed = views.filter((v) => v.group === "earlier" || !menus.retired.has(v.w.ref));
+  const by = (group: WorkerGroup) => listed.filter((v) => v.group === group);
   const count = (group: WorkerGroup) => by(group).length;
   const tokens = o.workers.current.reduce((sum, w) => sum + (w.tokens ?? 0), 0);
   const summary = [
@@ -1025,32 +1043,36 @@ function Workers({
     count("waiting") ? `${count("waiting")} waiting on a child` : null,
     count("needs") ? `${count("needs")} need${count("needs") === 1 ? "s" : ""} you` : null,
     count("done") ? `${count("done")} done` : null,
+    count("stopped") ? `${count("stopped")} stopped` : null,
     count("idle") ? `${count("idle")} idle` : null,
     tokens ? `${tokenCount(tokens)} tokens` : null,
   ].filter(Boolean).join(" · ");
   const open = views.find((v) => v.w.ref === selected) ?? null;
-  const bulk = useBulkRetire(run);
-  const menus = useRowMenus(run);
+  const bulk = { stopped: useBulkRetire(run, menus, BULK_REASON.stopped), idle: useBulkRetire(run, menus, BULK_REASON.idle) };
+  // Once the dashboard no longer lists a hidden worker as current, its retirement is confirmed.
+  useEffect(() => menus.confirm(new Set(o.workers.current.map((w) => w.ref))), [o.workers.current]);
   const row = (v: WorkerView) => (
     <WorkerRow key={v.w.ref} projectId={o.project.id} v={v} selected={v.w.ref === selected} select={() => select(v.w.ref)}
       openThread={openThread} loadChildren={loadChildren} menus={menus} />
   );
   return (
     <div className="cr-split-view" data-detail={open ? "open" : "closed"}>
-      <div className="cr-w-list" ref={menus.list}>
+      {/* Focusable only from script: the last place a retired row hands focus to. */}
+      <div className="cr-w-list" ref={menus.list} tabIndex={-1}>
         {views.length ? <p className="cr-lede">{summary || "No current workers"}</p> : null}
-        {GROUPS.map(([group, title]) =>
-          // Idle stays while its bulk retire runs or has failures to report, emptied or not.
-          count(group) || (group === "idle" && bulk.shown) ? (
+        {GROUPS.map(([group, title]) => {
+          const retire = group === "stopped" || group === "idle" ? bulk[group] : null;
+          // A bulk group stays while its retire runs or has failures to report, emptied or not.
+          return count(group) || retire?.shown ? (
             <section key={group} aria-label={title}>
               <div className="cr-w-group-head">
                 <h2 className="cr-section-heading">{title} <span className="cr-count">{count(group)}</span></h2>
-                {group === "idle" ? <RetireAll bulk={bulk} refs={by("idle").map((v) => v.w.ref)} /> : null}
+                {retire ? <RetireAll bulk={retire} group={group} refs={by(group).map((v) => v.w.ref)} /> : null}
               </div>
               <ul className="cr-w-rows">{by(group).map(row)}</ul>
             </section>
-          ) : null,
-        )}
+          ) : null;
+        })}
         {o.historyLoaded === false ? <p className="project-muted">Loading earlier workers…</p> : count("earlier") ? (
           <details className="cr-earlier">
             <summary>Earlier <span className="cr-count">{count("earlier")}</span></summary>
@@ -1069,25 +1091,30 @@ function Workers({
 }
 
 /**
- * Retire every idle worker the group showed when Retire all was pressed: one worker-retire each,
- * in turn, so a refusal (work opened since, a child still running) leaves the rest retired and is
- * reported by worker. Retired workers move to Earlier as the dashboard refreshes. The state lives
- * with the tab, so the report outlives the Idle group emptying.
+ * Retire every worker a group (Stopped or Idle) showed when Retire all was pressed: one
+ * worker-retire each, in turn, so a refusal (work opened since, a child still running) leaves the
+ * rest retired and is reported by worker. Each retired worker leaves the group at once, as one
+ * retired from its menu does. The state lives with the tab, so the report outlives the group
+ * emptying; focus lost with the group's controls goes to the nearest row outside it.
  */
-function useBulkRetire(run: Run) {
+function useBulkRetire(run: Run, menus: RowMenus, reason: string) {
   const [batch, setBatch] = useState<string[] | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [failed, setFailed] = useState<{ ref: string; error: string }[]>([]);
-  const retire = async (snapshot: string[]) => {
+  const retire = async (snapshot: string[], group: HTMLElement | null) => {
     const failures: { ref: string; error: string }[] = [];
     for (const [index, worker] of snapshot.entries()) {
       setProgress(index);
       try {
-        await run({ action: "worker-retire", worker, reason: BULK_REASON });
+        await run({ action: "worker-retire", worker, reason });
+        menus.hide(worker);
       } catch (error) {
         failures.push({ ref: worker, error: message(error) });
       }
     }
+    const focused = group?.ownerDocument.activeElement;
+    if (group && menus.list.current && (!focused || focused === group.ownerDocument.body || group.contains(focused)))
+      focusNear(menus.list.current, group, menus.leaving);
     setProgress(null);
     setBatch(null);
     setFailed(failures);
@@ -1101,16 +1128,16 @@ function useBulkRetire(run: Run) {
   };
 }
 
-function RetireAll({ bulk, refs }: { bulk: ReturnType<typeof useBulkRetire>; refs: string[] }) {
+function RetireAll({ bulk, group, refs }: { bulk: ReturnType<typeof useBulkRetire>; group: string; refs: string[] }) {
   const { batch, progress, failed } = bulk;
   const n = (count: number) => `${count} worker${count === 1 ? "" : "s"}`;
   if (batch && progress !== null)
     return <p role="status" className="cr-w-bulk">Retiring {progress + 1} of {batch.length}…</p>;
   if (batch)
     return (
-      <div className="cr-w-bulk" role="group" aria-label="Retire idle workers">
+      <div className="cr-w-bulk" role="group" aria-label={`Retire ${group} workers`}>
         <span>Retire {n(batch.length)}? Their threads are archived.</span>
-        <button type="button" className="project-primary" onClick={() => void bulk.retire(batch)}>Retire {batch.length}</button>
+        <button type="button" className="project-primary" onClick={(event) => void bulk.retire(batch, event.currentTarget.closest("section"))}>Retire {batch.length}</button>
         <button type="button" onClick={bulk.cancel}>Cancel</button>
       </div>
     );
@@ -1180,7 +1207,7 @@ function WorkerRow({ projectId, v, selected, select, openThread, loadChildren, m
   const { w } = v;
   // Only a worker the cache knows has children offers them; one waiting on a child shows them open.
   const hasChildren = !!v.waiting?.on || (v.waiting?.children ?? 0) > 0;
-  const [showChildren, setShowChildren] = useState(v.group === "waiting");
+  const [showChildren, setShowChildren] = useState(!!v.waiting?.on);
   const menu = menus.menu?.ref === w.ref ? menus.menu : null;
   const item = useRef<HTMLLIElement>(null);
   // The click that ends a long press (or the press that closes the menu) does not open the thread.
@@ -1251,13 +1278,26 @@ function WorkerRow({ projectId, v, selected, select, openThread, loadChildren, m
       {w.threadId && loadChildren && w.state !== "retired" && hasChildren ? (
         <>
           <button type="button" className="cr-w-fold" aria-expanded={showChildren} onClick={() => setShowChildren(!showChildren)}>
-            Child threads
+            {childThreads(v.waiting?.children ?? null)}
           </button>
           {showChildren ? <ChildTree projectId={projectId} threadId={w.threadId} load={loadChildren} openThread={openThread} /> : null}
         </>
       ) : null}
     </li>
   );
+}
+
+/**
+ * Focuses what follows `from` in the Workers list without scrolling: the next row that stays, else
+ * the one before, else Earlier's header, else the list itself. Rows folded away under a closed
+ * Earlier are skipped, and so are those `gone` says are leaving.
+ */
+function focusNear(list: HTMLElement, from: HTMLElement, gone: (row: HTMLElement) => boolean) {
+  const rows = Array.from(list.querySelectorAll<HTMLElement>(".cr-w-row"))
+    .filter((el) => !gone(el) && !el.closest("details:not([open])"));
+  const after = (el: HTMLElement) => !!(from.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const target = rows.find(after) ?? rows.filter((el) => !after(el)).at(-1) ?? list.querySelector<HTMLElement>(".cr-earlier > summary") ?? list;
+  target.focus({ preventScroll: true });
 }
 
 /** How long a row that got focus back from its menu reclaims it after remounting. */
@@ -1279,6 +1319,10 @@ type RowMenus = ReturnType<typeof useRowMenus>;
 function useRowMenus(run: Run) {
   const [menu, setMenu] = useState<RowMenu | null>(null);
   const [writes, setWrites] = useState<Record<string, RowWrite>>({});
+  // Workers retired here that the dashboard still lists as current: their rows are hidden. The ref
+  // knows at once, before React removes the rows, so focus never goes to one about to leave.
+  const [retired, setRetired] = useState<ReadonlySet<string>>(new Set());
+  const hiding = useRef(new Set<string>());
   const list = useRef<HTMLDivElement>(null);
   const open = useRef(menu);
   open.current = menu;
@@ -1300,22 +1344,44 @@ function useRowMenus(run: Run) {
     }
     return true;
   };
+  const hide = (ref: string) => {
+    hiding.current.add(ref);
+    setRetired((all) => new Set(all).add(ref));
+  };
+  /** Whether a row in the list belongs to a worker retired here, gone or about to go. */
+  const leaving = (row: HTMLElement) => hiding.current.has(row.closest("[data-worker]")?.getAttribute("data-worker") ?? "");
+  /**
+   * A worker retired from its menu leaves the list at once. The focus its row or menu held goes to
+   * the next row, else the one before, without scrolling: never after the worker into Earlier.
+   */
+  const retire = (ref: string) => {
+    const row = list.current?.querySelector<HTMLElement>(`[data-worker="${ref}"]`);
+    const focused = !!row?.contains(row.ownerDocument.activeElement);
+    close(ref, false);
+    if (refocused.current?.ref === ref) refocused.current = null;
+    hide(ref);
+    if (row && focused) focusNear(list.current!, row, leaving);
+  };
   return {
     menu,
     writes,
     list,
     close,
-    /**
-     * A remounted row takes back the focus its menu gave it, unless the reader has moved on; one
-     * now folded away (a retired worker under a closed Earlier) gives it to that fold's summary.
-     */
+    retired,
+    hide,
+    leaving,
+    /** Forgets hidden workers the dashboard no longer lists as current: their retirement has landed. */
+    confirm(current: ReadonlySet<string>) {
+      for (const ref of hiding.current) if (!current.has(ref)) hiding.current.delete(ref);
+      setRetired((all) => ([...all].every((ref) => current.has(ref)) ? all : new Set([...all].filter((ref) => current.has(ref)))));
+    },
+    /** A remounted row takes back the focus its menu gave it, unless the reader has moved on. */
     mounted(ref: string, row: HTMLElement) {
       const last = refocused.current;
       if (last?.ref !== ref || Date.now() > last.until) return;
       const active = row.ownerDocument.activeElement;
       if (active && active !== row.ownerDocument.body) return;
-      const folded = row.closest("details:not([open])");
-      (folded ? folded.querySelector<HTMLElement>(":scope > summary") : row.querySelector<HTMLElement>(".cr-w-row"))?.focus();
+      row.querySelector<HTMLElement>(".cr-w-row")?.focus();
     },
     /** Opens a worker's menu, on the step of a write still pending or not yet seen settled. */
     open(ref: string, x: number, y: number) {
@@ -1337,7 +1403,7 @@ function useRowMenus(run: Run) {
           : { action: "worker-retire", worker: ref, reason: "Retired from the Workers tab." });
         const running = kind === "stop" ? stillRunning(result) : null;
         if (running) patch(ref, id, { busy: false, slow: false, error: running });
-        else { settle(ref, id); close(ref, true); }
+        else { settle(ref, id); if (kind === "retire") retire(ref); else close(ref, true); }
       } catch (error) {
         patch(ref, id, { busy: false, slow: false, error: message(error) });
       } finally {
@@ -1365,7 +1431,8 @@ function WorkerMenu({ v, menu: state, menus, close, openThread, details }: {
   const menu = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState({ left: state.x, top: state.y });
   const retired = w.state === "retired";
-  const canStop = !!w.threadId && !retired && (v.group === "working" || v.group === "waiting" || !!w.open);
+  // From what runs, not the group: a worker that needs you can still have a busy thread or child.
+  const canStop = !!w.threadId && !retired && (BUSY_THREAD.has(w.runtime) || !!v.waiting?.on || !!w.open);
   const write = menus.writes[w.ref];
   // Keep the menu within its row's width and the window's height: below the pointer, above it
   // when it doesn't fit there, else as low as fits; again whenever a message changes its height.
@@ -1485,6 +1552,9 @@ function ChildTree({ projectId, threadId, load, openThread }: { projectId: strin
   );
 }
 
+/** "1 child thread", "3 child threads"; "Child threads" while the cache does not know how many. */
+const childThreads = (n: number | null) => (n === null ? "Child threads" : `${n} child thread${n === 1 ? "" : "s"}`);
+
 function ChildRow({ projectId, c, load, openThread }: { projectId: string; c: WorkerChild; load: LoadChildren; openThread: (threadId: string) => void }) {
   const [open, setOpen] = useState(false);
   const status = c.archived ? "archived" : childStatus(c.running ?? c.status);
@@ -1498,10 +1568,13 @@ function ChildRow({ projectId, c, load, openThread }: { projectId: string; c: Wo
           {c.providerId ? `${c.providerId} · ` : ""}{status} {compactAge(c.updatedAt)}
         </span>
       </button>
-      <button type="button" className="cr-w-fold" aria-expanded={open} aria-label={`${c.title}'s child threads`} onClick={() => setOpen(!open)}>
-        {open ? "Hide its child threads" : "Its child threads"}
-      </button>
-      {open ? <ChildTree projectId={projectId} threadId={c.threadId} load={load} openThread={openThread} /> : null}
+      {/* Only a child the cache knows has children of its own offers them. */}
+      {c.children ? (
+        <button type="button" className="cr-w-fold" aria-expanded={open} aria-label={`${c.title}: ${childThreads(c.children)}`} onClick={() => setOpen(!open)}>
+          {childThreads(c.children)}
+        </button>
+      ) : null}
+      {open && c.children ? <ChildTree projectId={projectId} threadId={c.threadId} load={load} openThread={openThread} /> : null}
     </li>
   );
 }

@@ -29,7 +29,7 @@ const worker = (ref: string): WorkerItem => ({
   lead: null, open: { ref: "A1", state: "running", tasks: [] }, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000,
 });
 const child = (n: number, running: WorkerChild["running"] = null): WorkerChild => ({
-  threadId: `c${n}`, title: `Helper ${n}`, status: running ? "active" : "idle", archived: false, running, providerId: null, updatedAt: NOW - 60_000,
+  threadId: `c${n}`, title: `Helper ${n}`, status: running ? "active" : "idle", archived: false, running, providerId: null, updatedAt: NOW - 60_000, children: 0,
 });
 
 describe("F3 an open child tree refreshes with the dashboard", () => {
@@ -43,7 +43,7 @@ describe("F3 an open child tree refreshes with the dashboard", () => {
     mounted.push(slot);
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
     const row = slot.getByRole("button", { name: "W1 W1 label" }).closest("li")!;
-    fireEvent.click(within(row).getByRole("button", { name: "Child threads" }));
+    fireEvent.click(within(row).getByRole("button", { name: "1 child thread" }));
     fireEvent.click(await within(row).findByRole("button", { name: "More child threads" }));
     await within(row).findByRole("button", { name: "Open Helper 2" });
     // Helper 1 finished and Helper 3 started; the server announces the Initiative.

@@ -232,6 +232,8 @@ export interface WorkerChild {
   running: Running | null;
   providerId: string | null;
   updatedAt: number;
+  /** Its own child threads as the cache knows them; null before a listing says. */
+  children: number | null;
 }
 
 /** v9: what a worker's descendants are doing as far as the cache knows (RunningChildren.waitingOn). */

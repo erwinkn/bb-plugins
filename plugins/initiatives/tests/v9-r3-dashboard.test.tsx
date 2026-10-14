@@ -30,7 +30,7 @@ const worker = (ref: string, over: Partial<WorkerItem> = {}): WorkerItem => ({
   lead: null, open: { ref: "A1", state: "idle_no_report", tasks: [] }, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
 });
 const child = (n: number, running: WorkerChild["running"] = null): WorkerChild => ({
-  threadId: `c${n}`, title: `Child ${n}`, status: running ? "active" : "idle", archived: false, running, providerId: null, updatedAt: NOW - 60_000,
+  threadId: `c${n}`, title: `Child ${n}`, status: running ? "active" : "idle", archived: false, running, providerId: null, updatedAt: NOW - 60_000, children: 0,
 });
 function mount(o: Overview, rpc: Record<string, (input: unknown) => unknown>) {
   const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview: () => o, command: vi.fn().mockResolvedValue({}), ...rpc } });
@@ -61,7 +61,7 @@ describe("R1/R9/R10 Workers tab child threads", () => {
     const slot = mount(o, { childPage });
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
     const row = slot.getByRole("button", { name: "W1 W1 label" }).closest("li")!;
-    fireEvent.click(within(row).getByRole("button", { name: "Child threads" }));
+    fireEvent.click(within(row).getByRole("button", { name: "3 child threads" }));
     expect((await within(row).findByRole("alert")).textContent).toMatch(/Couldn’t read child threads: BB unavailable/);
     expect(within(row).queryByText("No child threads.")).toBeNull();
     fail = false;

@@ -170,7 +170,7 @@ export default function plugin(bb: BbPluginApi) {
   // change found that way announces the Initiative. Agent and CLI reads stay fresh.
   const liveThreads = new LiveThreads((threadId) => bb.sdk.threads.get({ threadId }));
   const nativeContext = new Recent<unknown>(10_000);
-  const childPages = new Background<ChildPage>(10_000);
+  const childPages = new Background<{ rows: Omit<ChildPage["rows"][number], "children">[]; next: ChildPage["next"] }>(10_000);
   const instanceEpoch = Math.random().toString(36).slice(2, 10);
   const overview = async (
     projectId: string,
@@ -493,11 +493,14 @@ export default function plugin(bb: BbPluginApi) {
     childPage: ({ projectId, threadId, offset }) => {
       service.requireProject(projectId);
       // Never waits on BB: the cached page, or loading; a read that changes it announces the Initiative.
-      return childPages.get(`${threadId}:${offset ?? 0}`, async () => {
+      const page = childPages.get(`${threadId}:${offset ?? 0}`, async () => {
         const page = await service.childPage(threadId, offset);
         return { next: page.next, rows: page.rows.map((row) => ({ threadId: row.id, title: row.title ?? row.titleFallback ?? "Thread", status: row.status,
           archived: row.archivedAt !== null, running: row.running, providerId: row.providerId ?? null, updatedAt: row.updatedAt })) };
       }, () => bb.realtime.publish("initiatives-changed", { projectId }));
+      // Each child's own count comes from the cache as it stands now, so a tree listed since shows.
+      if (page.status !== "ready") return page;
+      return { ...page, value: { ...page.value, rows: page.value.rows.map((row) => ({ ...row, children: service.runningChildren.childCount(row.threadId) })) } };
     },
     reportReadTimeout: ({ read, ...r }) => {
       bb.log.warn(

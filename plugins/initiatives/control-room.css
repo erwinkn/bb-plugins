@@ -285,6 +285,7 @@
 /* ---- Workers: list, and the detail beside it from 900 px (below, it replaces the list). */
 .cr-split-view[data-detail="open"] > .cr-w-list { display: none; }
 .cr-w-list { max-width: 640px; }
+.cr-w-list:focus { outline: none; }
 .cr-w-detail { max-width: 640px; }
 .cr-w-close { display: none !important; }
 @container (min-width: 900px) {

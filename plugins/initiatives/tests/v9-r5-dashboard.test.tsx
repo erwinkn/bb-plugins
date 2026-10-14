@@ -29,7 +29,7 @@ const worker = (ref: string): WorkerItem => ({
   lead: null, open: { ref: "A1", state: "running", tasks: [] }, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000,
 });
 const child = (n: number): WorkerChild => ({
-  threadId: `c${n}`, title: `Helper ${n}`, status: "idle", archived: false, running: null, providerId: null, updatedAt: NOW - 60_000,
+  threadId: `c${n}`, title: `Helper ${n}`, status: "idle", archived: false, running: null, providerId: null, updatedAt: NOW - 60_000, children: 0,
 });
 
 describe("F2 More child threads survives a realtime refresh", () => {
@@ -43,7 +43,7 @@ describe("F2 More child threads survives a realtime refresh", () => {
     mounted.push(slot);
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
     const row = slot.getByRole("button", { name: "W1 W1 label" }).closest("li")!;
-    fireEvent.click(within(row).getByRole("button", { name: "Child threads" }));
+    fireEvent.click(within(row).getByRole("button", { name: "1 child thread" }));
     const more = await within(row).findByRole("button", { name: "More child threads" });
     childPage.mockClear();
     await act(async () => {
