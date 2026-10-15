@@ -439,13 +439,14 @@ describe("W464 migration", () => {
     const host = createFakePluginHost();
     const db = host.bb.storage.database();
     try {
-      const previous = MIGRATIONS.slice(0, -PR_OWNER_MIGRATIONS.length);
+      const previous = MIGRATIONS.slice(0, MIGRATIONS.indexOf(PR_OWNER_MIGRATIONS[0]!));
       host.bb.storage.migrate(db, previous);
       db.prepare("INSERT INTO pr_records (project_id, url, stage, updated_at) VALUES ('p', ?, 'in-review', 1)").run(url(1));
       const tables = () => db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").pluck().all() as string[];
       const before = tables();
       host.bb.storage.migrate(db, MIGRATIONS);
-      expect(tables()).toEqual([...before, "pr_owners"].sort());
+      // Later migrations (W468's report_notices) are appended after it.
+      expect(tables()).toEqual([...before, "pr_owners", "report_notices"].sort());
       expect(db.prepare("SELECT count(*) FROM pr_owners").pluck().get()).toBe(0);
       expect(db.prepare("SELECT stage FROM pr_records").pluck().all()).toEqual(["in-review"]);
       // Rollback: the previous build's statements are all recorded, so it applies nothing and never reads pr_owners.

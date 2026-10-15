@@ -502,6 +502,22 @@ export const MIGRATIONS = [
   )`,
   // R2 (W464): each PR's owner Initiative, by canonical URL.
   ...PR_OWNER_MIGRATIONS,
+  // W468: a filed report's notice to its lead, checked against BB's event log until accepted.
+  // One row per assignment; a filing of a different report starts it over under a new cycle id.
+  // hash is the report's content, queued_id the BB queue row that still holds the latest send.
+  `CREATE TABLE report_notices (
+    project_id TEXT NOT NULL,
+    assignment_num INTEGER NOT NULL,
+    cycle TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    lead_thread_id TEXT NOT NULL,
+    queued_id TEXT,
+    attempts INTEGER NOT NULL,
+    started_at INTEGER NOT NULL,
+    sent_at INTEGER NOT NULL,
+    open INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (project_id, assignment_num)
+  )`,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
@@ -592,6 +608,8 @@ export interface WorkerRecord {
 export interface ReviewTargetRecord { task: string; assignment: string; revision: string; worker: string; profile: Profile }
 /** T150: the flag recording that the coordinator was told this assignment's thread failed. */
 export const threadFailureKey = (projectId: string, num: number) => `failed:${projectId}:${num}`;
+/** W468: one report notice's delivery: what was sent, to which lead, how often, and whether it is still being checked. */
+export interface ReportNoticeCycle { projectId: string; num: number; cycle: string; hash: string; leadThreadId: string; queuedId: string | null; attempts: number; startedAt: number; sentAt: number }
 /** T150: how the stop reason of work closed on a thread failure starts; a failed dispatch's never does. */
 export const THREAD_FAILED = "Native thread failed, not retried: ";
 /** T150: closed because its thread failed, so a report from that thread still reopens it. */
@@ -1441,6 +1459,8 @@ export interface ProjectThreadRecord {
   confirmedAt: number | null;
 }
 
+const toNoticeCycle = (row: Row): ReportNoticeCycle => ({ projectId: String(row.project_id), num: Number(row.assignment_num), cycle: String(row.cycle), hash: String(row.hash), leadThreadId: String(row.lead_thread_id), queuedId: row.queued_id === null ? null : String(row.queued_id), attempts: Number(row.attempts), startedAt: Number(row.started_at), sentAt: Number(row.sent_at) });
+
 export class Store {
   constructor(
     readonly db: Database.Database,
@@ -1892,6 +1912,35 @@ export class Store {
   flagSetAt(key: string): number | null {
     const row = this.db.prepare("SELECT set_at FROM plugin_flags WHERE key=?").get(key) as { set_at: number } | undefined;
     return row ? Number(row.set_at) : null;
+  }
+
+  /** W468: a new report's notice, first send at `at`; replaces the assignment's earlier notice under the new cycle id. */
+  startReportNotice(projectId: string, num: number, cycle: string, hash: string, leadThreadId: string, at: number) {
+    this.db.prepare("INSERT OR REPLACE INTO report_notices(project_id, assignment_num, cycle, hash, lead_thread_id, attempts, started_at, sent_at, open) VALUES(?,?,?,?,?,1,?,?,1)").run(projectId, num, cycle, hash, leadThreadId, at, at);
+  }
+
+  openReportNotices(): ReportNoticeCycle[] {
+    return (this.db.prepare("SELECT * FROM report_notices WHERE open = 1 ORDER BY project_id, assignment_num").all() as Row[]).map(toNoticeCycle);
+  }
+
+  reportNotice(projectId: string, num: number): (ReportNoticeCycle & { open: boolean }) | null {
+    const row = this.db.prepare("SELECT * FROM report_notices WHERE project_id = ? AND assignment_num = ?").get(projectId, num) as Row | undefined;
+    return row ? { ...toNoticeCycle(row), open: !!row.open } : null;
+  }
+
+  /** Another send in this cycle, to `leadThreadId`; false when the cycle is over or replaced. */
+  noteReportNoticeSend(projectId: string, num: number, cycle: string, leadThreadId: string, at: number): boolean {
+    return this.db.prepare("UPDATE report_notices SET attempts = attempts + 1, lead_thread_id = ?, sent_at = ?, queued_id = NULL WHERE project_id = ? AND assignment_num = ? AND cycle = ? AND open = 1").run(leadThreadId, at, projectId, num, cycle).changes > 0;
+  }
+
+  /** BB queued the latest send as this row; it is BB's to dispatch. */
+  queueReportNotice(projectId: string, num: number, cycle: string, queuedId: string) {
+    this.db.prepare("UPDATE report_notices SET queued_id = ? WHERE project_id = ? AND assignment_num = ? AND cycle = ?").run(queuedId, projectId, num, cycle);
+  }
+
+  /** The cycle needs no more checks. */
+  settleReportNotice(projectId: string, num: number, cycle: string) {
+    this.db.prepare("UPDATE report_notices SET open = 0 WHERE project_id = ? AND assignment_num = ? AND cycle = ?").run(projectId, num, cycle);
   }
 
   /** Sets a flag's time, also when it already exists (v9's loops-v5 marker moves on each cutover). */

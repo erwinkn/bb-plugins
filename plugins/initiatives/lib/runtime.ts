@@ -47,6 +47,10 @@ export class Runtime {
   async onThreadIdle(thread: ThreadDto) {
     // T136: a handover writer finished; its final message is the handover.
     if (await this.service.finishHandoverDraft(thread.id)) return;
+    // W468: a lead whose turn just ended can take the report notices BB refused during it.
+    await this.service.redeliverReports(thread.id).catch((error) =>
+      this.log.warn(`Report notice redelivery failed: ${errorMessage(error)}`),
+    );
     let membership = this.store.membership(thread.id);
     if (!membership) {
       // An unclaimed thread whose live parent is a coordinator generation is

@@ -67,6 +67,7 @@ import {
   DEFAULT_WORKER_KIND,
   WORKER_KIND_PROFILE,
 } from "./schema";
+import { noticeVerdict, reportHash, REPORT_NOTICE_ATTEMPTS, REPORT_NOTICE_SETTLE_MS } from "./report-notices";
 import {
   assignmentRef,
   closedOnThreadFailure,
@@ -76,6 +77,7 @@ import {
   threadFailureKey,
   workerRef,
   type AssignmentRecord,
+  type ReportNoticeCycle,
   type HandoverDraft,
   type HandoverRecord,
   type DecisionRecord,
@@ -7042,6 +7044,7 @@ export class ProjectsService {
       for (const { project, workers } of stuck) await this.flagStuckWorkers(project, workers, rows, failing);
     }
     await this.sendFailureNotices();
+    await this.redeliverReports();
   }
 
   /**
@@ -7200,27 +7203,108 @@ export class ProjectsService {
   }
 
   /**
-   * D417, v9: a filed report goes once, as an ordinary message from the worker, to its lead
-   * (§5.1). A done report queues behind a busy lead; a blocked one steers into its turn. Work
-   * given out before the switch carries the pre-switch line.
+   * D417, v9: a filed report goes as an ordinary message from the worker, to its lead (§5.1). A
+   * done report queues behind a busy lead; a blocked one steers into its turn. Work given out
+   * before the switch carries the pre-switch line. BB can still refuse the turn that message
+   * starts and only its event log says so, so the send is recorded and `redeliverReports` checks
+   * that log until the notice is taken (W468).
    */
   private async sendReport(threadId: string, assignment: AssignmentRecord): Promise<string> {
     const { project, worker } = this.workerOf(threadId);
     const lead = await this.workerLead(project, worker.num);
     if (!lead) return "Report recorded; there is no current coordinator to send it to.";
     const name = lead === project.coordinatorThreadId ? "the coordinator" : `"${this.store.projectThreadByThreadId(lead)?.label ?? lead}"`;
-    const report = assignment.report!;
-    const preSwitch = preSwitchLine(assignment);
+    // A newer filing may have sent its own notice while the lead was looked up.
+    if (reportHash(this.store.assignment(project.id, assignment.num)?.report) !== reportHash(assignment.report)) return `Report recorded; a newer report on ${assignment.ref} replaced it before it was sent.`;
+    const release = this.holdNotice(project.id, assignment.num);
     try {
-      await this.sdk.threads.send({ threadId: lead, senderThreadId: threadId,
-        mode: report.outcome === "blocked" ? "steer-if-active" : "queue-if-active",
-        input: textInput(`Initiative · ${project.name} · ${worker.ref}\n\n${reportNotice(worker.ref, assignment.ref, report, assignment.role)}${preSwitch ? `\n\n${preSwitch}` : ""}`),
-      });
+      const cycle = newOpId();
+      this.store.startReportNotice(project.id, assignment.num, cycle, reportHash(assignment.report), lead, this.now());
+      await this.postReportNotice(project, assignment, lead, cycle);
       return `Report recorded and sent to ${name}.`;
     } catch (error) {
       this.store.log(project.id, "report", `${assignment.ref}'s report could not be sent to ${name}: ${errorMessage(error)}`);
       return `Report recorded, but sending it to ${name} failed (${errorMessage(error)}); tell ${name} with initiative_message to:"lead".`;
+    } finally {
+      release();
     }
+  }
+
+  /** The message after its header line, which names the Initiative and can change before the notice is checked. */
+  private reportNoticeText(assignment: AssignmentRecord) {
+    const worker = workerRef(assignment.workerNum);
+    const preSwitch = preSwitchLine(assignment);
+    return `${reportNotice(worker, assignment.ref, assignment.report!, assignment.role)}${preSwitch ? `\n\n${preSwitch}` : ""}`;
+  }
+
+  /** One send of the cycle's notice; a send BB queues is recorded, to be followed through dispatch. */
+  private async postReportNotice(project: ProjectRecord, assignment: AssignmentRecord, lead: string, cycle: string) {
+    const sent = await this.sdk.threads.send({ threadId: lead, senderThreadId: assignment.threadId!,
+      mode: assignment.report!.outcome === "blocked" ? "steer-if-active" : "queue-if-active",
+      input: textInput(`Initiative · ${project.name} · ${workerRef(assignment.workerNum)}\n\n${this.reportNoticeText(assignment)}`) });
+    if (sent?.delivery === "queued") this.store.queueReportNotice(project.id, assignment.num, cycle, sent.queuedMessage.id);
+  }
+
+  /** Report notices being sent or checked right now, so the sweep and an idle event never send one twice. */
+  private noticeBusy = new Map<string, number>();
+  private holdNotice(projectId: string, num: number) {
+    const key = `${projectId}:${num}`;
+    this.noticeBusy.set(key, (this.noticeBusy.get(key) ?? 0) + 1);
+    return () => { const left = (this.noticeBusy.get(key) ?? 1) - 1; if (left > 0) this.noticeBusy.set(key, left); else this.noticeBusy.delete(key); };
+  }
+
+  /**
+   * W468: BB refuses the turn a notice starts when another turn is starting on the same thread, and
+   * says so only as a `client/turn/rejected` event after the send went through. Each open notice
+   * is read back from its lead's event log (called by the sweep, and by the lead's idle event with
+   * that lead): a notice BB took or holds a retry for is left alone; a refused or never recorded
+   * one goes out again once the lead is idle, up to REPORT_NOTICE_ATTEMPTS sends in all, after
+   * which the activity log says it never arrived.
+   */
+  async redeliverReports(onlyLead?: string) {
+    for (const cycle of this.store.openReportNotices()) {
+      if ((onlyLead && cycle.leadThreadId !== onlyLead) || this.noticeBusy.has(`${cycle.projectId}:${cycle.num}`)) continue;
+      const release = this.holdNotice(cycle.projectId, cycle.num);
+      try { await this.checkReportNotice(cycle); }
+      catch (error) { this.bb.log.warn(`Report notice check for ${cycle.projectId}:${cycle.num} failed: ${errorMessage(error)}`); }
+      finally { release(); }
+    }
+  }
+
+  private async checkReportNotice(cycle: ReportNoticeCycle) {
+    const { projectId, num, hash } = cycle;
+    const project = this.store.project(projectId);
+    const assignment = this.store.assignment(projectId, num);
+    const settle = () => this.store.settleReportNotice(projectId, num, cycle.cycle);
+    if (!project || project.archivedAt !== null || !assignment?.threadId) return settle();
+    // A different report took the notice over (its own row); the old one has nothing left to check.
+    if (!assignment.report || reportHash(assignment.report) !== hash) return;
+    // Still this cycle, unsent since this check began, and still the assignment's report.
+    const unchanged = () => {
+      const now = this.store.reportNotice(projectId, num);
+      return !!now?.open && now.cycle === cycle.cycle && now.attempts === cycle.attempts && reportHash(this.store.assignment(projectId, num)?.report) === hash;
+    };
+    const verdict = await noticeVerdict(this.sdk, { lead: cycle.leadThreadId, sender: assignment.threadId, text: this.reportNoticeText(assignment), since: cycle.startedAt, queuedId: cycle.queuedId, now: this.now() });
+    if (!unchanged()) return;
+    if (verdict === "accepted") return settle();
+    if (verdict === "pending" || verdict === "queued" || verdict === "unknown" || (verdict === "missing" && this.now() - cycle.sentAt < REPORT_NOTICE_SETTLE_MS)) return;
+    if (cycle.attempts >= REPORT_NOTICE_ATTEMPTS) {
+      settle();
+      this.store.log(projectId, "report", `${assignment.ref}'s report never reached its lead after ${cycle.attempts} sends (BB ${verdict === "rejected" ? "refused the turn" : verdict === "gone" ? "no longer has its lead thread" : "recorded no turn"}); read ${assignment.ref} directly or ask ${workerRef(assignment.workerNum)}.`, { assignment: num });
+      return;
+    }
+    // Resend to the lead that was sent to, unless that thread is gone; only a busy one waits for its idle event.
+    let lead = cycle.leadThreadId;
+    const thread = verdict === "gone" ? null : await this.sdk.threads.get({ threadId: lead }).catch((error) => { if (isDefiniteRejection(error)) return null; throw error; });
+    if (thread && BUSY_STATUSES.has(thread.status)) return;
+    if (!thread || thread.archivedAt !== null || thread.deletedAt !== null) {
+      const current = await this.workerLead(project, assignment.workerNum);
+      if (!current) { settle(); this.store.log(projectId, "report", `${assignment.ref}'s report notice was not delivered and its lead is gone; read ${assignment.ref} directly.`, { assignment: num }); return; }
+      lead = current;
+    }
+    if (!unchanged() || !this.store.noteReportNoticeSend(projectId, num, cycle.cycle, lead, this.now())) return;
+    this.store.log(projectId, "report", `${assignment.ref}'s report notice ${verdict === "rejected" ? "was refused by BB" : verdict === "gone" ? "went to a lead that is gone" : "was never recorded"}; sending it again.`, { assignment: num });
+    await this.postReportNotice(project, assignment, lead, cycle.cycle);
   }
 
   progress(threadId: string, input: { note: string; nextCheckpoint?: string }) {

@@ -471,10 +471,10 @@ describe("v9 §11 migrations on the live database's schema (3d46353)", () => {
       INSERT INTO tasks (project_id, num, title, summary, status, priority, depends_on, work_kind, created_at, updated_at) VALUES ('p', 1, 't', 's', 'cancelled', 2, '[]', 'implementation', 1, 7), ('p', 2, 't', 's', 'in_progress', 2, '[]', 'implementation', 1, 1);
       INSERT INTO workers (project_id, num, role, label, area, thread_id, generation, bb_project_id, state, created_at, updated_at) VALUES ('p', 1, 'work', 'W', 'a', 'w1', 1, 'm', 'active', 1, 1);
       INSERT INTO assignments (project_id, num, worker_num, task_nums, route, role, thread_id, generation, profile, bb_project_id, state, op_id, op_state, brief_text, created_at, updated_at) VALUES ('p', 1, 1, '[2]', 'fresh', 'work', 'w1', 1, '{"providerId":"claude-code","model":"m","reasoningLevel":"high"}', 'm', 'running', 'op_1', 'done', 'b', 1, 1);`);
-    // The SDK's runner checks every recorded migration's hash, then applies the five new ones.
+    // The SDK's runner checks every recorded migration's hash, then applies the new ones (v9's, W464's PR owners, W468's report_notices).
     createFakePluginHost().bb.storage.migrate(db, MIGRATIONS);
     expect(db.prepare("SELECT COUNT(*) FROM _bb_migrations").pluck().get()).toBe(MIGRATIONS.length);
-    expect(MIGRATIONS.length - 87).toBe(5);
+    expect(MIGRATIONS.length - 87).toBe(6);
     for (const [table, cols] of Object.entries(before)) expect(columns(table), table).toEqual(expect.arrayContaining(cols));
     expect(columns("assignments")).toContain("reply_to");
     expect(columns("tasks")).toContain("status_set_at");
