@@ -27,8 +27,10 @@ const workerNumber = (ref: string) => Number(/\d+/.exec(ref)?.[0] ?? 0);
  * workers. A worker's thread is listed once, as its own row, never again as
  * another thread's child. The group follows the
  * server's facts, except that BB's live status wins at once: a thread
- * waiting for input needs you, a running one is working, and a quiet one
- * with a live descendant is waiting, as the Workers tab says. A descendant
+ * waiting for input needs you, a running one is working, a quiet one
+ * with a live descendant is waiting, and one the server still reads as
+ * running that BB shows stopped, or with a new error, moves where the Workers
+ * tab's derivation puts it (the facts carry both variants). A descendant
  * BB lists as quiet but Initiatives knows is queued shows through the facts.
  */
 export function adventureRows(
@@ -109,7 +111,13 @@ export function adventureRows(
           ? "working"
           : liveBelow(thread.id)
             ? "waiting"
-            : (known?.group ?? (thread.indicator === "unread-error" ? "stopped" : "idle"));
+            : thread.indicator === "unread-error"
+              // BB shows a new error the server's group does not know of yet.
+              ? (known?.errored ?? "stopped")
+              : known?.group === "working"
+                // The server still reads it as running; BB's live view says it is not.
+                ? (known.quiet ?? known.group)
+                : (known?.group ?? "idle");
     return {
       node: { thread, status, children },
       ref: n.worker!,

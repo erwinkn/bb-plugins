@@ -153,13 +153,13 @@ const workerTree = {
   ],
 };
 const FACTS = [
-  { ref: "W1", profile: OPUS, group: "working" as const },
-  { ref: "W2", profile: "codex / gpt-6.1-sol / xhigh", group: "done" as const },
-  { ref: "W3", profile: null, group: "needs" as const },
+  { ref: "W1", profile: OPUS, group: "working" as const, quiet: "idle" as const, errored: "stopped" as const },
+  { ref: "W2", profile: "codex / gpt-6.1-sol / xhigh", group: "done" as const, quiet: "done" as const, errored: "stopped" as const },
+  { ref: "W3", profile: null, group: "needs" as const, quiet: "needs" as const, errored: "needs" as const },
 ];
 const workerThreads = [
   thread({ id: "c", title: "Coordinator", updatedAt: minutes(5) }),
-  thread({ id: "w", title: "W1 Build the index", updatedAt: minutes(30) }),
+  thread({ id: "w", title: "W1 Build the index", indicator: "runtime", updatedAt: minutes(30) }),
   thread({ id: "w2", title: "W2 Ship it", updatedAt: minutes(2) }),
   thread({ id: "w3", title: "W3 Review", updatedAt: minutes(20) }),
   thread({ id: "rev", title: "Review W1", parentThreadId: "w", updatedAt: minutes(25) }),
@@ -594,7 +594,7 @@ describe("Adventure workers", () => {
 
   it("draws the cached Adventures and worker facts at once, before the first read answers", async () => {
     cacheTree(tree);
-    cacheWorkers({ p1: [{ ref: "W1", profile: OPUS, group: "working" }] });
+    cacheWorkers({ p1: [{ ref: "W1", profile: OPUS, group: "working", quiet: "idle", errored: "stopped" }] });
     const slot = mount({ projectMode: () => new Promise(() => {}) });
     expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy();
     expect(slot.queryByText("Loading Adventures…")).toBeNull();

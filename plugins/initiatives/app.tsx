@@ -29,6 +29,7 @@ import { appReads } from "./lib/dashboard-data";
 import { useData } from "./use-data";
 import { applyCommitted } from "./lib/committed-result";
 import { mergeOverview } from "./lib/overview-merge";
+import { BUSY_THREAD, withLiveRuntime } from "./lib/worker-group";
 import type { Overview, OpinionItem } from "./lib/overview";
 import {
   DEFAULT_PROFILES,
@@ -201,9 +202,7 @@ function CoordinatorSwitch({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [queued, setQueued] = useState(false);
-  const running = ["active", "starting", "stopping"].includes(
-    project.coordinatorStatus,
-  );
+  const running = BUSY_THREAD.has(project.coordinatorStatus);
   const unconfirmed = ["pending", "uncertain"].includes(
     project.coordinatorStart?.state ?? "",
   );
@@ -768,7 +767,11 @@ export function Dashboard({
   };
   const full = detailsNeeded ? details.data : null;
   const past = full ?? (historyNeeded ? history.data : null);
-  const o = state.data ? mergeOverview(state.data, past, full) : null;
+  // BB's live thread list decides whether a worker's thread is busy: the server's copy is a cache
+  // that a missed transition leaves reading "active".
+  const liveThreads = useSidebarThreads().threads;
+  const merged = state.data ? mergeOverview(state.data, past, full) : null;
+  const o = useMemo(() => merged ? withLiveRuntime(merged, liveThreads) : null, [merged, liveThreads]);
   return (
     <main
       className={`bb-projects bb-projects--control${variant === "panel" ? " bb-projects--panel" : ""}`}

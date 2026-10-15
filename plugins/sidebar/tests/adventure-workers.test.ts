@@ -12,63 +12,13 @@ import { registerProjectMode } from "../lib/project-mode-server";
 import { READ_TIMEOUT_MS } from "../lib/read-timeout";
 import { thread } from "./fixtures";
 
-type Current = OverviewSlice["workers"]["current"][number];
-const worker = (ref: string, patch: Partial<Current> = {}): Current => ({
-  ref,
-  profile: null,
-  runtime: "idle",
-  open: null,
-  stopReason: null,
-  latestReport: null,
-  ...patch,
-});
-
 describe("adventureWorkers", () => {
-  it("groups each worker by the Workers tab's rules", () => {
+  it("takes each worker's group from the Workers tab's derivation", () => {
     const groups = adventureWorkers({
-      workers: {
-        current: [
-          worker("W1", { runtime: "active", open: {} }),
-          worker("W2", { runtime: "active" }),
-          worker("W3", { open: {} }),
-          worker("W4", { latestReport: { outcome: "done" } }),
-          worker("W5", { latestReport: { outcome: "blocked" } }),
-          worker("W6"),
-          worker("W7", { runtime: "failed", latestReport: { outcome: "done" } }),
-          worker("W8"),
-          worker("W9", { stopReason: "Superseded", latestReport: { outcome: "done" } }),
-          // Waiting on a queued review outranks its earlier done report and
-          // an open assignment, as in the tab.
-          worker("W10", { latestReport: { outcome: "done" } }),
-          worker("W11", { open: {} }),
-        ],
-      },
-      blockers: [
-        // An open blocker outranks a running thread.
-        { owner: { worker: "W1" } },
-        // An answered one no longer needs you.
-        { owner: { worker: "W5" }, answer: { note: "Go" } },
-      ],
-      workerWaiting: {
-        W8: { on: { title: "Reviewer" } },
-        W6: { on: null },
-        W10: { on: { title: "Review r2", running: "pending" } },
-        W11: { on: { title: "Review r1", running: "active" } },
-      },
+      workers: { current: [{ ref: "W1", profile: null }, { ref: "W2", profile: null }, { ref: "W3", profile: null }] },
+      workerGroups: { W1: { group: "needs", quiet: "needs", errored: "needs" }, W2: { group: "stopped", quiet: "stopped", errored: "stopped" } },
     }).map((w) => `${w.ref}:${w.group}`);
-    expect(groups).toEqual([
-      "W1:needs",
-      "W2:working",
-      "W3:stopped",
-      "W4:done",
-      "W5:stopped",
-      "W6:idle",
-      "W7:stopped",
-      "W8:waiting",
-      "W9:stopped",
-      "W10:waiting",
-      "W11:waiting",
-    ]);
+    expect(groups).toEqual(["W1:needs", "W2:stopped", "W3:idle"]);
   });
 
   it("names the model and its reasoning as the Workers tab does", () => {
@@ -145,12 +95,36 @@ describe("adventureRows", () => {
       [...native.filter((t) => t.id !== "w1"), thread({ id: "w1", parentThreadId: "c", indicator: "runtime" })],
       [],
       [
-        { ref: "W1", profile: "p", group: "done" },
-        { ref: "W2", profile: null, group: "idle" },
+        { ref: "W1", profile: "p", group: "done", quiet: "done" },
+        { ref: "W2", profile: null, group: "idle", quiet: "idle" },
       ],
       "worker",
     );
     expect(workers.map((w) => `${w.ref}:${w.group}:${w.profile}`)).toEqual(["W2:needs:null", "W1:working:p"]);
+  });
+
+  it("moves a worker where the Workers tab's derivation puts it once BB shows its thread stopped or errored", () => {
+    const group = (host: Parameters<typeof thread>[0], known: { group: "working" | "done"; quiet: "done" | "waiting"; errored: "stopped" | "waiting" }) =>
+      adventureRows(
+        project,
+        [...native.filter((t) => t.id !== "w1" && t.id !== "w2"), thread({ id: "w1", parentThreadId: "c", ...host })],
+        [],
+        [{ ref: "W1", profile: null, ...known }],
+        "worker",
+      ).workers.find((w) => w.ref === "W1")!.group;
+    const stale = { group: "working", quiet: "done", errored: "stopped" } as const;
+    expect(group({ indicator: "runtime" }, stale)).toBe("working");
+    expect(group({ indicator: "unread-error" }, stale)).toBe("stopped");
+    // An unread error outranks work the host still counts (plan mode), as in statusOf.
+    expect(group({ indicator: "unread-error", activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: 1, goals: 0 } }, stale)).toBe("stopped");
+    expect(group({}, stale)).toBe("done");
+    // A queued child the server knows keeps it waiting, with or without the error.
+    expect(group({ indicator: "unread-error" }, { group: "working", quiet: "waiting", errored: "waiting" })).toBe("waiting");
+    // A new error on a worker the server filed as done.
+    expect(group({ indicator: "unread-error" }, { group: "done", quiet: "done", errored: "stopped" })).toBe("stopped");
+    // Facts cached by an older build carry no variants: the server's group stands.
+    const legacy = { ref: "W1", profile: null, group: "working" as const };
+    expect(adventureRows(project, [thread({ id: "w1", parentThreadId: "c" })], [], [legacy], "worker").workers[0]!.group).toBe("working");
   });
 
   // W2, nested under W1, waits for input in `native`; these walks need it quiet.
@@ -163,8 +137,8 @@ describe("adventureRows", () => {
         [...quiet, thread({ id: "deep", parentThreadId: "child", ...deep })],
         [],
         [
-          { ref: "W1", profile: null, group: "stopped" },
-          { ref: "W2", profile: null, group: "needs" },
+          { ref: "W1", profile: null, group: "stopped", quiet: "stopped" },
+          { ref: "W2", profile: null, group: "needs", quiet: "needs" },
         ],
         "worker",
       ).workers.map((w) => `${w.ref}:${w.group}`);
@@ -185,7 +159,7 @@ describe("adventureRows", () => {
       project,
       [...native.filter((t) => t.id !== "w2"), thread({ id: "review", parentThreadId: "w1", ...review })],
       [],
-      [{ ref: "W1", profile: null, group: "done" }],
+      [{ ref: "W1", profile: null, group: "done", quiet: "done" }],
       "worker",
     );
     expect(workers.find((w) => w.ref === "W1")?.group).toBe("waiting");
@@ -194,7 +168,7 @@ describe("adventureRows", () => {
   it("keeps the server's Waiting for a review BB lists as quiet, until the facts change", () => {
     // Initiatives knows a review queued for a slot; BB's sidebar list shows it as quiet.
     const quiet = native.filter((t) => t.id !== "w2");
-    const facts = (group: "waiting" | "done") => [{ ref: "W1", profile: null, group }];
+    const facts = (group: "waiting" | "done") => [{ ref: "W1", profile: null, group, quiet: group }];
     expect(adventureRows(project, quiet, [], facts("waiting"), "worker").workers[0]?.group).toBe("waiting");
     expect(adventureRows(project, quiet, [], facts("done"), "worker").workers[0]?.group).toBe("done");
     // The worker's own run outranks it.
@@ -208,8 +182,8 @@ describe("adventureRows", () => {
       [...native.filter((t) => t.id !== "w2"), thread({ id: "w2", parentThreadId: "w1", indicator: "runtime" })],
       [],
       [
-        { ref: "W1", profile: null, group: "stopped" },
-        { ref: "W2", profile: null, group: "stopped" },
+        { ref: "W1", profile: null, group: "stopped", quiet: "stopped" },
+        { ref: "W2", profile: null, group: "stopped", quiet: "stopped" },
       ],
       "worker",
     );
@@ -226,7 +200,7 @@ describe("adventureRows", () => {
           thread({ id: "helper", parentThreadId: "old-rev", ...helper }),
         ],
         [],
-        [{ ref: "W1", profile: null, group: "stopped" }],
+        [{ ref: "W1", profile: null, group: "stopped", quiet: "stopped" }],
         "worker",
       ).workers.find((w) => w.ref === "W1")?.group;
     expect(group({ indicator: "runtime" })).toBe("waiting");
@@ -245,8 +219,8 @@ describe("adventureRows", () => {
 describe("worker facts cache", () => {
   afterEach(() => vi.useRealTimers());
   const overview = (group: "running" | "idle") => ({
-    workers: { current: [worker("W1", { runtime: group === "running" ? "active" : "idle", profile: "codex / gpt-6.1-sol / xhigh" })] },
-    blockers: [],
+    workers: { current: [{ ref: "W1", profile: "codex / gpt-6.1-sol / xhigh" }] },
+    workerGroups: { W1: { group: group === "running" ? "working" : "idle", quiet: "idle", errored: "stopped" } },
   });
   const setup = () => {
     vi.useFakeTimers();
@@ -267,7 +241,7 @@ describe("worker facts cache", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(1);
     expect(changed).toHaveBeenCalledTimes(1);
-    expect(facts.read(["p1"])).toEqual({ p1: [{ ref: "W1", profile: "codex / gpt-6.1-sol / xhigh", group: "working" }] });
+    expect(facts.read(["p1"])).toEqual({ p1: [{ ref: "W1", profile: "codex / gpt-6.1-sol / xhigh", group: "working", quiet: "idle", errored: "stopped" }] });
     // Known and not announced as changed: no read.
     await vi.advanceTimersByTimeAsync(FACTS_INTERVAL_MS * 2);
     expect(read).toHaveBeenCalledTimes(1);
@@ -388,7 +362,7 @@ it("serves the open Adventures' worker facts beside the tree and reads them agai
         callRpc: async ({ method, input }: { method: string; input?: unknown }) => {
           if (method === "tree") return tree;
           overviews.push(input);
-          return { workers: { current: [worker("W1", { profile: "x / claude-sonnet-5-5 / low" })] }, blockers: [] };
+          return { workers: { current: [{ ref: "W1", profile: "x / claude-sonnet-5-5 / low" }] }, workerGroups: { W1: { group: "idle", quiet: "idle", errored: "stopped" } } };
         },
       },
     },
@@ -402,7 +376,7 @@ it("serves the open Adventures' worker facts beside the tree and reads them agai
       expect(h.harness.inspection.realtimeSignals).toContainEqual({ channel: "initiatives-changed", payload: {} }),
     );
     expect(overviews).toEqual([{ projectId: "p1", detail: "summary" }]);
-    expect((await read()).workers).toEqual({ p1: [{ ref: "W1", profile: "x / claude-sonnet-5-5 / low", group: "idle" }] });
+    expect((await read()).workers).toEqual({ p1: [{ ref: "W1", profile: "x / claude-sonnet-5-5 / low", group: "idle", quiet: "idle", errored: "stopped" }] });
     // An Adventure the tree no longer lists is never read.
     await h.harness.callRpc("projectMode", { known: null, workersOf: ["p1", "gone"] });
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -1,5 +1,6 @@
 import { preSwitchLine } from "./cutover";
 import type { NotDeliveredMessage } from "./not-delivered";
+import type { WorkerGroup } from "./worker-group";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { BUSY_STATUSES, type Running } from "./bb";
 import type { WaitingOn } from "./context";
@@ -190,6 +191,8 @@ export interface AnsweredItem {
 
 export interface WorkerItem {
   ref: string;
+  /** Client-side only: BB's live list counts work running on the thread though its status reads as an error. */
+  liveWork?: boolean;
   label: string;
   role: Role;
   /** What the coordinator asked for on spawn; null for reviewers and older workers. */
@@ -379,6 +382,13 @@ export interface Overview {
   rules: { ref: string; text: string; sources: string[] }[];
   /** v9: each live worker's descendants as the server's cache knows them (W# →); no native read. */
   workerWaiting?: Record<string, WorkerWaiting>;
+  /**
+   * Each current worker's Workers-tab group (W# →), from the one derivation in worker-group.ts;
+   * the Threads sidebar reads it instead of deriving its own. `quiet` and `errored` are the group
+   * it would be in were its thread quiet, or failed: where BB's live view moves a worker the
+   * cache reads as running, or one with a new unread error.
+   */
+  workerGroups?: Record<string, { group: WorkerGroup; quiet: WorkerGroup; errored: WorkerGroup }>;
   /** v9: the lead tabs by thread id → label (the coordinator tab included). */
   leadTabs: Record<string, string>;
 }

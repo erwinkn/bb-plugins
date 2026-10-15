@@ -87,6 +87,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { isOwnOrigin } from "./lib/identity";
 import { scopedNativeEvent } from "./lib/native-events";
+import { workerGroup } from "./lib/worker-group";
 import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
 import {
   readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection, withImpliedDetail,
@@ -290,6 +291,19 @@ export default function plugin(bb: BbPluginApi) {
         return children === null ? [] : [[w.ref, { ...cache.waitingOn(w.threadId!), children }]];
       }),
     ]);
+    const blocked = new Set(result.blockers.filter((b) => !b.answer).map((b) => b.owner.worker));
+    result.workerGroups = Object.fromEntries(result.workers.current.map((w) => {
+      const facts = {
+        blocked: blocked.has(w.ref), runtime: w.runtime, waiting: !!result.workerWaiting?.[w.ref]?.on,
+        open: !!w.open, stopReason: !!w.stopReason, outcome: w.latestReport?.outcome ?? null,
+      };
+      return [w.ref, {
+        group: workerGroup(facts),
+        // What BB's live view moves it to when the thread is not running: quiet, or errored.
+        quiet: workerGroup({ ...facts, runtime: "idle" }),
+        errored: workerGroup({ ...facts, runtime: "error" }),
+      }];
+    }));
     prefetchChildren(result.workers.current.flatMap((w) => w.threadId ? [w.threadId] : []), () => changed(projectId));
     if (result.project.coordinatorThreadId) {
       const threadId = result.project.coordinatorThreadId;

@@ -13,6 +13,7 @@ import {
 import { Markdown, useRealtime } from "@get-bb/plugin-sdk/app";
 import type { BlockerItem, Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
 import { needsYouCount } from "./lib/blockers";
+import { BUSY_THREAD, workerKind, KIND_GROUP, type WorkerGroup as LiveGroup } from "./lib/worker-group";
 import { MAX_RULES, RULE_MAX_CHARACTERS } from "./lib/rules";
 import type { Command } from "./lib/commands";
 import type { Cached, ChildPage, projectsContract } from "./lib/contract";
@@ -915,7 +916,7 @@ function HandoffActions({ assignment, readHandoff }: { assignment: string; readH
 
 // ---- Workers (v9 §10.1): the one place every worker and its child threads are reached.
 
-type WorkerGroup = "needs" | "working" | "waiting" | "done" | "stopped" | "idle" | "earlier";
+type WorkerGroup = LiveGroup | "earlier";
 /** A worker as the Workers tab shows it: its group, and why, in words from its records. */
 interface WorkerView {
   w: WorkerItem;
@@ -929,8 +930,6 @@ interface WorkerView {
   /** When its open work started, or when it last reported. */
   since: number | null;
 }
-const BUSY_THREAD = new Set(["active", "starting", "stopping"]);
-const FAILED_THREAD = new Set(["error", "failed"]);
 const firstLine = (text: string) => text.trim().split("\n")[0]!.trim();
 const childStatus = (status: string) => (status === "active" ? "running" : status);
 /** Until the cache has listed its whole tree, a quiet-looking worker may still be waiting on a child. */
@@ -953,26 +952,34 @@ function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: num
   const stopped = w.stopReason ? `Stopped: ${w.stopReason.replace(/^Stopped: /, "")}` : null;
   if (w.state === "retired")
     return { ...base, group: "earlier", status: report ? `Retired · ${report.outcome}: ${firstLine(report.summary)}` : "Retired" };
-  if (blocker && !blocker.answer)
-    return { ...base, group: "needs", tone: "warn", status: `Blocked: ${firstLine(blocker.question)}` };
-  if (BUSY_THREAD.has(w.runtime))
-    return { ...base, group: "working", status: "Running" };
-  if (live)
-    return { ...base, group: "waiting", status: `Waiting on “${live.title}” (${childStatus(live.running)} ${compactAge(live.since)})` };
-  if (FAILED_THREAD.has(w.runtime))
-    return { ...base, group: "stopped", tone: "error", status: `Thread failed${w.stopReason ? `: ${w.stopReason}` : ""}` };
-  if (w.open)
-    return { ...base, group: "stopped", tone: "warn", status: `${stopped ?? "Idle without a report"}${thread}${unchecked}` };
-  if (stopped)
-    return { ...base, group: "stopped", status: `${stopped}${thread}${unchecked}` };
-  if (report?.outcome === "done")
-    return { ...base, group: "done", status: `Done: ${firstLine(report.summary)}${unchecked}` };
-  if (report) {
-    const failed = report.outcome === "failed";
-    const answered = blocker ? " · answered" : "";
-    return { ...base, group: "stopped", tone: failed ? "error" : null, status: `${failed ? "Failed" : "Blocked"}: ${firstLine(report.question ?? report.summary)}${answered}${thread}${unchecked}` };
+  // The group is the shared derivation's; this only words each case from the recorded text.
+  const kind = workerKind({ blocked: !!blocker && !blocker.answer, runtime: w.runtime, waiting: !!live, open: !!w.open, stopReason: !!w.stopReason, outcome: report?.outcome ?? null });
+  const group = KIND_GROUP[kind];
+  switch (kind) {
+    case "blocked":
+      return { ...base, group, tone: "warn", status: `Blocked: ${firstLine(blocker!.question)}` };
+    case "input":
+      return { ...base, group, tone: "warn", status: "Waiting for your input" };
+    case "running":
+      return { ...base, group, status: "Running" };
+    case "waiting":
+      return { ...base, group, status: `Waiting on “${live!.title}” (${childStatus(live!.running)} ${compactAge(live!.since)})` };
+    case "failed":
+      return { ...base, group, tone: "error", status: `Thread failed${w.stopReason ? `: ${w.stopReason}` : ""}` };
+    case "open":
+      return { ...base, group, tone: "warn", status: `${stopped ?? "Idle without a report"}${thread}${unchecked}` };
+    case "stopReason":
+      return { ...base, group, status: `${stopped}${thread}${unchecked}` };
+    case "done":
+      return { ...base, group, status: `Done: ${firstLine(report!.summary)}${unchecked}` };
+    case "reported": {
+      const failed = report!.outcome === "failed";
+      const answered = blocker ? " · answered" : "";
+      return { ...base, group, tone: failed ? "error" : null, status: `${failed ? "Failed" : "Blocked"}: ${firstLine(report!.question ?? report!.summary)}${answered}${thread}${unchecked}` };
+    }
+    default:
+      return { ...base, group, status: `No report${thread}${unchecked}` };
   }
-  return { ...base, group: "idle", status: `No report${thread}${unchecked}` };
 }
 
 const prNumber = (url: string) => /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
@@ -1482,7 +1489,7 @@ function WorkerMenu({ v, menu: state, menus, close, openThread, details }: {
   const menu = useRef<HTMLDivElement>(null);
   const retired = w.state === "retired";
   // From what runs, not the group: a worker that needs you can still have a busy thread or child.
-  const canStop = !!w.threadId && !retired && (BUSY_THREAD.has(w.runtime) || !!v.waiting?.on || !!w.open);
+  const canStop = !!w.threadId && !retired && (BUSY_THREAD.has(w.runtime) || !!w.liveWork || !!v.waiting?.on || !!w.open);
   const write = menus.writes[w.ref];
   const { place, keys } = useRowMenu(menu, state, close, [confirm], [write?.slow, write?.error]);
   const question = confirm === "stop"

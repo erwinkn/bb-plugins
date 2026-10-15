@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * Where a worker stands, in the Workers tab's terms (plugins/initiatives
- * workerView): Needs you holds an open blocker nobody answered; Working a
+ * lib/worker-group.ts): Needs you holds an open blocker nobody answered; Working a
  * running thread; Waiting a quiet thread with a live descendant (a review
  * running, queued or asking for input); Done a finished report; Stopped work
  * that ended without finishing and nothing picked up; Idle the quiet rest.
@@ -19,60 +19,35 @@ export const adventureWorkerSchema = z.object({
   /** "provider / model / reasoning / tier", or null when unknown. */
   profile: z.string().max(300).nullable(),
   group: z.enum(WORKER_GROUPS),
+  /** The group it would be in were its thread quiet, or failed; absent from facts cached by an older build. */
+  quiet: z.enum(WORKER_GROUPS).optional(),
+  errored: z.enum(WORKER_GROUPS).optional(),
 });
 export type AdventureWorker = z.infer<typeof adventureWorkerSchema>;
 
-/** The part of the Initiatives `overview` (summary tier) the sidebar reads; the rest is dropped. */
+/**
+ * The part of the Initiatives `overview` (summary tier) the sidebar reads; the rest is dropped.
+ * `workerGroups` is the Workers tab's own derivation (plugins/initiatives lib/worker-group.ts),
+ * so the sidebar never decides a group a second time.
+ */
 export const overviewSliceSchema = z.object({
   workers: z.object({
-    current: z.array(
-      z.object({
-        ref: z.string(),
-        profile: z.string().nullable(),
-        runtime: z.string(),
-        open: z.unknown().nullable(),
-        stopReason: z.string().nullable(),
-        latestReport: z.object({ outcome: z.string() }).nullable(),
-      }),
-    ),
+    current: z.array(z.object({ ref: z.string(), profile: z.string().nullable() })),
   }),
-  blockers: z.array(
-    z.object({
-      owner: z.object({ worker: z.string() }),
-      answer: z.unknown().optional(),
-    }),
-  ),
-  workerWaiting: z
-    .record(z.string(), z.object({ on: z.unknown().nullable() }))
-    .optional(),
+  // Absent from an Initiatives build that has not reloaded yet: its workers read as idle until it has.
+  workerGroups: z.record(z.string(), z.object({ group: z.enum(WORKER_GROUPS), quiet: z.enum(WORKER_GROUPS), errored: z.enum(WORKER_GROUPS) })).optional(),
 });
 export type OverviewSlice = z.infer<typeof overviewSliceSchema>;
 
-const BUSY_THREAD = new Set(["active", "starting", "stopping"]);
-const FAILED_THREAD = new Set(["error", "failed"]);
-
-/** Each current worker's model and group, by the Workers tab's rules. */
+/** Each current worker's model and the group the Workers tab puts it in. */
 export function adventureWorkers(overview: OverviewSlice): AdventureWorker[] {
-  const blocked = new Set(
-    overview.blockers.filter((b) => !b.answer).map((b) => b.owner.worker),
-  );
-  return overview.workers.current.map((w) => {
-    const report = w.latestReport;
-    const group: WorkerGroup = blocked.has(w.ref)
-      ? "needs"
-      : BUSY_THREAD.has(w.runtime)
-        ? "working"
-        : overview.workerWaiting?.[w.ref]?.on
-          ? "waiting"
-          : FAILED_THREAD.has(w.runtime) || w.open || w.stopReason
-            ? "stopped"
-            : report?.outcome === "done"
-              ? "done"
-              : report
-                ? "stopped"
-                : "idle";
-    return { ref: w.ref, profile: w.profile, group };
-  });
+  return overview.workers.current.map((w) => ({
+    ref: w.ref,
+    profile: w.profile,
+    group: overview.workerGroups?.[w.ref]?.group ?? "idle",
+    quiet: overview.workerGroups?.[w.ref]?.quiet ?? "idle",
+    errored: overview.workerGroups?.[w.ref]?.errored ?? "stopped",
+  }));
 }
 
 const capital = (word: string) =>
