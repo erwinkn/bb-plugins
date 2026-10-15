@@ -554,7 +554,7 @@ export function buildOverview(
     decisions.flatMap((item) => (item.status === "active" && item.body.blocker && item.body.dismissal ? [blockerKey(item.body.blocker.assignment, item.body.blocker)] : [])),
   );
   const blockers: BlockerItem[] = undismissed(
-    openBlockers(assignments.map((a) => ({ ...a, outcome: a.report?.outcome ?? null })), closedTask),
+    openBlockers(assignments.map((a) => ({ ...a, outcome: a.report?.outcome ?? null })), closedTask, (num) => workerByNum.get(num)?.state === "retired"),
     (a) => a.report?.blocker,
     dismissedBlockers,
   ).map((assignment) => {
@@ -1001,9 +1001,11 @@ function summaryBlockers(store: Store, projectId: string, tasks: { num: number; 
   const keys = (dismissal: boolean) => new Set(settled.filter((row) => !!row.dismissal === dismissal).map((row) => blockerKey(row.assignment, row)));
   const answered = keys(false);
   const closed = new Set(tasks.filter((t) => ["done", "cancelled"].includes(t.status)).map((t) => t.num));
+  const retired = new Set(store.workers(projectId).filter((w) => w.state === "retired").map((w) => w.num));
   return undismissed(openBlockers(
     rows.map((row) => ({ num: row.num, workerNum: row.worker_num, role: row.role, taskNums: JSON.parse(row.task_nums) as number[], reviewOf: row.review_of ? (JSON.parse(row.review_of) as number[]) : null, state: row.state, outcome: row.outcome, blocker: row.question === null ? null : { question: row.question, context: row.context ?? "" } })),
     (num) => closed.has(num),
+    (num) => retired.has(num),
   ), (row) => row.blocker, keys(true)).filter((row) => !row.blocker || !answered.has(blockerKey(row.num, row.blocker))).length;
 }
 

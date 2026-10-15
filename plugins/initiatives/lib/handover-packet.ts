@@ -230,7 +230,7 @@ export function handoverPacket(store: Store, projectId: string, unsafeSnapshot: 
 
   // G. What waits on the user. Agent decisions are optional Inbox checks and block nothing.
   const questions = decisions.filter(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.madeBy === null);
-  const blockers = openBlockers(assignments.map(a => ({ ...a, outcome: a.report?.outcome ?? null })), num => ["done", "cancelled"].includes(store.task(projectId, num)?.status ?? ""));
+  const blockers = openBlockers(assignments.map(a => ({ ...a, outcome: a.report?.outcome ?? null })), num => ["done", "cancelled"].includes(store.task(projectId, num)?.status ?? ""), num => store.worker(projectId, num)?.state === "retired");
   const checks = decisions.filter(d => d.madeBy === "agent" && d.review === "pending" && d.status === "active");
   const waiting = `## Waiting on the user\n${[
     ...questions.map(d => `- Open question ${d.ref} (asked ${iso(d.createdAt)}): ${clip(safe(("question" in d.body && d.body.question) || d.title), 400)}${d.blocks.length ? ` — holds ${d.blocks.map(taskRef).join(", ")}` : ""}`),

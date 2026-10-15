@@ -25,11 +25,12 @@ const subjectOf = (a: BlockerFacts) => (a.role === "review" ? (a.reviewOf ?? [])
  * Blocked reports nobody has acted on yet. One clears when the coordinator
  * accepts or rejects it, starts a newer assignment for the same worker or the
  * same tasks (continue, fork or fresh; a dispatch that failed does not count),
- * or closes every task it is about.
+ * or closes every task it is about. W482: a retired worker's blocker is closed
+ * too: nobody is left to answer it, and retiring is final.
  */
-export function openBlockers<T extends BlockerFacts>(assignments: T[], closedTask: (num: number) => boolean): T[] {
+export function openBlockers<T extends BlockerFacts>(assignments: T[], closedTask: (num: number) => boolean, retiredWorker: (workerNum: number) => boolean): T[] {
   return assignments.filter((a) => {
-    if (a.state !== "reported" || a.outcome !== "blocked") return false;
+    if (a.state !== "reported" || a.outcome !== "blocked" || retiredWorker(a.workerNum)) return false;
     const subject = subjectOf(a);
     if (subject.length && subject.every(closedTask)) return false;
     return !assignments.some(

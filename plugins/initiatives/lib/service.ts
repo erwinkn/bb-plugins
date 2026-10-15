@@ -3823,10 +3823,14 @@ export class ProjectsService {
   /** The open blocker on `ref`, refused unless it is still exactly the one the user saw. */
   private seenBlocker(project: ProjectRecord, ref: string, seen: { question: string; context: string }, what: "answer" | "dismissal") {
     const assignment = this.requireAssignment(project, ref);
+    // W482: retired between render and submit; there is nobody left to answer or wait.
+    if (this.store.worker(project.id, assignment.workerNum)?.state === "retired")
+      throw new ProjectError(`${assignment.ref}'s worker was retired, so its blocker is closed and nobody can receive an answer. Your ${what} was not saved.`);
     const tasks = this.store.tasks(project.id);
     const open = openBlockers(
       this.store.assignments(project.id).map((a) => ({ ...a, outcome: a.report?.outcome ?? null })),
       (num) => ["done", "cancelled"].includes(tasks.find((task) => task.num === num)?.status ?? "done"),
+      (num) => this.store.worker(project.id, num)?.state === "retired",
     ).some((a) => a.num === assignment.num);
     if (!open) throw new ProjectError(`${assignment.ref} is no longer waiting on a blocker; the coordinator already acted on it. Your ${what} was not saved.`);
     const blocker = assignment.report!.blocker;
