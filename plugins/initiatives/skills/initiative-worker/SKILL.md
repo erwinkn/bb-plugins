@@ -14,6 +14,8 @@ current instructions, the reviewer command and the rules), which replaces anythi
   --lifecycle-owner-thread "$BB_THREAD_ID"`, in your checkout). Copy the standing rules that
   matter for its job into its brief. While it runs, end your turn: its final message wakes
   you, and ending a turn reports nothing.
+- A trivial change (one line or a handful of small tweaks), or one whose brief says "No
+  review", skips the review loop: verify it and report done with "review skipped (trivial)".
 - Fix the findings you agree with. A disagreement goes, with your evidence, into the next
   reviewer's brief and a PR note; a standing rule settles a dispute it covers.
 - At most 4 review rounds. Report done when the last verdict is clean; still rejected after

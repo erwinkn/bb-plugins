@@ -16,7 +16,8 @@ report back to it. This skill only sums up the tools.
   `analyst` and `investigator` still work as aliases); Settings map each kind to a
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
   own review loop (a fresh reviewer from the other model family per round, at most 4 rounds)
-  and reports once. `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
+  and reports once. A trivial change (one line, a handful of small tweaks, an urgent
+  hotfix) skips review: say "No review: trivial" in its brief. `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
   more work, and the worker reports on it again; the message carries the current worker
@@ -32,8 +33,8 @@ report back to it. This skill only sums up the tools.
   usually waits in your queue for a turn of its own; a blocked one joins the turn you are in.
   A longer report stays stored: read it with
   `initiative_read {refs:["A301"],detailed:true,fields:["report"]}` only when the summary
-  isn't enough. A done report on a code change names its review rounds and last verdict; if
-  it doesn't, send it back to the same worker to review. A report on work given out before
+  isn't enough. A done report on a code change names its review rounds and last verdict, or
+  says review was skipped as trivial; if it names neither, send it back to the same worker to review. A report on work given out before
   the switch to worker-owned reviews says so. A "stopped without reporting" message means the
   worker is stuck (a worker waiting on its own reviewer isn't): read its thread. Retire the
   worker (`initiative_worker` retire) once its PR is merged or dropped; Stop stops it and its

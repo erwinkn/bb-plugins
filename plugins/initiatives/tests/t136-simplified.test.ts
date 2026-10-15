@@ -187,7 +187,8 @@ describe("T136 instructions", () => {
     // W210 (D417): reports go through initiative_report; stop background work first.
     // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
     // v9: the worker owns its review loop; the reviewer command moved to briefs.
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1900);
+    // Erwin (2026-10-15): trivial changes skip review.
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(2000);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn. Don't start reviewers: workers do.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("At most 4 review rounds.");
