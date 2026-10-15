@@ -2,6 +2,7 @@ import { useDraggable, useDroppable } from "@dnd-kit/core";
 import * as Menu from "@radix-ui/react-context-menu";
 import * as Popover from "@radix-ui/react-popover";
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -45,6 +46,17 @@ import { useThreadDndState } from "../lib/thread-dnd-context";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { useFinePointer } from "../lib/use-fine-pointer";
 import { projectHueStep } from "../lib/project-hue";
+
+/**
+ * `experimental_useSidebarThreadActions` plus the prefetch member newer hosts
+ * add; optional so rows stay a no-op on hosts without it.
+ */
+type SidebarThreadActionsWithPrefetch = ReturnType<
+  typeof experimental_useSidebarThreadActions
+> & {
+  /** Warms a thread after a short hover-intent delay; returns its cancel. */
+  experimental_prefetch?: (threadId: string) => () => void;
+};
 
 /** The provider record `experimental_ProviderIcon` reads artwork from. */
 export type ProviderIconRecord = ExperimentalProviderIconProps["provider"];
@@ -136,7 +148,8 @@ export function ThreadRow({
   const snoozeRpc = useRpc<typeof snoozeContract>();
   const navigate = useBbNavigate();
   const nested = depth > 0;
-  const actions = experimental_useSidebarThreadActions();
+  const actions: SidebarThreadActionsWithPrefetch =
+    experimental_useSidebarThreadActions();
   const scope = usePortalScopeProps();
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -152,6 +165,18 @@ export function ThreadRow({
   const menuOpenedPicker = useRef(false);
   const rowRef = useRef<HTMLAnchorElement>(null);
   const restoreRowFocus = useRef(false);
+  // Cancels the pending hover/focus prefetch; undefined when idle or when the
+  // host predates `experimental_prefetch`.
+  const cancelPrefetch = useRef<(() => void) | undefined>(undefined);
+  const startPrefetch = () => {
+    cancelPrefetch.current?.();
+    cancelPrefetch.current = actions.experimental_prefetch?.(thread.id);
+  };
+  const stopPrefetch = () => {
+    cancelPrefetch.current?.();
+    cancelPrefetch.current = undefined;
+  };
+  useEffect(() => () => cancelPrefetch.current?.(), []);
   const closeEditor = () => {
     restoreRowFocus.current = true;
     setEditing(false);
@@ -278,8 +303,14 @@ export function ThreadRow({
       <div
         data-thread-status={thread.isArchived ? "archived" : status}
         data-thread-snoozed={sleeping ? "" : undefined}
-        onPointerEnter={() => setHovered(true)}
-        onPointerLeave={() => setHovered(false)}
+        onPointerEnter={() => {
+          setHovered(true);
+          startPrefetch();
+        }}
+        onPointerLeave={() => {
+          setHovered(false);
+          stopPrefetch();
+        }}
         className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : `${status === "attention" && !thread.isArchived ? "bg-[var(--surface-attention)]" : ""} hover:bg-accent/60`} ${nestTargetState ? NEST_TARGET_STATE_CLASS[nestTargetState] : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
       >
         {accentStep !== null && (
@@ -370,6 +401,8 @@ export function ThreadRow({
                 data-sidebar-thread-id={thread.id}
                 aria-current={active ? "page" : undefined}
                 aria-haspopup="menu"
+                onFocus={startPrefetch}
+                onBlur={stopPrefetch}
                 onPointerDown={(event) => {
                   suppressClick.current = false;
                   longPress.onPointerDown(event);
