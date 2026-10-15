@@ -1,11 +1,18 @@
 # Threads plugin
 
-- `app.tsx`: sidebar registration and the one view: the Initiatives section,
-  then the thread list with its sorting and group rendering.
-- `components/project-mode.tsx`: the Initiatives section (rows, reordering,
-  the + that opens the create dialog, pending creates).
-- `components/create-initiative.tsx`, `lib/initiative-submissions.ts`: the
-  New initiative dialog and its per-create pending entries.
+- `app.tsx`: sidebar registration and the one view: the Adventures section,
+  then the Other threads entry with its sorting and group rendering.
+- `components/project-mode.tsx`: the Adventures section (rows, reordering,
+  open/closed state, the tree read that carries the worker facts).
+- `components/adventure-workers.tsx`: an open Adventure's worker rows (by
+  state or in one list), their child-thread toggles, the coordinator's other
+  threads.
+- `lib/adventure-rows.ts`: which threads an open Adventure lists and each
+  worker's group, from the tree, BB's threads and the worker facts.
+- `lib/adventure-workers.ts`: worker facts (model, group) from the Adventures
+  overview, by the Workers tab's rules, and the model label.
+- `lib/adventure-workers-server.ts`: the server's bounded, shared cache of
+  worker facts for the Adventures clients have open.
 - `lib/status.ts`: pure status rules and within-group order.
 - `lib/thread-tree.ts`: parent/child nesting, sibling order, and family status.
 - `lib/client-state.ts`: versioned per-client preferences (the thread list's
@@ -20,7 +27,7 @@
 - `components/pull-request.tsx`: pull request icon and summary text.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
 - `components/menus.tsx`: grouping, date sorting, order, and status visibility
-  controls.
+  controls for Other threads; worker grouping and order for the Adventures.
 - `lib/ui-preferences-schema.ts`: the two BB sidebar preferences the plugin
   mirrors (collapsed Pinned and project groups), shared by server and frontend.
 - `lib/ui-preferences-contract.ts`, `lib/ui-preferences-store.ts`: read and

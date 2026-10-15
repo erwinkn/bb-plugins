@@ -46,6 +46,7 @@ import { useThreadDndState } from "../lib/thread-dnd-context";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { useFinePointer } from "../lib/use-fine-pointer";
 import { projectHueStep } from "../lib/project-hue";
+import { withoutRef } from "../lib/adventure-rows";
 
 /**
  * `experimental_useSidebarThreadActions` plus the prefetch member newer hosts
@@ -82,6 +83,15 @@ export interface ThreadRowNesting {
   onSetParent: (parentThreadId: string | null) => void;
 }
 
+export interface ThreadRowWorker {
+  /** "W12". */
+  ref: string;
+  /** "Opus 5.5 · high", or null while unknown. */
+  model: string | null;
+  /** The full execution profile, shown on hover over the model. */
+  profile: string | null;
+}
+
 export interface ThreadRowSnooze {
   /** Wake time while the thread sleeps; null when it is not snoozed. */
   until: number | null;
@@ -107,6 +117,7 @@ export function ThreadRow({
   nesting,
   branchPullRequestEligible = true,
   snooze,
+  worker,
   onNavigate,
   onError,
 }: {
@@ -141,6 +152,11 @@ export function ThreadRow({
   branchPullRequestEligible?: boolean;
   /** Snooze state and presets; omitted rows (archives) offer no snooze. */
   snooze?: ThreadRowSnooze;
+  /**
+   * An Adventure's worker: its id and model lead and close the second line,
+   * which drops the project and branch, and the title drops the leading id.
+   */
+  worker?: ThreadRowWorker;
   onNavigate: () => void;
   onError: (error: unknown) => void;
 }) {
@@ -227,7 +243,8 @@ export function ThreadRow({
     ? environmentPullRequest
     : null;
   const title = threadTitle(thread);
-  const branch = thread.environment?.branchName;
+  const shownTitle = worker ? withoutRef(title, worker.ref) : title;
+  const branch = worker ? undefined : thread.environment?.branchName;
   // The project accent only appears where the project name does, so a row
   // under its own project header stays plain.
   const accentStep = showProject && !singleLine ? projectHueStep(project) : null;
@@ -476,7 +493,7 @@ export function ThreadRow({
                   <span
                     className={`min-w-0 flex-1 text-sm leading-5 ${fadeClass} ${thread.isUnread || active ? "font-semibold" : "font-medium"}`}
                   >
-                    {title}
+                    {shownTitle}
                   </span>
                   {showHoverControls && canSnooze && (
                     <span
@@ -550,9 +567,14 @@ export function ThreadRow({
                     <span
                       className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
                     >
-                      {thread.parentThreadId && !nested && (
+                      {thread.parentThreadId && !nested && !worker && (
                         <span aria-hidden="true" className={ARROW_COLOR_CLASS}>
                           ↳
+                        </span>
+                      )}
+                      {worker && (
+                        <span data-worker-ref="" className="shrink-0 tabular-nums">
+                          {worker.ref}
                         </span>
                       )}
                       {pullRequest && (
@@ -589,6 +611,15 @@ export function ThreadRow({
                         </>
                       )}
                     </span>
+                    {worker?.model && (
+                      <span
+                        data-worker-model=""
+                        title={worker.profile ?? undefined}
+                        className="shrink-0"
+                      >
+                        {worker.model}
+                      </span>
+                    )}
                     {stamp}
                   </span>
                 )}
@@ -605,9 +636,14 @@ export function ThreadRow({
               className={`pointer-events-none absolute bottom-2 flex h-4 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)]`}
               style={{ left: `${nested ? 1.75 + (depth - 1) * 1.5 : 0.5}rem` }}
             >
-              {thread.parentThreadId && !nested && (
+              {thread.parentThreadId && !nested && !worker && (
                 <span aria-hidden="true" className="invisible">
                   ↳
+                </span>
+              )}
+              {worker && (
+                <span aria-hidden="true" className="invisible tabular-nums">
+                  {worker.ref}
                 </span>
               )}
               <PullRequestChip

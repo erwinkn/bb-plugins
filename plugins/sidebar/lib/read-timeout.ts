@@ -7,7 +7,7 @@ import type { ReadTimeoutReport } from "./project-mode-contract";
  */
 export const READ_TIMEOUT_MS = 30_000;
 export const READ_TIMEOUT_MESSAGE =
-  "Couldn't refresh Initiatives (connection slow). Retrying.";
+  "Couldn't refresh Adventures (connection slow). Retrying.";
 /** A client reports at most one timeout per interval. */
 export const REPORT_INTERVAL_MS = 60_000;
 

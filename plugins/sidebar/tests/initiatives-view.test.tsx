@@ -4,8 +4,7 @@ import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { parseState, updateState } from "../lib/client-state";
-import { cacheTree } from "../lib/initiative-tree-cache";
-import { CREATE_TIMEOUT_MS, reloadSubmissions } from "../lib/initiative-submissions";
+import { cacheTree, cacheWorkers } from "../lib/initiative-tree-cache";
 import { thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
@@ -111,9 +110,66 @@ async function choose(slot: ReturnType<typeof renderSlot>, submenu: RegExp, item
   await settle();
 }
 
+const OPUS = "claude-code / claude-opus-5-5 / high / tier unspecified";
+/** One Adventure with three workers: W1 works, W2 is done, W3 (a reviewer) needs you. */
+const workerTree = {
+  version: 1 as const,
+  projects: [
+    {
+      ...initiative,
+      nodes: [
+        initiative.nodes[0]!,
+        { ...initiative.nodes[1]!, label: "Build the index" },
+        { threadId: "w2", label: "Ship it", role: "work" as const, worker: "W2", parentWorker: null, state: "active", bbProjectId: "project-1" },
+        { threadId: "w3", label: "Review", role: "review" as const, worker: "W3", parentWorker: null, state: "active", bbProjectId: "project-1" },
+      ],
+    },
+  ],
+};
+const FACTS = [
+  { ref: "W1", profile: OPUS, group: "working" as const },
+  { ref: "W2", profile: "codex / gpt-6.1-sol / xhigh", group: "done" as const },
+  { ref: "W3", profile: null, group: "needs" as const },
+];
+const workerThreads = [
+  thread({ id: "c", title: "Coordinator", updatedAt: minutes(5) }),
+  thread({ id: "w", title: "W1 Build the index", updatedAt: minutes(30) }),
+  thread({ id: "w2", title: "W2 Ship it", updatedAt: minutes(2) }),
+  thread({ id: "w3", title: "W3 Review", updatedAt: minutes(20) }),
+  thread({ id: "rev", title: "Review W1", parentThreadId: "w", updatedAt: minutes(25) }),
+  thread({ id: "rev-helper", title: "Helper", parentThreadId: "rev", updatedAt: minutes(24) }),
+  ...threads.filter((t) => !["c", "w"].includes(t.id)),
+];
+/** A tree read that answers the worker facts of the Adventures it is asked for. */
+const withFacts = () =>
+  vi.fn(async (input: { known: string | null; workersOf?: string[] } | null) => ({
+    available: true,
+    tree: workerTree,
+    order: null,
+    orderError: null,
+    ...(input?.workersOf ? { workers: { p1: FACTS } } : {}),
+  }));
+const workerRpc = (projectMode = withFacts()) => ({
+  projectMode,
+  initiativeThreads: async () => ({ available: true, threadIds: ["c", "w", "w2", "w3"], status: "ready" }),
+});
+const workerRow = (slot: ReturnType<typeof renderSlot>, id: string) =>
+  slot.container.querySelector<HTMLElement>(`[data-adventure-workers] [data-thread-node="${id}"]`);
+const workerIds = (slot: ReturnType<typeof renderSlot>) =>
+  Array.from(slot.container.querySelectorAll("[data-adventure-workers] [data-thread-node]"), (row) =>
+    row.getAttribute("data-thread-node"),
+  );
+const groups = (slot: ReturnType<typeof renderSlot>) =>
+  Array.from(slot.container.querySelectorAll("[data-worker-group]"), (el) => el.getAttribute("data-worker-group"));
+async function chooseWorkers(slot: ReturnType<typeof renderSlot>, item: string) {
+  fireEvent.keyDown(slot.getByRole("button", { name: "Worker list options" }), { key: "Enter" });
+  await settle();
+  fireEvent.click(slot.getByRole("menuitemradio", { name: item }));
+  await settle();
+}
+
 beforeEach(() => {
   window.localStorage.clear();
-  reloadSubmissions();
 });
 afterEach(async () => {
   for (const slot of slots.splice(0)) slot.unmount();
@@ -123,17 +179,18 @@ afterEach(async () => {
 });
 
 describe("sidebar layout", () => {
-  it("shows Initiatives, then every other thread ungrouped and most recent first", async () => {
+  it("shows Adventures, then every other thread ungrouped and most recent first", async () => {
     const slot = mount();
     await slot.findByRole("link", { name: "Open Useful search" });
     await waitFor(() => expect(listed(slot)).toEqual(["b-new", "a-mid", "a-old"]));
-    expect(sectionTitles(slot)).toEqual(["Initiatives", "Threads"]);
+    expect(sectionTitles(slot)).toEqual(["Adventures"]);
+    expect(slot.getByRole("button", { name: /^Other threads/ }).getAttribute("aria-expanded")).toBe("true");
     expect(slot.container.querySelector("[data-group-header]")).toBeNull();
     expect(slot.getByRole("button", { name: "Thread list options" })).toBeTruthy();
     expect(slot.queryByRole("button", { name: "Threads display options" })).toBeNull();
   });
 
-  it("draws one dense row per Initiative with its last activity", async () => {
+  it("draws one dense row per Adventure with its last activity", async () => {
     const slot = mount();
     const row = await slot.findByRole("link", { name: "Open Useful search" });
     // The coordinator changed 5 minutes ago, the worker 90.
@@ -151,11 +208,11 @@ describe("sidebar layout", () => {
     expect(within(menu).getByRole("menuitemcheckbox", { name: /Archived/ })).toBeTruthy();
   });
 
-  it("groups by project under a Projects header", async () => {
+  it("groups by project under the Other threads entry", async () => {
     const slot = mount();
     await waitFor(() => expect(listed(slot)).toHaveLength(3));
     await choose(slot, /Grouping/, "Project");
-    expect(sectionTitles(slot)).toEqual(["Initiatives", "Projects"]);
+    expect(sectionTitles(slot)).toEqual(["Adventures"]);
     const groups = Array.from(slot.container.querySelectorAll("[data-group-header]"), (el) =>
       el.getAttribute("data-group-header"),
     );
@@ -168,7 +225,7 @@ describe("sidebar layout", () => {
     const slot = mount();
     await waitFor(() => expect(listed(slot)).toHaveLength(3));
     await choose(slot, /Grouping/, "Status");
-    expect(sectionTitles(slot)).toEqual(["Initiatives", "Threads"]);
+    expect(sectionTitles(slot)).toEqual(["Adventures"]);
     expect(slot.container.querySelector('[data-group-header="status:done"]')).toBeTruthy();
   });
 
@@ -191,14 +248,16 @@ describe("sidebar layout", () => {
     expect(groups).toEqual(["pinned", "recent"]);
   });
 
-  it("draws the cached Initiatives at once, before the first read answers", async () => {
+  it("draws the cached Adventures and worker facts at once, before the first read answers", async () => {
     cacheTree(tree);
+    cacheWorkers({ p1: [{ ref: "W1", profile: OPUS, group: "working" }] });
     const slot = mount({ projectMode: () => new Promise(() => {}) });
     expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy();
-    expect(slot.queryByText("Loading initiatives…")).toBeNull();
+    expect(slot.queryByText("Loading Adventures…")).toBeNull();
+    expect(workerRow(slot, "w")?.querySelector("[data-worker-model]")?.textContent).toBe("Opus 5.5 · high");
   });
 
-  it("caches the confirmed tree and forgets it once Initiatives is gone", async () => {
+  it("caches the confirmed tree and forgets it once Adventures is gone", async () => {
     const slot = mount();
     await slot.findByRole("link", { name: "Open Useful search" });
     await waitFor(() =>
@@ -212,92 +271,7 @@ describe("sidebar layout", () => {
   });
 });
 
-describe("New initiative", () => {
-  const fill = async (slot: ReturnType<typeof renderSlot>) => {
-    fireEvent.click(await slot.findByRole("button", { name: "New initiative" }));
-    const dialog = await slot.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Faster builds" } });
-    fireEvent.change(within(dialog).getByLabelText("What should it achieve?"), {
-      target: { value: "Halve CI time" },
-    });
-    return dialog;
-  };
-
-  it("creates in the background from the + and opens the new coordinator", async () => {
-    let finish!: (value: unknown) => void;
-    const createInitiative = vi.fn(() => new Promise((resolve) => (finish = resolve)));
-    const onNavigate = vi.fn();
-    const slot = mount({ createInitiative }, { onNavigate });
-    const dialog = await fill(slot);
-    // The open thread's repository is preselected and hosts the coordinator.
-    const alpha = within(dialog).getByRole("checkbox", { name: /Alpha/ }) as HTMLInputElement;
-    expect(alpha.checked).toBe(true);
-    expect(within(dialog).queryByText("No project")).toBeNull();
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: /Beta/ }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create initiative" }));
-    await settle();
-    // The dialog closes at once; the list shows the draft while it is created.
-    expect(slot.queryByRole("dialog")).toBeNull();
-    expect(slot.container.querySelector('[data-initiative-submission="pending"]')?.textContent).toContain(
-      "Faster builds",
-    );
-    expect(createInitiative).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Faster builds",
-        objective: "Halve CI time",
-        memberProjectIds: ["project-1", "project-2"],
-        key: expect.stringMatching(/^sidebar-create:/),
-      }),
-    );
-    await act(async () => finish({ write: "done", projectId: "p9", coordinatorThreadId: "c9", note: null }));
-    await settle();
-    expect(slot.container.querySelector("[data-initiative-submission]")).toBeNull();
-    expect(slot.inspection.navigateCalls).toContainEqual(
-      expect.objectContaining({ method: "toThread", threadId: "c9" }),
-    );
-    expect(onNavigate).toHaveBeenCalled();
-  });
-
-  it("keeps a failed draft with its reason and resends it under the same key", async () => {
-    const createInitiative = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("BB project project-1 does not exist."))
-      .mockResolvedValueOnce({ write: "done", projectId: "p9", coordinatorThreadId: null, note: "Checkout pending." });
-    const slot = mount({ createInitiative });
-    const dialog = await fill(slot);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create initiative" }));
-    await settle();
-    const failed = slot.container.querySelector('[data-initiative-submission="failed"]') as HTMLElement;
-    expect(within(failed).getByRole("alert").textContent).toBe("BB project project-1 does not exist.");
-    fireEvent.click(within(failed).getByRole("button", { name: "Edit" }));
-    const again = await slot.findByRole("dialog");
-    expect((within(again).getByLabelText("Name") as HTMLInputElement).value).toBe("Faster builds");
-    fireEvent.click(within(again).getByRole("button", { name: "Create initiative" }));
-    await settle();
-    const [first, second] = createInitiative.mock.calls.map(([input]) => input.key);
-    expect(second).toBe(first);
-    // No coordinator yet: nothing navigates, and the note says why.
-    expect(slot.inspection.navigateCalls).toEqual([]);
-    expect(slot.getByText(/Checkout pending\./)).toBeTruthy();
-  });
-
-  it("needs a name, an objective and a repository", async () => {
-    const slot = mount({}, { activeProjectId: "personal", activeThreadId: null });
-    fireEvent.click(await slot.findByRole("button", { name: "New initiative" }));
-    const dialog = await slot.findByRole("dialog");
-    const create = within(dialog).getByRole("button", { name: "Create initiative" }) as HTMLButtonElement;
-    expect(create.disabled).toBe(true);
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "N" } });
-    fireEvent.change(within(dialog).getByLabelText("What should it achieve?"), { target: { value: "O" } });
-    // A personal project cannot host an Initiative, so nothing is preselected.
-    expect(create.disabled).toBe(true);
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: /Beta/ }));
-    expect(create.disabled).toBe(false);
-    expect(within(dialog).getByText("Coordinator")).toBeTruthy();
-  });
-});
-
-describe("W447 review fixes", () => {
+describe("Other threads", () => {
   const archivedThread = (id: string, parentThreadId: string | null) => ({
     id,
     projectId: "project-1",
@@ -313,78 +287,7 @@ describe("W447 review fixes", () => {
     environmentProviderId: null,
     environmentWorkspaceDisplayKind: "other",
   });
-  const fill = async (slot: ReturnType<typeof renderSlot>) => {
-    fireEvent.click(await slot.findByRole("button", { name: "New initiative" }));
-    const dialog = await slot.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Faster builds" } });
-    fireEvent.change(within(dialog).getByLabelText("What should it achieve?"), {
-      target: { value: "Halve CI time" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create initiative" }));
-    await settle();
-  };
-  const submission = (slot: ReturnType<typeof renderSlot>) =>
-    slot.container.querySelector("[data-initiative-submission]") as HTMLElement | null;
-  const resend = async (slot: ReturnType<typeof renderSlot>) => {
-    fireEvent.click(within(submission(slot)!).getByRole("button", { name: "Edit" }));
-    const dialog = await slot.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create initiative" }));
-    await settle();
-  };
-  it("finding 1: keeps a sent draft and its key across a remount of the list", async () => {
-    let finish!: (value: unknown) => void;
-    const createInitiative = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("Connection lost."))
-      .mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
-    const slot = mount({ createInitiative });
-    await fill(slot);
-    expect(submission(slot)?.getAttribute("data-initiative-submission")).toBe("failed");
-    slot.unmount();
-    expect(submission(slot)).toBeNull();
-    let remounted = mount({ createInitiative });
-    await settle();
-    // The failed draft is still there, and sending it again reuses its key.
-    expect(submission(remounted)?.getAttribute("data-initiative-submission")).toBe("failed");
-    await resend(remounted);
-    const [first, second] = createInitiative.mock.calls.map(([input]) => input.key);
-    expect(second).toBe(first);
-    // An answer that lands while the list is not mounted still settles it.
-    remounted.unmount();
-    await act(async () => finish({ write: "done", projectId: "p9", coordinatorThreadId: "c9", note: "Checkout pending." }));
-    remounted = mount({ createInitiative });
-    await settle();
-    expect(submission(remounted)).toBeNull();
-    expect(remounted.getByText(/Checkout pending\./)).toBeTruthy();
-  });
-
-  it("finding 1: sends a draft a reload cut off again under its key, without opening it", async () => {
-    let finish!: (value: unknown) => void;
-    const createInitiative = vi.fn((_input: { key: string }) => new Promise((resolve) => (finish = resolve)));
-    const slot = mount({ createInitiative });
-    await fill(slot);
-    const [sent] = createInitiative.mock.calls.map(([input]) => input.key);
-    slot.unmount();
-    // A reload: the page forgets the call, storage keeps the draft.
-    reloadSubmissions();
-    const again = vi.fn((_input: { key: string }) => new Promise((resolve) => (finish = resolve)));
-    const reloaded = mount({ createInitiative: again });
-    await settle();
-    expect(again).toHaveBeenCalledTimes(1);
-    expect(again.mock.calls[0]![0].key).toBe(sent);
-    expect(submission(reloaded)?.getAttribute("data-initiative-submission")).toBe("pending");
-    await act(async () => finish({ write: "done", projectId: "p9", coordinatorThreadId: "c9", note: null }));
-    await settle();
-    expect(submission(reloaded)).toBeNull();
-    expect(reloaded.inspection.navigateCalls).toEqual([]);
-    // Once per page: a remount does not send it again.
-    reloaded.unmount();
-    mount({ createInitiative: again });
-    await settle();
-    expect(again).toHaveBeenCalledTimes(1);
-  });
-
-  it("finding 2: keeps Initiative threads and their descendants out of Archived", async () => {
+  it("keeps Adventure threads and their descendants out of Archived", async () => {
     const listArchived = async () => [
       archivedThread("w-old", null),
       archivedThread("w-child", "w"),
@@ -407,170 +310,136 @@ describe("W447 review fixes", () => {
     expect(slot.container.querySelector('[data-sidebar-thread-id="w-child"]')).toBeNull();
   });
 
-  it("finding 3: renews the key after a settled refusal or unknown outcome, keeps it after a lost answer", async () => {
-    const createInitiative = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("Connection lost."))
-      .mockResolvedValueOnce({ write: "rejected", message: "BB project project-1 does not exist." })
-      .mockResolvedValueOnce({ write: "unknown", message: "It is unclear what this saved." })
-      .mockResolvedValueOnce({ write: "done", projectId: "p9", coordinatorThreadId: null, note: null });
-    const slot = mount({ createInitiative });
-    await fill(slot);
-    await resend(slot);
-    expect(within(submission(slot)!).getByRole("alert").textContent).toBe(
-      "BB project project-1 does not exist.",
-    );
-    await resend(slot);
-    expect(within(submission(slot)!).getByRole("alert").textContent).toBe("It is unclear what this saved.");
-    await resend(slot);
-    expect(submission(slot)).toBeNull();
-    const keys = createInitiative.mock.calls.map(([input]) => input.key);
-    // Lost answer: same key. Refused: new key. Unknown: new key again.
-    expect(keys[1]).toBe(keys[0]);
-    expect(new Set(keys.slice(1)).size).toBe(3);
+  it("folds and unfolds, and remembers it", async () => {
+    const slot = mount();
+    await waitFor(() => expect(listed(slot)).toHaveLength(3));
+    const entry = slot.getByRole("button", { name: /^Other threads/ });
+    fireEvent.click(entry);
+    expect(entry.getAttribute("aria-expanded")).toBe("false");
+    expect(listed(slot)).toEqual([]);
+    expect(parseState(window.localStorage.getItem("bb-plugin-sidebar:v1")).collapsed).toContain("other-threads");
+    // The list options and New thread stay on the entry.
+    expect(slot.getByRole("button", { name: "Thread list options" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "New thread" })).toBeTruthy();
+    fireEvent.click(entry);
+    expect(listed(slot)).toEqual(["b-new", "a-mid", "a-old"]);
   });
 
-  it("finding 4: settles a create that succeeds after the deadline", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      let finish!: (value: unknown) => void;
-      const createInitiative = vi.fn(() => new Promise((resolve) => (finish = resolve)));
-      const onNavigate = vi.fn();
-      const slot = mount({ createInitiative }, { onNavigate });
-      await fill(slot);
-      await act(async () => { await vi.advanceTimersByTimeAsync(CREATE_TIMEOUT_MS); });
-      expect(submission(slot)?.getAttribute("data-initiative-submission")).toBe("failed");
-      await act(async () => finish({ write: "done", projectId: "p9", coordinatorThreadId: "c9", note: "Checkout pending." }));
-      await settle();
-      expect(submission(slot)).toBeNull();
-      expect(slot.getByText(/Checkout pending\./)).toBeTruthy();
-      // The user stayed put, so it still opens the coordinator.
-      expect(slot.inspection.navigateCalls).toContainEqual(
-        expect.objectContaining({ method: "toThread", threadId: "c9" }),
-      );
-    } finally {
-      vi.useRealTimers();
-    }
+  it("never lists a worker, its child threads or the coordinator", async () => {
+    const slot = mount(workerRpc(), {}, workerThreads);
+    await waitFor(() => expect(workerRow(slot, "w")).toBeTruthy());
+    expect(listed(slot)).toEqual(["b-new", "a-mid", "a-old"]);
   });
 });
 
-describe("W448 review fixes", () => {
-  const DAY = 24 * 60 * 60_000;
-  const fill = async (slot: ReturnType<typeof renderSlot>) => {
-    fireEvent.click(await slot.findByRole("button", { name: "New initiative" }));
-    const dialog = await slot.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Faster builds" } });
-    fireEvent.change(within(dialog).getByLabelText("What should it achieve?"), {
-      target: { value: "Halve CI time" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create initiative" }));
-    await settle();
-  };
-  const rows = (slot: ReturnType<typeof renderSlot>) =>
-    Array.from(slot.container.querySelectorAll<HTMLElement>("[data-initiative-submission]"));
-  const edit = async (slot: ReturnType<typeof renderSlot>) => {
-    fireEvent.click(within(rows(slot)[0]!).getByRole("button", { name: "Edit" }));
-    return slot.findByRole("dialog");
-  };
-  const resend = async (slot: ReturnType<typeof renderSlot>) => {
-    fireEvent.click(within(await edit(slot)).getByRole("button", { name: "Create initiative" }));
-    await settle();
-  };
-  const keys = (create: { mock: { calls: unknown[][] } }) =>
-    create.mock.calls.map(([input]) => (input as { key: string }).key);
-  const never = () => new Promise<never>(() => {});
-  const done = { write: "done", projectId: "p9", coordinatorThreadId: null, note: null };
-  afterEach(() => vi.useRealTimers());
-
-  it("finding 1: a reload past the retry window keeps the draft to check instead of sending its key", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    const createInitiative = vi.fn(never);
-    const slot = mount({ createInitiative });
-    await fill(slot);
-    const [sent] = keys(createInitiative);
-    slot.unmount();
-    // The browser stays closed for nine days: Initiatives no longer holds
-    // the receipt, so sending the key again would create a second one.
-    vi.setSystemTime(Date.now() + 9 * DAY);
-    reloadSubmissions();
-    const again = vi.fn(async (_input: { key: string }) => done);
-    const reloaded = mount({ createInitiative: again });
-    await settle();
-    expect(again).not.toHaveBeenCalled();
-    const [row] = rows(reloaded);
-    expect(row?.getAttribute("data-initiative-submission")).toBe("failed");
-    expect(within(row!).getByRole("alert").textContent).toMatch(/over 7 days ago/);
-    // Sending it after that is a deliberate new create, under a new key.
-    await resend(reloaded);
-    expect(keys(again)).toHaveLength(1);
-    expect(keys(again)[0]).not.toBe(sent);
-    expect(rows(reloaded)).toEqual([]);
+describe("Adventure workers", () => {
+  it("lists an open Adventure's workers with their id and model, the title without the id", async () => {
+    const read = withFacts();
+    const slot = mount(workerRpc(read), {}, workerThreads);
+    await waitFor(() => expect(workerRow(slot, "w")?.querySelector("[data-worker-model]")).toBeTruthy());
+    const row = workerRow(slot, "w")!;
+    expect(row.querySelector("[data-worker-ref]")?.textContent).toBe("W1");
+    expect(row.querySelector("[data-worker-model]")?.textContent).toBe("Opus 5.5 · high");
+    expect(row.querySelector("[data-worker-model]")?.getAttribute("title")).toBe(OPUS);
+    expect(within(row).getByText("Build the index")).toBeTruthy();
+    expect(row.textContent).not.toContain("W1 Build");
+    // The open Adventure's facts are asked for by id.
+    expect(read.mock.calls.some(([input]) => input?.workersOf?.includes("p1"))).toBe(true);
   });
 
-  it("finding 1: refuses to send a key again by hand past the retry window", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    const createInitiative = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("Connection lost."))
-      .mockResolvedValue(done);
-    const slot = mount({ createInitiative });
-    await fill(slot);
-    vi.setSystemTime(Date.now() + 8 * DAY);
-    await resend(slot);
-    expect(createInitiative).toHaveBeenCalledTimes(1);
-    expect(within(rows(slot)[0]!).getByRole("alert").textContent).toMatch(/over 7 days ago/);
-    await resend(slot);
-    const [first, second] = keys(createInitiative);
-    expect(second).not.toBe(first);
-    expect(rows(slot)).toEqual([]);
+  it("folds a worker's child threads under a toggle shown only when it has some", async () => {
+    const slot = mount(workerRpc(), {}, workerThreads);
+    await waitFor(() => expect(workerRow(slot, "w")).toBeTruthy());
+    const toggle = within(workerRow(slot, "w")!).getByRole("button", { name: /Show 1 child thread of/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(slot.container.querySelector('[data-adventure-workers] [data-sidebar-thread-id="rev"]')).toBeNull();
+    fireEvent.click(toggle);
+    expect(slot.container.querySelector('[data-adventure-workers] [data-sidebar-thread-id="rev"]')).toBeTruthy();
+    // Its own child folds under a toggle of its own.
+    expect(slot.container.querySelector('[data-adventure-workers] [data-sidebar-thread-id="rev-helper"]')).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: /Show 1 child thread of Review W1/ }));
+    expect(slot.container.querySelector('[data-adventure-workers] [data-sidebar-thread-id="rev-helper"]')).toBeTruthy();
+    // A worker without children has no toggle.
+    expect(within(workerRow(slot, "w2")!).queryByRole("button", { name: /child thread/ })).toBeNull();
   });
 
-  it.each([
-    ["rejected", "BB project project-1 does not exist."],
-    ["unknown", "It is unclear what this saved."],
-  ])(
-    "finding 3: an Edit opened before a %s answer sends the renewed key and replaces its row",
-    async (write, message) => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      let finish!: (value: unknown) => void;
-      const createInitiative = vi
-        .fn()
-        .mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
-        .mockImplementation(never);
-      const slot = mount({ createInitiative });
-      await fill(slot);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(CREATE_TIMEOUT_MS);
-      });
-      const dialog = await edit(slot);
-      // The first send's answer settles its key while the dialog is open.
-      await act(async () => finish({ write, message }));
-      await settle();
-      expect(rows(slot)[0]!.querySelector('[role="alert"]')?.textContent).toBe(message);
-      fireEvent.click(within(dialog).getByRole("button", { name: "Create initiative" }));
-      await settle();
-      const [first, second] = keys(createInitiative);
-      expect(second).toBeDefined();
-      expect(second).not.toBe(first);
-      expect(rows(slot).map((row) => row.getAttribute("data-initiative-submission"))).toEqual(["pending"]);
-    },
-  );
+  it("opens a folded toggle that holds the open thread", async () => {
+    const slot = mount(workerRpc(), { activeThreadId: "rev" }, workerThreads);
+    await waitFor(() =>
+      expect(slot.container.querySelector('[data-adventure-workers] [data-sidebar-thread-id="rev"]')).toBeTruthy(),
+    );
+  });
 
-  it("closes an Edit dialog whose draft was created meanwhile", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    let finish!: (value: unknown) => void;
-    const createInitiative = vi.fn(() => new Promise((resolve) => (finish = resolve)));
-    const slot = mount({ createInitiative });
-    await fill(slot);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(CREATE_TIMEOUT_MS);
+  it("groups workers by state, or lists them by recent activity or worker id, and remembers it", async () => {
+    const slot = mount(workerRpc(), {}, workerThreads);
+    await waitFor(() => expect(groups(slot)).toEqual(["needs", "working", "done"]));
+    expect(workerIds(slot)).toEqual(["w3", "w", "w2"]);
+    await chooseWorkers(slot, "None");
+    expect(groups(slot)).toEqual([]);
+    // Most recent activity first: w2 (2 min), w3 (20), w (30).
+    expect(workerIds(slot)).toEqual(["w2", "w3", "w"]);
+    await chooseWorkers(slot, "Newest worker");
+    expect(workerIds(slot)).toEqual(["w3", "w2", "w"]);
+    expect(parseState(window.localStorage.getItem("bb-plugin-sidebar:v1")).workerListing).toEqual({
+      groupBy: "none",
+      sortBy: "worker",
     });
-    await edit(slot);
-    await act(async () => finish(done));
-    await settle();
-    // Nothing is left to send, so the dialog cannot send it twice.
+  });
+
+  it("lists the workers in one list, without models, until their facts arrive", async () => {
+    const slot = mount(
+      workerRpc(vi.fn(async () => ({ available: true, tree: workerTree, order: null, orderError: null }))),
+      {},
+      workerThreads,
+    );
+    await waitFor(() => expect(workerRow(slot, "w")).toBeTruthy());
+    expect(groups(slot)).toEqual([]);
+    expect(slot.container.querySelector("[data-worker-model]")).toBeNull();
+    expect(workerRow(slot, "w")!.querySelector("[data-worker-ref]")?.textContent).toBe("W1");
+  });
+
+  it("opens and closes an Adventure from its chevron, and keeps a closed one closed", async () => {
+    const slot = mount(workerRpc(), {}, workerThreads);
+    await waitFor(() => expect(workerRow(slot, "w")).toBeTruthy());
+    const chevron = slot.getByRole("button", { name: "Hide the workers of Useful search" });
+    fireEvent.click(chevron);
+    expect(slot.container.querySelector("[data-adventure-workers]")).toBeNull();
+    expect(parseState(window.localStorage.getItem("bb-plugin-sidebar:v1")).adventures).toEqual({ p1: false });
+    fireEvent.click(slot.getByRole("button", { name: "Show the workers of Useful search" }));
+    expect(workerRow(slot, "w")).toBeTruthy();
+  });
+
+  it("starts closed when the open thread is elsewhere", async () => {
+    const slot = mount(workerRpc(), { activeThreadId: "a-old" }, workerThreads);
+    await slot.findByRole("button", { name: "Show the workers of Useful search" });
+    expect(slot.container.querySelector("[data-adventure-workers]")).toBeNull();
+  });
+
+  it("marks the open thread once: the worker row, or the Adventure row for its coordinator or while folded", async () => {
+    const slot = mount(workerRpc(), { activeThreadId: "w" }, workerThreads);
+    await waitFor(() => expect(workerRow(slot, "w")).toBeTruthy());
+    expect(slot.getByRole("link", { name: "Open Useful search" }).getAttribute("aria-current")).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Hide the workers of Useful search" }));
+    expect(slot.getByRole("link", { name: "Open Useful search" }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("asks worker facts for at most 64 open Adventures, so the tree read stays valid", async () => {
+    const many = Array.from({ length: 70 }, (_, i) => ({ ...initiative, id: `p${i}`, name: `A${i}`, coordinatorThreadId: null, nodes: [] }));
+    updateState((current) => ({ ...current, adventures: Object.fromEntries(many.map((p) => [p.id, true])) }));
+    const read = vi.fn(async (_input: { workersOf?: string[] } | null) => ({
+      available: true, tree: { version: 1 as const, projects: many }, order: null, orderError: null,
+    }));
+    const slot = mount({ projectMode: read });
+    await slot.findByRole("link", { name: "Open A69" });
+    await waitFor(() => expect(read.mock.calls.some(([input]) => input?.workersOf)).toBe(true));
+    for (const [input] of read.mock.calls) expect(input?.workersOf?.length ?? 0).toBeLessThanOrEqual(64);
+  });
+
+  it("offers no way to create an Adventure", async () => {
+    const slot = mount();
+    await slot.findByRole("link", { name: "Open Useful search" });
+    expect(slot.queryByRole("button", { name: /New (initiative|adventure)/i })).toBeNull();
     expect(slot.queryByRole("dialog")).toBeNull();
-    expect(rows(slot)).toEqual([]);
-    expect(createInitiative).toHaveBeenCalledTimes(1);
+    expect(slot.container.querySelector('[data-section-header="Adventures"] button[aria-label="Worker list options"]')).toBeTruthy();
   });
 });

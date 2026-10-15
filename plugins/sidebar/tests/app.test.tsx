@@ -83,11 +83,11 @@ const threads = [
   }),
   thread({ id: "archived", title: "Archived", isArchived: true }),
 ];
-// The Initiatives section is a region too; group assertions look past it.
+// The Adventures section is a region too; group assertions look past it.
 const groupRegions = (scope: Pick<ReturnType<typeof renderSdkSlot>, "queryAllByRole">) =>
   scope
     .queryAllByRole("region")
-    .filter((region) => region.getAttribute("aria-label") !== "Initiatives");
+    .filter((region) => region.getAttribute("aria-label") !== "Adventures");
 const mount = () =>
   renderSlot(app.threadLists[0], props, {
     sidebarThreads: { threads, projects },
@@ -1985,10 +1985,10 @@ describe("activity sidebar", () => {
     expect(slot.getByText("Archived parent child")).toBeTruthy();
     expect(slot.queryByRole("list", { name: /Children of/ })).toBeNull();
   });
-  it("shows Threads without filters and ignores the old saved project selector", () => {
+  it("shows Other threads without filters and ignores the old saved project selector", () => {
     updateState(() => parseState(JSON.stringify({ projectId: "project-1" })));
     const slot = mount();
-    expect(slot.getByRole("heading", { name: "Threads" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: /^Other threads/ })).toBeTruthy();
     expect(slot.queryByRole("textbox")).toBeNull();
     expect(slot.queryByRole("combobox")).toBeNull();
     expect(slot.getByText("New reply")).toBeTruthy();

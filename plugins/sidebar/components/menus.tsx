@@ -7,6 +7,7 @@ import {
   updateState,
   useClientState,
   type ThreadListing,
+  type WorkerListing,
 } from "../lib/client-state";
 import { StatusIcon } from "./status-icon";
 import { ArchiveIcon } from "./archive-icon";
@@ -74,8 +75,22 @@ export function orderingLabel(listing: ThreadListing): string {
       : "Oldest";
 }
 
+const listIcon = (
+  <svg
+    aria-hidden="true"
+    viewBox="0 0 16 16"
+    className="size-3.5"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+  >
+    <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
+  </svg>
+);
+
 /**
- * The options of the thread list under the Initiatives list: Grouping and
+ * The options of the Other threads list: Grouping and
  * Ordering submenus (each naming its current value), then which statuses,
  * Snoozed and Archived show. Choices stay on this client.
  */
@@ -95,17 +110,7 @@ export function ListingMenu() {
         title="Group, order and filter threads"
         className={sectionActionClass}
       >
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 16 16"
-          className="size-3.5"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        >
-          <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
-        </svg>
+        {listIcon}
       </Menu.Trigger>
       <MenuContent>
         <Menu.Sub>
@@ -202,6 +207,74 @@ export function ListingMenu() {
           Show
         </Menu.Label>
         <ShowItems />
+      </MenuContent>
+    </Menu.Root>
+  );
+}
+
+const WORKER_GROUPING: [WorkerListing["groupBy"], string][] = [
+  ["state", "State"],
+  ["none", "None"],
+];
+const WORKER_ORDER: [WorkerListing["sortBy"], string][] = [
+  ["updated", "Recent activity"],
+  ["worker", "Newest worker"],
+];
+
+/**
+ * The Adventures header's options: how each open Adventure groups (by state,
+ * or in one list) and orders its workers. Choices stay on this client.
+ */
+export function WorkerListingMenu() {
+  const { workerListing } = useClientState();
+  const set = (patch: Partial<WorkerListing>) =>
+    updateState((current) => ({
+      ...current,
+      workerListing: { ...current.workerListing, ...patch },
+    }));
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        aria-label="Worker list options"
+        title="Group and order workers"
+        className={sectionActionClass}
+      >
+        {listIcon}
+      </Menu.Trigger>
+      <MenuContent>
+        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
+          Group workers by
+        </Menu.Label>
+        <Menu.RadioGroup
+          value={workerListing.groupBy}
+          onValueChange={(groupBy) =>
+            set({ groupBy: groupBy === "none" ? "none" : "state" })
+          }
+        >
+          {WORKER_GROUPING.map(([value, label]) => (
+            <Menu.RadioItem key={value} value={value} className={menuItemClass}>
+              <span className="flex-1">{label}</span>
+              <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
+            </Menu.RadioItem>
+          ))}
+        </Menu.RadioGroup>
+        <Menu.Separator className="my-1 h-px bg-border" />
+        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
+          Order workers by
+        </Menu.Label>
+        <Menu.RadioGroup
+          value={workerListing.sortBy}
+          onValueChange={(sortBy) =>
+            set({ sortBy: sortBy === "worker" ? "worker" : "updated" })
+          }
+        >
+          {WORKER_ORDER.map(([value, label]) => (
+            <Menu.RadioItem key={value} value={value} className={menuItemClass}>
+              <span className="flex-1">{label}</span>
+              <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
+            </Menu.RadioItem>
+          ))}
+        </Menu.RadioGroup>
       </MenuContent>
     </Menu.Root>
   );

@@ -230,6 +230,8 @@ describe("client storage boundary", () => {
           drafts: ["thread:1", "secret", 2],
           collapsed: false,
           listing: { groupBy: "bad", sortBy: "created", sortDirection: 1 },
+          workerListing: { groupBy: "none", sortBy: "bad" },
+          adventures: { p1: true, p2: false, p3: "yes" },
         }),
       ),
     ).toEqual({
@@ -238,6 +240,8 @@ describe("client storage boundary", () => {
         sortBy: "created",
         sortDirection: "descending",
       },
+      workerListing: { groupBy: "none", sortBy: "updated" },
+      adventures: { p1: true, p2: false },
       hidden: ["done"],
       showArchives: false,
       showSnoozed: true,

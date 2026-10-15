@@ -6,6 +6,7 @@ import {
   useState,
   type FormEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import {
   DndContext,
@@ -25,7 +26,7 @@ import {
 import type { projectModeContract } from "../lib/project-mode-contract";
 import { INITIATIVES_CHANGED, INITIATIVES_PANEL } from "../lib/project-mode-names";
 import type { ProjectTree } from "../lib/project-tree-schema";
-import { useClientState } from "../lib/client-state";
+import { updateState, useClientState } from "../lib/client-state";
 import {
   lastActivity,
   needsYou,
@@ -41,38 +42,34 @@ import { moveItem, useProjectOrder } from "../lib/use-project-order";
 import { useReorderDnd } from "../lib/use-reorder-dnd";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { usePortalScopeProps } from "../lib/portal-scope";
-import { projectLabel } from "../lib/project-schema";
 import { relativeAge } from "../lib/time";
 import { StatusIcon } from "./status-icon";
 import { appearanceHueStep, appearanceIcon } from "../lib/project-hue";
 import { ProjectAppearanceEditor, type AppearancePatch } from "./project-appearance";
 import { HostIcon } from "../lib/host-icon";
 import { ThreadDragOverlay } from "./thread-drag-overlay";
-import { menuItemClass } from "./menus";
-import { SectionHeader, sectionActionClass } from "./section-header";
-import { CreateInitiativeDialog } from "./create-initiative";
+import { menuItemClass, WorkerListingMenu } from "./menus";
+import { SectionHeader } from "./section-header";
+import { AdventureWorkers } from "./adventure-workers";
+import { MAX_WORKERS_OF } from "../lib/adventure-workers";
 import {
-  dismissNotice,
-  dismissSubmission,
-  newDraft,
-  resumeSubmissions,
-  submitDraft,
-  useSubmissions,
-  type CreateInitiative,
-  type InitiativeDraft,
-} from "../lib/initiative-submissions";
-import { cacheTree, cachedTree } from "../lib/initiative-tree-cache";
+  cacheTree,
+  cacheWorkers,
+  cachedTree,
+  cachedWorkers,
+  type WorkerFacts,
+} from "../lib/initiative-tree-cache";
 import { ReadTimeoutError, claimReport, withReadTimeout } from "../lib/read-timeout";
 
 type TreeProject = ProjectTree["projects"][number];
 
 /**
- * The Initiatives list at the top of the sidebar: one dense row per
- * Initiative (icon, name, status, last activity), a + that opens the New
- * initiative dialog, and drag reordering. The last tree is cached, so the list
- * draws at once and refreshes in the background.
+ * The Adventures list at the top of the sidebar: one dense row per Adventure
+ * (icon, name, status, last activity) with drag reordering; an open row lists
+ * its workers below it. The last tree and worker facts are cached, so the
+ * list draws at once and refreshes in the background.
  */
-export function InitiativesSection(props: {
+export function AdventuresSection(props: {
   activeThreadId: string | null;
   activeProjectId: string | null;
   onNavigate: () => void;
@@ -91,6 +88,10 @@ export function InitiativesSection(props: {
   const [error, setError] = useState<string | null>(null);
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
+  // Each worker's model and group by Adventure, as the server last read them.
+  const [facts, setFacts] = useState<WorkerFacts>(cachedWorkers);
+  // The open Adventures, whose worker facts each read asks for.
+  const openIds = useRef<string[]>([]);
   const client = useClientState();
   const order = useProjectOrder(api);
   const { applySnapshot, commit } = order;
@@ -113,12 +114,19 @@ export function InitiativesSection(props: {
   const misses = useRef(0);
   const refresh = useCallback(function read(): Promise<void> {
     if (pending.current) return pending.current;
-    const call = withReadTimeout(apiRef.current.call("projectMode", { known: revision.current })).then(result => {
+    const call = withReadTimeout(apiRef.current.call("projectMode", { known: revision.current, ...(openIds.current.length ? { workersOf: openIds.current } : {}) })).then(result => {
       misses.current = 0;
       if (mounted.current) {
         setAvailable(result.available);
         setFresh(true);
         if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
+        const workers = result.workers;
+        if (workers) setFacts(current => {
+          const next = { ...current, ...workers };
+          if (JSON.stringify(next) === JSON.stringify(current)) return current;
+          cacheWorkers(next);
+          return next;
+        });
         applyRef.current(result.order, result.orderError); setError(null);
       }
     }, error => {
@@ -204,55 +212,33 @@ export function InitiativesSection(props: {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
-  const memberChoices = useMemo(
+  // Each Adventure's threads and whether the open thread is one of them.
+  const rows = useMemo(
     () =>
-      native.projects
-        .filter((project) => !project.isPersonal)
-        .map((project) => ({ id: project.id, name: projectLabel(project) }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [native.projects],
+      displayed.map((p) => {
+        const threads = projectThreads(p, native.threads);
+        const active =
+          threads.some((t) => t.id === props.activeThreadId) ||
+          p.nodes.some((n) => n.threadId === props.activeThreadId);
+        return { p, threads, active };
+      }),
+    [displayed, native.threads, props.activeThreadId],
   );
-  const [editing, setEditing] = useState<InitiativeDraft | null>(null);
-  const { submissions, notice } = useSubmissions();
-  // A listed draft's dialog closes once it is created or dismissed, here or
-  // in another tab: there is nothing left to send.
-  const dialogDraft =
-    editing && (editing.key === null || submissions.some((s) => s.key === editing.key))
-      ? editing
-      : null;
-  const openCreate = () =>
-    setEditing(
-      newDraft(
-        memberChoices.some((p) => p.id === props.activeProjectId)
-          ? props.activeProjectId
-          : null,
-      ),
-    );
-  // The dialog closes at once; the draft shows in the list while Initiatives
-  // creates it. A failed one stays there with its reason until sent again or
-  // dismissed, and sending it again unchanged keeps its key, so it cannot
-  // duplicate. Drafts a reload cut off are sent again once, without opening.
-  const create: CreateInitiative = (input) =>
-    apiRef.current.call("createInitiative", input);
-  useEffect(() => resumeSubmissions(create, schedule), []);
-  const submit = (draft: InitiativeDraft) => {
-    setEditing(null);
-    const from = window.location.pathname;
-    submitDraft(draft, create, (created) => {
-      schedule();
-      // Open its coordinator unless the user has moved on to another page
-      // meanwhile. Without one yet the new row and the note say what
-      // happened.
-      if (
-        !created.coordinatorThreadId ||
-        !mounted.current ||
-        window.location.pathname !== from
-      )
-        return;
-      navigate.toThread(created.coordinatorThreadId);
-      props.onNavigate();
-    });
-  };
+  // An Adventure opened or closed by hand stays so; otherwise it is open
+  // while it holds the open thread, as the selected one was before.
+  const isOpen = (id: string, active: boolean) => client.adventures[id] ?? active;
+  const opened = rows.filter(({ p, active }) => isOpen(p.id, active)).map(({ p }) => p.id);
+  // Past the cap, the last opened rows show without models rather than
+  // failing the whole read.
+  openIds.current = opened.slice(0, MAX_WORKERS_OF);
+  // Opening an Adventure reads its worker facts.
+  const openKey = opened.join("|");
+  const lastOpenKey = useRef(openKey);
+  useEffect(() => {
+    if (openKey === lastOpenKey.current) return;
+    lastOpenKey.current = openKey;
+    schedule();
+  }, [openKey, schedule]);
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -309,22 +295,10 @@ export function InitiativesSection(props: {
   );
 
   return (
-    <section aria-label="Initiatives" data-project-mode="" className="mt-2">
+    <section aria-label="Adventures" data-project-mode="" className="mt-2">
       <SectionHeader
-        title="Initiatives"
-        trailing={
-          available !== false && (
-            <button
-              type="button"
-              aria-label="New initiative"
-              title="New initiative"
-              onClick={openCreate}
-              className={sectionActionClass}
-            >
-              <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
-            </button>
-          )
-        }
+        title="Adventures"
+        trailing={available !== false && <WorkerListingMenu />}
       />
       {error && (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
@@ -336,52 +310,36 @@ export function InitiativesSection(props: {
       )}
       {order.error && (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
-          Could not save the initiative order: {order.error}{" "}
+          Could not save the Adventure order: {order.error}{" "}
           <button className="underline" onClick={order.dismissError}>
-            Dismiss
-          </button>
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
-          {notice}{" "}
-          <button className="underline" onClick={dismissNotice}>
             Dismiss
           </button>
         </p>
       )}
       {available === false && (
         <p className="px-2 py-1 text-xs text-muted-foreground">
-          Install or enable the Initiatives plugin to list Initiatives here.
+          Install or enable the Adventures plugin to list Adventures here.
         </p>
       )}
       {available === null && !error && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">Loading initiatives…</p>
+        <p className="px-2 py-1 text-xs text-muted-foreground">Loading Adventures…</p>
       )}
-      {available && !projects.length && !submissions.length && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">
-          No initiatives yet.{" "}
-          <button type="button" className="underline" onClick={openCreate}>
-            Start one
-          </button>
-        </p>
+      {available && !projects.length && (
+        <p className="px-2 py-1 text-xs text-muted-foreground">No Adventures yet.</p>
       )}
       <DndContext {...dnd.dndContextProps}>
         <ul
-          aria-label="Initiatives"
+          aria-label="Adventures"
           className="m-0 list-none p-0"
           onClickCapture={dnd.onClickCapture}
           onKeyDown={dnd.onEscape}
         >
-          {displayed.map((p) => {
-            const threads = projectThreads(p, native.threads);
+          {rows.map(({ p, threads, active }) => {
             const status = projectStatus(p, threads, client.drafts);
             const coordinator = p.nodes.find(
               (n) => n.role === "coordinator",
             );
-            const active =
-              threads.some((t) => t.id === props.activeThreadId) ||
-              p.nodes.some((n) => n.threadId === props.activeThreadId);
+            const open = isOpen(p.id, active);
             const activity = lastActivity(threads);
             const summary = [
               needsYou(p) ? `${needsYou(p)} need${needsYou(p) === 1 ? "s" : ""} you` : null,
@@ -402,7 +360,8 @@ export function InitiativesSection(props: {
                     : `${INITIATIVES_PANEL}/${p.id}`
                 }
                 canReorder={displayed.length > 1}
-                active={active}
+                // An open Adventure's worker row shows the open thread itself.
+                active={active && (!open || props.activeThreadId === p.coordinatorThreadId)}
                 status={status}
                 summary={summary}
                 age={activity === null ? null : relativeAge(activity, now)}
@@ -433,86 +392,49 @@ export function InitiativesSection(props: {
                 onMenuOpen={() => {
                   dnd.consumeClickSuppression();
                 }}
-              />
+                open={open}
+                onToggle={() =>
+                  updateState((current) => ({
+                    ...current,
+                    adventures: { ...current.adventures, [p.id]: !open },
+                  }))
+                }
+              >
+                {open && dragId === null && (
+                  <AdventureWorkers
+                    project={p}
+                    facts={facts[p.id]}
+                    activeThreadId={props.activeThreadId}
+                    onNavigate={props.onNavigate}
+                    onError={report}
+                  />
+                )}
+              </ProjectRow>
             );
           })}
-          {submissions.map(({ key, draft, error: failure }) => (
-            <li
-              key={key}
-              data-initiative-submission={failure ? "failed" : "pending"}
-              className="flex min-h-7 items-center gap-2 rounded-md px-2 py-1 text-[13px] leading-5"
-            >
-              <span aria-hidden="true" className="flex size-4 shrink-0 items-center justify-center text-[var(--subtle-foreground)]">
-                <HostIcon
-                  name={failure ? "AlertCircle" : "Loading"}
-                  fallback="Circle"
-                  className={`size-3.5 ${failure ? "text-destructive" : "animate-spin"}`}
-                />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-muted-foreground">
-                  {draft.name}
-                </span>
-                {failure && (
-                  <span role="alert" className="block text-xs text-destructive">
-                    {failure}
-                  </span>
-                )}
-              </span>
-              {failure ? (
-                <>
-                  <button
-                    type="button"
-                    className="shrink-0 text-xs underline"
-                    onClick={() => setEditing({ key, ...draft })}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Dismiss ${draft.name}`}
-                    className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() => dismissSubmission(key)}
-                  >
-                    <HostIcon name="X" className="size-3.5" />
-                  </button>
-                </>
-              ) : (
-                <span className="shrink-0 text-xs text-[var(--subtle-foreground)]">
-                  Creating…
-                </span>
-              )}
-            </li>
-          ))}
         </ul>
         <DragOverlay dropAnimation={null}>
           {dragId ? (
             <ThreadDragOverlay
               title={
-                displayed.find((p) => p.id === dragId)?.name ?? "Initiative"
+                displayed.find((p) => p.id === dragId)?.name ?? "Adventure"
               }
             />
           ) : null}
         </DragOverlay>
       </DndContext>
-      <CreateInitiativeDialog
-        draft={dialogDraft}
-        projects={memberChoices}
-        onSubmit={submit}
-        onClose={() => setEditing(null)}
-      />
     </section>
   );
 }
 
 /**
- * One dense Initiative row: icon in its hue, name, status, and the age of its
- * last activity, which a New thread link replaces on hover. The row itself is
- * the drag handle (mouse drag after a
- * few pixels, touch after a short hold with movement — a flick still scrolls,
- * a stationary long press opens the context menu instead). Right-click, the
- * ContextMenu/Shift+F10 keys, or the long press offer New thread, Rename and
- * Initiative overview; keyboard reordering is the Space-lift drag.
+ * One dense Adventure row: icon in its hue, name, status, the age of its last
+ * activity, and a chevron that opens its workers below it. The row itself is
+ * the drag handle (mouse drag after a few pixels, touch after a short hold
+ * with movement — a flick still scrolls, a stationary long press opens the
+ * context menu instead). Right-click, the ContextMenu/Shift+F10 keys, or the
+ * long press offer New thread, Rename, Icon and color and Adventure overview;
+ * keyboard reordering is the Space-lift drag.
  */
 function ProjectRow({
   project,
@@ -529,6 +451,9 @@ function ProjectRow({
   onAppearance,
   onNewThread,
   onMenuOpen,
+  open,
+  onToggle,
+  children,
 }: {
   project: TreeProject;
   href: string;
@@ -546,6 +471,11 @@ function ProjectRow({
   onAppearance: (patch: AppearancePatch) => Promise<void>;
   onNewThread: () => void;
   onMenuOpen: () => void;
+  /** Its workers show below it. */
+  open: boolean;
+  onToggle: () => void;
+  /** The workers, while open. */
+  children?: ReactNode;
 }) {
   const scope = usePortalScopeProps();
   // toPluginPanel is scoped to Sidebar. A cross-plugin link opens the frozen
@@ -628,7 +558,7 @@ function ProjectRow({
             onSubmit={submitRename}
           >
             <input
-              aria-label="Initiative name"
+              aria-label="Adventure name"
               autoFocus
               onFocus={(event) => event.currentTarget.select()}
               value={draft}
@@ -684,7 +614,7 @@ function ProjectRow({
                 ref={setAnchor}
                 {...(canReorder ? draggable.listeners : {})}
                 {...(canReorder
-                  ? { "aria-roledescription": "draggable initiative" }
+                  ? { "aria-roledescription": "draggable Adventure" }
                   : {})}
                 {...longPress}
                 draggable={false}
@@ -825,14 +755,31 @@ function ProjectRow({
                     href={`${INITIATIVES_PANEL}/${project.id}`}
                     onClick={onOverview}
                   >
-                    Initiative overview
+                    Adventure overview
                   </a>
                 </ContextMenu.Item>
               </ContextMenu.Content>
             </ContextMenu.Portal>
           </ContextMenu.Root>
         )}
+        {!editing && !styling && (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={`${open ? "Hide" : "Show"} the workers of ${project.name}`}
+            title={open ? "Hide workers" : "Show workers"}
+            onClick={onToggle}
+            className="flex size-6 shrink-0 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-md:size-9"
+          >
+            <HostIcon
+              name="ChevronDown"
+              fallback="ArrowDown"
+              className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`}
+            />
+          </button>
+        )}
       </div>
+      {children}
     </li>
   );
 }

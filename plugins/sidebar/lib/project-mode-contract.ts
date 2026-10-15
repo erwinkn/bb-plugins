@@ -2,6 +2,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { projectOrderDocSchema } from "./project-order-schema";
 import { PROJECT_COLORS, PROJECT_ICONS, treeSchema } from "./project-tree-schema";
+import { adventureWorkerSchema, MAX_WORKERS_OF } from "./adventure-workers";
 
 const projectId = z.string().min(1).max(80);
 
@@ -29,53 +30,19 @@ export const readTimeoutReportSchema = z.object({
 });
 export type ReadTimeoutReport = z.infer<typeof readTimeoutReportSchema>;
 
-/**
- * What the Initiatives `command` RPC answers to a keyed `create`: a WriteAnswer
- * wrapping `{ project, note }`. An unkeyed (older) reply is the bare answer.
- */
-const createdSchema = z.object({
-  project: z.object({
-    id: projectId,
-    coordinatorThreadId: z.string().nullable().optional(),
-  }),
-  note: z.string().nullable().optional(),
-});
-export const createReplySchema = z.union([
-  z.object({ write: z.literal("done"), answer: createdSchema }),
-  z.object({
-    write: z.enum(["rejected", "unknown"]),
-    message: z.string(),
-  }),
-  createdSchema,
-]);
-
-/**
- * The create's outcome. rejected: Initiatives refused it with nothing saved.
- * unknown: an earlier send of the key failed midway, so what it saved is
- * unknown. Either settles the key; a failed call (no answer) does not.
- */
-export const createdInitiativeSchema = z.discriminatedUnion("write", [
-  z.object({
-    write: z.literal("done"),
-    projectId,
-    coordinatorThreadId: z.string().nullable(),
-    /** Why the coordinator is not confirmed yet, or null. */
-    note: z.string().nullable(),
-  }),
-  z.object({
-    write: z.enum(["rejected", "unknown"]),
-    message: z.string(),
-  }),
-]);
-export type CreatedInitiative = z.infer<typeof createdInitiativeSchema>;
-
 export const projectModeContract = defineRpcContract({
   projectMode: {
     /**
      * Pass the `revision` of the tree the client holds to have an unchanged
      * tree answered as `unchanged` with `tree: null`, instead of resent.
+     * `workersOf` names the Adventures whose worker rows the client shows.
      */
-    input: z.object({ known: z.string().max(80).nullable() }).nullable(),
+    input: z
+      .object({
+        known: z.string().max(80).nullable(),
+        workersOf: z.array(projectId).max(MAX_WORKERS_OF).optional(),
+      })
+      .nullable(),
     output: z.object({
       available: z.boolean(),
       tree: treeSchema.nullable(),
@@ -94,6 +61,13 @@ export const projectModeContract = defineRpcContract({
        * replaced. Null when the read path is healthy.
        */
       orderError: z.string().nullable(),
+      /**
+       * The model and group of each worker of the `workersOf` Adventures, as
+       * the server last read them, whether or not the tree changed. An
+       * Adventure not read yet is absent; its read is announced on the
+       * Initiatives channel once it lands.
+       */
+      workers: z.record(z.string(), z.array(adventureWorkerSchema)).optional(),
     }),
   },
   /**
@@ -156,22 +130,6 @@ export const projectModeContract = defineRpcContract({
       prompt: z.string().trim().min(1).max(4000),
     }),
     output: threadCreateResultSchema,
-  },
-  /**
-   * Starts an Initiative through the Initiatives plugin's user-scoped `command`
-   * RPC ("create"), with a new coordinator on the first member's default
-   * checkout, as its own create form does. `key` makes the write idempotent:
-   * sending the same request with the same key again (after a timeout or a
-   * lost answer) runs it at most once.
-   */
-  createInitiative: {
-    input: z.object({
-      name: z.string().trim().min(1).max(200),
-      objective: z.string().trim().min(1).max(4000),
-      memberProjectIds: z.array(projectId).min(1).max(30),
-      key: z.string().min(1).max(100),
-    }),
-    output: createdInitiativeSchema,
   },
   /**
    * Cross-plugin bump the Initiatives plugin calls on every ledger mutation.

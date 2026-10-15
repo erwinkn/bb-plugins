@@ -13,8 +13,21 @@ export interface ThreadListing {
   sortDirection: SortDirection;
 }
 
+/** Grouping and order of the worker rows under each Adventure, local to this client. */
+export interface WorkerListing {
+  groupBy: "state" | "none";
+  /** Most recent activity first, or the newest worker (highest W#) first. */
+  sortBy: "updated" | "worker";
+}
+
 export interface ClientState {
   listing: ThreadListing;
+  workerListing: WorkerListing;
+  /**
+   * Adventures opened or closed by hand; one without a choice is open while
+   * it holds the active thread.
+   */
+  adventures: Record<string, boolean>;
   hidden: Status[];
   showArchives: boolean;
   showSnoozed: boolean;
@@ -33,8 +46,14 @@ export const DEFAULT_LISTING: ThreadListing = {
   sortBy: "updated",
   sortDirection: "descending",
 };
+export const DEFAULT_WORKER_LISTING: WorkerListing = {
+  groupBy: "state",
+  sortBy: "updated",
+};
 const DEFAULT: ClientState = {
   listing: DEFAULT_LISTING,
+  workerListing: DEFAULT_WORKER_LISTING,
+  adventures: {},
   hidden: [],
   showArchives: false,
   showSnoozed: true,
@@ -61,6 +80,24 @@ function parseListing(value: unknown): ThreadListing {
   };
 }
 
+function parseWorkerListing(value: unknown): WorkerListing {
+  if (!value || typeof value !== "object") return DEFAULT_WORKER_LISTING;
+  const listing = value as Record<string, unknown>;
+  return {
+    groupBy: listing.groupBy === "none" ? "none" : "state",
+    sortBy: listing.sortBy === "worker" ? "worker" : "updated",
+  };
+}
+
+function parseOpen(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
+    ),
+  );
+}
+
 export function parseState(raw: string | null): ClientState {
   try {
     const value = JSON.parse(raw ?? "null");
@@ -68,6 +105,8 @@ export function parseState(raw: string | null): ClientState {
     return {
       // Stored as `initiativesListing` while it belonged to one of two views.
       listing: parseListing(value.listing ?? value.initiativesListing),
+      workerListing: parseWorkerListing(value.workerListing),
+      adventures: parseOpen(value.adventures),
       hidden: strings(value.hidden).filter((s): s is Status =>
         STATUSES.includes(s as Status),
       ),

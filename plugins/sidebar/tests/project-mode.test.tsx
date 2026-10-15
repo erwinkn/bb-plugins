@@ -326,7 +326,8 @@ describe("Projects sidebar mode", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
     try {
       const read = vi.fn((_input: unknown) => ({ available: true, tree, order: null, orderError: null }));
-      const slot = mount(true, { rpc: { projectMode: read } });
+      // No open Adventure, so no follow-up read for worker facts.
+      const slot = mount(true, { rpc: { projectMode: read }, props: { activeThreadId: null } });
       await slot.findByRole("link", { name: "Open Useful search" });
       expect(read).toHaveBeenCalledTimes(1);
       visibility = "hidden";
@@ -348,7 +349,7 @@ describe("Projects sidebar mode", () => {
       input?.known === "r1"
         ? { available: true, tree: null, revision: "r1", unchanged: true, order: null, orderError: null }
         : { available: true, tree, revision: "r1", unchanged: false, order: null, orderError: null });
-    const slot = mount(true, { rpc: { projectMode: read } });
+    const slot = mount(true, { rpc: { projectMode: read }, props: { activeThreadId: null } });
     const row = await slot.findByRole("link", { name: "Open Useful search" });
     expect(read.mock.calls[0]![0]).toEqual({ known: null });
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
@@ -422,15 +423,15 @@ describe("Projects sidebar mode", () => {
     expect(prevented).toBe(false);
     expect(slot.inspection.navigateCalls).toHaveLength(0);
   });
-  it("explains that Initiatives is unavailable, and still lists the threads below", async () => {
+  it("explains that Adventures is unavailable, and still lists the other threads below", async () => {
     const slot = mount(false, { threads: [thread({ id: "plain" })] });
     await waitFor(() =>
       expect(
-        slot.getByText(/Install or enable the Initiatives plugin/),
+        slot.getByText(/Install or enable the Adventures plugin/),
       ).toBeTruthy(),
     );
     expect(slot.queryByRole("button", { name: "Switch to Threads view" })).toBeNull();
-    expect(slot.container.querySelector('[data-section-header="Threads"]')).toBeTruthy();
+    expect(slot.container.querySelector("[data-other-threads]")).toBeTruthy();
     await waitFor(() => expect(listedThreads(slot)).toEqual(["plain"]));
   });
   it.each([false, true])(
@@ -448,7 +449,7 @@ describe("Projects sidebar mode", () => {
         );
     },
   );
-  it("lists the other threads under the Initiatives, ungrouped and most recent first", async () => {
+  it("lists the other threads under the Adventures, ungrouped and most recent first", async () => {
     const slot = mount(true, {
       treeData: richTree,
       threads: [
@@ -460,8 +461,8 @@ describe("Projects sidebar mode", () => {
     });
     await slot.findByRole("link", { name: "Open Useful search" });
     await waitFor(() => expect(listedThreads(slot)).toEqual(["new", "mid", "old"]));
-    // Initiatives first, then the list's own header, then its rows.
-    const header = slot.container.querySelector('[data-section-header="Threads"]')!;
+    // Adventures first, then the Other threads entry, then its rows.
+    const header = slot.container.querySelector("[data-other-threads]")!;
     expect(
       rowAnchor(slot, "Second push").compareDocumentPosition(header) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -638,7 +639,7 @@ describe("Projects sidebar mode", () => {
     fireEvent.keyDown(document, { code: "Space" });
     await waitFor(() =>
       expect(
-        slot.getByText(/Could not save the initiative order: kv is down/),
+        slot.getByText(/Could not save the Adventure order: kv is down/),
       ).toBeTruthy(),
     );
     // The optimistic order is kept on screen and stays retryable.
@@ -666,7 +667,7 @@ describe("Projects sidebar mode", () => {
     const menu = await openContextMenu(slot, "Useful search");
     expect(within(menu).getByRole("menuitem", { name: "Rename…" })).toBeTruthy();
     expect(
-      within(menu).getByRole("menuitem", { name: "Initiative overview" }),
+      within(menu).getByRole("menuitem", { name: "Adventure overview" }),
     ).toBeTruthy();
     expect(slot.queryByRole("menuitem", { name: /Move/ })).toBeNull();
     // A right click never opens the row's link.
@@ -699,7 +700,7 @@ describe("Projects sidebar mode", () => {
     });
     const menu = await openContextMenu(slot, "Useful search");
     const item = within(menu).getByRole("menuitem", {
-      name: "Initiative overview",
+      name: "Adventure overview",
     });
     // A real link to the Initiatives plugin's panel route — the app router owns
     // the navigation; the click also closes a compact drawer.
@@ -726,7 +727,7 @@ describe("Projects sidebar mode", () => {
       name: "Rename Useful search",
     });
     const input = within(form).getByRole("textbox", {
-      name: "Initiative name",
+      name: "Adventure name",
     }) as HTMLInputElement;
     expect(input.value).toBe("Useful search");
     fireEvent.change(input, { target: { value: "Better search" } });
@@ -785,7 +786,7 @@ describe("Projects sidebar mode", () => {
       threads: richThreads,
       rpc: {
         setTreeProjectAppearance: async () => {
-          throw new Error("The Initiatives plugin is not running.");
+          throw new Error("The Adventures plugin is not running.");
         },
       },
     });
@@ -793,7 +794,7 @@ describe("Projects sidebar mode", () => {
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Icon and color…" }));
     const editor = await slot.findByRole("group", { name: "Icon and color for Useful search" });
     fireEvent.click(within(editor).getByRole("button", { name: "red" }));
-    expect((await within(editor).findByRole("alert")).textContent).toBe("The Initiatives plugin is not running.");
+    expect((await within(editor).findByRole("alert")).textContent).toBe("The Adventures plugin is not running.");
     expect(within(editor).getByRole("button", { name: "red" }).getAttribute("aria-pressed")).toBe("false");
   });
   const expectNativeComposerLink = (

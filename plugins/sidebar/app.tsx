@@ -1,5 +1,5 @@
 import { DndContext, DragOverlay, useDroppable } from "@dnd-kit/core";
-import { InitiativesSection } from "./components/project-mode";
+import { AdventuresSection } from "./components/project-mode";
 import {
   useCallback,
   useEffect,
@@ -21,12 +21,17 @@ import {
 import type { projectContract } from "./lib/project-contract";
 import type { nestingContract } from "./lib/nesting-contract";
 import { projectLabel } from "./lib/project-schema";
-import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
+import {
+  STATUSES,
+  STATUS_LABEL,
+  statusOf,
+  threadTitle,
+  type Status,
+} from "./lib/status";
 import {
   toggleValue,
   updateState,
   useClientState,
-  type ThreadListing,
 } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { useSnooze, useSnoozePresets } from "./lib/use-snooze";
@@ -36,7 +41,7 @@ import { SnoozeSettings } from "./components/snooze-settings";
 import { useUiPreferences } from "./lib/use-ui-preferences";
 import { useBranchPullRequestEligibility } from "./lib/use-branch-pull-request-eligibility";
 import { ListingMenu } from "./components/menus";
-import { SectionHeader, sectionActionClass } from "./components/section-header";
+import { sectionActionClass } from "./components/section-header";
 import { ProjectHeaderMenu } from "./components/project-header-menu";
 import {
   ProjectRemoveForm,
@@ -55,6 +60,7 @@ import { ThreadDragOverlay } from "./components/thread-drag-overlay";
 import { DraftObserver } from "./components/draft-observer";
 import { HostIcon } from "./lib/host-icon";
 import { StatusIcon } from "./components/status-icon";
+import { GroupCount } from "./components/group-count";
 import { ArchiveIcon } from "./components/archive-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
 import { useFinePointer } from "./lib/use-fine-pointer";
@@ -79,30 +85,6 @@ import {
   ThreadDndContext,
   useThreadDndState,
 } from "./lib/thread-dnd-context";
-
-/**
- * The count chip on a group header. Muted by default; Needs Attention turns
- * amber while it holds rows. Decorative: the rows below carry the meaning.
- */
-export function GroupCount({
-  count,
-  attention = false,
-}: {
-  count: number;
-  attention?: boolean;
-}) {
-  const alert = attention && count > 0;
-  return (
-    <span
-      aria-hidden="true"
-      data-group-count={count}
-      data-group-count-tone={alert ? "attention" : "muted"}
-      className={`shrink-0 rounded px-1 text-[10px] leading-4 tabular-nums ${alert ? "bg-[var(--surface-attention)] font-medium text-[var(--warning-text)]" : "bg-muted text-muted-foreground"}`}
-    >
-      {count}
-    </span>
-  );
-}
 
 function Group({
   id,
@@ -257,15 +239,70 @@ function useStableArray<T>(value: readonly T[]): readonly T[] {
   return result;
 }
 
-/** The thread list section's title: what its groups are. */
-function listingTitle(groupBy: ThreadListing["groupBy"]): string {
-  return groupBy === "project" ? "Projects" : "Threads";
+/** The client-state key of the closed Other threads entry. */
+const OTHER_THREADS = "other-threads";
+
+/**
+ * The entry below the Adventures that folds every other thread: a row in the
+ * Adventures' style (icon, title, the most urgent status of its threads, a
+ * chevron), with the list options and New thread over its right end.
+ */
+function OtherThreadsEntry({
+  open,
+  status,
+  trailing,
+}: {
+  open: boolean;
+  status: Status | null;
+  trailing: ReactNode;
+}) {
+  return (
+    <div data-other-threads="" className="relative">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() =>
+          updateState((current) => ({
+            ...current,
+            collapsed: toggleValue(current.collapsed, OTHER_THREADS),
+          }))
+        }
+        className="flex min-h-7 w-full items-center gap-2 rounded-md pl-2 text-left text-[13px] leading-5 outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-9"
+      >
+        <span
+          aria-hidden="true"
+          className="flex size-4 shrink-0 items-center justify-center text-[var(--subtle-foreground)]"
+        >
+          <HostIcon name="MessageSquare" fallback="Folder" className="size-3.5" />
+        </span>
+        <span className="min-w-0 flex-1 truncate">Other threads</span>
+        {status && (
+          <span role="img" aria-label={STATUS_LABEL[status]} className="flex shrink-0 items-center">
+            <StatusIcon status={status} size="small" />
+          </span>
+        )}
+        {/* The slot the list options and New thread sit over. */}
+        <span aria-hidden="true" className="w-9 shrink-0" />
+        <span aria-hidden="true" className="flex size-6 shrink-0 items-center justify-center text-[var(--subtle-foreground)] max-md:size-9">
+          <HostIcon
+            name="ChevronDown"
+            fallback="ArrowDown"
+            className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`}
+          />
+        </span>
+      </button>
+      <span className="absolute right-7 top-1/2 flex -translate-y-1/2 items-center gap-2.5 max-md:right-10">
+        {trailing}
+      </span>
+    </div>
+  );
 }
 
 /**
- * The Initiatives list first, then every thread outside the Initiatives under
- * its own header, grouped and sorted by this client's choices (no grouping,
- * most recent first by default); the open Initiative never changes that list.
+ * The Adventures list first, then the Other threads entry: every thread
+ * outside the Adventures, grouped and sorted by this client's choices (no
+ * grouping, most recent first by default); the open Adventure never changes
+ * that list.
  */
 function ThreadsList(props: PluginThreadListProps) {
   const { status, threads: rawThreads, projects } =
@@ -311,8 +348,8 @@ function ThreadsList(props: PluginThreadListProps) {
         : hostThreads,
     [hostThreads, parentOverrides],
   );
-  // Initiative threads and everything they spawned live in the Initiative
-  // panel, not here. Ids come from the server's complete snapshot (cached,
+  // Adventure threads and everything they spawned are listed under their
+  // Adventure, not here. Ids come from the server's complete snapshot (cached,
   // refreshed in the background).
   const threadKey = useMemo(
     () => threads.map((thread) => thread.id).join("|"),
@@ -792,12 +829,22 @@ function ThreadsList(props: PluginThreadListProps) {
       renderDraft={draftRow}
     />
   );
+  const otherOpen = !state.collapsed.includes(OTHER_THREADS);
+  const otherStatuses = new Set([
+    ...families.map((family) => family.status),
+    ...pinned.map(familyStatus),
+  ]);
+  const otherStatus =
+    (["attention", "unread", "working"] as const).find((s) =>
+      otherStatuses.has(s),
+    ) ?? null;
   const threadSection = (
     <DndContext {...dnd.dndContextProps}>
       <ThreadDndContext.Provider value={status === "ready" ? dnd.state : null}>
-        <div className="mt-4 px-2">
-          <SectionHeader
-            title={listingTitle(listing.groupBy)}
+        <div className="px-2">
+          <OtherThreadsEntry
+            open={otherOpen}
+            status={otherStatus}
             trailing={
               <>
                 <ListingMenu />
@@ -814,6 +861,7 @@ function ThreadsList(props: PluginThreadListProps) {
             }
           />
         </div>
+        {otherOpen && (
         <div
           data-activity-thread-groups=""
           onClickCapture={dnd.onClickCapture}
@@ -1062,6 +1110,7 @@ function ThreadsList(props: PluginThreadListProps) {
             </>
           )}
         </div>
+        )}
       </ThreadDndContext.Provider>
       <DragOverlay dropAnimation={null}>
         {dnd.activeThreadId && dnd.state.dragMoved ? (
@@ -1114,7 +1163,7 @@ function ThreadsList(props: PluginThreadListProps) {
         }
       >
         <div className="px-2">
-          <InitiativesSection
+          <AdventuresSection
             activeThreadId={props.activeThreadId}
             activeProjectId={props.activeProjectId || null}
             onNavigate={props.onNavigate}
@@ -1136,7 +1185,7 @@ export default definePluginApp((app) => {
     id: "sidebar",
     title: "Threads",
     description:
-      "Initiatives first, then every other thread, recent first or grouped by status or project.",
+      "Adventures with their workers first, then every other thread, recent first or grouped by status or project.",
     component: ThreadsList,
   });
   app.composer.customize({

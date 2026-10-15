@@ -6,91 +6,108 @@ window, automatically archive threads, or run cleanup jobs.
 
 ## Layout
 
-The sidebar is one view with two sections: the Initiatives, then every other
-thread.
+The sidebar is one view: the Adventures, each of which opens onto its
+workers, then an **Other threads** entry holding every thread outside them.
 
 ```
-Initiatives                         +
-  ◇ Sidebar v2                 ⓘ   3m
-  ◎ Initiatives v9             ◌  55m
-  ◍ Equisafe onboarding            1d
-Threads                           ≡ +
-  Fix flaky snooze test            ◌
-  bb-plugins · fix-snooze         2m
-  KYC webhook retries              •
-  equisafe-market · kyc-retries  18m
+Adventures                                    ≡
+  ◎ bb-plugins                          ◌  2m ⌄
+  │ Needs you                                  1
+  │   ⚙ Sidebar review                         ⓘ
+  │     W476                    Sol 6.1 · xhigh  4m
+  │ Working                                    2
+  │   ⚙ Sidebar: workers under Adventures      ◌
+  │     W474  #812              Opus 5.5 · high  1m
+  │     › 1 child thread
+  │   ⚙ Workers tab prefetch                   ◌
+  │     W473                    Opus 5.5 · high  6m
+  │ › 3 member threads
+  ◍ Equisafe: infra                     ⓘ  1m ›
+  ◌ Other threads                       ◌ ≡ +  ⌄
+  Fix flaky snooze test                        ◌
+  bb-plugins · fix-snooze                     2m
 ```
 
-**Initiatives.** One dense line per Initiative: its icon in its color, its
-name (muted while paused), its status, and how long ago its threads last
-changed. The status prioritizes an unread coordinator reply or a
+**Adventures.** One dense line per Adventure: its icon in its color, its
+name (muted while paused), its status, how long ago its threads last changed,
+and a chevron. The status prioritizes an unread coordinator reply or a
 decision/input needing you, then any working thread (including native
 descendants), then an observed unsent text or attachment draft. Routine
-unread worker reports wait for the coordinator. The counts that used to fill a
-second line (needs you, in flight, remaining, to revisit, paused) are in the
-row's tooltip, under the objective. A click opens the coordinator; workers,
-reviewers and discussions are reached from the Initiative's own panel, never
-from the sidebar (see below).
+unread worker reports wait for the coordinator. The counts (needs you, in
+flight, remaining, to revisit, paused) are in the row's tooltip, under the
+objective. A click opens the coordinator. There is no create button: Adventures
+are started from the Adventures plugin itself.
+
+**Workers.** The chevron opens an Adventure onto its current workers. An
+Adventure you never opened or closed by hand is open while it holds the open
+thread (its coordinator, a worker, or one of their child threads), as the
+selected one was before; a choice made with the chevron sticks, per client.
+Each worker is an ordinary thread row (status, hover prefetch, the row menu,
+split and PR chip) whose title drops the leading worker id BB titles start
+with; its second line starts with the id (W474) and ends with the model and
+reasoning level from its Adventures execution profile ("Opus 5.5 · high",
+the full profile on hover), then its age. A worker's child threads
+(reviewers, helpers) fold under a "› 2 child threads" toggle shown only when
+it has some, closed until clicked or while it holds the open thread; a child
+with children of its own gets its own toggle. The Adventure's member threads
+(discussions and threads attached to it, the ones its tree names whose parent
+is the coordinator or gone) fold the same way under "member threads" at the
+end. Other threads under the coordinator, such as a former worker's thread
+nobody archived, are not listed.
+
+The Adventures header's options button chooses, for every Adventure at once:
+**Group workers by** State (Needs you, Working, Done, Stopped, Idle, the
+Workers tab's rules) or None, and **Order workers by** Recent activity or
+Newest worker (highest W# first). The choice is kept in this client's
+storage. BB's live status wins over the last read at once: a worker waiting
+for input shows under Needs you and a running one under Working. Needs you and
+Working show whole; Done, Stopped and Idle show five rows before Show more,
+and the ungrouped list fifteen.
+
+Where the model and state come from: BB threads carry no model, so the
+sidebar server reads each open Adventure's Adventures `overview` (summary
+tier) and keeps only each worker's id, profile and group. That read is heavy
+(about 1.2 MB and 1.5 s for an Adventure of 80 workers), so it is bounded: only
+Adventures some client opened in the last two minutes are read, one read at a
+time, a first read at once and a changed one again at most every 30 s
+(`FACTS_INTERVAL_MS`). The tree read (`projectMode`) answers with the facts
+the server already has, never waiting on a read; a read that changes them
+announces the change so clients read the tree again. Clients keep the last
+facts in `localStorage`, so rows draw with their models at once after a
+reload. Before an Adventure's first read its workers show in one list without
+models.
 
 The last tree this client confirmed is kept in `localStorage`, in its displayed
 order, so the list draws at once and the first read refreshes it in the
 background; only a confirmed read replaces it, and a read that finds
-Initiatives gone clears it.
+Adventures gone clears it.
 
-**New initiative.** The section's + (or "Start one" while the list is empty)
-opens a dialog: a name, what it should achieve, and its repositories, where the
-open thread's repository is preselected and the first checked one hosts the
-coordinator. It creates through the Initiatives plugin's own `command` RPC
-(`create`, with a new coordinator on the first repository's default checkout),
-like its create form. The dialog closes at once and the draft shows in the
-list as "Creating…" while Initiatives spawns the coordinator, so nothing waits
-on it; once created, the coordinator opens unless you have navigated away
-meanwhile. A failed draft stays in the list with its reason; Edit
-reopens it, and resending it unchanged reuses its idempotency key, so a create
-that did land but whose answer was lost is never made twice. Past 90 s without
-an answer the draft shows as unconfirmed, and a late answer still settles it.
-Sent drafts and their keys are kept in this client's storage, so a reload
-keeps them; after a reload, drafts still waiting for an answer are
-sent again under their keys. Each send is its own storage entry, named by its
-key and holding only what that key's answers decided, so tabs sending at once
-never overwrite each other's, and every tab shows what another sent or
-settled. A send that got no answer shows as failed only in its own tab. Only an answer from
-Initiatives settles a key: when it refused the create, or cannot tell what an
-earlier send saved, the draft gets a new key and resending it is a new create,
-which you check and send on purpose. A key first sent over 7 days ago is never
-sent again, by a reload or by hand, because Initiatives keeps its receipt only
-a day longer: the draft stays listed with a warning, so you can check whether
-it was created before sending it as new. An Edit dialog always sends the
-draft's current key, even one that settled while it was open, and closes if
-the draft is created meanwhile.
+**Other threads.** Below the Adventures, an entry in their style folds every
+thread outside them, with pins, snoozes, drafts and archive; it is open
+until you fold it, and remembers it. Its status shows the most urgent of its
+threads (needs attention, unread, working). Its grouping and order are this
+client's own (they default to no grouping, most recent first) and never follow
+the open Adventure. Its options button holds Grouping (None, Status, Project)
+and Ordering (date updated or created, newest or oldest first) submenus that
+name the current choice, then Show options for each status, Snoozed and
+Archived. Its + opens BB's new-thread composer in the open thread's project.
+Ungrouped, new-thread drafts lead the list and 25 threads show before Show
+more; under a Pinned group the list gets a "Recent" title so it does not read
+as pinned.
 
-**Threads.** Below the Initiatives, every thread outside them, with pins,
-snoozes, drafts and archive. Its grouping and order are this client's own
-(they default to no grouping, most recent first) and never follow the open
-Initiative. The header names what the groups are ("Threads", or "Projects"
-when grouped by project). Its options button holds Grouping (None, Status,
-Project) and Ordering (date updated or created, newest or oldest first)
-submenus that name the current choice, then Show options for each status,
-Snoozed and Archived. Its + opens BB's new-thread composer in the open
-thread's project. Ungrouped, new-thread drafts lead the list and 25 threads
-show before Show more; under a Pinned group the list gets a "Recent" title so
-it does not read as pinned.
-
-Initiative order is fixed until you change it: activity, selection, polling and
+Adventure order is fixed until you change it: activity, selection, polling and
 reloads never move a row. Drag a row to reorder it — the whole row is the
 handle on desktop; on touch, hold about a fifth of a second before moving so
 the sidebar still scrolls on a flick. On the keyboard, focus a row and press
 Space to lift it, arrows to move it, Space or Enter to drop it. The release
-click after a drag never opens the Initiative.
+click after a drag never opens the Adventure.
 
 Each row keeps an options menu on right-click or a stationary long press
 (the same gesture on keyboard is ContextMenu/Shift+F10): **New thread**,
-**Rename…**, **Icon and color…** and **Initiative overview** (that
-Initiative's dashboard). New thread opens the Initiative's native BB composer
-in Initiatives immediately. On desktop the same composer is one click away: a
-plus replaces the row's age on hover or keyboard focus. On touch the row stays
-one line and the menu's New thread stands in. Navigation closes the mobile
-drawer and does not create a thread or send input.
+**Rename…**, **Icon and color…** and **Adventure overview** (that
+Adventure's dashboard). New thread opens the Adventure's native BB composer
+in the Adventures plugin immediately. Navigation closes the mobile drawer and
+does not create a thread or send input.
 
 Choose the member repository, model and checkout in the native composer.
 Initiatives validates the selected repository and creates the user-owned thread
@@ -130,13 +147,14 @@ reorder that would exceed it is rejected rather than silently truncated. A
 stored document that fails to parse is surfaced as an error and left
 untouched.
 
-The sidebar builds independently of Initiatives; its versioned RPC schema is checked
-against the same fixture in both plugins' tests. If Initiatives is disabled, the
-Initiatives section explains how to enable it and the thread list below still works. Composer links close
+The sidebar builds independently of the Adventures plugin (`initiatives`); its
+versioned RPC schema is checked against the same fixture in both plugins' tests.
+If it is disabled, the Adventures section explains how to enable it and Other
+threads still works. Composer links close
 the mobile drawer before navigating. Composer links use `UrlLink` for BB's
 internal navigation; the row menu's overview link remains an ordinary anchor.
 
-## Initiative threads stay out of the thread list
+## Adventure threads stay out of Other threads
 
 The thread list hides every thread the Initiatives tree names (coordinators,
 workers, reviewers and the Initiative's other member threads, which include
@@ -145,8 +163,9 @@ children that Initiatives never records are therefore hidden too, even under an
 archived or unlisted intermediate thread. A thread with the same shape (a child of a plain thread) is
 untouched. Pinned Initiative threads are hidden as well, so one rule holds
 everywhere: the Pinned section, the Recent list, the Status and Project
-groups, Archived, and the **Make child of…** targets all skip them. Initiative
-threads live only in the Initiatives list and its panel.
+groups, Archived, and the **Make child of…** targets all skip them. Adventure
+threads are listed under their Adventure instead (workers, their child
+threads, and its member threads), and in its panel.
 
 The ids come from the `initiativeThreads` RPC. The server keeps one snapshot
 for all clients and answers at once from it, announcing a change on its own
@@ -161,7 +180,7 @@ finishes, `failed` when that first read failed (no snapshot exists, and a
 failure is never reported as a confirmed empty set), and `ready` otherwise.
 The client keeps the last confirmed set in `localStorage` and caches every
 confirmed answer, even one equal to the set in memory. With a cache the list
-renders at once and a refresh never blocks it; on a cache miss the Threads list
+renders at once and a refresh never blocks it; on a cache miss Other threads
 shows "Loading threads…" until the first answer (a failed or timed-out first
 read also ends the wait, with nothing hidden and nothing cached until a read
 succeeds). A client that has a set keeps it and its cache through any failed or
@@ -509,8 +528,9 @@ development. To remove it, run `bb plugin remove sidebar`.
 
 Tests cover status precedence, grouping and date sorting, synced collapsed
 groups, navigation, storage validation, draft text and attachments, fallback
-UI, a disconnected realtime connection, the Initiatives list and its create
-dialog, project rename and removal through BB's API, and the snooze CLI.
+UI, a disconnected realtime connection, the Adventures list with its worker
+rows, models, child toggles and worker options, the worker facts cache,
+project rename and removal through BB's API, and the snooze CLI.
 They use the SDK's frontend harness. The live BB view still needs visual checks
 after SDK upgrades because the sidebar API is experimental.
 

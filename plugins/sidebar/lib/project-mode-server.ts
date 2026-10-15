@@ -7,9 +7,9 @@ import {
 } from "./project-mode-names";
 import { initiativeThreadIds, withDescendants } from "./initiative-threads";
 import { withReadTimeout } from "./read-timeout";
+import { createWorkerFacts } from "./adventure-workers-server";
 import { treeSchema } from "./project-tree-schema";
 import {
-  createReplySchema,
   projectModeContract,
   threadCreateResultSchema,
 } from "./project-mode-contract";
@@ -21,7 +21,7 @@ const initiativesRunning = async (bb: BbPluginApi) =>
     (p) => p.id === INITIATIVES_PLUGIN_ID && p.enabled && p.status === "running",
   );
 const requireRunning = async (bb: BbPluginApi) => {
-  if (!(await initiativesRunning(bb))) throw new Error("The Initiatives plugin is not running.");
+  if (!(await initiativesRunning(bb))) throw new Error("The Adventures plugin is not running.");
 };
 
 // BB refuses a call to a missing or stopped plugin, so only a failed read pays
@@ -132,7 +132,20 @@ export function registerProjectMode(bb: BbPluginApi) {
         if (dirty) refreshSnapshot();
       });
   };
+  const workerFacts = createWorkerFacts(
+    bb,
+    (projectId) =>
+      bb.sdk.plugins.callRpc({
+        pluginId: INITIATIVES_PLUGIN_ID,
+        method: "overview",
+        input: { projectId, detail: "summary" },
+        outputSchema: z.unknown(),
+      }),
+    // Clients read the tree again, with the facts beside it.
+    () => bb.realtime.publish(INITIATIVES_CHANGED, {}),
+  );
   bb.onDispose(() => {
+    workerFacts.dispose();
     dirty = false;
     clearTimeout(timer);
     walking?.abort();
@@ -151,6 +164,12 @@ export function registerProjectMode(bb: BbPluginApi) {
       const fresh = await readTree(bb);
       if (!fresh)
         return { available: false, tree: null, order: null, orderError: null };
+      const listed = new Set(fresh.projects.map((project) => project.id));
+      workerFacts.retain(listed);
+      // An Adventure the tree no longer lists is never read.
+      const workers = input?.workersOf
+        ? workerFacts.read(input.workersOf.filter((id) => listed.has(id)))
+        : undefined;
       const revision = input ? revisionOf(JSON.stringify(fresh)) : null;
       const unchanged = !!input?.known && input.known === revision;
       const tree = unchanged ? null : fresh;
@@ -174,6 +193,7 @@ export function registerProjectMode(bb: BbPluginApi) {
         ...(input ? { revision, unchanged } : {}),
         order: doc,
         orderError,
+        ...(workers ? { workers } : {}),
       };
     },
     initiativeThreads: () => {
@@ -229,46 +249,10 @@ export function registerProjectMode(bb: BbPluginApi) {
         outputSchema: threadCreateResultSchema,
       });
     },
-    createInitiative: async ({ name, objective, memberProjectIds, key }) => {
-      await requireRunning(bb);
-      const reply = await bb.sdk.plugins.callRpc({
-        pluginId: INITIATIVES_PLUGIN_ID,
-        method: "command",
-        input: {
-          command: {
-            action: "create",
-            name,
-            objective,
-            memberProjectIds,
-            coordinator: {
-              kind: "new",
-              bbProjectId: memberProjectIds[0],
-              environment: { type: "project-default" },
-            },
-          },
-          key,
-        },
-        outputSchema: createReplySchema,
-      });
-      // A settled refusal is an answer, not an error: the client renews the
-      // key only for those.
-      if ("write" in reply && reply.write !== "done")
-        return { write: reply.write, message: reply.message };
-      const created = "write" in reply ? reply.answer : reply;
-      // The Initiatives plugin announces the new Initiative itself; this
-      // also covers a reply that lands before its signal.
-      bb.realtime.publish(INITIATIVES_CHANGED, {});
-      refreshSnapshot(true);
-      return {
-        write: "done" as const,
-        projectId: created.project.id,
-        coordinatorThreadId: created.project.coordinatorThreadId ?? null,
-        note: created.note ?? null,
-      };
-    },
     initiativesChanged: (payload) => {
       bb.realtime.publish(INITIATIVES_CHANGED, payload);
       refreshSnapshot(true);
+      workerFacts.changed(payload.projectId);
       return { ok: true as const };
     },
     reportReadTimeout: (r) => {
