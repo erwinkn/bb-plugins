@@ -41,7 +41,7 @@ describe("A96 lightweight decisions and safe history", () => {
   it("preserves every legacy byte, distinguishes user answers from agent choices, and archives non-decisions", () => {
     const { db, before, store } = legacyFixture();
     const after = db.prepare("SELECT * FROM knowledge").all() as Record<string, unknown>[];
-    expect(after.map(({ decision_owner, decision_review, decision_review_message, decision_notification, ...original }) => original)).toEqual(before);
+    expect(after.map(({ decision_owner, decision_review, decision_review_message, decision_notification, blocker_choice, ...original }) => original)).toEqual(before);
     const decisions = store.decisions("p");
     expect(decisions.map(d => [d.ref, d.madeBy, d.review])).toEqual([
       ["D2", "agent", "pending"], ["D3", "user", null], ["D4", "user", null], ["D6", null, null],

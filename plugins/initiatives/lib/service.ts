@@ -130,6 +130,10 @@ function notOpenQuestion(item: DecisionRecord) {
   return `${item.ref} is not an open question: ${why}.`;
 }
 
+/** W476: how an Inbox answer reads to its recipient: the picked option's label verbatim, then the user's detail. */
+const answerLines = (choice: string | null, note: string) =>
+  choice === null ? `Answer: ${note}` : `Answer: ${choice}${note ? `\nDetail: ${note}` : ""}`;
+
 /** An unconfirmed coordinator start as the sweep reads it. */
 type PendingCoordinatorStart = {
   project_id: string;
@@ -3723,7 +3727,7 @@ export class ProjectsService {
     });
     if (notify)
       await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your answer is saved.",
-        `Initiative · ${project.name} · Your answer to ${item.ref}\n\n${body.question ?? item.title}\nChoice: ${input.choice ?? "Written answer"}${note ? `\nNote: ${note}` : ""}${recordedBy ? `\nRecorded from chat by ${recordedBy.threadId}.` : ""}`,
+        `Initiative · ${project.name} · Your answer to ${item.ref}\n\n${body.question ?? item.title}\n${answerLines(input.choice, note)}${recordedBy ? `\nRecorded from chat by ${recordedBy.threadId}.` : ""}`,
         { senderThreadId: recordedBy?.threadId });
     return this.store.decisionItem(project.id, item.num)!;
   }
@@ -3741,15 +3745,16 @@ export class ProjectsService {
    * coordinator notice. An unconfirmed receipt never authorizes another send. A
    * different answer or target supersedes the previous one and is sent again.
    * `seen` is the blocker the user answered; an answer to an older question or
-   * context is refused.
+   * context is refused. W476: `choice` is the option the user picked, if the
+   * report gave options; the note is then optional detail.
    */
-  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator") {
+  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator", choice: string | null = null) {
     const project = this.requireProject(projectId);
     const text = note.trim();
-    if (!text) throw new ProjectError("Write an answer.");
+    if (!text && choice === null) throw new ProjectError("Pick an option or write an answer.");
     const key = blockerKey(this.requireAssignment(project, ref).num, seen);
     const previous = this.store.decisions(project.id).find((item) => item.body.blocker && item.body.answer && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
-    const same = previous?.body.answer?.note === text && (previous.body.answer.to ?? "coordinator") === to ? previous : null;
+    const same = previous?.body.answer?.note === text && previous.body.answer.choice === choice && (previous.body.answer.to ?? "coordinator") === to ? previous : null;
     const failed = (state?: string) => state === "failed";
     const redeliver = to === "worker" && failed(same?.body.answer?.delivery?.state);
     // A failed FYI is retried even after the worker reported again; it only informs the coordinator.
@@ -3759,6 +3764,9 @@ export class ProjectsService {
       ? { assignment: this.requireAssignment(project, ref), blocker: same.body.blocker! }
       : this.seenBlocker(project, ref, seen, "answer");
     if (same && !redeliver && !renotify) return same;
+    if (!same && choice !== null && !assignment.report?.blocker?.options?.some((option) => option.label === choice))
+      throw new ProjectError(`"${choice}" is not one of ${assignment.ref}'s options. Your answer was not saved.`);
+    const said = choice === null ? text : text ? `${choice} · ${text}` : choice;
     const worker = this.store.worker(project.id, assignment.workerNum)!;
     // The thread that reported the blocker, which the Inbox card links to.
     const workerThreadId = assignment.threadId;
@@ -3768,16 +3776,16 @@ export class ProjectsService {
     const coordinatorThreadId = await this.workerLead(project, assignment.workerNum);
     const deliveryOp = newOpId();
     const item = same ?? this.store.tx(() => {
-      const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref})${to === "worker" ? `, sent to ${worker.ref}` : ""}: ${text}`;
+      const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref})${to === "worker" ? `, sent to ${worker.ref}` : ""}: ${said}`;
       const added = this.store.addDecision({
         projectId: project.id, title: description.slice(0, 100),
         topic: previous?.topic ?? `blocker-${assignment.ref.toLowerCase()}`, scope: "project", status: "active",
         body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context },
-          answer: { choice: null, note: text, at: this.now(), ...(to === "worker" ? { to, delivery: { op: deliveryOp, state: "pending" as const, threadId: workerThreadId! } } : {}) } },
+          answer: { choice, note: text, at: this.now(), ...(to === "worker" ? { to, delivery: { op: deliveryOp, state: "pending" as const, threadId: workerThreadId! } } : {}) } },
         madeBy: "user", humanAttention: "none", blocks: [], deadline: null,
         provenance: { author: "user", threadId: null, assignment: null }, supersedes: previous?.num ?? null,
       });
-      this.store.log(project.id, "decision", `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref})${to === "worker" ? ` and sent it to ${worker.ref}` : ""}: ${text}`);
+      this.store.log(project.id, "decision", `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref})${to === "worker" ? ` and sent it to ${worker.ref}` : ""}: ${said}`);
       return added;
     });
     const about = `${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref}`;
@@ -3788,7 +3796,7 @@ export class ProjectsService {
     };
     if (to === "coordinator") {
       await notify("Your answer is saved.",
-        `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\nAnswer: ${text}\n\nContinue ${worker.ref} with this answer (initiative_message work:true, with 4 more review rounds if it needs them). The Inbox item clears when ${worker.ref} reports again.`);
+        `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\n${answerLines(choice, text)}\n\nContinue ${worker.ref} with this answer (initiative_message work:true, with 4 more review rounds if it needs them). The Inbox item clears when ${worker.ref} reports again.`);
       return this.store.decisionItem(project.id, item.num)!;
     }
     if (!same || redeliver) {
@@ -3800,14 +3808,14 @@ export class ProjectsService {
       };
       if (redeliver) settle({ state: "pending" }, true);
       settle(await this.deliver(workerThreadId!, deliveryOp,
-        `Initiative · ${project.name} · The user answered your blocker directly (${about})\n\nBlocker: ${blocker.question}\nAnswer: ${text}\n\nContinue ${assignment.ref} with this answer and report again with initiative_report when done. The coordinator has been told.`));
+        `Initiative · ${project.name} · The user answered your blocker directly (${about})\n\nBlocker: ${blocker.question}\n${answerLines(choice, text)}\n\nContinue ${assignment.ref} with this answer and report again with initiative_report when done. The coordinator has been told.`));
     }
     const current = this.store.decisionItem(project.id, item.num)!;
     const reached = ["sent", "queued"].includes(current.body.answer?.delivery?.state ?? "");
     // The coordinator's records stay consistent: one FYI once the worker has the answer, retried like any notice.
     if (reached && (!current.notification || failed(current.notification.state)))
       await notify(`Your answer reached ${worker.ref}.`,
-        `Initiative · ${project.name} · FYI: the user answered ${worker.ref}'s blocker (${about}) directly to ${worker.ref}\n\nBlocker: ${blocker.question}\nAnswer: ${text}\n\n${worker.ref} continues ${assignment.ref} with it and reports again. Nothing to send; review its next report as usual.`,
+        `Initiative · ${project.name} · FYI: the user answered ${worker.ref}'s blocker (${about}) directly to ${worker.ref}\n\nBlocker: ${blocker.question}\n${answerLines(choice, text)}\n\n${worker.ref} continues ${assignment.ref} with it and reports again. Nothing to send; review its next report as usual.`,
         "queue-if-active");
     return this.store.decisionItem(project.id, item.num)!;
   }
@@ -6994,7 +7002,7 @@ export class ProjectsService {
    * The short report (T136, D417): outcome and summary for the dashboard, and the report text,
    * which the coordinator receives.
    */
-  async shortReport(threadId: string, input: { outcome: "done" | "blocked" | "failed"; summary: string; question?: string; report: string }) {
+  async shortReport(threadId: string, input: { outcome: "done" | "blocked" | "failed"; summary: string; question?: string; options?: { label: string; consequences: string }[]; recommendation?: string; report: string }) {
     // A long summary is not refused (agents kept hitting the old 300 limit): the dashboard line
     // is clipped and the full text kept as the report's handoff summary.
     const SUMMARY_LINE = 300;
@@ -7004,7 +7012,10 @@ export class ProjectsService {
       outcome: input.outcome === "done" ? "succeeded" : input.outcome,
       summary: line,
       evidence: [],
-      ...(input.outcome === "blocked" ? { blocker: { question: (input.question ?? input.summary).slice(0, 1000), context: input.summary.slice(0, 2000) } } : {}),
+      ...(input.outcome === "blocked" ? { blocker: {
+        question: (input.question ?? input.summary).slice(0, 1000), context: input.summary.slice(0, 2000),
+        ...(input.options?.length ? { options: input.options } : {}), ...(input.recommendation?.trim() ? { recommendation: input.recommendation.trim() } : {}),
+      } } : {}),
       handoff: { summary: input.summary, workspaceRevision: "not recorded", files: [], openQuestions: [], nextSteps: [], dirtyFiles: [], recoveryArtifacts: [], pendingCommands: [] },
       pendingBackgroundWork: [],
       finalMessage: input.report,

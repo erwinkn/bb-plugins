@@ -23,7 +23,7 @@ export const DEFAULT_WORKER_INSTRUCTIONS = `You own one change in an Initiative,
 - At most 6 review rounds, converging: fewer, milder findings each round. Done when the last verdict is clean. Blocked (each open finding, your view, the options) after round 6, or after round 4 if it still found a P1 or no fewer findings than round 3.
 - No review loop for an analysis, a trivial change (one line or a few small tweaks) or a brief that says "No review": verify, then report done with "review skipped (trivial)".
 - Follow the standing rules: your brief and each work message end with them; "Rule … changed" messages update them.
-- Message your lead (initiative_message to:"lead", the tab that gave you this work) only for blockers or facts it needs now. If only the user can answer something, report blocked with the question, options and your recommendation.
+- Message your lead (initiative_message to:"lead", the tab that gave you this work) only for blockers or facts it needs now. If only the user can answer something, report blocked with question, options and recommendation filled in.
 - Keep your PR's stage and notes current with initiative_pr; set ready-for-erwin after a clean review.
 - Finish with initiative_report {outcome, summary, report}. The summary stands alone: outcome, PR URL and head, review rounds and last verdict, what you need.`;
 
@@ -263,6 +263,19 @@ export const PREVIOUS_DEFAULTS: Record<"coordinator" | "worker", readonly string
 - Follow the repository's own rules (AGENTS.md).`,
   ],
   worker: [
+    // Before blocked reports carried options and a recommendation for the Inbox (W476).
+    `You own one change in an Initiative, from implementation to a clean review. Your brief is your task.
+
+- Implement and verify it. Explore with your own subagents. For a separate context (a reviewer, a long investigation, a parallel helper), start a BB child thread with \`bb thread spawn --parent-self --lifecycle-owner-thread "$BB_THREAD_ID"\`. Its final message comes back to you. Copy the standing rules that matter for its job into its brief.
+- Review with the code-review skill: a fresh reviewer each round, from the other model family, started with the reviewer command in your brief. It shares your checkout; don't edit while it reads. Follow the repository's own rules on commits: review uncommitted changes where the repository says workers don't commit.
+- While a child runs, end your turn; its result wakes you. Ending a turn reports nothing.
+- Fix the findings you agree with. If you disagree, put the finding, your reasoning and evidence in the next reviewer's brief and in a PR note. A standing rule settles a dispute it covers.
+- At most 6 review rounds, converging: fewer, milder findings each round. Done when the last verdict is clean. Blocked (each open finding, your view, the options) after round 6, or after round 4 if it still found a P1 or no fewer findings than round 3.
+- No review loop for an analysis, a trivial change (one line or a few small tweaks) or a brief that says "No review": verify, then report done with "review skipped (trivial)".
+- Follow the standing rules: your brief and each work message end with them; "Rule … changed" messages update them.
+- Message your lead (initiative_message to:"lead", the tab that gave you this work) only for blockers or facts it needs now. If only the user can answer something, report blocked with the question, options and your recommendation.
+- Keep your PR's stage and notes current with initiative_pr; set ready-for-erwin after a clean review.
+- Finish with initiative_report {outcome, summary, report}. The summary stands alone: outcome, PR URL and head, review rounds and last verdict, what you need.`,
     // Before 6 converging review rounds replaced 4 (Erwin, 2026-10-15).
     `You own one change in an Initiative, from implementation to a clean review. Your brief is your task.
 

@@ -155,6 +155,21 @@ export const storedPolicySchema = z.object({
 
 const line = (max: number) => z.string().trim().min(1).max(max);
 
+/**
+ * The options of a question for the user (initiative_question, a blocked report): each a label
+ * and what picking it means. The answer names its option by label, so labels are unique, as
+ * decisionSchema checks them.
+ */
+export const answerOptionsSchema = z.array(z.object({ label: line(200), consequences: z.string().max(1000) }).strict()).max(6)
+  .superRefine((options, ctx) => {
+    const seen = new Set<string>();
+    options.forEach((option, index) => {
+      const key = option.label.replace(/\s+/g, " ").toLowerCase();
+      if (seen.has(key)) ctx.addIssue({ code: "custom", path: [index, "label"], message: `Option labels must be unique; "${option.label}" repeats an earlier option.` });
+      seen.add(key);
+    });
+  });
+
 /** User-editable project framing, shown in the panel and seeds a fresh coordinator. */
 export const projectContextSchema = z
   .object({
@@ -229,7 +244,13 @@ export const reportSchema = z
       .max(30)
       .default([]),
     blocker: z
-      .object({ question: line(1000), context: line(2000) })
+      .object({
+        question: line(1000),
+        context: line(2000),
+        /** W476: what the user can pick in the Inbox, and the worker's pick; stored beside the report (assignments.blocker_options). */
+        options: answerOptionsSchema.optional(),
+        recommendation: z.string().max(1000).optional(),
+      })
       .strict()
       .optional(),
     handoff: handoffSchema,

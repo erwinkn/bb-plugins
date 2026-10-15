@@ -22,6 +22,7 @@ import type {
 } from "./schema";
 import {
   DEFAULT_POLICY,
+  answerOptionsSchema,
   canonicalWorkerKind,
   briefSchema,
   decisionFieldsSchema,
@@ -518,6 +519,11 @@ export const MIGRATIONS = [
     open INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (project_id, assignment_num)
   )`,
+  // W476: a blocked report's options and recommendation, and the option the user picked in a
+  // blocker answer. Beside the JSON, not in it: the previous build's report and answer decoders
+  // are strict, so it still reads every row (it shows the answer's detail without the pick).
+  `ALTER TABLE assignments ADD COLUMN blocker_options TEXT`,
+  `ALTER TABLE knowledge ADD COLUMN blocker_choice TEXT`,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
@@ -1116,6 +1122,32 @@ const objectSchema = z.record(z.string(), z.unknown());
 const json = (value: unknown) =>
   value === null || value === undefined ? null : JSON.stringify(value);
 
+/**
+ * W476: a blocked report's options live in assignments.blocker_options and a blocker answer's
+ * pick in knowledge.blocker_choice, so the JSON keeps the shape the previous build decodes.
+ * These split a record for writing and join it back on reading.
+ */
+const blockerOptionsSchema = z.object({ options: answerOptionsSchema.optional(), recommendation: z.string().optional() }).strict();
+function splitReport(report: Report | null) {
+  const blocker = report?.blocker;
+  if (!report || !blocker) return { report, options: null };
+  const { options, recommendation, ...rest } = blocker;
+  // Kept exactly as given, so a stored report reads back equal to the one filed.
+  return { report: { ...report, blocker: rest }, options: options === undefined && recommendation === undefined ? null : { options, recommendation } };
+}
+function joinReport(report: Report | null, stored: z.output<typeof blockerOptionsSchema> | null): Report | null {
+  if (!report?.blocker || !stored) return report;
+  const { options, recommendation } = stored;
+  return { ...report, blocker: { ...report.blocker, ...(options !== undefined ? { options } : {}), ...(recommendation !== undefined ? { recommendation } : {}) } };
+}
+function splitBody(body: DecisionBody) {
+  if (!body.blocker || !body.answer) return { body, choice: null };
+  return { body: { ...body, answer: { ...body.answer, choice: null } }, choice: body.answer.choice };
+}
+function joinBody(body: DecisionBody, choice: string | null): DecisionBody {
+  return body.blocker && body.answer && choice ? { ...body, answer: { ...body.answer, choice } } : body;
+}
+
 type Row = Record<string, unknown>;
 
 function toProject(row: Row): ProjectRecord {
@@ -1293,7 +1325,7 @@ function toAssignment(row: Row): AssignmentRecord {
     scopeRelease: decodeNullable("assignments", row, "scope_release", scopeReleaseSchema),
     handoffSources: decodeNullable("assignments", row, "handoff_sources", handoffSourcesSchema),
     reportSeq: Number(row.report_seq ?? 0),
-    report: decodeNullable("assignments", row, "report", storedReportSchema),
+    report: joinReport(decodeNullable("assignments", row, "report", storedReportSchema), decodeNullable("assignments", row, "blocker_options", blockerOptionsSchema)),
     reportedAt: (row.reported_at as number | null) ?? null,
     stopReason: (row.stop_reason as string | null) ?? null,
     createdAt: Number(row.created_at),
@@ -1310,6 +1342,7 @@ export function decisionDescription(body: DecisionBody, humanAttention?: HumanAt
 
 function toDecision(row: Row): DecisionRecord {
   const num = Number(row.num);
+  const body = joinBody(decode("knowledge", row, "body", decisionBodySchema), (row.blocker_choice as string | null) ?? null);
   return {
     projectId: String(row.project_id),
     num,
@@ -1319,7 +1352,7 @@ function toDecision(row: Row): DecisionRecord {
     status: row.status as DecisionStatus,
     scope: String(row.scope),
     title: String(row.title),
-    body: decode("knowledge", row, "body", decisionBodySchema),
+    body,
     humanAttention: row.human_attention as HumanAttention,
     blocks: decode("knowledge", row, "blocks", numsSchema),
     deadline: (row.deadline as string | null) ?? null,
@@ -1330,7 +1363,7 @@ function toDecision(row: Row): DecisionRecord {
     notification: decodeNullable("knowledge", row, "decision_notification", z.object({
       state: z.enum(["pending", "sent", "queued", "uncertain", "failed"]), op: z.string(), coordinatorThreadId: z.string().nullable(), queuedId: z.string().optional(), detail: z.string().optional(),
     }).strict()),
-    description: decisionDescription(decode("knowledge", row, "body", decisionBodySchema), row.human_attention as HumanAttention),
+    description: decisionDescription(body, row.human_attention as HumanAttention),
     supersedes: (row.supersedes as number | null) ?? null,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
@@ -2895,6 +2928,7 @@ export class Store {
         .get(projectId, num) as { report: string | null }).report;
       if ("report" in patch && stored && isLegacyReport(stored))
         this.archiveLegacyPayload(current.threadId, { assignment: assignmentRef(num), report: stored });
+      const report = splitReport(next.report);
       this.db
         .prepare(
           `UPDATE assignments SET thread_id = ?, generation = ?, actual_profile = ?, fingerprint = ?, environment_id = ?, state = ?, op_state = ?, queued_message_id = ?, report = ?, report_seq = report_seq + ?, reported_at = ?, stop_reason = ?, brief_delivered = ?, cancel_requested = ?, pending_identity = ?, checkpoint = ?, review_targets = ?, report_notice = ?, scope_release = ?, updated_at = ?
@@ -2909,7 +2943,7 @@ export class Store {
           next.state,
           next.opState,
           next.queuedMessageId,
-          "report" in patch ? json(next.report) : stored,
+          "report" in patch ? json(report.report) : stored,
           // Every stored report is a new filing, even with identical content.
           "report" in patch && next.report !== null ? 1 : 0,
           next.reportedAt,
@@ -2925,6 +2959,8 @@ export class Store {
           projectId,
           num,
         );
+      if ("report" in patch)
+        this.db.prepare("UPDATE assignments SET blocker_options = ? WHERE project_id = ? AND num = ?").run(json(report.options), projectId, num);
       this.touchProject(projectId);
       return this.assignment(projectId, num)!;
     });
@@ -2981,6 +3017,7 @@ export class Store {
   }): DecisionRecord {
     const num = this.nextNum("knowledge", input.projectId);
     const now = this.now();
+    const stored = splitBody(input.body);
     const previous = this.db
       .prepare(
         `SELECT MAX(version) AS version FROM knowledge WHERE project_id = ? AND topic = ?`,
@@ -2988,8 +3025,8 @@ export class Store {
       .get(input.projectId, input.topic) as { version: number | null };
     this.db
       .prepare(
-        `INSERT INTO knowledge (project_id, num, topic, version, kind, status, scope, title, body, human_attention, blocks, deadline, provenance, supersedes, created_at, updated_at, decision_owner, decision_review)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO knowledge (project_id, num, topic, version, kind, status, scope, title, body, human_attention, blocks, deadline, provenance, supersedes, created_at, updated_at, decision_owner, decision_review, blocker_choice)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.projectId,
@@ -3000,7 +3037,7 @@ export class Store {
         input.status,
         input.scope,
         input.title,
-        JSON.stringify(input.body),
+        JSON.stringify(stored.body),
         input.humanAttention,
         JSON.stringify(input.blocks),
         input.deadline,
@@ -3010,6 +3047,7 @@ export class Store {
         now,
         input.madeBy,
         input.madeBy === "agent" ? "pending" : null,
+        stored.choice,
       );
     if (input.supersedes !== null)
       this.db
@@ -3077,18 +3115,20 @@ export class Store {
     const current = this.decisionItem(projectId, num);
     if (!current) throw new Error(`Unknown decision ${decisionRef(num)}`);
     const next = { ...current, ...patch };
+    const stored = splitBody(next.body);
     this.db
       .prepare(
-        `UPDATE knowledge SET status = ?, body = ?, human_attention = ?, decision_owner = ?, decision_review = ?, decision_review_message = ?, decision_notification = ?, updated_at = ? WHERE project_id = ? AND num = ?`,
+        `UPDATE knowledge SET status = ?, body = ?, human_attention = ?, decision_owner = ?, decision_review = ?, decision_review_message = ?, decision_notification = ?, blocker_choice = ?, updated_at = ? WHERE project_id = ? AND num = ?`,
       )
       .run(
         next.status,
-        JSON.stringify(next.body),
+        JSON.stringify(stored.body),
         next.humanAttention,
         next.madeBy,
         next.review,
         next.reviewMessage,
         json(next.notification),
+        stored.choice,
         this.now(),
         projectId,
         num,

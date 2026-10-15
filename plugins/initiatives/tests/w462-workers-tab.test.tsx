@@ -62,7 +62,7 @@ function fleet() {
   return o;
 }
 function blocker(ref: string, question: string, answer: Overview["blockers"][number]["answer"] = null): Overview["blockers"][number] {
-  return { assignment: "A9", role: "work", tasks: [], owner: { worker: ref, label: `${ref} label`, threadId: `thr_${ref}` }, question, context: "", reportedAt: NOW - 3_600_000, answer };
+  return { assignment: "A9", role: "work", tasks: [], owner: { worker: ref, label: `${ref} label`, threadId: `thr_${ref}` }, question, context: "", options: [], recommendation: null, reportedAt: NOW - 3_600_000, answer };
 }
 function mount(o: Overview, command = vi.fn().mockResolvedValue({}), overview = () => o) {
   const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview, command,

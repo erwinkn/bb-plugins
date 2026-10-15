@@ -78,7 +78,7 @@ describe("v9 Workers tab", () => {
       W1373: { on: null, checked: true, children: 2 },
     };
     o.blockers = [{ assignment: "A9", role: "work", tasks: [], owner: { worker: "W1406", label: "PDF Worker perf", threadId: "thr_W1406" },
-      question: "Split rendering into pages or move to a queue consumer?", context: "", reportedAt: NOW - 3_600_000, answer: null }];
+      question: "Split rendering into pages or move to a queue consumer?", context: "", options: [], recommendation: null, reportedAt: NOW - 3_600_000, answer: null }];
     o.tasks = [{ ref: "T163", title: "Human-steps query double-counts", status: "in_progress", statusReason: "W1420 on A1641", setByHand: false, summary: "", workers: ["W1420", "W1425"], updatedAt: NOW }];
     return o;
   }

@@ -71,7 +71,7 @@ export const dismissalItem = (blocker: NonNullable<DecisionBody["blocker"]>, d: 
 /** T132: a blocker answer as the dashboard's decision row carries it. */
 export const blockerAnswerItem = (blocker: NonNullable<DecisionBody["blocker"]>, a: NonNullable<DecisionBody["answer"]>, worker: string | null): BlockerAnswerItem => ({
   assignment: `A${blocker.assignment}`, worker, question: blocker.question, context: blocker.context,
-  note: a.note, to: a.to ?? "coordinator", delivery: a.delivery ?? null,
+  choice: a.choice, note: a.note, to: a.to ?? "coordinator", delivery: a.delivery ?? null,
 });
 
 /** What the Needs you pill shows: open questions plus undismissed blockers the user has not answered yet. */

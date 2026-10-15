@@ -149,12 +149,10 @@ describe("project dashboard", () => {
   it("T57 quiet answers explicitly disable notification without a confirmation flow", async () => {
     const command = vi.fn().mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => overview(), command });
-    const checkbox = await slot.findByRole("checkbox", { name: "Notify coordinator" });
-    expect((checkbox as HTMLInputElement).checked).toBe(true);
-    fireEvent.click(slot.getByRole("radio", { name: /Exclude Private notes/ }));
-    fireEvent.click(checkbox);
-    expect(slot.getByText("Save your answer quietly, without a message.")).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "Save quietly" }));
+    fireEvent.click(await slot.findByRole("radio", { name: /Exclude Recommended Private notes/ }));
+    // W476: Send to coordinator is the default; saving without a message is in its menu.
+    fireEvent.click(slot.getByRole("button", { name: "More send options" }));
+    fireEvent.click(slot.getByRole("menuitem", { name: "Save without sending" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0].command).toEqual({ action: "answer", decision: "K1", choice: "Exclude", note: "", notify: false });
   });
@@ -186,8 +184,8 @@ describe("project dashboard", () => {
       return { ref: "D1", notification };
     });
     const slot = mount({ list: () => [], overview: () => o, command });
-    fireEvent.click(await slot.findByRole("radio", { name: /Exclude Private notes/ }));
-    fireEvent.click(slot.getByRole("button", { name: "Send answer" }));
+    fireEvent.click(await slot.findByRole("radio", { name: /Exclude Recommended Private notes/ }));
+    fireEvent.click(slot.getByRole("button", { name: "Send to coordinator" }));
     await waitFor(() => expect(slot.getByRole("alert").textContent).toContain("answer saved"));
     await openView(slot, "Archive");
     const row = await slot.findByRole("article", { name: "D1" });
@@ -359,17 +357,17 @@ describe("project dashboard", () => {
       .mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => o, command });
     await waitFor(() =>
-      expect(slot.getByRole("button", { name: "Send answer" })).toBeTruthy(),
+      expect(slot.getByRole("button", { name: "Send to coordinator" })).toBeTruthy(),
     );
     fireEvent.click(
       slot.getByRole("radio", {
-        name: "Exclude Private notes stay invisible.",
+        name: "Exclude Recommended Private notes stay invisible.",
       }),
     );
     fireEvent.change(slot.getByLabelText("Add detail (optional)"), {
       target: { value: "Keep notes private" },
     });
-    fireEvent.click(slot.getByRole("button", { name: "Send answer" }));
+    fireEvent.click(slot.getByRole("button", { name: "Send to coordinator" }));
     await waitFor(() =>
       expect(slot.getByRole("alert").textContent).toContain(
         "Connection unavailable",
@@ -379,7 +377,7 @@ describe("project dashboard", () => {
       (slot.getByLabelText("Add detail (optional)") as HTMLTextAreaElement)
         .value,
     ).toBe("Keep notes private");
-    fireEvent.click(slot.getByRole("button", { name: "Send answer" }));
+    fireEvent.click(slot.getByRole("button", { name: "Send to coordinator" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
     expect(command.mock.calls[1][0]).toEqual({
       projectId: "p1",
@@ -660,7 +658,7 @@ describe("project dashboard", () => {
     fireEvent.click(
       slot.getByRole("radio", { name: "__other__ A real recorded option." }),
     );
-    fireEvent.click(slot.getByRole("button", { name: "Send answer" }));
+    fireEvent.click(slot.getByRole("button", { name: "Send to coordinator" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0]).toEqual({
       projectId: "p1",
@@ -685,7 +683,7 @@ describe("project dashboard", () => {
         }),
       ).toBeTruthy(),
     );
-    const send = () => slot.getByRole("button", { name: "Send answer" });
+    const send = () => slot.getByRole("button", { name: "Send to coordinator" });
     fireEvent.click(
       slot.getByRole("radio", { name: "Other Write your own answer." }),
     );
@@ -715,12 +713,12 @@ describe("project dashboard", () => {
     await waitFor(() =>
       expect(
         slot.getByRole("radio", {
-          name: "Exclude Private notes stay invisible.",
+          name: "Exclude Recommended Private notes stay invisible.",
         }),
       ).toBeTruthy(),
     );
     expect(
-      (slot.getByRole("button", { name: "Send answer" }) as HTMLButtonElement)
+      (slot.getByRole("button", { name: "Send to coordinator" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
     expect(slot.queryByLabelText("Add detail (optional)")).toBeNull();

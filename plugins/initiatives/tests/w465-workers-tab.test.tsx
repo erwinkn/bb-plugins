@@ -40,7 +40,7 @@ const report = (outcome: "done" | "blocked" | "failed", summary: string, questio
 type Blocker = Overview["blockers"][number];
 const blocker = (ref: string, question: string, answer: Blocker["answer"] = null): Blocker => ({
   assignment: `A${ref.slice(1)}`, role: "work", tasks: [], owner: { worker: ref, label: `${ref} label`, threadId: `thr_${ref}` },
-  question, context: "", reportedAt: NOW - 3_600_000, answer,
+  question, context: "", options: [], recommendation: null, reportedAt: NOW - 3_600_000, answer,
 });
 const answered = { ref: "D1", note: "Pages.", at: NOW, to: "coordinator" as const, delivery: null, notification: null } as unknown as Blocker["answer"];
 const child = (n: number, children: number | null): WorkerChild => ({

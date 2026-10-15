@@ -1324,7 +1324,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_report",
-    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. The coordinator gets summary (which must stand on its own: outcome, PR URL and head, merge order, what you need) and reads report, your full report, on demand; a short report is sent whole. blocked needs question.',
+    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. The coordinator gets summary (which must stand on its own: outcome, PR URL and head, merge order, what you need) and reads report, your full report, on demand; a short report is sent whole. blocked needs question; add options [{label,consequences}] and recommendation (starting with its label) so the user can pick one in the Inbox.',
     parameters: jsonSchema(reportToolSchema),
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Report from the worker thread.");

@@ -80,7 +80,7 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
       return { ...saved, notification: { op: "test", state, coordinatorThreadId: "coordinator", ...(state === "failed" ? { detail: "Refused" } : {}) } };
     });
     const slot = mount(project.id, { overview, command: answersLikeServer(command) });
-    fireEvent.click(await slot.findByRole("radio", { name: /Yes/ })); fireEvent.click(slot.getByRole("button", { name: "Send answer" }));
+    fireEvent.click(await slot.findByRole("radio", { name: /Yes/ })); fireEvent.click(slot.getByRole("button", { name: "Send to coordinator" }));
     await waitFor(() => expect(slot.container.textContent).toContain(`${q.ref}: answer saved. Coordinator notification ${state}`));
     expect(slot.queryByText("Saving…")).toBeNull(); expect(slot.queryByRole("radio", { name: /Yes/ })).toBeNull();
     await waitFor(() => expect(overview).toHaveBeenCalledTimes(2)); await act(async () => { refresh.reject(new Error("Answer refresh failed")); });

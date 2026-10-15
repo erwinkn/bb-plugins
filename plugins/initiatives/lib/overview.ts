@@ -102,13 +102,17 @@ export interface BlockerItem {
   owner: { worker: string; label: string; threadId: string | null };
   question: string;
   context: string;
+  /** W476: the report's options and the worker's recommendation; none on older reports. */
+  options: { label: string; consequences: string }[];
+  recommendation: string | null;
   reportedAt: number | null;
   /**
-   * The user's answer, kept until the coordinator acts on the report. to: who
-   * received it (T130). delivery: the worker's receipt; notification: the
-   * coordinator's notice, or for a worker answer its FYI (T132).
+   * The user's answer, kept until the coordinator acts on the report. choice:
+   * the option picked (W476). to: who received it (T130). delivery: the
+   * worker's receipt; notification: the coordinator's notice, or for a worker
+   * answer its FYI (T132).
    */
-  answer: { ref: string; note: string; at: number; to: "coordinator" | "worker"; delivery: Delivery | null; notification: DecisionRecord["notification"] } | null;
+  answer: { ref: string; choice: string | null; note: string; at: number; to: "coordinator" | "worker"; delivery: Delivery | null; notification: DecisionRecord["notification"] } | null;
 }
 
 /** T132: the user's blocker answer as its decision row carries it, so an undelivered one can retry after its card is gone. */
@@ -118,6 +122,7 @@ export interface BlockerAnswerItem {
   worker: string | null;
   question: string;
   context: string;
+  choice: string | null;
   note: string;
   to: "coordinator" | "worker";
   delivery: Delivery | null;
@@ -563,8 +568,10 @@ export function buildOverview(
       owner: { worker: worker.ref, label: worker.label, threadId: assignment.threadId },
       question: blocker?.question ?? assignment.report?.summary ?? "",
       context: blocker?.context ?? "",
+      options: blocker?.options ?? [],
+      recommendation: blocker?.recommendation ?? null,
       reportedAt: assignment.reportedAt,
-      answer: answer ? { ref: answer.ref, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", delivery: answer.body.answer?.delivery ?? null, notification: answer.notification } : null,
+      answer: answer ? { ref: answer.ref, choice: answer.body.answer?.choice ?? null, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", delivery: answer.body.answer?.delivery ?? null, notification: answer.notification } : null,
     };
   });
 

@@ -294,10 +294,12 @@ export const blockerAnswerSchema = z.object({
   action: z.literal("blocker-answer"), assignment: ref,
   question: z.string().max(1000),
   context: z.string().max(2000),
-  note: z.string().trim().min(1, "Write an answer.").max(4000),
+  /** W476: the picked option's label, when the report gave options; note is then optional detail. */
+  choice: text(200).optional(),
+  note: z.string().trim().max(4000).default(""),
   /** T130: the coordinator continues the worker (default), or the answer goes straight to the worker with an FYI to the coordinator. */
   to: z.enum(["coordinator", "worker"]).default("coordinator"),
-}).strict();
+}).strict().refine((c) => c.choice !== undefined || c.note, { message: "Pick an option or write an answer.", path: ["note"] });
 /** T128: the user dismisses a blocked report without answering; notify tells the coordinator, with an optional note. */
 export const blockerDismissSchema = z.object({
   action: z.literal("blocker-dismiss"), assignment: ref,
@@ -537,7 +539,7 @@ export async function runCommand(
     }
     case "blocker-answer":
       if (author !== "user") throw new ProjectError("Only the user answers a worker's blocker from the Inbox. Agents continue the worker with the answer instead.");
-      return service.answerBlocker(projectId, c.assignment, { question: c.question, context: c.context }, c.note, c.to);
+      return service.answerBlocker(projectId, c.assignment, { question: c.question, context: c.context }, c.note, c.to, c.choice ?? null);
     case "blocker-dismiss":
       if (author !== "user") throw new ProjectError("Only the user dismisses a worker's blocker from the Inbox. Agents answer the worker instead.");
       return service.dismissBlocker(projectId, c.assignment, { question: c.question, context: c.context }, { notify: c.notify, note: c.note });

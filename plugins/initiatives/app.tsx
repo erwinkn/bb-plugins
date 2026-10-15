@@ -37,7 +37,7 @@ import {
 } from "./lib/schema";
 import "./app.css";
 import { ProjectsSettings } from "./settings-view";
-import { AutoTextarea, ControlRoom, toTab, type Tab } from "./control-room";
+import { AnswerChoices, AutoTextarea, ControlRoom, pickByKey, pickedLabel, SplitButton, toTab, type Pick, type Tab } from "./control-room";
 import { useRemembered } from "./ui-memory";
 import { sendWrite } from "./lib/write-timeout";
 import { MergeQueueView } from "./merge-queue-view";
@@ -78,8 +78,6 @@ function ErrorNotice({
     </div>
   ) : null;
 }
-type Selection = { kind: "option"; index: number } | { kind: "other" } | null;
-
 function Opinion({
   item,
   answer,
@@ -87,27 +85,19 @@ function Opinion({
   item: OpinionItem;
   answer: (command: Command) => Promise<unknown>;
 }) {
-  const [selected, setSelected] = useState<Selection>(null);
+  const [pick, setPick] = useState<Pick>(null);
   const [detail, setDetail] = useState("");
-  const [notify, setNotify] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const detailRef = useRef<HTMLTextAreaElement | null>(null);
-  const hasOptions = item.options.length > 0;
-  const isOther = selected?.kind === "other";
-  const needsText = isOther || !hasOptions;
+  const written = pick?.kind === "other" || !item.options.length;
   const canSubmit =
-    !busy && (needsText ? detail.trim().length > 0 : selected !== null);
+    !busy && (written ? detail.trim().length > 0 : pick !== null);
 
-  useEffect(() => {
-    if (isOther) detailRef.current?.focus();
-  }, [isOther]);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (selected?.kind === "option" && !item.options[selected.index]) {
+  const submit = async (notify: boolean) => {
+    const choice = pickedLabel(pick, item.options);
+    if (pick?.kind === "option" && choice === null) {
       setError("The options changed. Please pick again.");
-      setSelected(null);
+      setPick(null);
       return;
     }
     if (!canSubmit) return;
@@ -117,10 +107,7 @@ function Opinion({
       await answer({
         action: "answer",
         decision: item.ref,
-        choice:
-          selected?.kind === "option"
-            ? item.options[selected.index]!.label
-            : null,
+        choice,
         note: detail,
         notify,
       });
@@ -131,63 +118,15 @@ function Opinion({
     }
   };
   return (
-    <form onSubmit={submit} className="project-card project-opinion" onKeyDown={event => {
+    <form onSubmit={(e) => { e.preventDefault(); void submit(true); }} className="project-card project-opinion" onKeyDown={event => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault(); event.currentTarget.requestSubmit();
-      } else if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) && /^[1-6]$/.test(event.key)) {
-        const index = Number(event.key) - 1;
-        if (index < item.options.length) setSelected({ kind: "option", index });
-        else if (index === item.options.length) setSelected({ kind: "other" });
-      }
+      } else pickByKey(event, item.options, setPick);
     }}>
       <h3>{item.title}</h3>
       <Markdown className="project-question" content={item.question} />
       {item.context ? (
         <Markdown className="project-context" content={item.context} />
-      ) : null}
-      {hasOptions ? (
-        <div
-          className="project-choices"
-          role="radiogroup"
-          aria-label={`Options for "${item.title}"`}
-        >
-          {item.options.map((o, index) => (
-            <label className="project-option" key={index}>
-              <input
-                type="radio"
-                name={item.ref}
-                value={o.label}
-                checked={
-                  selected?.kind === "option" && selected.index === index
-                }
-                onChange={() => setSelected({ kind: "option", index })}
-              />
-              <span>
-                <strong>{o.label}</strong>
-                <Markdown className="project-muted" content={o.consequences} />
-              </span>
-            </label>
-          ))}
-          <label className="project-option">
-            <input
-              type="radio"
-              name={item.ref}
-              value="__other__"
-              checked={isOther}
-              onChange={() => setSelected({ kind: "other" })}
-            />
-            <span>
-              <strong>Other</strong>
-              <span className="project-muted">Write your own answer.</span>
-            </span>
-          </label>
-        </div>
-      ) : null}
-      {item.recommendation ? (
-        <div className="project-reco">
-          <span className="project-reco-tag">Recommended</span>
-          <Markdown content={item.recommendation} />
-        </div>
       ) : null}
       {item.blocks.length > 0 ? (
         <p className="project-muted">
@@ -195,34 +134,15 @@ function Opinion({
           {item.blocks.map((t) => `${t.ref} ${t.title}`).join(", ")}
         </p>
       ) : null}
-      {selected !== null || !hasOptions ? (
-        <label className="project-field">
-          {needsText ? "Your answer" : "Add detail (optional)"}
-          <AutoTextarea
-            ref={detailRef}
-            rows={needsText ? 3 : 2}
-            value={detail}
-            onChange={(e) => setDetail(e.target.value)}
-            maxLength={4000}
-            required={needsText}
-            placeholder={
-              needsText
-                ? "Write your answer."
-                : "Optional context for this choice."
-            }
-          />
-        </label>
-      ) : null}
+      <AnswerChoices name={item.ref} title={item.title} options={item.options} recommendation={item.recommendation}
+        recommender="Coordinator" pick={pick} setPick={setPick} detail={detail} setDetail={setDetail} />
       <ErrorNotice message={error} />
-      <label className="project-notification-option">
-        <input type="checkbox" checked={notify} disabled={busy} onChange={event => setNotify(event.target.checked)} />
-        <span>Notify coordinator</span>
-      </label>
-      <p className="project-hint">{notify ? "Your choice and note will be sent to the current coordinator." : "Save your answer quietly, without a message."}</p>
       <div className="project-actions">
-        <button className="project-primary" disabled={!canSubmit}>
-          {busy ? "Saving…" : notify ? "Send answer" : "Save quietly"}
-        </button>
+        <SplitButton label="Send"
+          main={<button className="project-primary" disabled={!canSubmit} title="Your choice and detail go to the coordinator that asked.">
+            {busy ? "Saving…" : "Send to coordinator"}
+          </button>}
+          items={[{ label: "Save without sending", disabled: !canSubmit, onSelect: () => void submit(false) }]} />
         <button type="button" disabled={busy} onClick={async () => {
           setBusy(true); setError(null);
           try { await answer({ action: "question-close", decision: item.ref, note: detail }); }

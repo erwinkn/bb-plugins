@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { environmentSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
+import { answerOptionsSchema, environmentSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
 import type { Command } from "./commands";
 import { ruleSources, ruleText } from "./rules";
 import { ToolInputError } from "./tool-errors";
@@ -70,7 +70,7 @@ export const ruleToolSchema = z.object({
 export const questionToolSchema = z.object({
   question: text(1000).optional().describe("The question, in plain words."),
   context: text(2000).optional().describe("What the user needs to know to answer."),
-  options: z.array(z.object({ label: text(200), consequences: z.string().max(1000) }).strict()).max(6).optional(),
+  options: answerOptionsSchema.optional(),
   recommendation: z.string().max(1000).optional(),
   withdraw: ref.optional().describe("D# of your own open question to withdraw instead (with reason)."),
   reason: text().optional().describe("withdraw: why the user no longer needs to answer."),
@@ -109,6 +109,8 @@ export const reportToolSchema = z.object({
   outcome: z.enum(["done", "blocked", "failed"]),
   summary: text(4000).describe("What the coordinator reads first, standing on its own: outcome, PR URL and head, merge order, what you need. Its first 300 characters are the dashboard line; a long report reaches the coordinator as its first 1000."),
   question: text(1000).optional().describe("blocked: what you need answered."),
+  options: answerOptionsSchema.optional().describe("blocked: the choices, shown to the user as options."),
+  recommendation: z.string().max(1000).optional().describe("blocked: your pick, starting with its label, and why."),
   report: text(FINAL_MESSAGE_MAX).describe("Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded; the coordinator gets it whole when short, otherwise reads it on demand."),
 }).strict();
 

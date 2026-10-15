@@ -1695,7 +1695,7 @@ function WorkerDetail({ v, o, run, openThread, readHandoff, loadChildren, close 
  * from the chevron (click, Enter, Space or ↓), moves with ↑/↓, closes on
  * Escape, outside press or a choice, and returns focus to the chevron.
  */
-function SplitButton({ label, main, items, align = "start", className }: {
+export function SplitButton({ label, main, items, align = "start", className }: {
   label: string;
   className?: string;
   main: ReactNode;
@@ -1748,6 +1748,106 @@ function SplitButton({ label, main, items, align = "start", className }: {
 }
 
 /**
+ * W476: what the user has picked on an Inbox card: one of the options, Other, or nothing yet.
+ * An option is held by its label, so a refresh that reorders the options keeps the pick, and
+ * one that drops it leaves nothing picked.
+ */
+export type Pick = { kind: "option"; label: string } | { kind: "other" } | null;
+/** The picked option's label while the card still offers it. */
+export const pickedLabel = (pick: Pick, options: { label: string }[]) =>
+  pick?.kind === "option" && options.some((option) => option.label === pick.label) ? pick.label : null;
+
+/** The option a recommendation names: the longest label it starts with, ignoring case. */
+export function recommendedOption(options: { label: string }[], recommendation: string | null) {
+  const text = recommendation?.trim().toLowerCase() ?? "";
+  let best = -1;
+  options.forEach((option, index) => {
+    const label = option.label.trim().toLowerCase();
+    if (label && text.startsWith(label) && (best < 0 || label.length > options[best]!.label.trim().length)) best = index;
+  });
+  return best;
+}
+
+/** Keys 1–6 pick an option, the next one Other, unless the user is typing. */
+export function pickByKey(event: React.KeyboardEvent, options: { label: string }[], pick: (pick: Pick) => void) {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || !/^[1-7]$/.test(event.key)) return;
+  const index = Number(event.key) - 1;
+  if (index < options.length) pick({ kind: "option", label: options[index]!.label });
+  else if (options.length && index === options.length) pick({ kind: "other" });
+}
+
+/**
+ * W476 (v9 §10.2): an Inbox card's answer. The options as radio rows, the
+ * recommended one marked, then Other; the recommendation under them. Picking
+ * an option offers an optional detail; Other, or a card without options,
+ * needs the written answer.
+ */
+export function AnswerChoices({ name, title, options, recommendation, recommender, pick, setPick, detail, setDetail }: {
+  name: string;
+  title: string;
+  options: { label: string; consequences: string }[];
+  recommendation: string | null;
+  /** Who recommends, e.g. "W12" or "Coordinator". */
+  recommender: string;
+  pick: Pick;
+  setPick: (pick: Pick) => void;
+  detail: string;
+  setDetail: (detail: string) => void;
+}) {
+  const detailRef = useRef<HTMLTextAreaElement>(null);
+  const other = pick?.kind === "other";
+  const written = other || !options.length;
+  const recommended = recommendedOption(options, recommendation);
+  useEffect(() => {
+    if (other) detailRef.current?.focus();
+  }, [other]);
+  return (
+    <>
+      {options.length ? (
+        <div className="project-choices" role="radiogroup" aria-label={`Options for "${title}"`}>
+          {options.map((option, index) => (
+            <label className="project-option" key={index}>
+              <input type="radio" name={name} value={option.label} checked={pick?.kind === "option" && pick.label === option.label}
+                onChange={() => setPick({ kind: "option", label: option.label })} />
+              <span>
+                <strong>{option.label}</strong>
+                {index === recommended ? <span className="project-reco-tag cr-reco-mark">Recommended</span> : null}
+                {option.consequences ? <Markdown className="project-muted" content={option.consequences} /> : null}
+              </span>
+            </label>
+          ))}
+          <label className="project-option">
+            <input type="radio" name={name} value="__other__" checked={other} onChange={() => setPick({ kind: "other" })} />
+            <span>
+              <strong>Other</strong>
+              <span className="project-muted">Write your own answer.</span>
+            </span>
+          </label>
+        </div>
+      ) : null}
+      {recommendation ? (
+        <div className="project-reco">
+          <span className="project-reco-tag">{recommender} recommends</span>
+          <Markdown content={recommendation} />
+        </div>
+      ) : null}
+      {pickedLabel(pick, options) !== null || other || !options.length ? (
+        <label className="project-field">
+          {written ? "Your answer" : "Add detail (optional)"}
+          <AutoTextarea ref={detailRef} rows={written ? 3 : 2} value={detail} maxLength={4000} required={written}
+            placeholder={written ? "Write your answer." : "Optional context for this choice."}
+            onChange={(e) => setDetail(e.target.value)} />
+        </label>
+      ) : null}
+    </>
+  );
+}
+
+/** The Inbox's blocker answer, with the pick only when there is one (older clients and rows have none). */
+const blockerAnswer = (item: { assignment: string; question: string; context: string }, choice: string | null, note: string, to: "coordinator" | "worker"): Command =>
+  ({ action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, ...(choice ? { choice } : {}), note, to });
+
+/**
  * D386: a worker's blocker, answerable here. The answer goes to the
  * coordinator, who continues the worker; the item stays until it does.
  * T130: it can go straight to the worker instead, with an FYI to the
@@ -1758,6 +1858,7 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
   const [revising, setRevising] = useState(false);
   const [telling, setTelling] = useState(false);
   const [note, setNote] = useState(item.answer?.note ?? "");
+  const [pick, setPick] = useState<Pick>(null);
   const [busy, setBusy] = useState<"answer" | "dismiss" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const worker = item.owner.worker;
@@ -1777,8 +1878,16 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
       setBusy(null);
     }
   };
+  const choice = pickedLabel(pick, item.options);
+  const ready = choice !== null || ((pick?.kind === "other" || !item.options.length) && !!note.trim());
   const answer = (to: "coordinator" | "worker") => {
-    if (note.trim()) void act("answer", { action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note, to });
+    if (ready) void act("answer", blockerAnswer(item, choice, note, to));
+  };
+  const revise = (previous: NonNullable<BlockerItem["answer"]>) => {
+    const kept = item.options.some((option) => option.label === previous.choice);
+    setPick(kept ? { kind: "option", label: previous.choice! } : item.options.length ? { kind: "other" } : null);
+    setNote(previous.note);
+    setRevising(true);
   };
   const dismiss = telling ? null : (
     <SplitButton label="Dismiss" align="end" className="cr-split--quiet"
@@ -1797,18 +1906,19 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
         <>
           <div className="cr-blocker-answer">
             <span className="project-meta">Your answer · {item.answer.ref}{item.answer.to === "worker" ? ` · sent to ${worker}` : ""}</span>
-            <Markdown content={item.answer.note} />
+            {item.answer.choice ? <p className="cr-blocker-choice">{item.answer.choice}</p> : null}
+            {item.answer.note ? <Markdown content={item.answer.note} /> : null}
           </div>
           <AnswerReceipts receipts={answerReceipts(item.answer, worker)}
             settled={item.answer.to === "worker" ? `This stays here until ${worker} reports again.` : `This stays here until it continues ${worker} or settles ${item.assignment}.`} />
           {error ? <p role="alert" className="project-error">{error}</p> : null}
           <div className="project-actions cr-blocker-actions">
             {answerReceipts(item.answer, worker).retry ? (
-              <button type="button" disabled={!!busy} onClick={() => void act("answer", { action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note: item.answer!.note, to: item.answer!.to })}>
+              <button type="button" disabled={!!busy} onClick={() => void act("answer", blockerAnswer(item, item.answer!.choice ?? null, item.answer!.note, item.answer!.to))}>
                 {busy === "answer" ? "Sending…" : answerReceipts(item.answer, worker).retry}
               </button>
             ) : null}
-            <button type="button" onClick={() => { setNote(item.answer!.note); setRevising(true); }}>Change answer</button>
+            <button type="button" onClick={() => revise(item.answer!)}>Change answer</button>
             {dismiss}
           </div>
         </>
@@ -1817,20 +1927,18 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
             event.preventDefault();
             event.currentTarget.requestSubmit();
-          }
+          } else pickByKey(event, item.options, setPick);
         }}>
-          <label className="project-field">
-            Your answer
-            <AutoTextarea rows={3} value={note} maxLength={4000} required placeholder="Write your answer." onChange={(e) => setNote(e.target.value)} />
-          </label>
+          <AnswerChoices name={`blocker-${item.assignment}`} title={item.question} options={item.options} recommendation={item.recommendation}
+            recommender={worker} pick={pick} setPick={setPick} detail={note} setDetail={setNote} />
           {error ? <p role="alert" className="project-error">{error}</p> : null}
           <div className="project-actions cr-blocker-actions">
             <SplitButton label="Send"
-              main={<button className="project-primary" disabled={!!busy || !note.trim()}
+              main={<button className="project-primary" disabled={!!busy || !ready}
                 title={fallback === "worker" ? `No current coordinator: ${worker} continues ${item.assignment} with your answer.` : `The coordinator continues ${worker} with your answer.`}>
                 {busy === "answer" ? "Sending…" : sendTo(fallback)}
               </button>}
-              items={other ? [{ label: sendTo(other), disabled: !!busy || !note.trim(), onSelect: () => answer(other) }] : []} />
+              items={other ? [{ label: sendTo(other), disabled: !!busy || !ready, onSelect: () => answer(other) }] : []} />
             {revising ? <button type="button" onClick={() => setRevising(false)}>Cancel</button> : null}
             {dismiss}
           </div>
@@ -2320,7 +2428,7 @@ function BlockerAnswerStatus({ d, answer, run }: { d: DecisionRow; answer: NonNu
     <div>
       <AnswerReceipts receipts={receipts} />
       {receipts.retry ? (
-        <Action run={run} command={{ action: "blocker-answer", assignment: answer.assignment, question: answer.question, context: answer.context, note: answer.note, to: answer.to }}>
+        <Action run={run} command={blockerAnswer(answer, answer.choice ?? null, answer.note, answer.to)}>
           {receipts.retry}
         </Action>
       ) : null}

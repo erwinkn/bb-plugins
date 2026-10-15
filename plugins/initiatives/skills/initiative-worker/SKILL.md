@@ -32,6 +32,10 @@ current instructions, the reviewer command and the rules), which replaces anythi
   your assignment names or your branch opened. Your report's summary is added to the PRs it
   names by itself. A PR your thread (or its child) opened belongs to your Adventure;
   `initiative:"<name>"` moves one elsewhere, `initiative:null` unassigns it.
+- If only the user can answer something, report blocked with `question`, `options`
+  (`[{label, consequences}]`) and `recommendation` (start it with the option's label). The
+  user picks an option, or writes their own, on the Adventure's Inbox; the answer comes back
+  to you or to your lead.
 - `initiative_message {to:"lead", text}` is for blockers or facts your lead needs now;
   `to:"W4"` reaches a peer. No progress pings. `to:"coordinator"` also reaches your lead.
 - `initiative_read {view:"rules"}` lists the standing rules; `{refs:["W4"]}` reads a peer
