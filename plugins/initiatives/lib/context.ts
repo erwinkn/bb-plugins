@@ -4,6 +4,7 @@ import { renderStandardHandoff } from "./handoffs";
 import { reportVersion } from "./write-holds";
 import { StoreCorruptionError, parseRef, taskRef, workerRef, assignmentRef, type AssignmentRecord, type Store } from "./store";
 import type { AssignmentState } from "./schema";
+import type { WorkerChild } from "./overview";
 import { running, type ActivityFacts, type Running } from "./bb";
 
 /**
@@ -132,8 +133,18 @@ function reviewContext(store: Store, m: NonNullable<ReturnType<typeof membership
   return review && { ref: review.ref, worker: workerRef(review.workerNum), phase: PHASES[review.state], since: review.createdAt };
 }
 
-type ChildRow = ActivityFacts & { parentThreadId?: string | null; title?: string | null; titleFallback?: string | null };
-type Child = { title: string; since: number; running: Running | null; at: number };
+type ChildRow = ActivityFacts & {
+  parentThreadId?: string | null; title?: string | null; titleFallback?: string | null;
+  providerId?: string | null; updatedAt?: number;
+};
+type Child = {
+  title: string; since: number; running: Running | null; at: number;
+  status: string; archived: boolean; deleted: boolean; providerId: string | null; updatedAt: number;
+  /** Where rows() places it: its index in the last listing (BB's order), or below zero, newest lowest, when only an event has shown it. */
+  rank: number;
+};
+/** A child as the Workers tab lists it, bar its own count. */
+export type CachedChild = Omit<WorkerChild, "children">;
 /** A worker's descendant it waits on, as the cache knows it. */
 export interface WaitingOn { threadId: string; title: string; running: Running; since: number }
 
@@ -147,33 +158,50 @@ export interface WaitingOn { threadId: string; title: string; running: Running; 
  * touched since keeps the event's word. Memory only, never persisted.
  */
 export class RunningChildren {
-  private byParent = new Map<string, { listed: boolean; children: Map<string, Child> }>();
+  /** `listedAt`: the begin() of the listing that last filled the set, so an older one never replaces it. */
+  private byParent = new Map<string, { listed: boolean; listedAt: number; children: Map<string, Child> }>();
   private epoch = 0;
-  private entry = (thread: ChildRow, known: Child | undefined, at: number, now: number): Child => {
+  private entry = (thread: ChildRow, known: Child | undefined, at: number, now: number, rank: number): Child => {
     const reason = running(thread);
-    return { title: thread.title ?? thread.titleFallback ?? "Thread", since: reason && known?.running ? known.since : now, running: reason, at };
+    return {
+      title: thread.title ?? thread.titleFallback ?? "Thread", since: reason && known?.running ? known.since : now, running: reason, at,
+      status: thread.status, archived: thread.archivedAt != null, deleted: thread.deletedAt != null,
+      providerId: thread.providerId ?? null, updatedAt: thread.updatedAt ?? 0, rank,
+    };
   };
   observe(thread: ChildRow, now = Date.now()) {
     const parent = thread.parentThreadId;
     if (!parent) return;
-    const set = this.byParent.get(parent) ?? { listed: false, children: new Map<string, Child>() };
-    set.children.set(thread.id, this.entry(thread, set.children.get(thread.id), ++this.epoch, now));
+    const set = this.byParent.get(parent) ?? { listed: false, listedAt: 0, children: new Map<string, Child>() };
+    const known = set.children.get(thread.id);
+    const at = ++this.epoch;
+    set.children.set(thread.id, this.entry(thread, known, at, now, known?.rank ?? -at));
     this.byParent.set(parent, set);
   }
-  /** Call before a listing; pass the result to listed with its rows. */
+  /** Call before a listing; pass the result to listed with its rows. Each listing gets its own. */
   begin() {
-    return this.epoch;
+    return ++this.epoch;
   }
-  /** Every child BB lists under a parent, all pages: the parent's set becomes theirs, bar newer events. */
+  /**
+   * Every child BB lists under a parent, all pages: the parent's set becomes theirs, bar newer
+   * events. A listing that began before the one that last filled the set is dropped.
+   */
   listed(parentThreadId: string, rows: readonly ChildRow[], epoch: number, now = Date.now()) {
-    const known = this.byParent.get(parentThreadId)?.children ?? new Map<string, Child>();
+    const set = this.byParent.get(parentThreadId);
+    if (set?.listed && set.listedAt > epoch) return;
+    const known = set?.children ?? new Map<string, Child>();
     const children = new Map<string, Child>();
-    for (const row of rows) {
+    for (const [rank, row] of rows.entries()) {
       const had = known.get(row.id);
-      children.set(row.id, had && had.at > epoch ? had : this.entry(row, had, epoch, now));
+      children.set(row.id, had && had.at > epoch ? { ...had, rank } : this.entry(row, had, epoch, now, rank));
     }
     for (const [id, had] of known) if (had.at > epoch && !children.has(id)) children.set(id, had);
-    this.byParent.set(parentThreadId, { listed: true, children });
+    this.byParent.set(parentThreadId, { listed: true, listedAt: epoch, children });
+  }
+  /** The begin() of the complete listing that last filled the thread's set; null before one. */
+  listedAt(parentThreadId: string): number | null {
+    const set = this.byParent.get(parentThreadId);
+    return set?.listed ? set.listedAt : null;
   }
   /** Whether a complete listing of the thread's children has filled its set. */
   isListed(parentThreadId: string) {
@@ -182,7 +210,22 @@ export class RunningChildren {
   /** How many children the cache knows under a thread; null while it has neither listed nor seen one. */
   childCount(parentThreadId: string): number | null {
     const set = this.byParent.get(parentThreadId);
-    return set && (set.listed || set.children.size) ? set.children.size : null;
+    if (!set) return null;
+    const live = [...set.children.values()].filter((c) => !c.deleted).length;
+    return set.listed || live ? live : null;
+  }
+  /**
+   * A listed thread's children as its listing and the events since left them: in BB's order, the
+   * ones only an event has shown first, newest first (a deleted one drops out, as BB's listing
+   * hides it); null until a complete listing.
+   */
+  rows(parentThreadId: string): CachedChild[] | null {
+    const set = this.byParent.get(parentThreadId);
+    if (!set?.listed) return null;
+    return [...set.children.entries()]
+      .filter(([, c]) => !c.deleted)
+      .sort(([, x], [, y]) => x.rank - y.rank)
+      .map(([threadId, c]) => ({ threadId, title: c.title, status: c.status, archived: c.archived, running: c.running, providerId: c.providerId, updatedAt: c.updatedAt }));
   }
   /** The newest running child of a thread, if any. */
   of(parentThreadId: string): { threadId: string; title: string; since: number } | null {

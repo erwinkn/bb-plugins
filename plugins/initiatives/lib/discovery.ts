@@ -44,6 +44,8 @@ export class DiscoveryMemory {
   private obligations = new Map<string, number>();
   /** Per project, unclaimed parents a listing found that no completed listing has covered yet. */
   private unclaimed = new Map<string, Set<string>>();
+  /** Per project, unclaimed parents whose listing completed: the walk went through them once. */
+  private walkedThrough = new Map<string, Set<string>>();
   private epoch = 0;
 
   /** A native event may have revived these member threads or given them children. */
@@ -122,9 +124,18 @@ export class DiscoveryMemory {
     this.unclaimed.set(projectId, unclaimed);
   }
 
+  /** Whether a completed listing of this unclaimed parent queued its children. */
+  walked(projectId: string, parentId: string) {
+    return this.walkedThrough.get(projectId)?.has(parentId) === true;
+  }
+
   /** A listing finished; it discharges an obligation only if no newer event arrived meanwhile. */
   completed(projectId: string, parentId: string, token: number | undefined) {
-    this.unclaimed.get(projectId)?.delete(parentId);
+    if (this.unclaimed.get(projectId)?.delete(parentId)) {
+      const walked = this.walkedThrough.get(projectId) ?? new Set<string>();
+      walked.add(parentId);
+      this.walkedThrough.set(projectId, walked);
+    }
     if (token !== undefined && this.obligations.get(parentId) === token) this.obligations.delete(parentId);
   }
 }

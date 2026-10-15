@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
-import { Markdown } from "@get-bb/plugin-sdk/app";
+import { Markdown, useRealtime } from "@get-bb/plugin-sdk/app";
 import type { BlockerItem, Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
 import { needsYouCount } from "./lib/blockers";
 import { MAX_RULES, RULE_MAX_CHARACTERS } from "./lib/rules";
@@ -1540,6 +1540,9 @@ function ChildTree({ projectId, threadId, load, openThread }: { projectId: strin
   };
   // Read at call time: a refresh started by an older render still reads every page opened since.
   const state = useData(key, () => read((appReads.entry(key).data as ChildTreeData | null)?.pages ?? 1)());
+  useRealtime("initiatives-children", (payload) => {
+    if ((payload as { threadId?: string } | null)?.threadId === threadId) state.schedule();
+  });
   const tree = state.data;
   // The new count is saved before the read, so every refresh from now on reads that page too,
   // a realtime one replacing this one within the debounce included.

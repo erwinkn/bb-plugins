@@ -299,27 +299,48 @@ describe("W465 child-thread toggles say how many and show only where some are kn
   });
 });
 
+describe("W473 an open tree re-reads on its own signal", () => {
+  it("a child-page signal for its thread refreshes it; one for another thread, nothing", async () => {
+    const o = base();
+    o.workers.current = [worker("W1", { label: "Lead" })];
+    o.workerWaiting = { W1: { on: null, checked: true, children: 1 } };
+    let rows = [child(1, 0)];
+    const childPage = vi.fn(() => ({ status: "ready", value: { rows, next: null } }));
+    const slot = await workersTab(o, undefined, childPage);
+    const row = slot.getByRole("button", { name: "W1 Lead" }).closest("li")!;
+    fireEvent.click(within(row).getByRole("button", { name: "1 child thread" }));
+    await within(row).findByRole("button", { name: "Open Helper 1" });
+    const reads = childPage.mock.calls.length;
+    rows = [child(2, 0), child(1, 0)];
+    await slot.emitRealtime("initiatives-children", { threadId: "thr_W2" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(childPage.mock.calls.length).toBe(reads);
+    await slot.emitRealtime("initiatives-children", { threadId: "thr_W1" });
+    await within(row).findByRole("button", { name: "Open Helper 2" });
+  });
+});
+
 describe("W465 childPage counts each child's children from the cache", () => {
   type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
   const childOf = (f: Fx, id: string, parentThreadId: string) =>
     f.threads.set(id, makeThreadResponse({ id, projectId: "proj_a", parentThreadId, status: "idle" as never, title: `Thread ${id}`, createdAt: Date.now() }) as never);
 
-  it("null until the child's own tree is listed, then its count, with no extra read", async () => {
+  it("null until the child's own tree is listed, which the page starts in the background; then its count, with no extra read", async () => {
     const { f, project } = await projectFixture();
     const [w] = JSON.parse((await f.harness.callAgentTool("initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." }, { threadId: "coordinator" })) as string);
     childOf(f, "reviewer", w.threadId);
     childOf(f, "helper", w.threadId);
     childOf(f, "grandchild", "reviewer");
     const input = { projectId: project.id, threadId: w.threadId };
-    const first = await settledChildPage(f.harness, input);
-    expect(first.status === "ready" && first.value.rows.map((r) => [r.threadId, r.children])).toEqual([["reviewer", null], ["helper", null]]);
-    await settledChildPage(f.harness, { projectId: project.id, threadId: "reviewer" });
-    await settledChildPage(f.harness, { projectId: project.id, threadId: "helper" });
+    const counts = (page: Awaited<ReturnType<typeof settledChildPage>>) =>
+      page.status === "ready" ? Object.fromEntries(page.value.rows.map((r) => [r.threadId, r.children])) : page.error;
+    expect(counts(await settledChildPage(f.harness, input))).toEqual({ reviewer: null, helper: null });
+    // W473: nobody opens the children; the page's own background listings count them.
+    await vi.waitFor(async () => expect(counts(await settledChildPage(f.harness, input))).toEqual({ reviewer: 1, helper: 0 }));
     let lists = 0;
     f.intercept((path, _args, call) => { if (path === "threads.list") lists++; return call(); });
     // The worker's page is still fresh in its cache: the counts come from the cache alone.
-    const again = await settledChildPage(f.harness, input);
-    expect(again.status === "ready" && again.value.rows.map((r) => [r.threadId, r.children])).toEqual([["reviewer", 1], ["helper", 0]]);
+    expect(counts(await settledChildPage(f.harness, input))).toEqual({ reviewer: 1, helper: 0 });
     expect(lists).toBe(0);
   });
 });

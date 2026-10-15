@@ -30,7 +30,7 @@ const within = <T,>(promise: Promise<T>, ms = 1000) =>
   Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`still waiting after ${ms} ms`)), ms))]);
 
 describe("R1 the dashboard's first answer never waits on a descendant walk", () => {
-  it("summary and full overviews answer while a worker's child listing hangs, and list nothing natively for it", async () => {
+  it("summary and full overviews answer while a worker's child listing hangs, which they start once in the background", async () => {
     const { f, project } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     childOf(f, "helper", w.threadId, "idle");
@@ -46,7 +46,8 @@ describe("R1 the dashboard's first answer never waits on a descendant walk", () 
     await within(f.harness.callRpc("overview", { projectId: project.id }));
     await within(f.harness.callRpc("panel", { threadId: w.threadId }));
     f.intercept();
-    expect(listed).toEqual([]);
+    // W473: the first read lists the worker's children in the background; the later reads join it.
+    expect(listed).toEqual([w.threadId]);
   });
 });
 
@@ -172,9 +173,10 @@ describe("R9 a child read that fails is a failure, never a complete empty tree",
     const { f, project } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     childOf(f, "helper", w.threadId, "idle");
+    // The overview's background listing fails too, so the tree stays unlisted.
+    f.intercept((path, args, call) => path === "threads.list" && args?.parentThreadId === w.threadId ? Promise.reject(new Error("BB unavailable")) : call());
     const o = (await f.harness.callRpc("overview", { projectId: project.id })) as { workerWaiting: Record<string, unknown> };
     expect(o.workerWaiting.W1).toEqual({ on: null, checked: false, children: null });
-    f.intercept((path, args, call) => path === "threads.list" && args?.parentThreadId === w.threadId ? Promise.reject(new Error("BB unavailable")) : call());
     expect(await settledChildPage(f.harness, { projectId: project.id, threadId: w.threadId })).toEqual({ status: "failed", error: expect.stringMatching(/BB unavailable/) });
     // A failed sweep listing keeps what the last good one said.
     f.intercept();

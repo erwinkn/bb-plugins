@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { projectFixture } from "./fake-native";
 import { RunningChildren } from "../lib/context";
@@ -82,6 +82,23 @@ describe("F2 waiting discovery reaches through an archived helper nobody claimed
     expect(await waiting()).toMatchObject({ on: { threadId: "grandchild", running: "active" }, checked: true });
     expect(f.store.membership("helper", true)).toBeNull();
     expect(f.store.membership("grandchild", true)).toBeNull();
+  });
+
+  it("W473: a Workers-tab listing of the archived helper does not stop the walk from going through it", async () => {
+    const { f, project } = await projectFixture();
+    const [w] = await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
+    childOf(f, "helper", w.threadId, "idle", { archivedAt: Date.now() - 1000 });
+    childOf(f, "middle", "helper", "idle", { archivedAt: Date.now() - 1000 });
+    childOf(f, "leaf", "middle", "active");
+    realChildListing(f);
+    const waiting = async () => ((await f.harness.callRpc("overview", { projectId: project.id })) as { workerWaiting: Record<string, unknown> }).workerWaiting.W1;
+    // The overview prefetches the worker; its opened page prefetches the helper.
+    await waiting();
+    await vi.waitFor(() => expect(f.service.runningChildren.isListed(w.threadId)).toBe(true));
+    await settledChildPage(f.harness, { projectId: project.id, threadId: w.threadId });
+    await vi.waitFor(() => expect(f.service.runningChildren.isListed("helper")).toBe(true));
+    await f.service.associateNativeChildren(project.id);
+    expect(await waiting()).toMatchObject({ on: { threadId: "leaf", running: "active" }, checked: true });
   });
 
   it("an archived child the cache has not listed leaves the tree unchecked", () => {

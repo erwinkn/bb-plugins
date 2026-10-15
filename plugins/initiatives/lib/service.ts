@@ -104,7 +104,7 @@ export const DISCUSSION_CAP = 62;
 const DESCENDANT_PAGE = 100;
 const DESCENDANT_BUDGET = 500;
 /** One page of a thread's children in the Workers tab. */
-const CHILD_PAGE = 100;
+export const CHILD_PAGE = 100;
 /** Open work Stop cancels, idle adopted work included: it can own running children. */
 const OPEN_WORK: AssignmentState[] = ["dispatching", "queued", "running", "idle_no_report"];
 const LIST_PAGE = 200;
@@ -1323,9 +1323,10 @@ export class ProjectsService {
           // An unclaimed child (an archived helper, or anything under one) is listed once without
           // joining the Initiative, so the waiting cache reaches a descendant BB restored under it.
           // Memory keeps it planned until that listing completes, however full this sweep's cap.
+          // Only discovery's own listing counts (W473): a Workers-tab listing walks no further.
           if (!member) {
             if (this.associateNativeChild(child)) queue.push(child.id);
-            else if (!this.runningChildren.isListed(child.id)) {
+            else if (!discovery.walked(projectId, child.id)) {
               discovery.found(projectId, child.id);
               queue.push(child.id);
             }
@@ -6420,11 +6421,26 @@ export class ProjectsService {
    * open a worker's tree one level and one page at a time. `next` is the offset of the following
    * page, null on the last.
    */
+  /**
+   * W473: every page of a thread's native children into runningChildren, so the Workers tab knows
+   * a worker's tree (its count, and its first page) before anyone opens it.
+   */
+  async listChildren(parentThreadId: string) {
+    const epoch = this.runningChildren.begin();
+    const rows: ThreadListRow[] = [];
+    for (let offset = 0; ; offset += CHILD_PAGE) {
+      const page = await this.sdk.threads.list({ parentThreadId, includeHidden: true, limit: CHILD_PAGE, offset });
+      rows.push(...page);
+      if (page.length < CHILD_PAGE) break;
+    }
+    this.runningChildren.listed(parentThreadId, rows, epoch);
+  }
+
   async childPage(parentThreadId: string, offset = 0) {
     const epoch = this.runningChildren.begin();
     const page = await this.sdk.threads.list({ parentThreadId, includeHidden: true, limit: CHILD_PAGE, offset });
     if (offset === 0 && page.length < CHILD_PAGE) this.runningChildren.listed(parentThreadId, page, epoch);
-    return { rows: page.map((row) => ({ ...row, running: running(row) })), next: page.length < CHILD_PAGE ? null : offset + page.length };
+    return { rows: page.map((row) => ({ ...row, running: running(row) })), next: page.length < CHILD_PAGE ? null : offset + page.length, epoch };
   }
 
   /**

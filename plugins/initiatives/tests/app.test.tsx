@@ -501,7 +501,8 @@ describe("project dashboard", () => {
       { list: () => [], overview: () => overview() },
       "created",
     );
-    await waitFor(() => expect(dashboard.getByText(note)).toBeTruthy());
+    // The creating panel shows the note too once it has moved to the new Initiative: read this slot's.
+    await waitFor(() => expect(within(dashboard.container).getByText(note)).toBeTruthy());
   });
   it("renders vision, objectives and ideas and edits them", async () => {
     const o = overview();

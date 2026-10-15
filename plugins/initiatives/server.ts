@@ -48,7 +48,7 @@ import { definePreferences } from "./lib/settings";
 import { WriteReceipts } from "./lib/write-receipts";
 import { CHAT_MEMORY_PLUGIN_ID } from "./lib/memory-scopes";
 import { Store, MIGRATIONS } from "./lib/store";
-import { ProjectsService } from "./lib/service";
+import { CHILD_PAGE, ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
 import {
   buildOverview,
@@ -70,6 +70,10 @@ import { prsByRef, prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
+/** W473: Workers-tab child listings in flight at once (each is one ~2 ms BB query). */
+const PREFETCH_LISTINGS = 3;
+/** W473: the most often one prefetch batch announces what it found. */
+const PREFETCH_ANNOUNCE_MS = 100;
 const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "rules", "reconcile", "recreate-coordinators"];
 /** Tools initiative_batch can run, by their name without the initiative_ prefix. */
 const BATCH_TOOLS = ["spawn", "message", "task", "worker", "question", "rule", "decision", "update", "pr", "read"] as const;
@@ -172,7 +176,77 @@ export default function plugin(bb: BbPluginApi) {
   const liveThreads = new LiveThreads((threadId) => bb.sdk.threads.get({ threadId }));
   const nativeContext = new Recent<unknown>(10_000);
   const childPages = new Background<{ rows: Omit<ChildPage["rows"][number], "children">[]; next: ChildPage["next"] }>(10_000);
+  /** W473: each cached page's listing, as RunningChildren.begin() numbers it, so a newer complete listing wins over it. */
+  const childPageEpochs = new Map<string, number>();
+  /** W473: cached pages whose latest refresh has already announced its tree. */
+  const childPageAnnounced = new Set<string>();
   const instanceEpoch = Math.random().toString(36).slice(2, 10);
+  /**
+   * W473: the trees the Workers tab is about to show are listed before anyone opens them: each
+   * thread the cache has never listed, once (lifecycle events keep it current after), through one
+   * queue for the instance, PREFETCH_LISTINGS at a time. A listing that changes a count a row
+   * shows (unknown and none both show no toggle) announces its batch, at most once per
+   * PREFETCH_ANNOUNCE_MS. No read waits on it; a failed listing is logged once and tried again by
+   * a later read.
+   */
+  const prefetching = new Set<string>();
+  /** Threads whose first child page answered loading: a listing that fills the cache tells their open trees. */
+  const awaitingRows = new Set<string>();
+  /** Threads whose last listing failed and was logged: an outage logs each once, not every read. */
+  const prefetchFailed = new Set<string>();
+  const prefetchQueue: { threadId: string; settled: () => void }[] = [];
+  let prefetchRunning = 0;
+  const pumpPrefetch = () => {
+    while (prefetchRunning < PREFETCH_LISTINGS && prefetchQueue.length) {
+      const { threadId, settled } = prefetchQueue.shift()!;
+      prefetchRunning++;
+      void service.listChildren(threadId).then(() => {
+        prefetchFailed.delete(threadId);
+        if (awaitingRows.delete(threadId)) announceChildren(threadId);
+      }, (error) => {
+        if (prefetchFailed.has(threadId)) return;
+        prefetchFailed.add(threadId);
+        try {
+          bb.log.warn(`Listing ${threadId}'s child threads failed; a later read tries again: ${errorMessage(error)}`);
+        } catch {
+          /* the plugin reloaded meanwhile */
+        }
+      }).finally(() => {
+        prefetching.delete(threadId);
+        prefetchRunning--;
+        settled();
+        pumpPrefetch();
+      });
+    }
+  };
+  const announceChildren = (threadId: string) => {
+    try {
+      bb.realtime.publish("initiatives-children", { threadId });
+    } catch {
+      /* the plugin reloaded meanwhile */
+    }
+  };
+  const prefetchChildren = (threadIds: readonly string[], announce: () => void) => {
+    const cache = service.runningChildren;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    for (const threadId of new Set(threadIds)) {
+      if (cache.isListed(threadId) || prefetching.has(threadId)) continue;
+      prefetching.add(threadId);
+      const before = cache.childCount(threadId) ?? 0;
+      prefetchQueue.push({ threadId, settled: () => {
+        if (timer || (cache.childCount(threadId) ?? 0) === before) return;
+        timer = setTimeout(() => {
+          timer = null;
+          try {
+            announce();
+          } catch {
+            /* the plugin reloaded meanwhile: its successor announces its own reads */
+          }
+        }, PREFETCH_ANNOUNCE_MS);
+      } });
+    }
+    pumpPrefetch();
+  };
   const overview = async (
     projectId: string,
     detail: OverviewDetail = "full",
@@ -216,6 +290,7 @@ export default function plugin(bb: BbPluginApi) {
         return children === null ? [] : [[w.ref, { ...cache.waitingOn(w.threadId!), children }]];
       }),
     ]);
+    prefetchChildren(result.workers.current.flatMap((w) => w.threadId ? [w.threadId] : []), () => changed(projectId));
     if (result.project.coordinatorThreadId) {
       const threadId = result.project.coordinatorThreadId;
       try {
@@ -530,17 +605,50 @@ export default function plugin(bb: BbPluginApi) {
     overview: ({ projectId, detailed, detail }) =>
       overview(projectId, detail ?? (detailed === false ? "summary" : "full"), { fresh: false }),
     membership: ({ threadId }) => membershipOf(threadId),
-    childPage: ({ projectId, threadId, offset }) => {
+    childPage: ({ projectId, threadId, offset = 0 }) => {
       service.requireProject(projectId);
-      // Never waits on BB: the cached page, or loading; a read that changes it announces the Initiative.
-      const page = childPages.get(`${threadId}:${offset ?? 0}`, async () => {
+      const cache = service.runningChildren;
+      // W473: a changed page re-reads only this thread's open trees; the Adventure's views re-read
+      // only when the thread's count changed, which its row shows.
+      const announce = () => announceChildren(threadId);
+      // Never waits on BB: the cached page, or loading.
+      const key = `${threadId}:${offset}`;
+      const page = childPages.get(key, async () => {
+        childPageAnnounced.delete(key);
+        const count = cache.childCount(threadId) ?? 0;
+        // The first page may be served from the cache: a refresh that changes it announces the
+        // tree even when BB's page reads as it did last time.
+        const shown = offset === 0 ? JSON.stringify(cache.rows(threadId)) : null;
         const page = await service.childPage(threadId, offset);
+        if ((cache.childCount(threadId) ?? 0) !== count) changed(projectId);
+        else if (shown !== null && JSON.stringify(cache.rows(threadId)) !== shown) {
+          childPageAnnounced.add(key);
+          announce();
+        }
+        childPageEpochs.set(key, page.epoch);
         return { next: page.next, rows: page.rows.map((row) => ({ threadId: row.id, title: row.title ?? row.titleFallback ?? "Thread", status: row.status,
           archived: row.archivedAt !== null, running: row.running, providerId: row.providerId ?? null, updatedAt: row.updatedAt })) };
-      }, () => bb.realtime.publish("initiatives-changed", { projectId }));
-      // Each child's own count comes from the cache as it stands now, so a tree listed since shows.
-      if (page.status !== "ready") return page;
-      return { ...page, value: { ...page.value, rows: page.value.rows.map((row) => ({ ...row, children: service.runningChildren.childCount(row.threadId) })) } };
+      }, () => {
+        // Once per refresh: one that announced its cache change has already said so.
+        if (!childPageAnnounced.delete(key)) announce();
+      });
+      // W473: the first page of a tree the cache has listed (the prefetch, the sweep, or this read
+      // before) comes from the cache, which events keep current, so it opens at once; the read
+      // above refreshes it in the background. A first page with a next one, read after the
+      // cache's listing (a child moved in without an event), pages from BB.
+      const paged = page.status === "ready" && page.value.next !== null && (childPageEpochs.get(key) ?? 0) > (cache.listedAt(threadId) ?? -1);
+      const known = offset === 0 && !paged ? cache.rows(threadId) : null;
+      const answer = known && known.length < CHILD_PAGE ? { status: "ready" as const, value: { rows: known, next: null } } : page;
+      if (answer.status !== "ready") {
+        if (offset === 0) awaitingRows.add(threadId);
+        return answer;
+      }
+      if (offset === 0) awaitingRows.delete(threadId);
+      // Each child's own count comes from the cache as it stands now, so a tree listed since shows;
+      // the children it cannot count yet are listed next, so their toggles show before a click.
+      const rows = answer.value.rows.map((row) => ({ ...row, children: cache.childCount(row.threadId) }));
+      prefetchChildren(rows.flatMap((row) => row.children === null ? [row.threadId] : []), announce);
+      return { ...answer, value: { ...answer.value, rows } };
     },
     reportReadTimeout: ({ read, ...r }) => {
       bb.log.warn(
