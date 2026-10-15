@@ -590,15 +590,6 @@ describe("Adventure workers", () => {
     expect(read.mock.calls.some(([input]) => input?.workersOf?.includes("p1"))).toBe(true);
   });
 
-  it("lists the coordinator first, labelled, without the threads it spawned", async () => {
-    const slot = mount(workerRpc(), {}, workerThreads);
-    await waitFor(() => expect(workerIds(slot)[0]).toBe("c"));
-    const row = workerRow(slot, "c")!;
-    expect(row.querySelector("[data-worker-ref]")?.textContent).toBe("Coordinator");
-    expect(row.querySelector("[data-worker-model]")).toBeNull();
-    expect(within(row).queryByRole("button", { name: /child thread/ })).toBeNull();
-  });
-
   it("draws the cached Adventures and worker facts at once, before the first read answers", async () => {
     cacheTree(tree);
     cacheWorkers({ p1: [{ ref: "W1", profile: OPUS, group: "working" }] });
@@ -634,13 +625,13 @@ describe("Adventure workers", () => {
   it("groups workers by state, or lists them by recent activity or worker id, and remembers it", async () => {
     const slot = mount(workerRpc(), {}, workerThreads);
     await waitFor(() => expect(groups(slot)).toEqual(["needs", "working", "done"]));
-    expect(workerIds(slot)).toEqual(["c", "w3", "w", "w2"]);
+    expect(workerIds(slot)).toEqual(["w3", "w", "w2"]);
     await chooseWorkers(slot, "None");
     expect(groups(slot)).toEqual([]);
     // Most recent activity first: w2 (2 min), w3 (20), w (30).
-    expect(workerIds(slot)).toEqual(["c", "w2", "w3", "w"]);
+    expect(workerIds(slot)).toEqual(["w2", "w3", "w"]);
     await chooseWorkers(slot, "Newest worker");
-    expect(workerIds(slot)).toEqual(["c", "w3", "w2", "w"]);
+    expect(workerIds(slot)).toEqual(["w3", "w2", "w"]);
     expect(stored().workerListing).toEqual({ groupBy: "none", sortBy: "worker" });
   });
 
@@ -663,7 +654,7 @@ describe("Adventure workers", () => {
     const link = (id: string) =>
       slot.container.querySelector(`[data-adventure-workers] [data-sidebar-thread-id="${id}"]`)!;
     expect(link("w").getAttribute("aria-current")).toBe("page");
-    expect(link("c").getAttribute("aria-current")).toBeNull();
+    expect(link("w2").getAttribute("aria-current")).toBeNull();
   });
 
   it("offers no way to create an Adventure, and the worker options sit over its workers", async () => {

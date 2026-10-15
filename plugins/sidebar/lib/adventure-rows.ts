@@ -20,11 +20,12 @@ export interface WorkerRow {
 const workerNumber = (ref: string) => Number(/\d+/.exec(ref)?.[0] ?? 0);
 
 /**
- * What a selected Adventure lists: its coordinator's thread while live (no
- * children: every thread it spawned is a worker or past work), each current
- * worker whose BB thread is live, and its live member threads (discussions, threads attached by hand),
- * each with its live descendants. A worker's thread is listed once, as its
- * own row, never again as another thread's child. The group follows the
+ * What a selected Adventure lists: each current worker whose BB thread is
+ * live, and its live member threads (discussions, threads attached by hand),
+ * each with its live descendants. The coordinator is not listed (the
+ * Adventure's own row opens it), nor are the threads it spawned that are not
+ * workers. A worker's thread is listed once, as its own row, never again as
+ * another thread's child. The group follows the
  * server's facts, except that BB's live status wins at once: a thread
  * waiting for input needs you, a running one (or one with a running
  * descendant) is working.
@@ -35,7 +36,7 @@ export function adventureRows(
   drafts: readonly string[],
   facts: readonly AdventureWorker[] | undefined,
   sortBy: WorkerListing["sortBy"],
-): { coordinator: ThreadNode | null; workers: WorkerRow[]; others: ThreadNode[] } {
+): { workers: WorkerRow[]; others: ThreadNode[] } {
   const draftKeys = new Set(drafts);
   const statusFor = (thread: PluginSidebarThread): Status =>
     statusOf(thread, draftKeys.has(`thread:${thread.id}`));
@@ -127,9 +128,7 @@ export function adventureRows(
   const others = members
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
     .map((thread) => ({ thread, status: statusFor(thread), children: subtree(thread.id) }));
-  const lead = project.coordinatorThreadId ? byId.get(project.coordinatorThreadId) : undefined;
-  const coordinator = lead ? { thread: lead, status: statusFor(lead), children: [] } : null;
-  return { coordinator, workers, others };
+  return { workers, others };
 }
 
 /** The thread title without the leading worker id BB titles start with: "W12 Fix login" → "Fix login". */
