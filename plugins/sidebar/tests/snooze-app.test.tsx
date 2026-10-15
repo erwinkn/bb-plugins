@@ -14,6 +14,8 @@ import type { SnoozeDoc, SnoozeEntry } from "../lib/snooze-schema";
 import { thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
+const { QueryObserver } = await import("@tanstack/react-query");
+const { applyDoc, queryClient, queryKeys, snoozesQuery } = await import("../lib/queries");
 const HOUR = 3_600_000;
 const projects = [{ id: "project-1", name: "One", isPersonal: false }];
 const threads = [
@@ -92,9 +94,11 @@ const mount = (
   mounted.push(slot);
   return slot;
 };
+// A query settles over a few macrotasks: its retry, then the batched notify.
 const tick = () =>
   act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let hop = 0; hop < 8; hop++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
   });
 const rowsIn = (element: HTMLElement) =>
   Array.from(element.querySelectorAll("[data-sidebar-thread-id]")).map((node) =>
@@ -331,5 +335,29 @@ describe("hover control", () => {
     // Long press (the touch path) still reaches the Snooze submenu.
     const menu = await openMenu(slot, "plain");
     expect(within(menu).getByRole("menuitem", { name: /^Snooze…/ })).toBeTruthy();
+  });
+});
+
+describe("snooze document revisions", () => {
+  it("keeps a write that lands after a read returned but before its answer is stored", async () => {
+    const client = queryClient();
+    applyDoc(client, queryKeys.snoozes, { revision: 1, entries: [] });
+    const options = snoozesQuery({
+      call: async () => ({ revision: 1, entries: [] }),
+    } as unknown as Parameters<typeof snoozesQuery>[0]);
+    const observer = new QueryObserver(client, {
+      ...options,
+      queryFn: async (context) => {
+        const answer = await options.queryFn!(context as never);
+        // A snooze's answer lands in the gap.
+        applyDoc(client, queryKeys.snoozes, { revision: 2, entries: [] });
+        return answer;
+      },
+    });
+    const stop = observer.subscribe(() => {});
+    await observer.refetch();
+    expect(options.queryFn).toBeDefined();
+    expect((client.getQueryData(queryKeys.snoozes) as SnoozeDoc).revision).toBe(2);
+    stop();
   });
 });

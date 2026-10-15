@@ -25,7 +25,7 @@ import {
   type SortBy,
 } from "../lib/status";
 import type { archiveContract } from "../lib/archive-contract";
-import type { snoozeContract } from "../lib/snooze-contract";
+import { useSnoozeChange } from "../lib/use-snooze";
 import { formatWakeTime, type SnoozePreset } from "../lib/snooze-presets";
 import {
   SnoozePopoverContent,
@@ -161,7 +161,7 @@ export function ThreadRow({
   onError: (error: unknown) => void;
 }) {
   const rpc = useRpc<typeof archiveContract>();
-  const snoozeRpc = useRpc<typeof snoozeContract>();
+  const changeSnooze = useSnoozeChange(onError);
   const navigate = useBbNavigate();
   const nested = depth > 0;
   const actions: SidebarThreadActionsWithPrefetch =
@@ -255,10 +255,10 @@ export function ThreadRow({
   const sleeping = snooze !== undefined && snooze.until !== null;
   const canSnooze = snooze !== undefined && !thread.isArchived;
   const snoozeUntil = (until: number) => {
-    void snoozeRpc.call("snooze", { threadId: thread.id, until }).catch(onError);
+    changeSnooze({ action: "snooze", threadId: thread.id, until });
   };
   const unsnooze = () => {
-    void snoozeRpc.call("unsnooze", { threadId: thread.id }).catch(onError);
+    changeSnooze({ action: "unsnooze", threadId: thread.id });
   };
   const toggleArchived = () => {
     void rpc
@@ -287,10 +287,7 @@ export function ThreadRow({
     if (thread.isArchived) navigate.toThread(thread.id);
     else actions.open(thread.id, { split });
     // Opening a woke thread clears its attention signal.
-    if (snooze?.woke)
-      void snoozeRpc
-        .call("acknowledge", { threadId: thread.id })
-        .catch(onError);
+    if (snooze?.woke) changeSnooze({ action: "acknowledge", threadId: thread.id });
     onNavigate();
   };
   // A sleeping row shows when it wakes instead of its age.

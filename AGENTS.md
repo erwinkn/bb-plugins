@@ -22,6 +22,55 @@ call. RPCs and UI answer immediately from cache, show a loading placeholder or
 skeleton while the first fetch runs, and refresh in the background. Cache every
 external query.
 
+## Data fetching
+
+Plugin frontends read their server with TanStack Query (`@tanstack/react-query`,
+a normal dependency; it bundles against BB's shared React). The Sidebar
+(`plugins/sidebar`) is the reference:
+
+- **One client per plugin**, in `lib/query.ts`: defaults (`staleTime` 30 s,
+  one quiet retry, `networkMode: "always"`, since RPCs reach the local BB
+  server), persistence, and `refresh`. Wrap every slot component in
+  `QueryClientProvider` with that client (the Sidebar's `withQueries`).
+- **Keys and reads in one file**, `lib/queries.tsx`: a `queryKeys` object and
+  a `queryOptions` factory per read, taking the `useRpc()` client. Bound reads
+  that can stall with a deadline (`withReadTimeout`).
+- **Persistence**: list the root keys worth a cold open, each with the zod
+  schema its restored data must pass. They are restored synchronously before
+  the first render (`createSyncStoragePersister` + `hydrate`), marked stale so
+  they are read again at once, and dropped on a version (`CACHE_VERSION`)
+  bump or after a week.
+- **Realtime, not polling**: route each realtime channel to the keys it
+  concerns (the Sidebar's `QuerySync`). `refresh(client, key)` coalesces a
+  burst and lets a read in flight finish before one more; plain
+  `invalidateQueries` cancels and restarts it, which starves under a stream of
+  signals. A signal that carries the new document goes straight to
+  `setQueryData`. Refresh everything on reconnect. Keep any poll as a slow
+  safety net (the Sidebar's is 60 s, visible tabs only).
+- **Prefetch** what a click is about to show: `client.prefetchQuery` on hover
+  (after a short dwell, so a passing pointer reads nothing) or focus.
+- **Writes** whose answer lands in a query use `useMutation`, applying the
+  answer (`setQueryData`) or refreshing the keys they change in `onSuccess`.
+
+```ts
+// lib/queries.tsx
+export const queryKeys = { tree: ["adventure-tree"] as const };
+export const treeQuery = (api: PluginRpcClient<typeof contract>) =>
+  queryOptions({
+    queryKey: queryKeys.tree,
+    queryFn: () => withReadTimeout(api.call("projectMode", { known: null })),
+    refetchInterval: SAFETY_POLL_MS,
+  });
+
+// A component
+const client = useQueryClient();
+const tree = useQuery(treeQuery(useRpc<typeof contract>()));
+useRealtime(TREE_CHANGED, () => refresh(client, queryKeys.tree));
+```
+
+Measure the request rate before and after a change to how a plugin reads (the
+Sidebar's `tests/request-rate.test.tsx`), and keep its bounds as a test.
+
 ## Development topology
 
 This repository is developed from the **main checkout** at `~/Code/bb-plugins`

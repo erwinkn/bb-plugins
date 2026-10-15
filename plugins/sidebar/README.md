@@ -132,19 +132,34 @@ Where the model and state come from: BB threads carry no model, so the
 sidebar server reads the picked Adventure's Adventures `overview` (summary
 tier) and keeps only each worker's id, profile and group. That read is heavy
 (about 1.2 MB and 1.5 s for an Adventure of 80 workers), so it is bounded: only
-Adventures some client picked in the last two minutes are read, one read at a
-time, a first read at once and a changed one again at most every 30 s
-(`FACTS_INTERVAL_MS`). The tree read (`projectMode`) answers with the facts
-the server already has, never waiting on a read; a read that changes them
-announces the change so clients read the tree again. Clients keep the last
-facts in `localStorage`, so rows draw with their models at once after a
-reload. Before an Adventure's first read its workers show in one list without
-models.
+Adventures some client asked about in the last two minutes are read, one read
+at a time, a first read at once and a changed one again at most every 30 s
+(`FACTS_INTERVAL_MS`). Clients ask with `adventureWorkers`, which answers from
+the server's memory at once, without reading the tree; a read that changes an
+Adventure's facts announces it on `adventure-workers-changed`, so the clients
+showing that Adventure ask again and nothing else is read. A client asks for
+the picked Adventure's facts once a minute, which keeps them current, and for
+an Adventure whose row the pointer rests on (150 ms), so picking it draws its
+groups at once. Before an Adventure's first read its workers show in one list
+without models.
 
-The last tree this client confirmed is kept in `localStorage`, in its displayed
-order, so the list draws at once and the first read refreshes it in the
-background; only a confirmed read replaces it, and a read that finds
-Adventures gone clears it.
+**How the sidebar reads.** Every server read goes through TanStack Query
+(`lib/query.ts`, `lib/queries.tsx`): one client shared by every mounted slot,
+so two views of a query read it once. The tree and order, worker facts,
+Adventure thread ids and both snooze documents are saved to `localStorage` and
+restored before the first render, so a cold open draws them at once and reads
+each again in the background; the archive list, branch-PR eligibility and
+thread ancestry stay in memory. Realtime signals drive the reads: a signal
+marks its queries stale and reads the ones on screen once, 200 ms after a
+burst, and a read in flight finishes and is followed by exactly one more (its
+answer may predate the change). A signal carrying a document applies it
+without a read, as does a snooze write's answer. A reconnect reads everything
+on screen again, since signals are not replayed; a tab coming back reads what
+is older than 30 s. A slow poll (`SAFETY_POLL_MS`, 60 s, visible tabs only)
+covers a lost signal. A failed read retries once at once; errors show from
+the second miss. Measured in `tests/request-rate.test.tsx`, an open sidebar
+sends 3 reads a minute idle (8.2 before), 14 under a signal every 5 s (32.1),
+none in a hidden tab.
 
 **Other threads.** The picker's last entry, in the Adventures' style with a
 list glyph, lists every thread outside them, with pins, snoozes, drafts and
@@ -241,17 +256,18 @@ changes in between are coalesced into the next allowed walk. A walk that times
 out or fails cancels its reads before the next may start. `status` is `loading` until the first read
 finishes, `failed` when that first read failed (no snapshot exists, and a
 failure is never reported as a confirmed empty set), and `ready` otherwise.
-The client keeps the last confirmed set in `localStorage` and caches every
-confirmed answer, even one equal to the set in memory. With a cache the list
-renders at once and a refresh never blocks it; on a cache miss Other threads
+The client keeps the last confirmed set in its query cache, saved to
+`localStorage`. With a saved set the list renders at once and a refresh never
+blocks it; without one Other threads
 shows "Loading threads…" until the first answer (a failed or timed-out first
 read also ends the wait, with nothing hidden and nothing cached until a read
 succeeds). A client that has a set keeps it and its cache through any failed or
 slow read; only a confirmed answer replaces it, and an Initiatives plugin that
 is not running hides nothing. Each read has a 30 s deadline and late answers
 are ignored, so a stalled request cannot stop later refreshes. The set is read
-again on connection, on Initiatives and snapshot change signals, when the host
-thread list gains or loses a thread, and every 15 s while the tab is visible.
+again on reconnection, on the snapshot change signal (a ledger change starts a
+walk on the server, which announces its result there), when the host thread
+list gains or loses a thread, and once a minute while the tab is visible.
 For a thread newer than the snapshot, the client also follows the live parent
 links, using loaded archived rows too; a named parent hides its children even
 when its own row is missing from the list.
@@ -592,7 +608,9 @@ development. To remove it, run `bb plugin remove sidebar`.
 Tests cover status precedence, grouping and date sorting, synced collapsed
 groups, navigation, storage validation, draft text and attachments, fallback
 UI, a disconnected realtime connection, the Adventures list with its worker
-rows, models, child toggles and worker options, the worker facts cache,
+rows, models, child toggles and worker options, the query cache's
+persistence, deduplication, prefetch and signal-driven reads, the request
+rate,
 project rename and removal through BB's API, and the snooze CLI.
 They use the SDK's frontend harness. The live BB view still needs visual checks
 after SDK upgrades because the sidebar API is experimental.

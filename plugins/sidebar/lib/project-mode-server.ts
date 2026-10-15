@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createProjectOrderStore } from "./project-order-store";
 import {
+  ADVENTURE_WORKERS_CHANGED,
   INITIATIVES_CHANGED,
   INITIATIVE_THREADS_CHANGED,
 } from "./project-mode-names";
@@ -143,8 +144,8 @@ export function registerProjectMode(bb: BbPluginApi) {
         input: { projectId, detail: "summary" },
         outputSchema: z.unknown(),
       }),
-    // Clients read the tree again, with the facts beside it.
-    () => bb.realtime.publish(INITIATIVES_CHANGED, {}),
+    // Clients showing that Adventure read its facts again; the tree stays.
+    (projectId) => bb.realtime.publish(ADVENTURE_WORKERS_CHANGED, { projectId }),
   );
   bb.onDispose(() => {
     workerFacts.dispose();
@@ -161,17 +162,15 @@ export function registerProjectMode(bb: BbPluginApi) {
     if (json !== served.json) served = { json, revision: `${epoch}:${++count}` };
     return served.revision;
   };
+  // The Adventures the last tree read listed; null before the first one.
+  let listed: ReadonlySet<string> | null = null;
   bb.rpc.register(projectModeContract, {
     projectMode: async (input) => {
       const fresh = await readTree(bb);
       if (!fresh)
         return { available: false, tree: null, order: null, orderError: null };
-      const listed = new Set(fresh.projects.map((project) => project.id));
+      listed = new Set(fresh.projects.map((project) => project.id));
       workerFacts.retain(listed);
-      // An Adventure the tree no longer lists is never read.
-      const workers = input?.workersOf
-        ? workerFacts.read(input.workersOf.filter((id) => listed.has(id)))
-        : undefined;
       const revision = input ? revisionOf(JSON.stringify(fresh)) : null;
       const unchanged = !!input?.known && input.known === revision;
       const tree = unchanged ? null : fresh;
@@ -195,9 +194,15 @@ export function registerProjectMode(bb: BbPluginApi) {
         ...(input ? { revision, unchanged } : {}),
         order: doc,
         orderError,
-        ...(workers ? { workers } : {}),
       };
     },
+    // An Adventure the last tree no longer lists is never read.
+    adventureWorkers: ({ projectId }) => ({
+      workers:
+        listed && !listed.has(projectId)
+          ? null
+          : (workerFacts.read([projectId])[projectId] ?? null),
+    }),
     initiativeThreads: () => {
       refreshSnapshot();
       return snapshot

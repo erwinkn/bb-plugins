@@ -1,3 +1,4 @@
+import { CACHE_VERSION, STORAGE_KEY } from "../lib/query";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 
 // dnd-kit mounts a visually-hidden aria-live="assertive" role="status" region
@@ -47,12 +48,55 @@ export function thread(
   };
 }
 
-/** A known-empty Initiative thread set, so the list renders at first paint. */
-export function seedInitiativeCache(ids: string[] = []) {
+/**
+ * Stores query data as a page would have persisted it, for the next mount to
+ * restore: each entry is a query key and its data, read `ageMs` ago.
+ */
+export function seedQueryCache(entries: [readonly unknown[], unknown][], ageMs = 60_000) {
+  const at = Date.now() - ageMs;
   window.localStorage.setItem(
-    "bb-plugin-sidebar:initiative-threads-cache",
-    JSON.stringify(ids),
+    STORAGE_KEY,
+    JSON.stringify({
+      buster: CACHE_VERSION,
+      timestamp: Date.now(),
+      clientState: {
+        mutations: [],
+        queries: entries.map(([queryKey, data]) => ({
+          queryKey,
+          queryHash: JSON.stringify(queryKey),
+          state: {
+            data,
+            dataUpdateCount: 1,
+            dataUpdatedAt: at,
+            error: null,
+            errorUpdateCount: 0,
+            errorUpdatedAt: 0,
+            fetchFailureCount: 0,
+            fetchFailureReason: null,
+            fetchMeta: null,
+            isInvalidated: false,
+            status: "success",
+            fetchStatus: "idle",
+          },
+        })),
+      },
+    }),
   );
+}
+
+/** The persisted query entries, by root key; empty without a stored cache. */
+export function persistedQueries(): Record<string, unknown[]> {
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const out: Record<string, unknown[]> = {};
+  if (!raw) return out;
+  for (const query of JSON.parse(raw).clientState.queries as { queryKey: string[]; state: { data: unknown } }[])
+    (out[query.queryKey[0]!] ??= []).push(query.state.data);
+  return out;
+}
+
+/** A known Initiative thread set (empty by default), so the list renders at first paint. */
+export function seedInitiativeCache(ids: string[] = []) {
+  seedQueryCache([[["initiative-threads"], ids]]);
 }
 
 export type ThreadLink = { id: string; parent: string; archived?: boolean };

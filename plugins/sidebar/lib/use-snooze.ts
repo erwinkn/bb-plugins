@@ -1,22 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  useRealtime,
-  useRealtimeConnectionState,
-  useRpc,
-} from "@get-bb/plugin-sdk/app";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { snoozeContract } from "./snooze-contract";
-import {
-  EMPTY_SNOOZE_PRESETS,
-  SNOOZE_PRESETS_CHANNEL,
-  snoozePresetsDocSchema,
-  type SnoozePresetsDoc,
-} from "./snooze-presets";
-import {
-  EMPTY_SNOOZES,
-  SNOOZE_CHANNEL,
-  snoozeDocSchema,
-  type SnoozeDoc,
-} from "./snooze-schema";
+import { EMPTY_SNOOZE_PRESETS, type SnoozePresetsDoc } from "./snooze-presets";
+import { EMPTY_SNOOZES, snoozeDocSchema, type SnoozeDoc } from "./snooze-schema";
+import { applyDoc, queryKeys, snoozePresetsQuery, snoozesQuery } from "./queries";
 
 export interface SyncedDocState<Doc> {
   doc: Doc;
@@ -26,114 +13,50 @@ export interface SyncedDocState<Doc> {
   refresh: () => void;
 }
 
-interface SyncedDocSource<Doc extends { revision: number }> {
-  method: "getSnoozes" | "getSnoozePresets";
-  channel: string;
-  /** Last document this client saw, applied before the server answers. */
-  cacheKey: string;
-  parse: (value: unknown) => Doc | null;
-  empty: Doc;
-}
-
-function readCache<Doc>(source: SyncedDocSource<Doc & { revision: number }>) {
-  try {
-    return source.parse(
-      JSON.parse(window.localStorage.getItem(source.cacheKey) ?? "null"),
-    );
-  } catch {
-    return null;
-  }
-}
-function writeCache(key: string, doc: unknown) {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(doc));
-  } catch {
-    /* Memory-only mode. */
-  }
-}
-
-// One revisioned KV document served over RPC and pushed over realtime.
-// Callers pass a module-level source so the effect dependencies stay stable.
-function useSyncedDoc<Doc extends { revision: number }>(
-  source: SyncedDocSource<Doc>,
+// One revisioned KV document served over RPC and pushed over realtime
+// (QuerySync applies the pushed documents).
+function useSyncedDoc<Doc>(
+  query: ReturnType<typeof useQuery<Doc, Error, Doc>>,
+  empty: Doc,
 ): SyncedDocState<Doc> {
-  const rpc = useRpc<typeof snoozeContract>();
-  const connection = useRealtimeConnectionState();
-  const [doc, setDoc] = useState<Doc | null>(() => readCache(source));
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const refresh = useCallback(() => setAttempt((value) => value + 1), []);
-  // The server's revision only grows within a session. A fetch answer that
-  // was in flight while a signal landed a newer document is stale and must
-  // not roll the UI or the cache back.
-  const serverRevision = useRef<number | null>(null);
-  const apply = useCallback(
-    (next: Doc) => {
-      if (
-        serverRevision.current !== null &&
-        next.revision < serverRevision.current
-      )
-        return;
-      serverRevision.current = next.revision;
-      setDoc(next);
-      setError(null);
-      writeCache(source.cacheKey, next);
-    },
-    [source],
-  );
-  useRealtime(source.channel, (payload) => {
-    const parsed = source.parse(payload);
-    if (parsed) apply(parsed);
-  });
-  // Signals are not replayed, so reconcile on every (re)connection.
-  useEffect(() => {
-    let cancelled = false;
-    rpc
-      .call(source.method, null)
-      .then((next) => {
-        const parsed = source.parse(next);
-        if (!cancelled && parsed) apply(parsed);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled)
-          setError(cause instanceof Error ? cause.message : "Cannot load.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rpc, connection, attempt, apply, source]);
+  const { data, error, refetch } = query;
   return {
-    doc: doc ?? source.empty,
-    status: doc ? "ready" : error ? "error" : "loading",
-    error,
-    refresh,
+    doc: data ?? empty,
+    status: data ? "ready" : error ? "error" : "loading",
+    error: data ? null : (error?.message ?? null),
+    refresh: () => void refetch(),
   };
 }
 
-const SNOOZES: SyncedDocSource<SnoozeDoc> = {
-  method: "getSnoozes",
-  channel: SNOOZE_CHANNEL,
-  cacheKey: "bb-plugin-sidebar:snooze-cache",
-  parse: (value) => {
-    const parsed = snoozeDocSchema.safeParse(value);
-    return parsed.success ? parsed.data : null;
-  },
-  empty: EMPTY_SNOOZES,
-};
-const PRESETS: SyncedDocSource<SnoozePresetsDoc> = {
-  method: "getSnoozePresets",
-  channel: SNOOZE_PRESETS_CHANNEL,
-  cacheKey: "bb-plugin-sidebar:snooze-presets-cache",
-  parse: (value) => {
-    const parsed = snoozePresetsDocSchema.safeParse(value);
-    return parsed.success ? parsed.data : null;
-  },
-  empty: EMPTY_SNOOZE_PRESETS,
-};
-
 export function useSnooze(): SyncedDocState<SnoozeDoc> {
-  return useSyncedDoc(SNOOZES);
+  const rpc = useRpc<typeof snoozeContract>();
+  return useSyncedDoc(useQuery(snoozesQuery(rpc)), EMPTY_SNOOZES);
 }
 export function useSnoozePresets(): SyncedDocState<SnoozePresetsDoc> {
-  return useSyncedDoc(PRESETS);
+  const rpc = useRpc<typeof snoozeContract>();
+  return useSyncedDoc(useQuery(snoozePresetsQuery(rpc)), EMPTY_SNOOZE_PRESETS);
+}
+
+export type SnoozeChange =
+  | { action: "snooze"; threadId: string; until: number }
+  | { action: "unsnooze" | "acknowledge"; threadId: string };
+
+/**
+ * Snoozes, unsnoozes or acknowledges a thread. Each write answers the stored
+ * document, which applies at once instead of after the realtime signal.
+ */
+export function useSnoozeChange(onError: (error: unknown) => void) {
+  const rpc = useRpc<typeof snoozeContract>();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (change: SnoozeChange) =>
+      change.action === "snooze"
+        ? rpc.call("snooze", { threadId: change.threadId, until: change.until })
+        : rpc.call(change.action, { threadId: change.threadId }),
+    onSuccess: (doc) => {
+      const parsed = snoozeDocSchema.safeParse(doc);
+      if (parsed.success) applyDoc(client, queryKeys.snoozes, parsed.data);
+    },
+    onError,
+  }).mutate;
 }

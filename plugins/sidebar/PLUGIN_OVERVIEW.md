@@ -4,8 +4,12 @@
   list (sorting and group rendering) it hands to the Adventures picker.
 - `components/project-mode.tsx`: the Adventures picker (rows, reordering, the
   header's + that opens the create dialog, pending creates, the Other threads
-  entry, which entry is picked, the tree read that carries the worker facts)
-  and the section below it that lists the pick.
+  entry, which entry is picked, the tree and worker-facts queries) and the
+  section below it that lists the pick.
+- `lib/query.ts`: the plugin's one QueryClient (defaults, the synchronous
+  `localStorage` restore and throttled save, `refresh` for change signals).
+- `lib/queries.tsx`: every query's key and read, which ones persist, the
+  realtime routing (`QuerySync`) and `withQueries`, which wraps each slot.
 - `components/create-initiative.tsx`, `lib/initiative-submissions.ts`: the
   New Adventure dialog and its per-create pending entries.
 - `components/adventure-workers.tsx`: the picked Adventure's rows: its
@@ -17,8 +21,6 @@
   overview, by the Workers tab's rules, and the model label.
 - `lib/adventure-workers-server.ts`: the server's bounded, shared cache of
   worker facts for the Adventures clients have picked.
-- `lib/thread-ancestry.ts`: the session store of parent links read from the
-  host for threads BB's list omits, so an opened thread finds its Adventure.
 - `lib/status.ts`: pure status rules and within-group order.
 - `lib/thread-tree.ts`: parent/child nesting, sibling order, and family status.
 - `lib/client-state.ts`: versioned per-client preferences (the picked entry,

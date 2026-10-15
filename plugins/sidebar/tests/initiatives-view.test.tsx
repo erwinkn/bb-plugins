@@ -4,9 +4,9 @@ import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { OTHER_THREADS, parseState, updateState } from "../lib/client-state";
-import { cacheTree, cacheWorkers } from "../lib/initiative-tree-cache";
 import { CREATE_TIMEOUT_MS, reloadSubmissions } from "../lib/initiative-submissions";
-import { thread } from "./fixtures";
+import { persistedQueries, seedQueryCache, thread } from "./fixtures";
+import { STORAGE_KEY, resetQueryClient } from "../lib/query";
 
 const app = await loadPluginApp(() => import("../app"));
 const Component = app.threadLists[0].component;
@@ -166,17 +166,19 @@ const workerThreads = [
   thread({ id: "rev-helper", title: "Helper", parentThreadId: "rev", updatedAt: minutes(24) }),
   ...threads.filter((t) => !["c", "w"].includes(t.id)),
 ];
-/** A tree read that answers the worker facts of the Adventures it is asked for. */
 const withFacts = () =>
-  vi.fn(async (input: { known: string | null; workersOf?: string[] } | null) => ({
+  vi.fn(async (_input: { known: string | null } | null) => ({
     available: true,
     tree: workerTree,
     order: null,
     orderError: null,
-    ...(input?.workersOf ? { workers: { p1: FACTS } } : {}),
   }));
-const workerRpc = (projectMode = withFacts()) => ({
+/** The server's worker facts: p1's, and none read yet for any other. */
+const factsRead = () =>
+  vi.fn(async ({ projectId }: { projectId: string }) => ({ workers: projectId === "p1" ? FACTS : null }));
+const workerRpc = (projectMode = withFacts(), adventureWorkers = factsRead()) => ({
   projectMode,
+  adventureWorkers,
   initiativeThreads: async () => ({ available: true, threadIds: ["c", "w", "w2", "w3"], status: "ready" }),
 });
 const workerRow = (slot: ReturnType<typeof renderSlot>, id: string) =>
@@ -276,17 +278,21 @@ describe("sidebar layout", () => {
     expect(groups).toEqual(["pinned", "recent"]);
   });
 
-  it("caches the confirmed tree and forgets it once Adventures is gone", async () => {
+  it("caches the confirmed tree, and that Adventures is gone once it is", async () => {
+    const stored = () => persistedQueries()["adventure-tree"]?.[0] as { available: boolean; tree: unknown } | undefined;
     const slot = mount();
     await slot.findByRole("link", { name: "Open Useful search" });
-    await waitFor(() =>
-      expect(window.localStorage.getItem("bb-plugin-sidebar:initiative-tree:v1")).toContain("Useful search"),
-    );
+    // Writes to storage are throttled to one a second.
+    await waitFor(() => expect(JSON.stringify(stored()?.tree)).toContain("Useful search"), { timeout: 2_000 });
     slot.unmount();
-    mount({ projectMode: async () => ({ available: false, tree: null, order: null, orderError: null }) });
-    await waitFor(() =>
-      expect(window.localStorage.getItem("bb-plugin-sidebar:initiative-tree:v1")).toBeNull(),
-    );
+    resetQueryClient();
+    const gone = mount({ projectMode: async () => ({ available: false, tree: null, order: null, orderError: null }) });
+    await waitFor(() => expect(stored()).toMatchObject({ available: false, tree: null }), { timeout: 2_000 });
+    // The next cold open says so at once instead of loading.
+    gone.unmount();
+    resetQueryClient();
+    const next = mount({ projectMode: () => new Promise(() => {}) });
+    expect(next.getByText("Install or enable the Adventures plugin to list Adventures here.")).toBeTruthy();
   });
 });
 
@@ -432,6 +438,19 @@ describe("picking what the lower section lists", () => {
     expect(threadAncestry).toHaveBeenCalledTimes(1);
   });
 
+  it("asks on from where a partial chain stopped", async () => {
+    pickOther();
+    // The first read stops short (a host read failed midway); the second goes on from there.
+    const threadAncestry = vi.fn(async ({ threadId }: { threadId: string }) => ({
+      links: threadId === "gone-p" ? [{ id: "gone-p", parentThreadId: "mid-p" }] : [{ id: "mid-p", parentThreadId: "x" }],
+    }));
+    const threadList = [...twoThreads, thread({ id: "late-p", title: "Late helper", parentThreadId: "gone-p" })];
+    const slot = mount({ ...twoRpc(), threadAncestry }, { activeThreadId: "late-p" }, threadList);
+    await waitFor(() => expect(workerRow(slot, "x")).toBeTruthy());
+    expect(stored().selected).toBe("p2");
+    expect(threadAncestry.mock.calls).toEqual([[{ threadId: "gone-p" }], [{ threadId: "mid-p" }]]);
+  });
+
   it("delivers a chain read before a remount to the sidebar mounted after it", async () => {
     pickOther();
     let answer!: (value: { links: { id: string; parentThreadId: string | null }[] }) => void;
@@ -516,16 +535,36 @@ describe("picking what the lower section lists", () => {
   });
 
   it("asks worker facts for the selected Adventure only, and none for Other threads", async () => {
-    const read = vi.fn(async (_input: { known: string | null; workersOf?: string[] } | null) => ({
-      available: true, tree: twoTree, order: null, orderError: null,
-    }));
-    const slot = mount(twoRpc(read), {}, twoThreads);
-    await waitFor(() => expect(read.mock.calls.at(-1)?.[0]?.workersOf).toEqual(["p1"]));
+    const adventureWorkers = vi.fn(async (_input: { projectId: string }) => ({ workers: null }));
+    const slot = mount({ ...twoRpc(), adventureWorkers }, {}, twoThreads);
+    await waitFor(() => expect(adventureWorkers.mock.calls.at(-1)?.[0]).toEqual({ projectId: "p1" }));
     fireEvent.click(adventureRow(slot, "Second push"));
-    await waitFor(() => expect(read.mock.calls.at(-1)?.[0]?.workersOf).toEqual(["p2"]));
+    await waitFor(() => expect(adventureWorkers.mock.calls.at(-1)?.[0]).toEqual({ projectId: "p2" }));
     fireEvent.click(otherEntry(slot));
+    const asked = adventureWorkers.mock.calls.length;
+    // Neither a tree change nor a facts change reads facts nobody shows.
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p2" });
-    await waitFor(() => expect(read.mock.calls.at(-1)?.[0]?.workersOf).toBeUndefined());
+    await slot.behavior.emitRealtime("adventure-workers-changed", { projectId: "p2" });
+    await settle();
+    expect(adventureWorkers).toHaveBeenCalledTimes(asked);
+  });
+
+  it("reads an Adventure's facts ahead when the pointer rests on its row, and once only", async () => {
+    const adventureWorkers = vi.fn(async (_input: { projectId: string }) => ({ workers: null }));
+    pickOther();
+    const slot = mount({ ...twoRpc(), adventureWorkers }, {}, twoThreads);
+    const row = await slot.findByRole("link", { name: "Open Second push" });
+    // Passing over the row reads nothing.
+    fireEvent.pointerEnter(row);
+    fireEvent.pointerLeave(row);
+    await settle();
+    expect(adventureWorkers).not.toHaveBeenCalled();
+    fireEvent.pointerEnter(row);
+    await waitFor(() => expect(adventureWorkers).toHaveBeenCalledWith({ projectId: "p2" }));
+    // Picking it right after draws from that read instead of asking again.
+    fireEvent.click(row);
+    await settle();
+    expect(adventureWorkers).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -579,8 +618,8 @@ describe("Other threads", () => {
 
 describe("Adventure workers", () => {
   it("lists the selected Adventure's workers with their id and model, the title without the id", async () => {
-    const read = withFacts();
-    const slot = mount(workerRpc(read), {}, workerThreads);
+    const facts = factsRead();
+    const slot = mount(workerRpc(undefined, facts), {}, workerThreads);
     await waitFor(() => expect(workerRow(slot, "w")?.querySelector("[data-worker-model]")).toBeTruthy());
     const row = workerRow(slot, "w")!;
     expect(row.querySelector("[data-worker-ref]")?.textContent).toBe("W1");
@@ -589,12 +628,14 @@ describe("Adventure workers", () => {
     expect(within(row).getByText("Build the index")).toBeTruthy();
     expect(row.textContent).not.toContain("W1 Build");
     // The selected Adventure's facts are asked for by id.
-    expect(read.mock.calls.some(([input]) => input?.workersOf?.includes("p1"))).toBe(true);
+    expect(facts).toHaveBeenCalledWith({ projectId: "p1" });
   });
 
   it("draws the cached Adventures and worker facts at once, before the first read answers", async () => {
-    cacheTree(tree);
-    cacheWorkers({ p1: [{ ref: "W1", profile: OPUS, group: "working", quiet: "idle", errored: "stopped" }] });
+    seedQueryCache([
+      [["adventure-tree"], { available: true, tree, revision: null, order: null, orderError: null }],
+      [["adventure-workers", "p1"], [{ ref: "W1", profile: OPUS, group: "working", quiet: "idle", errored: "stopped" }]],
+    ]);
     const slot = mount({ projectMode: () => new Promise(() => {}) });
     expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy();
     expect(slot.queryByText("Loading Adventures…")).toBeNull();
@@ -652,7 +693,7 @@ describe("Adventure workers", () => {
 
   it("lists the workers in one list, without models, until their facts arrive", async () => {
     const slot = mount(
-      workerRpc(vi.fn(async () => ({ available: true, tree: workerTree, order: null, orderError: null }))),
+      workerRpc(withFacts(), vi.fn(async () => ({ workers: null }))),
       {},
       workerThreads,
     );
@@ -768,7 +809,8 @@ describe("New Adventure", () => {
     // A reload onto a worker of Useful search, with no cached tree: the
     // resumed create answers before the first tree read does.
     reloadSubmissions();
-    window.localStorage.removeItem("bb-plugin-sidebar:initiative-tree:v1");
+    resetQueryClient();
+    window.localStorage.removeItem(STORAGE_KEY);
     const created = {
       ...initiative,
       id: "p9",

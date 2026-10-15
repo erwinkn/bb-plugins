@@ -33,8 +33,8 @@ import {
   useClientState,
 } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
-import { useSnooze, useSnoozePresets } from "./lib/use-snooze";
-import type { snoozeContract } from "./lib/snooze-contract";
+import { useSnooze, useSnoozeChange, useSnoozePresets } from "./lib/use-snooze";
+import { withQueries } from "./lib/queries";
 import { isSleeping, isWoke, type SnoozeEntry } from "./lib/snooze-schema";
 import { SnoozeSettings } from "./components/snooze-settings";
 import { useUiPreferences } from "./lib/use-ui-preferences";
@@ -298,7 +298,7 @@ function ThreadsList(props: PluginThreadListProps) {
   const initiativeIds = useInitiativeThreadIds(threadKey);
   const snoozes = useSnooze();
   const snoozePresets = useSnoozePresets();
-  const snoozeRpc = useRpc<typeof snoozeContract>();
+  const changeSnooze = useSnoozeChange(report);
   const [projectEdit, setProjectEdit] = useState<{
     kind: "rename" | "remove";
     id: string;
@@ -358,7 +358,7 @@ function ThreadsList(props: PluginThreadListProps) {
     )
       return;
     acknowledged.current = key;
-    void snoozeRpc.call("acknowledge", { threadId: id }).catch(report);
+    changeSnooze({ action: "acknowledge", threadId: id });
   });
   // Grouping, sort, and collapsed Pinned/project groups follow BB's synced
   // sidebar preferences.
@@ -1114,14 +1114,14 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "snooze",
     title: "Snooze presets",
-    component: SnoozeSettings,
+    component: withQueries(SnoozeSettings),
   });
   app.slots.experimental_threadList({
     id: "sidebar",
     title: "Threads",
     description:
       "Pick an Adventure to list its workers, or Other threads for every thread outside them, recent first or grouped by status or project.",
-    component: ThreadsList,
+    component: withQueries(ThreadsList),
   });
   app.composer.customize({
     id: "draft-tracking",

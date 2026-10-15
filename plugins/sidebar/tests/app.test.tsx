@@ -539,8 +539,10 @@ describe("activity sidebar", () => {
   });
   it("retries archive loading without hiding active threads", async () => {
     updateState((state) => ({ ...state, showArchives: true }));
+    // The read and its quiet retry both fail.
     const list = vi
       .fn()
+      .mockRejectedValueOnce(new Error("Offline"))
       .mockRejectedValueOnce(new Error("Offline"))
       .mockResolvedValue(archiveRows);
     const slot = renderSlot(app.threadLists[0], props, {

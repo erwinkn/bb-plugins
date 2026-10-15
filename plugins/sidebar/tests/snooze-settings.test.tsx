@@ -29,9 +29,11 @@ const mount = (fake = server()) => {
   mounted.push(slot);
   return slot;
 };
+// A query settles over a few macrotasks: its retry, then the batched notify.
 const tick = () =>
   act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let hop = 0; hop < 8; hop++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
   });
 beforeEach(() => {
   window.localStorage.clear();

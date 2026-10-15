@@ -21,11 +21,11 @@ import {
   UrlLink,
   useRpc,
   useRealtime,
-  useRealtimeConnectionState,
   experimental_useSidebarThreads,
 } from "@get-bb/plugin-sdk/app";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { projectModeContract } from "../lib/project-mode-contract";
-import { INITIATIVES_CHANGED, INITIATIVES_PANEL } from "../lib/project-mode-names";
+import { INITIATIVES_PANEL } from "../lib/project-mode-names";
 import type { ProjectTree } from "../lib/project-tree-schema";
 import { OTHER_THREADS, updateState, useClientState } from "../lib/client-state";
 import { STATUS_LABEL, type Status } from "../lib/status";
@@ -66,15 +66,8 @@ import {
 } from "../lib/initiative-submissions";
 import { projectLabel } from "../lib/project-schema";
 import { AdventureWorkers } from "./adventure-workers";
-import {
-  cacheTree,
-  cacheWorkers,
-  cachedTree,
-  cachedWorkers,
-  type WorkerFacts,
-} from "../lib/initiative-tree-cache";
-import { ReadTimeoutError, claimReport, withReadTimeout } from "../lib/read-timeout";
-import { askAncestry, useHostLinks } from "../lib/thread-ancestry";
+import { ancestryQuery, queryKeys, treeQuery, workersQuery, type TreeData } from "../lib/queries";
+import { isLive, refresh } from "../lib/query";
 
 type TreeProject = ProjectTree["projects"][number];
 
@@ -120,95 +113,49 @@ export function AdventuresSection(props: {
   const navigate = useBbNavigate();
   const api = useRpc<typeof projectModeContract>();
   const native = experimental_useSidebarThreads();
-  const connection = useRealtimeConnectionState();
-  // The cache stands in until the first read answers; only a read updates it.
-  const [cached] = useState(cachedTree);
-  const [tree, setTree] = useState<ProjectTree | null>(cached);
-  const [fresh, setFresh] = useState(false);
-  const [available, setAvailable] = useState<boolean | null>(
-    cached ? true : null,
-  );
-  const [error, setError] = useState<string | null>(null);
+  const client = useQueryClient();
+  // The tree draws from the restored cache at once; reads refresh it.
+  const read = useQuery(treeQuery(api));
+  const tree = read.data?.tree ?? null;
+  const available = read.data ? read.data.available : null;
+  const [reported, setReported] = useState<string | null>(null);
   const report = (cause: unknown) =>
-    setError(cause instanceof Error ? cause.message : String(cause));
-  // Each worker's model and group by Adventure, as the server last read them.
-  const [facts, setFacts] = useState<WorkerFacts>(cachedWorkers);
-  // The selected Adventure, whose worker facts each read asks for.
-  const wanted = useRef<string | null>(null);
-  const client = useClientState();
+    setReported(cause instanceof Error ? cause.message : String(cause));
+  // A read that answers clears what the rows reported.
+  useEffect(() => setReported(null), [read.dataUpdatedAt]);
+  const error = read.isError ? read.error.message : reported;
+  const clientState = useClientState();
   const order = useProjectOrder(api);
   const { applySnapshot, commit } = order;
-  const apiRef = useRef(api); apiRef.current = api;
-  const applyRef = useRef(applySnapshot); applyRef.current = applySnapshot;
-  const mounted = useRef(false);
-  const pending = useRef<Promise<void> | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Refreshes are conditional: an unchanged tree comes back as a few bytes
-  // and keeps the current tree object, so nothing re-renders for it.
-  const revision = useRef<string | null>(null);
-  // A change announced while a read is in flight may postdate what that read
-  // returns: BB lists a spawned worker's thread before Initiatives records it,
-  // and the Initiatives signal can land during the read that listing started.
-  // A scheduled refresh then runs once more after it instead of joining it.
-  const again = useRef(false);
-  // One missed read stays quiet and reads again at once: it is usually a tab
-  // or device that slept, or a stale connection. The current tree stays up
-  // either way; the banner shows from the second miss in a row.
-  const misses = useRef(0);
-  const refresh = useCallback(function read(): Promise<void> {
-    if (pending.current) return pending.current;
-    const call = withReadTimeout(apiRef.current.call("projectMode", { known: revision.current, ...(wanted.current ? { workersOf: [wanted.current] } : {}) })).then(result => {
-      misses.current = 0;
-      if (mounted.current) {
-        setAvailable(result.available);
-        setFresh(true);
-        if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
-        const workers = result.workers;
-        if (workers) setFacts(current => {
-          const next = { ...current, ...workers };
-          if (JSON.stringify(next) === JSON.stringify(current)) return current;
-          cacheWorkers(next);
-          return next;
-        });
-        applyRef.current(result.order, result.orderError); setError(null);
-      }
-    }, error => {
-      if (error instanceof ReadTimeoutError && claimReport())
-        void apiRef.current.call("reportReadTimeout", error.report).catch(() => {});
-      if (!mounted.current) return;
-      if (++misses.current === 1) again.current = true;
-      else setError(error instanceof Error ? error.message : String(error));
-    })
-      .finally(() => {
-        if (pending.current === call) pending.current = null;
-        if (again.current && mounted.current) { again.current = false; void read(); }
-      });
-    pending.current = call;
-    return call;
-  }, []);
-  const schedule = useCallback(() => {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      timer.current = null;
-      if (!mounted.current) return;
-      if (pending.current) again.current = true;
-      else void refresh();
-    }, 200);
-  }, [refresh]);
+  // Every read made since this page loaded feeds the order; a restored one
+  // only draws, so its revision never outranks the server's.
   useEffect(() => {
-    mounted.current = true; void refresh();
-    return () => { mounted.current = false; if (timer.current) clearTimeout(timer.current); };
-  }, [refresh]);
+    if (read.data && isLive(read.dataUpdatedAt))
+      applySnapshot(read.data.order, read.data.orderError);
+  }, [read.data, read.dataUpdatedAt, applySnapshot]);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  // The order the hook accepted (a save's answer, another client's) is saved
+  // with the tree, so a reload before the next read draws it; a late tree
+  // answer carrying an older order does not replace it.
+  useEffect(() => {
+    const doc = order.doc;
+    const saved = read.data?.order;
+    if (doc && !(saved && saved.revision === doc.revision && saved.order.join() === doc.order.join()))
+      client.setQueryData<TreeData>(queryKeys.tree, (data) => data && { ...data, order: doc });
+  }, [client, order.doc, read.data]);
   useRealtime(PROJECT_ORDER_CHANNEL, payload => {
     const parsed = projectOrderDocSchema.safeParse(payload);
     if (parsed.success) applySnapshot(parsed.data);
   });
-  useRealtime(INITIATIVES_CHANGED, schedule);
+  // BB lists a spawned worker's thread before Initiatives records it, so a
+  // member thread's change reads the tree again.
   const threadSignal = native.threads.map(t => `${t.id}:${t.indicator}:${t.isArchived}:${t.parentThreadId}`).join("|");
   const previousThreads = useRef(native.threads);
   const previousSignal = useRef(threadSignal);
-  const previousConnection = useRef(connection);
-  const connectedOnce = useRef(connection === "connected");
   useEffect(() => {
     if (previousSignal.current !== threadSignal) {
       const before = new Map(previousThreads.current.map(t => [t.id, t]));
@@ -219,37 +166,15 @@ export function AdventuresSection(props: {
         const changed = a?.indicator !== b?.indicator || a?.isArchived !== b?.isArchived || a?.parentThreadId !== b?.parentThreadId;
         return changed && (!tree || members.has(id) || !!a?.parentThreadId && members.has(a.parentThreadId) || !!b?.parentThreadId && members.has(b.parentThreadId));
       });
-      if (relevant) schedule();
+      if (relevant) refresh(client, queryKeys.tree);
     }
-    if (connection === "connected") {
-      if (connectedOnce.current && previousConnection.current !== "connected") schedule();
-      connectedOnce.current = true;
-    }
-    previousSignal.current = threadSignal; previousThreads.current = native.threads; previousConnection.current = connection;
-  }, [threadSignal, connection, schedule, tree, native.threads]);
-  useEffect(() => {
-    const interval = setInterval(() => { if (document.visibilityState !== "hidden") schedule(); }, 15000);
-    // A tab coming back or a network returning reads at once instead of on
-    // the next poll, which a hidden tab skipped.
-    const visible = () => { if (document.visibilityState !== "hidden") schedule(); };
-    document.addEventListener("visibilitychange", visible);
-    window.addEventListener("online", schedule);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", visible);
-      window.removeEventListener("online", schedule);
-    };
-  }, [schedule]);
+    previousSignal.current = threadSignal; previousThreads.current = native.threads;
+  }, [threadSignal, client, tree, native.threads]);
   const projects = tree?.projects ?? [];
   const displayed = useMemo(
-    () => orderedProjects(projects, order.order),
-    [projects, order.order],
+    () => orderedProjects(projects, order.order ?? read.data?.order?.order ?? null),
+    [projects, order.order, read.data?.order],
   );
-  // Cache what is on screen, in its displayed order, once a read confirmed it.
-  useEffect(() => {
-    if (!fresh) return;
-    cacheTree(available && tree ? { ...tree, projects: displayed } : null);
-  }, [fresh, available, tree, displayed]);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -263,50 +188,63 @@ export function AdventuresSection(props: {
   // Opening a thread of an Adventure selects it, once per opening (or once
   // the tree shows where it belongs): a pick made while it stays open sticks.
   // Before paint, so a reload onto a worker never flashes the stored
-  // selection first.
-  const links = useHostLinks();
+  // selection first. A walk that stops at a thread BB's list omits (an
+  // archived reviewer between a worker and the open helper) asks the host for
+  // the rest of the chain. Every chain read so far (by any mounted sidebar)
+  // joins the walk, so a partial answer (a host read that failed midway, or
+  // the 32-link cap) asks next for where it stopped.
+  const chains = client.getQueriesData<{ links: { id: string; parentThreadId: string | null }[] }>({
+    queryKey: queryKeys.ancestries,
+  });
+  const chainsKey = chains.map(([key, data]) => `${String(key[1])}:${data?.links.length ?? "-"}`).join("|");
+  const links = useMemo(
+    () => new Map(chains.flatMap(([, data]) => data?.links.map((link) => [link.id, link.parentThreadId] as const) ?? [])),
+    // `chainsKey` changes whenever a chain is added or answered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chainsKey],
+  );
   const { owner: holder, unknown } = useMemo(
     () => owningProject(displayed, native.threads, props.activeThreadId, links),
     [displayed, native.threads, props.activeThreadId, links],
   );
+  const missing = native.status === "ready" ? unknown : null;
+  // Its answer re-renders this list (the walk reads it from the cache, so
+  // the data is named here), which then walks with it.
+  const ancestry = useQuery({
+    ...ancestryQuery(api, missing ?? ""),
+    enabled: missing !== null,
+    notifyOnChangeProps: ["data", "isError"],
+  });
+  // Each opening asks again after a failed read.
+  useEffect(() => {
+    if (ancestry.isError) void ancestry.refetch();
+    // Only a new opening asks again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.activeThreadId]);
   // A pick made since, here or in another tab, ends a created Adventure's.
   useLayoutEffect(() => {
-    if (createdPick && client.selected !== createdPick.projectId) createdPick = null;
-  }, [client.selected]);
+    if (createdPick && clientState.selected !== createdPick.projectId) createdPick = null;
+  }, [clientState.selected]);
   useLayoutEffect(() => {
     if (createdPick?.openThread === props.activeThreadId) return;
     createdPick = null;
     if (holder) select(holder);
   }, [props.activeThreadId, holder]);
-  // A walk that stopped at a thread BB's list omits (an archived reviewer
-  // between a worker and the open helper) asks the host for the rest of the
-  // chain in the background; each opening asks again after a failed read.
-  const missing = native.status === "ready" ? unknown : null;
-  useEffect(() => {
-    if (missing)
-      askAncestry(missing, (threadId) =>
-        withReadTimeout(apiRef.current.call("threadAncestry", { threadId })),
-      );
-  }, [missing, props.activeThreadId]);
   // A stored Adventure that left the tree falls back to the first one; with
   // none (or no Adventures plugin), to Other threads. Null while the first
   // read decides.
   const selection: TreeProject | typeof OTHER_THREADS | null =
-    client.selected === OTHER_THREADS
+    clientState.selected === OTHER_THREADS
       ? OTHER_THREADS
-      : (displayed.find((p) => p.id === client.selected) ??
+      : (displayed.find((p) => p.id === clientState.selected) ??
         displayed[0] ??
         (available === null && !error ? null : OTHER_THREADS));
   const selectedId =
     selection === null || selection === OTHER_THREADS ? null : selection.id;
-  wanted.current = selectedId;
-  // Selecting an Adventure reads its worker facts.
-  const lastSelected = useRef(selectedId);
-  useEffect(() => {
-    if (selectedId === lastSelected.current) return;
-    lastSelected.current = selectedId;
-    if (selectedId) schedule();
-  }, [selectedId, schedule]);
+  // The selected Adventure's worker facts; hovering a row reads them ahead.
+  const facts = useQuery({ ...workersQuery(api, selectedId ?? ""), enabled: selectedId !== null });
+  const prefetchWorkers = (projectId: string) =>
+    void client.prefetchQuery(workersQuery(api, projectId));
 
   const memberChoices = useMemo(
     () =>
@@ -336,8 +274,11 @@ export function AdventuresSection(props: {
   // creates it. A failed one stays there with its reason until sent again or
   // dismissed, and sending it again unchanged keeps its key, so it cannot
   // duplicate. Drafts a reload cut off are sent again once, without opening.
-  const create: CreateInitiative = (input) =>
-    apiRef.current.call("createInitiative", input);
+  // Each answer reads the tree again, which lists a created Adventure.
+  const create: CreateInitiative = useMutation({
+    mutationFn: (input: Parameters<CreateInitiative>[0]) => api.call("createInitiative", input),
+    onSettled: () => refresh(client, queryKeys.tree),
+  }).mutateAsync;
   // A created Adventure becomes the pick; the picker shows it once the tree
   // lists it.
   const openThread = useRef(props.activeThreadId);
@@ -345,7 +286,6 @@ export function AdventuresSection(props: {
   const created = (projectId: string) => {
     select(projectId);
     createdPick = { projectId, openThread: openThread.current };
-    schedule();
   };
   useEffect(() => resumeSubmissions(create, (answer) => created(answer.projectId)), []);
   const submit = (draft: InitiativeDraft) => {
@@ -382,20 +322,16 @@ export function AdventuresSection(props: {
     },
     [displayIds, commit],
   );
-  const renameProject = useCallback(
-    async (projectId: string, name: string) => {
-      await api.call("renameTreeProject", { projectId, name });
-      schedule();
-    },
-    [api, schedule],
-  );
-  const restyleProject = useCallback(
-    async (projectId: string, patch: AppearancePatch) => {
-      await api.call("setTreeProjectAppearance", { projectId, ...patch });
-      schedule();
-    },
-    [api, schedule],
-  );
+  const renameProject = useMutation({
+    mutationFn: ({ projectId, name }: { projectId: string; name: string }) =>
+      api.call("renameTreeProject", { projectId, name }),
+    onSuccess: () => refresh(client, queryKeys.tree),
+  }).mutateAsync;
+  const restyleProject = useMutation({
+    mutationFn: ({ projectId, patch }: { projectId: string; patch: AppearancePatch }) =>
+      api.call("setTreeProjectAppearance", { projectId, ...patch }),
+    onSuccess: () => refresh(client, queryKeys.tree),
+  }).mutateAsync;
   const dnd = useReorderDnd(
     {
       onDragStart: (event) => {
@@ -444,7 +380,7 @@ export function AdventuresSection(props: {
         {error && (
           <p role="alert" className="px-2 py-1 text-xs text-destructive">
             {error}{" "}
-            <button className="underline" onClick={() => void refresh()}>
+            <button className="underline" onClick={() => { setReported(null); void read.refetch(); }}>
               Retry
             </button>
           </p>
@@ -489,7 +425,7 @@ export function AdventuresSection(props: {
             onKeyDown={dnd.onEscape}
           >
             {rows.map(({ p, threads }) => {
-              const status = projectStatus(p, threads, client.drafts);
+              const status = projectStatus(p, threads, clientState.drafts);
               const coordinator = p.nodes.find(
                 (n) => n.role === "coordinator",
               );
@@ -539,8 +475,9 @@ export function AdventuresSection(props: {
                     props.onNavigate();
                   }}
                   onOverview={props.onNavigate}
-                  onRename={(name) => renameProject(p.id, name)}
-                  onAppearance={(patch) => restyleProject(p.id, patch)}
+                  onRename={async (name) => { await renameProject({ projectId: p.id, name }); }}
+                  onAppearance={async (patch) => { await restyleProject({ projectId: p.id, patch }); }}
+                  onIntent={() => prefetchWorkers(p.id)}
                   onNewThread={props.onNavigate}
                   onMenuOpen={() => {
                     dnd.consumeClickSuppression();
@@ -630,7 +567,7 @@ export function AdventuresSection(props: {
             <AdventureWorkers
               key={selection.id}
               project={selection}
-              facts={facts[selection.id]}
+              facts={facts.data ?? undefined}
               activeThreadId={props.activeThreadId}
               onNavigate={props.onNavigate}
               onError={report}
@@ -677,6 +614,9 @@ function OtherThreadsEntry({
   );
 }
 
+/** How long the pointer rests on an Adventure row before its workers are read ahead. */
+const INTENT_MS = 150;
+
 /**
  * One dense Adventure row: icon in its hue, name, status and the age of its
  * last activity. A click selects it and opens its coordinator. The row itself is
@@ -701,6 +641,7 @@ function ProjectRow({
   onAppearance,
   onNewThread,
   onMenuOpen,
+  onIntent,
 }: {
   project: TreeProject;
   href: string;
@@ -719,6 +660,8 @@ function ProjectRow({
   onAppearance: (patch: AppearancePatch) => Promise<void>;
   onNewThread: () => void;
   onMenuOpen: () => void;
+  /** The pointer rested on the row, or it took focus: a pick is likely. */
+  onIntent: () => void;
 }) {
   const scope = usePortalScopeProps();
   // toPluginPanel is scoped to Sidebar. A cross-plugin link opens the frozen
@@ -746,6 +689,14 @@ function ProjectRow({
     disabled: !canReorder,
   });
   const longPress = useLongPressMenu(menuOpen);
+  // A pointer passing over the row on its way elsewhere reads nothing.
+  const intent = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const startIntent = () => {
+    clearTimeout(intent.current);
+    intent.current = setTimeout(onIntent, INTENT_MS);
+  };
+  const stopIntent = () => clearTimeout(intent.current);
+  useEffect(() => stopIntent, []);
   const hue = appearanceHueStep(project.name, project.appearance?.color);
   const setAnchor = (node: HTMLAnchorElement | null) => {
     anchorRef.current = node;
@@ -870,6 +821,13 @@ function ProjectRow({
                 suppressClick.current = false;
                 longPress.onPointerDown(event);
               }}
+              onPointerEnter={startIntent}
+              onPointerLeave={() => {
+                longPress.onPointerLeave();
+                stopIntent();
+              }}
+              onFocus={startIntent}
+              onBlur={stopIntent}
               onKeyDown={(event) => {
                 suppressClick.current = false;
                 if (canReorder)

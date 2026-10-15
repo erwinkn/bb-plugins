@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    setupFiles: ["./tests/setup.ts"],
     // Use jsdom storage, not Node 26's unrelated native Web Storage global.
     pool: "forks",
     poolOptions: {

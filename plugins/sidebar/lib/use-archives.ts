@@ -1,102 +1,25 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  useRealtime,
-  useRealtimeConnectionState,
-  useRpc,
-  type PluginSidebarThread,
-} from "@get-bb/plugin-sdk/app";
-import type { archiveContract, ArchivedThread } from "./archive-contract";
+import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRpc, type PluginSidebarThread } from "@get-bb/plugin-sdk/app";
+import type { archiveContract } from "./archive-contract";
+import { archivesQuery, queryKeys } from "./queries";
 
-function sidebarThread(thread: ArchivedThread): PluginSidebarThread {
-  return {
-    ...thread,
-    sectionId: null,
-    originKind: null,
-    originPluginId: null,
-    hasPendingInteraction: false,
-    activity: {
-      workflows: 0,
-      backgroundAgents: 0,
-      backgroundCommands: 0,
-      planMode: 0,
-      goals: 0,
-    },
-    indicator: "none",
-    indicatorLabel: null,
-    isUnread: false,
-    isPinned: false,
-    isArchived: true,
-    host: null,
-    lastReadAt: null,
-    latestAttentionAt: thread.updatedAt,
-    environment: thread.environmentId
-      ? {
-          id: thread.environmentId,
-          name: thread.environmentName,
-          branchName: thread.environmentBranchName,
-          providerId: thread.environmentProviderId,
-          workspaceDisplayKind: thread.environmentWorkspaceDisplayKind,
-        }
-      : null,
-  };
-}
+const NONE: PluginSidebarThread[] = [];
 
-// Archiving, restoring, or deleting a thread each publishes a signal; a
-// burst restarts this timer so N signals become one pagination.
-const REFETCH_DEBOUNCE_MS = 250;
-
+/** The archived threads while `enabled` (the Archived list shows); none otherwise. */
 export function useArchives(enabled: boolean) {
   const rpc = useRpc<typeof archiveContract>();
-  const connection = useRealtimeConnectionState();
-  const [revision, setRevision] = useState(0);
-  const [threads, setThreads] = useState<PluginSidebarThread[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const refresh = () => setRevision((value) => value + 1);
-  // A hidden list skips the signal; it reloads when it opens anyway.
-  useRealtime("archives-changed", () => {
-    if (enabled) refresh();
-  });
-  // The first load is prompt; every later trigger restarts the debounce so
-  // the burst becomes one reload with the latest state.
-  const loaded = useRef(false);
+  const client = useQueryClient();
+  const query = useQuery({ ...archivesQuery(rpc), enabled });
+  // Closing the list stops its paging once no open list still wants it; the
+  // last complete list stays cached.
   useEffect(() => {
-    let cancelled = false;
-    if (!enabled) {
-      setThreads((current) => (current.length ? [] : current));
-      setError(null);
-      return;
-    }
-    const timer = setTimeout(
-      () => {
-        async function load() {
-          const result: PluginSidebarThread[] = [];
-          for (let offset = 0; ; offset += 200) {
-            const page = await rpc.call("listArchived", { offset });
-            if (cancelled) return;
-            result.push(...page.map(sidebarThread));
-            if (page.length < 200) break;
-          }
-          setThreads([
-            ...new Map(result.map((thread) => [thread.id, thread])).values(),
-          ]);
-          setError(null);
-        }
-        void load().catch((cause: unknown) => {
-          if (!cancelled)
-            setError(
-              cause instanceof Error
-                ? cause.message
-                : "Cannot load archived threads.",
-            );
-        });
-      },
-      loaded.current ? REFETCH_DEBOUNCE_MS : 0,
-    );
-    loaded.current = true;
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [rpc, connection, revision, enabled]);
-  return { threads, error, refresh };
+    if (!enabled && !client.getQueryCache().find({ queryKey: queryKeys.archives })?.isActive())
+      void client.cancelQueries({ queryKey: queryKeys.archives });
+  }, [client, enabled]);
+  return {
+    threads: enabled ? (query.data ?? NONE) : NONE,
+    error: enabled && query.error ? query.error.message || "Cannot load archived threads." : null,
+    refresh: () => void query.refetch(),
+  };
 }

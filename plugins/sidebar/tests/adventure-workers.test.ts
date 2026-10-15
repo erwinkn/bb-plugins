@@ -240,7 +240,7 @@ describe("worker facts cache", () => {
     expect(facts.read(["p1"])).toEqual({});
     await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(1);
-    expect(changed).toHaveBeenCalledTimes(1);
+    expect(changed).toHaveBeenCalledExactlyOnceWith("p1");
     expect(facts.read(["p1"])).toEqual({ p1: [{ ref: "W1", profile: "codex / gpt-6.1-sol / xhigh", group: "working", quiet: "idle", errored: "stopped" }] });
     // Known and not announced as changed: no read.
     await vi.advanceTimersByTimeAsync(FACTS_INTERVAL_MS * 2);
@@ -344,7 +344,7 @@ describe("worker facts cache", () => {
   });
 });
 
-it("serves the open Adventures' worker facts beside the tree and reads them again on a change", async () => {
+it("serves an Adventure's worker facts from memory, without the tree, and announces a changed read", async () => {
   const tree = {
     version: 1,
     projects: [
@@ -368,21 +368,28 @@ it("serves the open Adventures' worker facts beside the tree and reads them agai
     },
   });
   registerProjectMode(h.bb);
-  type Mode = { workers?: Record<string, unknown[]> };
-  const read = () => h.harness.callRpc("projectMode", { known: null, workersOf: ["p1"] }) as Promise<Mode>;
+  type Facts = { workers: unknown[] | null };
+  const read = (projectId = "p1") => h.harness.callRpc("adventureWorkers", { projectId }) as Promise<Facts>;
   try {
-    expect((await read()).workers).toEqual({});
+    // Before any tree read, an Adventure is read on request.
+    expect((await read()).workers).toBeNull();
     await vi.waitFor(() =>
-      expect(h.harness.inspection.realtimeSignals).toContainEqual({ channel: "initiatives-changed", payload: {} }),
+      expect(h.harness.inspection.realtimeSignals).toContainEqual({
+        channel: "adventure-workers-changed",
+        payload: { projectId: "p1" },
+      }),
     );
     expect(overviews).toEqual([{ projectId: "p1", detail: "summary" }]);
-    expect((await read()).workers).toEqual({ p1: [{ ref: "W1", profile: "x / claude-sonnet-5-5 / low", group: "idle", quiet: "idle", errored: "stopped" }] });
-    // An Adventure the tree no longer lists is never read.
-    await h.harness.callRpc("projectMode", { known: null, workersOf: ["p1", "gone"] });
+    expect((await read()).workers).toEqual([{ ref: "W1", profile: "x / claude-sonnet-5-5 / low", group: "idle", quiet: "idle", errored: "stopped" }]);
+    // An Adventure the last tree no longer lists is never read.
+    await h.harness.callRpc("projectMode", { known: null });
+    expect((await read("gone")).workers).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(overviews).toEqual([{ projectId: "p1", detail: "summary" }]);
-    // A read without workersOf answers no facts and asks for none.
+    // The tree read answers no facts.
     expect(await h.harness.callRpc("projectMode", { known: null })).not.toHaveProperty("workers");
+    // Facts never announce on the tree's channel.
+    expect(h.harness.inspection.realtimeSignals.map((signal) => signal.channel)).not.toContain("initiatives-changed");
   } finally {
     await h.harness.dispose();
   }

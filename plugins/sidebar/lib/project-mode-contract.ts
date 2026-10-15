@@ -2,7 +2,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { projectOrderDocSchema } from "./project-order-schema";
 import { PROJECT_COLORS, PROJECT_ICONS, treeSchema } from "./project-tree-schema";
-import { adventureWorkerSchema, MAX_WORKERS_OF } from "./adventure-workers";
+import { adventureWorkerSchema } from "./adventure-workers";
 
 const projectId = z.string().min(1).max(80);
 /** The most parent links one `threadAncestry` read returns. */
@@ -77,12 +77,10 @@ export const projectModeContract = defineRpcContract({
     /**
      * Pass the `revision` of the tree the client holds to have an unchanged
      * tree answered as `unchanged` with `tree: null`, instead of resent.
-     * `workersOf` names the Adventures whose worker rows the client shows.
      */
     input: z
       .object({
         known: z.string().max(80).nullable(),
-        workersOf: z.array(projectId).max(MAX_WORKERS_OF).optional(),
       })
       .nullable(),
     output: z.object({
@@ -103,14 +101,19 @@ export const projectModeContract = defineRpcContract({
        * replaced. Null when the read path is healthy.
        */
       orderError: z.string().nullable(),
-      /**
-       * The model and group of each worker of the `workersOf` Adventures, as
-       * the server last read them, whether or not the tree changed. An
-       * Adventure not read yet is absent; its read is announced on the
-       * Initiatives channel once it lands.
-       */
-      workers: z.record(z.string(), z.array(adventureWorkerSchema)).optional(),
     }),
+  },
+  /**
+   * The model and group of each worker of an Adventure the client shows, as
+   * the server last read them; answered from memory, without reading the
+   * tree. Null while not read yet (or for an Adventure the last tree did not
+   * list): asking marks it wanted, and its read is announced on
+   * ADVENTURE_WORKERS_CHANGED once it lands. An Adventure nobody asked about
+   * for WANTED_MS is no longer read again after a change.
+   */
+  adventureWorkers: {
+    input: z.object({ projectId }),
+    output: z.object({ workers: z.array(adventureWorkerSchema).nullable() }),
   },
   /**
    * The ids of every thread the Threads view hides: the ones the Initiatives

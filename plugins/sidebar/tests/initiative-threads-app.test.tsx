@@ -6,9 +6,16 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { READ_TIMEOUT_MS } from "../lib/read-timeout";
 import { registerProjectMode } from "../lib/project-mode-server";
 import { parseState, updateState } from "../lib/client-state";
-import { seedInitiativeCache, thread, threadsList, type ThreadLink } from "./fixtures";
+import {
+  persistedQueries,
+  seedInitiativeCache,
+  thread,
+  threadsList,
+  type ThreadLink,
+} from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
+const { SAFETY_POLL_MS } = await import("../lib/queries");
 const projects = [{ id: "project-1", name: "One", isPersonal: false }];
 const threads = [
   thread({ id: "plain", title: "Plain thread" }),
@@ -35,9 +42,11 @@ const mount = (rpc: Record<string, (input: unknown) => unknown>) => {
   mounted.push(slot);
   return slot;
 };
+// A query settles over a few macrotasks: its retry, then the batched notify.
 const tick = () =>
   act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let hop = 0; hop < 8; hop++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
   });
 const rows = (slot: ReturnType<typeof renderSlot>) =>
   Array.from(slot.container.querySelectorAll("[data-sidebar-thread-id]")).map(
@@ -207,8 +216,9 @@ it("recovers from a stalled read: the next read is made and its answer applies",
 it("stops waiting when the first read fails, and corrects itself on the next success", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
+    // The read and its quiet retry both fail.
     const read = vi.fn((_input: unknown) =>
-      read.mock.calls.length === 1
+      read.mock.calls.length <= 2
         ? Promise.reject(new Error("down"))
         : { available: true, threadIds: ["worker"], status: "ready" },
     );
@@ -216,7 +226,7 @@ it("stops waiting when the first read fails, and corrects itself on the next suc
     await tick();
     expect(rows(slot)).toContain("worker");
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(15_250);
+      await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS + 250);
     });
     await vi.waitFor(() => expect(rows(slot)).not.toContain("worker"));
   } finally {
@@ -224,8 +234,46 @@ it("stops waiting when the first read fails, and corrects itself on the next suc
   }
 });
 
-const cached = () =>
-  window.localStorage.getItem("bb-plugin-sidebar:initiative-threads-cache");
+/** The persisted thread-id set, as JSON, or null when none is stored. */
+it("stays settled after a failed first read while a later read is in flight", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    // The read and its quiet retry fail; the poll's read never answers.
+    const read = vi.fn((_input: unknown) =>
+      read.mock.calls.length <= 2 ? Promise.reject(new Error("down")) : new Promise(() => {}),
+    );
+    const slot = mount({ ...base, initiativeThreads: read });
+    await tick();
+    expect(rows(slot)).toContain("plain");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS + 250);
+    });
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(slot.queryByText("Loading threads…")).toBeNull();
+    expect(rows(slot)).toContain("plain");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+const cached = () => {
+  const stored = persistedQueries()["initiative-threads"]?.[0];
+  return stored ? JSON.stringify(stored) : null;
+};
+/** Delivers the server's realtime signals to the sidebar, as BB does. */
+const relay = (
+  h: Awaited<ReturnType<typeof serverHost>>,
+  slot: ReturnType<typeof renderSlot>,
+) => {
+  let sent = 0;
+  return async () => {
+    const signals = h.harness.inspection.realtimeSignals;
+    while (sent < signals.length) {
+      const { channel, payload } = signals[sent++]!;
+      await slot.behavior.emitRealtime(channel, payload);
+    }
+  };
+};
 
 // The real server behind the RPC, with a host whose Initiatives tree read
 // and thread store the test controls.
@@ -292,7 +340,7 @@ it("a warm client keeps its ids and cache when a cold server's first read fails"
     });
     await tick();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(16_000);
+      await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS + 1_000);
     });
     await tick();
     expect(rows(slot)).not.toContain("worker");
@@ -316,8 +364,12 @@ it("an uncached client fails open when the cold server's first read fails, witho
       ...base,
       initiativeThreads: () => h.harness.callRpc("initiativeThreads", null),
     });
-    await tick();
-    await vi.waitFor(() => expect(rows(slot)).toContain("plain"));
+    const signals = relay(h, slot);
+    await vi.waitFor(async () => {
+      await signals();
+      await tick();
+      expect(rows(slot)).toContain("plain");
+    });
     expect(slot.queryByText("Loading threads…")).toBeNull();
     expect(cached()).toBeNull();
   } finally {
@@ -350,8 +402,9 @@ it("hides a restored fixer under an archived reviewer the ledger never recorded"
       },
     );
     mounted.push(slot);
-    await vi.waitFor(() => expect(rows(slot)).toContain("plain"));
+    const signals = relay(h, slot);
     await vi.waitFor(async () => {
+      await signals();
       await tick();
       expect(rows(slot)).toEqual(["plain"]);
     });
@@ -403,11 +456,18 @@ it("keeps a reviewer restored mid-walk, and its subtree, in the cache of a clien
     );
     mounted.push(slot);
     // The client has applied a confirmed answer from the real server.
-    await vi.waitFor(() => expect(ready).toBeGreaterThan(0));
+    const signals = relay(h, slot);
+    await vi.waitFor(async () => {
+      await signals();
+      expect(ready).toBeGreaterThan(0);
+    });
     await tick();
     await tick();
     expect(rows(slot)).toEqual(["plain"]);
-    expect(JSON.parse(cached()!).sort()).toEqual(["fixer", "reviewer", "worker"]);
+    // Writes to storage are throttled to one a second.
+    await vi.waitFor(() =>
+      expect(JSON.parse(cached()!).sort()).toEqual(["fixer", "reviewer", "worker"]),
+    { timeout: 2_000 });
   } finally {
     await h.harness.dispose();
   }
@@ -464,7 +524,7 @@ it("caches a confirmed-empty answer that follows a failed first request", async 
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
     const read = vi.fn((_input: unknown) =>
-      read.mock.calls.length === 1
+      read.mock.calls.length <= 2
         ? Promise.reject(new Error("down"))
         : { available: true, threadIds: [], status: "ready" },
     );
@@ -473,7 +533,7 @@ it("caches a confirmed-empty answer that follows a failed first request", async 
     expect(rows(slot)).toContain("worker");
     expect(cached()).toBeNull();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(15_250);
+      await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS + 250);
     });
     await vi.waitFor(() => expect(cached()).toBe("[]"));
   } finally {

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { applyDoc, queryKeys } from "../lib/queries";
 import type { snoozeContract } from "../lib/snooze-contract";
 import {
   DEFAULT_SNOOZE_PRESETS,
@@ -71,6 +73,13 @@ const blankDraft = (): Draft => ({
 export function SnoozeSettings() {
   const rpc = useRpc<typeof snoozeContract>();
   const presets = useSnoozePresets();
+  const client = useQueryClient();
+  // The saved document shows in every open list at once.
+  const savePresets = useMutation({
+    mutationFn: async (input: { presets: unknown[] }) =>
+      snoozePresetsDocSchema.parse(await rpc.call("saveSnoozePresets", input)),
+    onSuccess: (doc) => applyDoc(client, queryKeys.snoozePresets, doc),
+  }).mutateAsync;
   const [drafts, setDrafts] = useState<Draft[] | null>(null);
   const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -121,11 +130,7 @@ export function SnoozeSettings() {
     setSaving(true);
     setError(null);
     try {
-      const next = snoozePresetsDocSchema.parse(
-        await rpc.call("saveSnoozePresets", {
-          presets: drafts.map(fromDraft),
-        }),
-      );
+      const next = await savePresets({ presets: drafts.map(fromDraft) });
       setDrafts(next.presets.map(toDraft));
       setLoadedRevision(next.revision);
       setDirty(false);

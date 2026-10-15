@@ -28,7 +28,7 @@ type Entry = { workers: AdventureWorker[] | null; readAt: number; dirty: boolean
 export function createWorkerFacts(
   bb: BbPluginApi,
   readOverview: (projectId: string) => Promise<unknown>,
-  onChanged: () => void,
+  onChanged: (projectId: string) => void,
 ) {
   const facts = new Map<string, Entry>();
   const wanted = new Map<string, number>();
@@ -73,7 +73,7 @@ export function createWorkerFacts(
         // Gone from the tree meanwhile.
         if (!entry || disposed) return;
         facts.set(id, { ...entry, workers });
-        if (JSON.stringify(before) !== JSON.stringify(workers)) onChanged();
+        if (JSON.stringify(before) !== JSON.stringify(workers)) onChanged(id);
       } catch (cause: unknown) {
         // Tried again once the interval allows.
         const entry = facts.get(id);

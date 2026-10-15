@@ -69,6 +69,8 @@ export interface ProjectOrderState {
    * acknowledged document. Null until the first projectMode read answers.
    */
   order: string[] | null;
+  /** The latest acknowledged document, or null before the first. */
+  doc: ProjectOrderDoc | null;
   /** The last failed save or unreadable store's message; kept until a save lands or is dismissed. */
   error: string | null;
   /**
@@ -202,6 +204,7 @@ export function useProjectOrder(
 
   return {
     order: pending ? displayOrder(pending.order, doc) : (doc?.order ?? null),
+    doc,
     error,
     applySnapshot,
     commit,

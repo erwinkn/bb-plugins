@@ -8,10 +8,12 @@ import {
 import { OTHER_THREADS, parseState, updateState } from "../lib/client-state";
 import { PROJECT_ORDER_CHANNEL } from "../lib/project-order-schema";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
-import { thread } from "./fixtures";
+import { persistedQueries, thread } from "./fixtures";
 import { projectHueStep } from "../lib/project-hue";
 import { READ_TIMEOUT_MS, READ_TIMEOUT_MESSAGE, resetReports } from "../lib/read-timeout";
+import { resetQueryClient } from "../lib/query";
 const app = await loadPluginApp(() => import("../app"));
+const { SAFETY_POLL_MS } = await import("../lib/queries");
 const Component = app.threadLists[0].component;
 const slots: ReturnType<typeof renderSlot>[] = [];
 beforeEach(() => {
@@ -285,7 +287,8 @@ describe("Projects sidebar mode", () => {
       // The change lands while that read hangs: it waits for it, but not forever.
       await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
       await act(async () => { await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS); });
-      await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+      // Its quiet retry, then the read the change asked for.
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(4));
       expect(await slot.findByRole("link", { name: "Open Second push" })).toBeTruthy();
     } finally { vi.useRealTimers(); }
   });
@@ -294,8 +297,8 @@ describe("Projects sidebar mode", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     resetReports();
     try {
-      // Polls during a hung read queue the next one, so three reads hang.
-      const read = vi.fn((_input: unknown) => [2, 3, 4].includes(read.mock.calls.length)
+      // A read and its quiet retry hang.
+      const read = vi.fn((_input: unknown) => [2, 3].includes(read.mock.calls.length)
         ? new Promise(() => {})
         : { available: true, tree, order: null, orderError: null });
       const reportReadTimeout = vi.fn((_input: unknown) => ({ ok: true }));
@@ -316,34 +319,38 @@ describe("Projects sidebar mode", () => {
       expect(reportReadTimeout).toHaveBeenCalledTimes(1);
       expect(reportReadTimeout.mock.calls[0]![0]).toMatchObject({ hidden: false, online: true, sinceVisibleMs: 0, hiddenDuringRead: false });
       expect((reportReadTimeout.mock.calls[0]![0] as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(READ_TIMEOUT_MS);
-      // A later read answers and clears it.
-      await act(async () => { await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS + 250); });
+      // The safety poll's read answers and clears it.
+      await act(async () => { await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS); });
       await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
-      expect(read).toHaveBeenCalledTimes(5);
+      expect(read).toHaveBeenCalledTimes(4);
     } finally { vi.useRealTimers(); }
   });
 
-  it("W196 reads at once when the tab becomes visible again or the network returns", async () => {
+  it("W196 reads at once when the tab comes back to a stale tree, and not again for a fresh one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     let visibility: DocumentVisibilityState = "visible";
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
     try {
       const read = vi.fn((_input: unknown) => ({ available: true, tree, order: null, orderError: null }));
-      // No selected Adventure, so no follow-up read for worker facts.
       pickOther();
       const slot = mount(true, { rpc: { projectMode: read }, props: { activeThreadId: null } });
       await slot.findByRole("link", { name: "Open Useful search" });
       expect(read).toHaveBeenCalledTimes(1);
       visibility = "hidden";
-      document.dispatchEvent(new Event("visibilitychange"));
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); });
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+      // A hidden tab reads nothing, whatever the age of its tree.
+      await act(async () => { await vi.advanceTimersByTimeAsync(50_000); });
       expect(read).toHaveBeenCalledTimes(1);
       visibility = "visible";
-      document.dispatchEvent(new Event("visibilitychange"));
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
       await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+      // The network returning moments later finds the tree fresh.
       window.dispatchEvent(new Event("online"));
-      await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(read).toHaveBeenCalledTimes(2);
     } finally {
       delete (document as { visibilityState?: unknown }).visibilityState;
+      vi.useRealTimers();
     }
   });
 
@@ -373,11 +380,12 @@ describe("Projects sidebar mode", () => {
     await slot.findByRole("link", { name: "Open Second push" });
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p2" });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
-    const rpcBefore = slot.inspection.rpcCalls.length;
+    const treeReads = () => slot.inspection.rpcCalls.filter((call) => call.method === "projectMode").length;
+    const readsBefore = treeReads();
     fireEvent.click(slot.getByRole("link", { name: "Open Second push" }));
-    // Navigation is synchronous with the click, and the click reads nothing.
+    // Navigation is synchronous with the click, and the click reads no tree.
     expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "c2" }));
-    expect(slot.inspection.rpcCalls.length).toBe(rpcBefore);
+    expect(treeReads()).toBe(readsBefore);
     fireEvent.click(slot.getByRole("link", { name: "Open Useful search" }));
     expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "c" }));
   });
@@ -754,6 +762,9 @@ describe("Projects sidebar mode", () => {
     expect(row.querySelector("[data-project-icon]")?.getAttribute("data-project-icon")).toBe("Bug");
     expect(row.querySelector("[data-project-hue]")?.getAttribute("data-project-hue")).toBe("7");
     slot.unmount();
+    // A fresh page, so the first tree is not drawn from the cache.
+    resetQueryClient();
+    localStorage.clear();
     const unknown = { ...tree, projects: [{ ...tree.projects[0]!, appearance: { icon: "Skull", color: "chartreuse" } }] };
     const plain = mount(true, { treeData: unknown as typeof richTree });
     const fallback = await plain.findByRole("link", { name: "Open Useful search" });
@@ -1116,6 +1127,52 @@ describe("Projects sidebar mode", () => {
     expect(
       slot.inspection.rpcCalls.filter((call) => call.method === "saveProjectOrder"),
     ).toHaveLength(0);
+  });
+  it("saves an adopted order with the tree, so a reload before the next read draws it", async () => {
+    const slot = mount(true, {
+      treeData: richTree,
+      threads: richThreads,
+      order: { revision: 1, order: ["p1", "p2"] },
+    });
+    await waitFor(() => expect(rowOrder(slot)).toEqual(["p1", "p2"]));
+    await slot.emitRealtime(PROJECT_ORDER_CHANNEL, { revision: 2, order: ["p2", "p1"] });
+    // Writes to storage are throttled to one a second.
+    await waitFor(
+      () =>
+        expect((persistedQueries()["adventure-tree"]?.[0] as { order: unknown }).order).toEqual({
+          revision: 2,
+          order: ["p2", "p1"],
+        }),
+      { timeout: 2_000 },
+    );
+    slot.unmount();
+    resetQueryClient();
+    const reloaded = mount(true, {
+      treeData: richTree,
+      threads: richThreads,
+      rpc: { projectMode: () => new Promise(() => {}) },
+    });
+    expect(rowOrder(reloaded)).toEqual(["p2", "p1"]);
+  });
+  it("keeps the adopted order saved when a tree read that started before it answers late", async () => {
+    let answer!: (value: unknown) => void;
+    const read = vi.fn((_input: unknown) =>
+      read.mock.calls.length === 1
+        ? { available: true, tree: richTree, order: { revision: 1, order: ["p1", "p2"] }, orderError: null }
+        : new Promise((resolve) => (answer = resolve)),
+    );
+    const slot = mount(true, { treeData: richTree, threads: richThreads, rpc: { projectMode: read } });
+    await waitFor(() => expect(rowOrder(slot)).toEqual(["p1", "p2"]));
+    await slot.emitRealtime("initiatives-changed", {});
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await slot.emitRealtime(PROJECT_ORDER_CHANNEL, { revision: 2, order: ["p2", "p1"] });
+    await act(async () => answer({ available: true, tree: richTree, order: { revision: 1, order: ["p1", "p2"] }, orderError: null }));
+    expect(rowOrder(slot)).toEqual(["p2", "p1"]);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)); });
+    expect((persistedQueries()["adventure-tree"]?.[0] as { order: unknown }).order).toEqual({
+      revision: 2,
+      order: ["p2", "p1"],
+    });
   });
   it("adopts a foreign client's order from realtime and ignores stale docs", async () => {
     const slot = mount(true, {

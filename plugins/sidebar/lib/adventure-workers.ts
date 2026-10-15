@@ -10,9 +10,6 @@ import { z } from "zod";
 export const WORKER_GROUPS = ["needs", "working", "waiting", "done", "stopped", "idle"] as const;
 export type WorkerGroup = (typeof WORKER_GROUPS)[number];
 
-/** The most Adventures one tree read asks worker facts for; clients send no more. */
-export const MAX_WORKERS_OF = 64;
-
 /** What the sidebar shows about one current worker beyond its BB thread. */
 export const adventureWorkerSchema = z.object({
   ref: z.string().min(1).max(20),
