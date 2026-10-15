@@ -47,7 +47,7 @@ import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
 import { WriteReceipts } from "./lib/write-receipts";
 import { CHAT_MEMORY_PLUGIN_ID } from "./lib/memory-scopes";
-import { Store, MIGRATIONS } from "./lib/store";
+import { Store, MIGRATIONS, type WorkerRecord } from "./lib/store";
 import { CHILD_PAGE, ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
 import {
@@ -371,11 +371,11 @@ export default function plugin(bb: BbPluginApi) {
     }
   };
   const summary = (id: string): ProjectSummary => buildSummary(store, id);
-  const orderedWorkers = (id: string) => {
-    const workers = store.workers(id).filter((w) => w.state !== "retired");
+  /** Live workers with each fork right after the worker it was forked from. */
+  const orderedWorkers = (workers: WorkerRecord[]) => {
     const seen = new Set<number>();
-    const ordered: typeof workers = [];
-    const visit = (w: (typeof workers)[number]) => {
+    const ordered: WorkerRecord[] = [];
+    const visit = (w: WorkerRecord) => {
       if (seen.has(w.num)) return;
       seen.add(w.num);
       ordered.push(w);
@@ -407,74 +407,79 @@ export default function plugin(bb: BbPluginApi) {
       .all(projectId, projectId) as { thread_id: string }[];
     return [...new Set(rows.map((r) => r.thread_id))].filter((id) => !current.has(id)).sort();
   };
-  const buildTree = (): ProjectTree => ({
-    version: 1,
-    projects: store.projects().map((p) => ({
-      ...summary(p.id),
-      retired: store.workers(p.id).filter((w) => w.state === "retired").length,
-      formerThreadIds: formerThreadIds(p.id, new Set([p.coordinatorThreadId, ...orderedWorkers(p.id).map((w) => w.threadId)].filter((id): id is string => !!id))),
-      nodes: [
-        {
-          threadId: p.coordinatorThreadId,
-          label: "Coordinator",
-          role: "coordinator" as const,
-          worker: null,
-          parentWorker: null,
-          state: p.paused ? "paused" : "coordinating",
-          bbProjectId: p.memberProjectIds[0]!,
-        },
-        ...orderedWorkers(p.id).map((w) => ({
-          threadId: w.threadId,
-          label: w.label,
-          role: w.role,
-          worker: w.ref,
-          parentWorker: w.forkedFrom ? `W${w.forkedFrom}` : null,
-          state: w.state,
-          bbProjectId: w.bbProjectId,
-        })),
-        ...store
-          .projectThreads(p.id)
-          .filter(
-            (t) =>
-              t.state !== "failed" &&
-              // Explicit membership wins: a thread later adopted as a worker
-              // or coordinator is emitted under that role, not twice.
-              (!t.threadId ||
-                store.membership(t.threadId, true)?.kind === "adhoc"),
-          )
-          .map((t) => ({
-            threadId: t.threadId,
-            label: t.label,
-            role: "adhoc" as const,
-            // D532: a discussion is a lead tab, not a user-attached thread.
-            ...(t.discussion && t.threadId && store.membership(t.threadId, true)?.discussion ? { discussion: true as const } : {}),
-            worker: null,
-            parentWorker: null,
-            // An associated thread carries no execution evidence of its own;
-            // the sidebar reads live native status for liveness, and a
-            // vanished native thread must never read as working.
-            state: t.state === "active" ? "member" : t.state,
-            bbProjectId: t.bbProjectId ?? p.memberProjectIds[0]!,
-          })),
-        ...store
-          .nestedProjectThreads(p.id)
-          // Nested associations follow the same precedence: an explicit
-          // membership always wins over the lightweight lineage claim.
-          .filter((t) => store.membership(t.threadId, true)?.kind === "adhoc")
-          .map((t) => ({
-            threadId: t.threadId,
-            label: t.label ?? "Thread",
-            role: "adhoc" as const,
-            worker: null,
-            parentWorker: null,
-            state: "member",
-            bbProjectId: t.bbProjectId ?? p.memberProjectIds[0]!,
-          })),
-      ],
-    })),
-  });
+  // Summaries are shared by the tree and the list: one build per ledger version.
+  const summaries = memo(() => new Map(store.projects().map((p) => [p.id, summary(p.id)])));
+  const list = memo(() => [...summaries().values()]);
+  // W483: one pass of a few queries per Initiative. A per-row membership read
+  // took seconds on large histories and blocked BB's server meanwhile.
+  const buildTree = (): ProjectTree => {
+    const shown = summaries();
+    // Explicit membership wins: a thread later adopted as a worker or
+    // coordinator is emitted under that role, not again as an associated one.
+    const claimed = store.claimedThreadIds();
+    return {
+      version: 1,
+      projects: store.projects().map((p) => {
+        const workers = orderedWorkers(store.liveWorkers(p.id));
+        return {
+          ...shown.get(p.id)!,
+          retired: store.retiredWorkerNums(p.id).length,
+          formerThreadIds: formerThreadIds(p.id, new Set([p.coordinatorThreadId, ...workers.map((w) => w.threadId)].filter((id): id is string => !!id))),
+          nodes: [
+            {
+              threadId: p.coordinatorThreadId,
+              label: "Coordinator",
+              role: "coordinator" as const,
+              worker: null,
+              parentWorker: null,
+              state: p.paused ? "paused" : "coordinating",
+              bbProjectId: p.memberProjectIds[0]!,
+            },
+            ...workers.map((w) => ({
+              threadId: w.threadId,
+              label: w.label,
+              role: w.role,
+              worker: w.ref,
+              parentWorker: w.forkedFrom ? `W${w.forkedFrom}` : null,
+              state: w.state,
+              bbProjectId: w.bbProjectId,
+            })),
+            ...store
+              .projectThreads(p.id)
+              .filter((t) => t.state !== "failed" && (!t.threadId || !claimed.has(t.threadId)))
+              .map((t) => ({
+                threadId: t.threadId,
+                label: t.label,
+                role: "adhoc" as const,
+                // D532: a discussion is a lead tab, not a user-attached thread.
+                ...(t.discussion && t.threadId ? { discussion: true as const } : {}),
+                worker: null,
+                parentWorker: null,
+                // An associated thread carries no execution evidence of its own;
+                // the sidebar reads live native status for liveness, and a
+                // vanished native thread must never read as working.
+                state: t.state === "active" ? "member" : t.state,
+                bbProjectId: t.bbProjectId ?? p.memberProjectIds[0]!,
+              })),
+            ...store
+              .nestedProjectThreads(p.id)
+              // Nested associations follow the same precedence.
+              .filter((t) => !claimed.has(t.threadId))
+              .map((t) => ({
+                threadId: t.threadId,
+                label: t.label ?? "Thread",
+                role: "adhoc" as const,
+                worker: null,
+                parentWorker: null,
+                state: "member",
+                bbProjectId: t.bbProjectId ?? p.memberProjectIds[0]!,
+              })),
+          ],
+        };
+      }),
+    };
+  };
   const tree = memo(buildTree);
-  const list = memo(() => store.projects().map((p) => summary(p.id)));
   const read = (
     projectId: string,
     view: ReadView,
@@ -1406,7 +1411,7 @@ export default function plugin(bb: BbPluginApi) {
           else if (value in DESCRIBE_GROUPS) result = Object.fromEntries(DESCRIBE_GROUPS[value]!.map(name => [name, COMMAND_EXAMPLES[name]]));
           else throw new ProjectError(`Unknown example ${value}. Available: read, ${[...Object.keys(DESCRIBE_GROUPS), ...Object.keys(COMMAND_EXAMPLES)].join(", ")}.`);
         } else if (action === "list" && args.length === 1)
-          result = store.projects().map((p) => summary(p.id));
+          result = list();
         else if (action === "overview" && args.length <= 2)
           result = ctx.threadId ? compactOverview(store, value ?? member?.project.id ?? "") : await overview(value ?? member?.project.id ?? "");
         else if (action === "read" && args.length <= 4) {

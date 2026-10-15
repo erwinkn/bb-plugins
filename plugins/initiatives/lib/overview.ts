@@ -995,15 +995,24 @@ export function threadsToWatch(store: Store, projectId: string): string[] {
 
 /** Unanswered open blockers, from the few columns `openBlockers` reads. */
 function summaryBlockers(store: Store, projectId: string, tasks: { num: number; status: string }[]) {
-  const rows = store.db.prepare("SELECT num, worker_num, role, task_nums, review_of, state, CASE WHEN json_valid(report) THEN json_extract(report, '$.outcome') END AS outcome, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.question') END AS question, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.context') END AS context FROM assignments WHERE project_id=? ORDER BY num").all(projectId) as { num: number; worker_num: number; role: "work" | "review"; task_nums: string; review_of: string | null; state: string; outcome: string | null; question: string | null; context: string | null }[];
-  if (!rows.some((row) => row.state === "reported" && row.outcome === "blocked")) return 0;
+  const rows = store.db.prepare("SELECT num, worker_num, role, task_nums, review_of, state FROM assignments WHERE project_id=? ORDER BY num").all(projectId) as { num: number; worker_num: number; role: "work" | "review"; task_nums: string; review_of: string | null; state: string }[];
+  // openBlockers keeps a blocked report only while it is a live worker's latest assignment that
+  // did not fail: read those few reports, not the whole history.
+  const retired = new Set(store.retiredWorkerNums(projectId));
+  const latest = new Map<number, number>();
+  for (const row of rows) if (row.state !== "failed") latest.set(row.worker_num, row.num);
+  const candidates = rows.filter((row) => row.state === "reported" && latest.get(row.worker_num) === row.num && !retired.has(row.worker_num)).map((row) => row.num);
+  const reports = new Map((store.db.prepare("SELECT num, CASE WHEN json_valid(report) THEN json_extract(report, '$.outcome') END AS outcome, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.question') END AS question, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.context') END AS context FROM assignments WHERE project_id=? AND num IN (SELECT value FROM json_each(?))").all(projectId, JSON.stringify(candidates)) as { num: number; outcome: string | null; question: string | null; context: string | null }[]).map((r) => [r.num, r]));
+  if (![...reports.values()].some((r) => r.outcome === "blocked")) return 0;
   const settled = store.db.prepare("SELECT json_extract(body, '$.blocker.assignment') AS assignment, json_extract(body, '$.blocker.question') AS question, json_extract(body, '$.blocker.context') AS context, json_extract(body, '$.dismissal') IS NOT NULL AS dismissal FROM knowledge WHERE project_id=? AND kind='decision' AND status NOT IN ('superseded','removed') AND json_valid(body) AND json_extract(body, '$.blocker') IS NOT NULL AND (json_extract(body, '$.dismissal') IS NULL OR status='active')").all(projectId) as { assignment: number; question: string; context: string; dismissal: number }[];
   const keys = (dismissal: boolean) => new Set(settled.filter((row) => !!row.dismissal === dismissal).map((row) => blockerKey(row.assignment, row)));
   const answered = keys(false);
   const closed = new Set(tasks.filter((t) => ["done", "cancelled"].includes(t.status)).map((t) => t.num));
-  const retired = new Set(store.workers(projectId).filter((w) => w.state === "retired").map((w) => w.num));
   return undismissed(openBlockers(
-    rows.map((row) => ({ num: row.num, workerNum: row.worker_num, role: row.role, taskNums: JSON.parse(row.task_nums) as number[], reviewOf: row.review_of ? (JSON.parse(row.review_of) as number[]) : null, state: row.state, outcome: row.outcome, blocker: row.question === null ? null : { question: row.question, context: row.context ?? "" } })),
+    rows.map((row) => {
+      const report = reports.get(row.num);
+      return { num: row.num, workerNum: row.worker_num, role: row.role, taskNums: JSON.parse(row.task_nums) as number[], reviewOf: row.review_of ? (JSON.parse(row.review_of) as number[]) : null, state: row.state, outcome: report?.outcome ?? null, blocker: report?.question == null ? null : { question: report.question, context: report.context ?? "" } };
+    }),
     (num) => closed.has(num),
     (num) => retired.has(num),
   ), (row) => row.blocker, keys(true)).filter((row) => !row.blocker || !answered.has(blockerKey(row.num, row.blocker))).length;

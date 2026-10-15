@@ -2111,6 +2111,21 @@ export class Store {
 
   // Membership -------------------------------------------------------------
 
+  /**
+   * Every thread `membership(id, true)` resolves as a coordinator or worker, current or former,
+   * before it looks at associations: an associated thread outside this set is "adhoc".
+   */
+  claimedThreadIds(): Set<string> {
+    const rows = this.db
+      .prepare(
+        `SELECT coordinator_thread_id AS id FROM projects WHERE coordinator_thread_id IS NOT NULL
+         UNION SELECT w.thread_id FROM workers w JOIN projects p ON p.id = w.project_id WHERE w.thread_id IS NOT NULL
+         UNION SELECT g.thread_id FROM generations g JOIN projects p ON p.id = g.project_id`,
+      )
+      .all() as { id: string }[];
+    return new Set(rows.map((row) => row.id));
+  }
+
   membership(threadId: string, includeArchived = false): Membership | null {
     const coordinator = this.db
       .prepare(
@@ -2296,7 +2311,7 @@ export class Store {
     const row = this.db
       .prepare(`SELECT * FROM tasks WHERE project_id = ? AND num = ?`)
       .get(projectId, num) as Row | undefined;
-    return row ? this.withStatus(projectId, [toTask(row)], num)[0]! : null;
+    return row ? this.withStatus(projectId, [toTask(row)])[0]! : null;
   }
 
   tasks(projectId: string): TaskRecord[] {
@@ -2313,12 +2328,13 @@ export class Store {
    * v9: each task's shown status, computed from the work assignments naming it and the PRs that
    * work names (its PR records, and the PRs its report names), unless it was set by hand.
    */
-  private withStatus(projectId: string, tasks: TaskRecord[], only?: number): TaskRecord[] {
+  private withStatus(projectId: string, tasks: TaskRecord[]): TaskRecord[] {
     const computed = tasks.filter((t) => t.statusSetAt === null);
     if (!computed.length) return tasks;
-    const rows = (only === undefined
-      ? this.db.prepare(`SELECT * FROM assignments WHERE project_id = ? AND role = 'work' AND task_nums <> '[]'`).all(projectId)
-      : this.db.prepare(`SELECT * FROM assignments WHERE project_id = ? AND role = 'work' AND EXISTS (SELECT 1 FROM json_each(task_nums) WHERE value = ?)`).all(projectId, only)) as Row[];
+    // Only the work naming a computed task: decoding every report took most of a tree build.
+    const rows = this.db
+      .prepare(`SELECT * FROM assignments WHERE project_id = ? AND role = 'work' AND EXISTS (SELECT 1 FROM json_each(task_nums) WHERE value IN (SELECT value FROM json_each(?)))`)
+      .all(projectId, JSON.stringify(computed.map((t) => t.num))) as Row[];
     if (!rows.length) return tasks.map((t) => (t.statusSetAt === null ? { ...t, status: "planned" as const, statusReason: "no worker yet" } : t));
     const work = rows.map(toAssignment);
     const records = this.prRecords(projectId);
@@ -2575,6 +2591,23 @@ export class Store {
         .prepare(`SELECT * FROM workers WHERE project_id = ? ORDER BY num`)
         .all(projectId) as Row[]
     ).map(toWorker);
+  }
+
+  /** The workers not retired, without decoding the retired history. */
+  liveWorkers(projectId: string): WorkerRecord[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM workers WHERE project_id = ? AND state != 'retired' ORDER BY num`)
+        .all(projectId) as Row[]
+    ).map(toWorker);
+  }
+
+  retiredWorkerNums(projectId: string): number[] {
+    return (
+      this.db
+        .prepare(`SELECT num FROM workers WHERE project_id = ? AND state = 'retired' ORDER BY num`)
+        .all(projectId) as { num: number }[]
+    ).map((row) => row.num);
   }
 
   /** Role is deliberately not patchable: it is immutable for a worker's life. */
