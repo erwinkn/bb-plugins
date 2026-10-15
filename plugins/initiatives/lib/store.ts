@@ -38,6 +38,7 @@ import { isLegacyReport, storedReportSchema } from "./legacy";
 import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
 import { PR_STAGE_IDS, type PrRecord, type PrStage, type PrStageChange } from "./pr-stages";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
+import { PR_OWNER_MIGRATIONS } from "./pr-owners";
 import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
 import { ownBriefText } from "./brief";
 import { computeTaskStatus, reportPrs, type HandStatus, type PrState } from "./task-status";
@@ -499,6 +500,8 @@ export const MIGRATIONS = [
     checked_at INTEGER NOT NULL,
     error TEXT
   )`,
+  // R2 (W464): each PR's owner Initiative, by canonical URL.
+  ...PR_OWNER_MIGRATIONS,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */

@@ -20,6 +20,7 @@ import {
 import { PR_STAGES, canonicalPrUrl, type PrRecord } from "./pr-stages";
 import type { PrNotesSummary } from "./pr-notes";
 import type { PrWork } from "./pr-records";
+import type { PrOwner } from "./pr-owners";
 import { linkStacks } from "./pr-map";
 
 /** Runs `gh` with these arguments and resolves its stdout, failing after `timeoutMs` (default GH_TIMEOUT_MS). */
@@ -30,7 +31,7 @@ export const REFRESH_MS = 2 * 60_000;
 /** A manual refresh within this long of the last attempt reuses it. */
 export const MIN_FORCED_REFRESH_MS = 10_000;
 /** A project's remote is looked up again after this long. */
-const REMOTE_TTL_MS = 5 * 60_000;
+export const REMOTE_TTL_MS = 5 * 60_000;
 /** Each `gh` call's bound; a hung one reads as a failed fetch. Reads never wait for it. */
 const GH_TIMEOUT_MS = 20_000;
 /** Open PRs read per repository: Equisafe alone had 93 open in October 2026. */
@@ -92,6 +93,8 @@ export interface MergeQueueSources {
   assignedPrs(projectId: string): ReadonlyMap<string, PrWork>;
   /** Each PR's notes summary (D442), by canonical PR URL. */
   notes(projectId: string): ReadonlyMap<string, PrNotesSummary>;
+  /** R2: the owner of each PR that has one, by canonical PR URL (see PrOwners.owners). */
+  owners?(pullRequests: readonly { url: string; head: string }[]): ReadonlyMap<string, PrOwner>;
   /** v9 (§7): PR states for computed task status. Every open-list fetch marks what it lists open. */
   prStates?: {
     markOpen(urls: string[], at: number): void;
@@ -99,6 +102,24 @@ export interface MergeQueueSources {
     toLookUp(listed: ReadonlySet<string>, at: number, limit: number): string[];
     save(url: string, at: number, result: { state: "OPEN" | "MERGED" | "CLOSED"; mergedAt: number | null; closedAt: number | null } | { error: string }): void;
   };
+}
+
+/**
+ * R2: the PRs left out of `listed` (another Initiative's) that a listed PR is stacked on, at any
+ * depth, so what keeps a listed PR waiting can still be named.
+ */
+function beneath(listed: readonly QueuedPullRequest[], all: readonly QueuedPullRequest[]): QueuedPullRequest[] {
+  const at = (repo: string, number: number) => `${repo.toLowerCase()}#${number}`;
+  const byNumber = new Map(all.map((pr) => [at(pr.repo, pr.number), pr]));
+  const under = (pr: QueuedPullRequest) => (pr.stack?.on == null ? undefined : byNumber.get(at(pr.repo, pr.stack.on)));
+  // By repository and number: a listed PR is a copy (an unassigned one is marked so), not `all`'s object.
+  const shown = new Set(listed.map((pr) => at(pr.repo, pr.number)));
+  const found = new Map<string, QueuedPullRequest>();
+  // A listed PR on the way down has its own turn; `found` ends a cycle.
+  for (const pr of listed)
+    for (let below = under(pr); below && !shown.has(at(below.repo, below.number)) && !found.has(at(below.repo, below.number)); below = under(below))
+      found.set(at(below.repo, below.number), below);
+  return [...found.values()];
 }
 
 /** The lookup pass after each open-list fetch: at most this many PRs, this many at a time. */
@@ -119,7 +140,14 @@ export class MergeQueueCache {
   /** The account once resolved, for reads that never wait on the lookup. */
   private loginName: string | null = null;
   private repos = new Map<string, RepoEntry>();
-  private remotes = new Map<string, { at: number; value: Promise<Remote>; last: Remote | null }>();
+  /**
+   * R2: members whose latest lookup failed (a deleted BB project answers 404), with the last answer
+   * they had, if any. cachedRepos takes such a member as it was, or without a repository, and asks
+   * again only after REMOTE_TTL_MS; a member's own read still asks again at once.
+   */
+  private remoteFailures = new Map<string, { at: number; last: Remote | null }>();
+  /** `announce`: a read that wouldn't wait asked for it, so its first answer is announced (`fetched`). */
+  private remotes = new Map<string, { at: number; value: Promise<Remote>; last: Remote | null; announce: boolean }>();
   /** The running PR-state lookup pass, one at a time. */
   private lookups: Promise<void> | null = null;
 
@@ -142,17 +170,29 @@ export class MergeQueueCache {
     const workers = this.sources.workers(projectId);
     const records = this.sources.prRecords(projectId);
     const assigned = this.sources.assignedPrs(projectId);
-    const pullRequests = linkStacks(attachLinks(attachNotes(attachWorkers(
-      assignStages(repos.flatMap((repo) => {
-        const entry = this.repos.get(repo)!;
-        return attachDetails(entry.pullRequests ?? [], entry.details.data, { reviewers: entry.details.error === null });
-      }), records),
-      workers,
-      assigned,
-    ), this.sources.notes(projectId)), assigned, records));
+    const listed = repos.flatMap((repo) => {
+      const entry = this.repos.get(repo)!;
+      return attachDetails(entry.pullRequests ?? [], entry.details.data, { reviewers: entry.details.error === null });
+    });
+    const owner = this.ownerOf(projectId, listed);
+    // Each PR staged by its owner's records (this Initiative's when unassigned): a PR another
+    // Initiative owns still holds up the ones stacked on it, at the stage that one recorded.
+    const recordsOf = new Map([[projectId, records]]);
+    const staged = listed.map((pr) => {
+      const id = owner(pr) ?? projectId;
+      if (!recordsOf.has(id)) recordsOf.set(id, this.sources.prRecords(id));
+      return assignStages([pr], recordsOf.get(id)!)[0]!;
+    });
+    const linked = linkStacks(attachLinks(attachNotes(attachWorkers(staged, workers, assigned), this.sources.notes(projectId)), assigned, records));
+    // R2: this Initiative's PRs and the unassigned ones; another Initiative's PRs leave the list.
+    const pullRequests = this.sources.owners ? linked.flatMap((pr) => {
+      const id = owner(pr);
+      return !id ? [{ ...pr, unassigned: true }] : id === projectId ? [pr] : [];
+    }) : linked;
     const stages = PR_STAGES.map((stage) => ({ ...stage }));
     return {
       projectId,
+      beneath: beneath(pullRequests, linked),
       login: this.loginName,
       repos: repos.map((repo) => {
         const entry = this.repos.get(repo)!;
@@ -175,6 +215,62 @@ export class MergeQueueCache {
     return [...this.repos.values()].flatMap((entry) => (entry.pending ? [entry.pending] : []));
   }
 
+  /**
+   * R2: each listed PR's owner Initiative, or null when it has none. An owner counts only while
+   * it lists the PR's repository: one that doesn't would show the PR nowhere, so the PR stays
+   * unassigned and every Initiative listing the repository shows it.
+   */
+  private ownerOf(projectId: string, listed: readonly QueuedPullRequest[]): (pr: QueuedPullRequest) => string | null {
+    const key = (pr: QueuedPullRequest) => canonicalPrUrl(pr.url) ?? pr.url.toLowerCase();
+    const owners = this.sources.owners?.(listed.map((pr) => ({ url: key(pr), head: pr.head })));
+    if (!owners) return () => null;
+    const others = new Set([...owners.values()].flatMap((o) => (o.projectId && o.projectId !== projectId ? [o.projectId] : [])));
+    // Never waits on another Initiative's remotes: one not looked up yet keeps its PRs (they leave
+    // this list) until the lookup behind the read lands and is announced.
+    const reposOf = new Map([...others].map((id) => [id, this.cachedRepos(id)] as const));
+    return (pr) => {
+      const id = owners.get(key(pr))?.projectId;
+      const repos = id && reposOf.get(id);
+      return id && (id === projectId || repos === null || repos?.includes(pr.repo.toLowerCase())) ? id : null;
+    };
+  }
+
+  /**
+   * R2: an Initiative's repositories, lower case, as far as the remotes cache knows them; null
+   * while a member's first lookup runs. Never waits: a missing or stale remote is looked up behind
+   * the answer, and the first answer for one never read is announced. A member whose lookup
+   * failed counts as it last was, or without a repository, so an owner that can't be read leaves
+   * its PRs unassigned rather than nowhere.
+   */
+  cachedRepos(projectId: string): string[] | null {
+    let ids: string[];
+    try {
+      ids = this.sources.memberProjectIds(projectId);
+    } catch {
+      return [];
+    }
+    const repos = new Set<string>();
+    let known = true;
+    for (const id of ids) {
+      const failed = this.remoteFailures.get(id);
+      const recent = failed && this.now() - failed.at < REMOTE_TTL_MS;
+      if (!recent) void this.remote(id, true);
+      const last = this.remotes.get(id)?.last ?? (recent ? failed.last : null);
+      if (last?.repo) repos.add(last.repo.toLowerCase());
+      else if (!last && !recent) known = false;
+    }
+    return known ? [...repos] : null;
+  }
+
+  /**
+   * R2: an Initiative's GitHub repositories, lower case, from its members' remotes, for a write
+   * that must know them: only a member's first lookup waits on BB, never on GitHub.
+   */
+  async reposOf(projectId: string): Promise<string[]> {
+    const members = await Promise.all(this.sources.memberProjectIds(projectId).map((id) => this.remote(id)));
+    return [...new Set(members.flatMap((m) => (m.repo ? [m.repo.toLowerCase()] : [])))];
+  }
+
   /** The cached open PR at this URL, if any; never fetches. */
   cachedPr(url: string): QueuedPullRequest | null {
     const key = canonicalPrUrl(url);
@@ -187,15 +283,36 @@ export class MergeQueueCache {
    * A member's name and repository; after REMOTE_TTL_MS every read gets the last
    * answer while one lookup asks BB again. Only a member's first read waits on BB.
    */
-  private remote(bbProjectId: string): Promise<Remote> {
+  private remote(bbProjectId: string, announce = false): Promise<Remote> {
     const cached = this.remotes.get(bbProjectId);
-    if (cached && this.now() - cached.at < REMOTE_TTL_MS) return cached.last ? Promise.resolve(cached.last) : cached.value;
-    const entry = { at: this.now(), value: null as unknown as Promise<Remote>, last: cached?.last ?? null };
+    if (cached && this.now() - cached.at < REMOTE_TTL_MS) {
+      if (!cached.last) cached.announce ||= announce;
+      return cached.last ? Promise.resolve(cached.last) : cached.value;
+    }
+    // The last good answer survives failed lookups: a retry starts from it, and fails keeping it.
+    const last = cached?.last ?? this.remoteFailures.get(bbProjectId)?.last ?? null;
+    const entry = { at: this.now(), value: null as unknown as Promise<Remote>, last, announce: announce && !last };
+    const announced = (repo: string) => {
+      if (!entry.announce) return;
+      try {
+        this.fetched(repo);
+      } catch {
+        // A hint; the next poll reads anyway.
+      }
+    };
     entry.value = this.sources.project(bbProjectId).then(
-      (p) => (entry.last = { name: p.name, repo: githubRepo(p.gitRemoteUrl) }),
+      (p) => {
+        entry.last = { name: p.name, repo: githubRepo(p.gitRemoteUrl) };
+        this.remoteFailures.delete(bbProjectId);
+        announced(entry.last.repo ?? "");
+        return entry.last;
+      },
       () => {
         // Look again on the next read rather than caching the failure.
         if (this.remotes.get(bbProjectId) === entry) this.remotes.delete(bbProjectId);
+        this.remoteFailures.set(bbProjectId, { at: this.now(), last: entry.last });
+        // A first lookup that fails still answers: cachedRepos now counts the member without a repository.
+        announced("");
         return entry.last ?? { name: bbProjectId, repo: null };
       },
     );

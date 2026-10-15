@@ -387,6 +387,54 @@ it (its `origin`); projects without a GitHub remote are named in the footer.
 For bb-plugins that is `erwinkn/bb-plugins` and, through bb-fork,
 `erwinkn/bb`.
 
+**Ownership (R2, W464).** Adventures can share repositories (Equisafe and
+Equisafe UI both list `equisafe/equisafe-market` and `equisafe/infra`), so each
+PR belongs to one Adventure at most, recorded per canonical URL in table
+`pr_owners` (`url`, `project_id`, `source` auto or manual, `set_at`). A PR its
+owner lists as usual; every other Adventure leaves it out. A PR without an
+owner shows in every Adventure listing its repository, folded at the bottom
+of the list under **Unassigned** (a search opens the fold), and outside Next up
+and the tab's count. The owner is decided:
+
+- **By hand**, always first: right-click, long-press, the context-menu key or
+  Shift+F10 on a row or a graph node opens **Move to Adventure**, which lists
+  the open Adventures listing the PR's repository (the current one first for
+  an unassigned PR) and **Unassign** for an owned one. Agents do the same with
+  `initiative_pr {prs:[{url, initiative:"Equisafe UI"}]}` (a name or id;
+  `null` unassigns), as does `bb initiative pr`; a worker may move its own
+  PRs. A move to an Adventure that doesn't list the PR's repository is
+  refused, since the PR would show nowhere. A manual Unassign is stored too (`project_id` NULL), so no automatic
+  owner takes the PR back. Moving a PR leaves its stage, category and notes
+  where they were written: each Adventure keeps its own records.
+- **Automatically**, otherwise: the thread named by the PR's BB worktree branch
+  (`…-thr_<id>`) opened it. If that thread is a worker of an open Adventure
+  (any of its generations), or descends from one, the PR is that Adventure's
+  and the row is written once (`auto`). A worker thread is matched from the
+  ledger as the list is built, every time; for any other thread the server
+  looks up its parents in BB behind the read (to the root, a cycle ending the
+  walk; never waited on), then announces `merge-queue-changed` when it finds
+  a worker. A thread with no worker above it is looked up again after ten
+  minutes. PRs opened outside BB
+  worktrees, or by threads no worker spawned, stay unassigned: nothing is
+  guessed. Existing PRs are backfilled the same way the first time a list
+  reads them; no migration guesses.
+
+An owner counts only while it is open and lists the PR's repository; otherwise
+the PR shows as unassigned rather than nowhere. Reads never wait on another
+Adventure's repositories: they come from the remotes cache, and one never read
+is looked up behind the answer (announced on `merge-queue-changed`); until
+then its owner keeps the PR, and the menu says it is still looking. A member
+whose lookup fails (a deleted BB project) counts as it last was, or without a
+repository, and is asked again only after the remotes' five minutes, so an
+owner that can't be read leaves its PRs unassigned rather than nowhere. A PR another Adventure owns
+still links into stacks, at the stage that Adventure recorded, so a PR stacked
+on it waits until its owner says it is ready for you; the queue carries such PRs
+apart (`beneath`), so the row, the graph and the detail panel still say "waits on
+#5", and the agent read's `stacks` start from the lowest PR it lists ("(on #5)
+#6"). A move resolves its destination to the Adventure's id once, then checks
+it again (open, listing the repository) in the same step that records it. Rollback: the table is additive (BB applies plugin migrations by
+index, so an older build skips it and lists every PR everywhere, as before).
+
 Each row shows the title, `repo #number` (the owner is dropped for the user's
 own repositories), `head → base`, when it was opened and last updated, the
 checks rollup with counts, the review decision (omitted when the base branch
@@ -467,8 +515,9 @@ Retry.
 ## Backend and tools
 
 **PR records.** `initiative_pr {prs:[{url, stage?, note?, category?, waitingOn?,
-changes?, decision?, worker?, assignment?, notes?, answered?}], rename?:[{from, to}]}`
-(the coordinator; workers add notes only) keeps one record per PR, several PRs per call, in one
+changes?, decision?, worker?, assignment?, notes?, answered?, initiative?}], rename?:[{from, to}]}`
+(the coordinator; workers set their PRs' stage, add notes and move them; `initiative`
+moves a PR to an Adventure or, with null, out of every one, see Ownership above) keeps one record per PR, several PRs per call, in one
 transaction: `stage` is `working`, `ready-for-review`, `in-review`,
 `ready-for-erwin`, `experiment`, or `clear`. A URL may carry any suffix
 (`/files`, `?diff=split`) or be `owner/repo#12`; it is stored canonical and
@@ -542,7 +591,13 @@ reasons, every open question and change and the last notes, paged the same
 way over the PRs the refs match. A ref is the PR URL, `owner/repo#12`,
 `repo#12` (that repository under every owner) or `#12` (every repository's
 #12). With several repositories a PR is named `infra#12`, with the owner
-only when two repositories share a name.
+only when two repositories share a name. Like the dashboard, the read is about
+the Adventure's own PRs (R2): `open` counts them, and the unassigned PRs in
+the slice are only counted (`unassigned`) and listed by ref and title
+(`unassignedPrs`, as many as fit). `{view:"prs", unassigned:true}` reads them
+instead, as a slice whose `state` lists and pages every one; refs also read
+unassigned PRs, marked `unassigned:true`.
+Another Adventure's PRs are not in the queue at all.
 
 Every answer fits the cap and still pages forward: the lists besides the
 page (repositories, byCategory, stacks, category names, unmatched refs)

@@ -879,7 +879,8 @@ export function Dashboard({
           loadChildren={(threadId, offset) => api.call("childPage", { projectId, threadId, offset })}
           refresh={refresh}
           mergeQueue={{
-            count: queue.data?.pullRequests.length ?? 0,
+            // R2: the Initiative's own PRs; the unassigned ones every Initiative shows aren't counted.
+            count: queue.data?.pullRequests.filter((pr) => !pr.unassigned).length ?? 0,
             view: (
               <MergeQueueView
                 queue={queue.data}
@@ -888,6 +889,10 @@ export function Dashboard({
                 onRefresh={() => void refreshQueue()}
                 loadNotes={(url) => api.call("prNotes", { projectId, url })}
                 loadDetail={(url) => api.call("prDetail", { projectId, url })}
+                onMove={async (url, initiative) => {
+                  await api.call("prOwner", { projectId, url, initiative });
+                  await queue.refresh().catch(() => undefined);
+                }}
               />
             ),
           }}

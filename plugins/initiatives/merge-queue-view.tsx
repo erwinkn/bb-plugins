@@ -6,8 +6,9 @@ import {
   type QueuedPullRequest,
 } from "./lib/merge-queue";
 import type { PrNote } from "./lib/pr-notes";
-import { categoriesOf, filterPrs, groupPrs, nextUp, sizeDetail, stackLabel, stateItems, workerLabel, type GroupBy, type PrFilter } from "./lib/pr-map";
+import { categoriesOf, filterPrs, groupPrs, nextUp, sizeDetail, stackLabel, stackOrder, stateItems, workerLabel, type GroupBy, type PrFilter } from "./lib/pr-map";
 import { compactAge } from "./control-room";
+import { moveTargets, useMoveMenu, type MoveMenu, type MovePr, type PrMenuAt } from "./pr-move-menu";
 import { pickPr, searchPrs } from "./lib/pr-search";
 import { DetailsButton, NoteMeta, NotesList, PrGraph, Signals, SizeDelta, StateLine, numberIndex, reviewerText, usePrLink, waitsOn, workerTitle } from "./pr-graph";
 import { PrDetailPanel, type LoadDetail } from "./pr-detail-view";
@@ -91,14 +92,19 @@ function NotesPanel({ pr, load }: { pr: QueuedPullRequest; load?: LoadNotes }) {
   );
 }
 
-function Row({ pr, login, blocker, loadNotes, open, onOpen }: {
+/**
+ * A PR row. A click opens the PR; a right click, a long press, the context-menu key or
+ * Shift+F10 open its "Move to Initiative" menu (R2).
+ */
+function Row({ pr, login, blocker, loadNotes, open, onOpen, menu }: {
   pr: QueuedPullRequest; login: string | null; blocker: QueuedPullRequest | null; loadNotes?: LoadNotes;
-  open: boolean; onOpen: (pr: QueuedPullRequest) => void;
+  open: boolean; onOpen: (pr: QueuedPullRequest) => void; menu: MoveMenu | null;
 }) {
   const link = usePrLink(pr.url);
+  const { item, anchor, handlers, element } = useMoveMenu(pr, menu, link.onClick);
   return (
-    <li className="cr-mq-row" data-open={open || undefined}>
-      <a className="cr-mq-pr" data-group={pr.group} {...link}
+    <li ref={item} className="cr-mq-row" data-open={open || undefined} data-unassigned={pr.unassigned || undefined}>
+      <a ref={anchor} className="cr-mq-pr" data-group={pr.group} {...link} {...handlers}
         title={pr.reasons.length ? `${pr.title}\n${pr.reasons.join(", ")}` : pr.title}>
         <PullRequestGlyph group={pr.group} />
         <span className="cr-mq-main">
@@ -146,6 +152,7 @@ function Row({ pr, login, blocker, loadNotes, open, onOpen }: {
       <DetailsButton pr={pr} open={open} onOpen={onOpen} />
       <StateLine pr={pr} />
       <NotesLine pr={pr} loadNotes={loadNotes} />
+      {element}
     </li>
   );
 }
@@ -220,8 +227,12 @@ const isPrView = (v: unknown): v is PrView => {
     && (view.open === undefined || view.open === null || typeof view.open === "string");
 };
 
-/** The toolbar (view, grouping, search, filters), Next up, the list or the graph, and the open PR's detail. */
-function PrMap({ queue, loadNotes, loadDetail }: { queue: MergeQueue; loadNotes?: LoadNotes; loadDetail?: LoadDetail }) {
+/**
+ * The toolbar (view, grouping, search, filters), Next up, the list or the graph, and the open
+ * PR's detail. The Initiative's own PRs come first; the unassigned ones (R2) follow, folded
+ * under Unassigned, unless a search is looking through them.
+ */
+function PrMap({ queue, loadNotes, loadDetail, onMove }: { queue: MergeQueue; loadNotes?: LoadNotes; loadDetail?: LoadDetail; onMove?: MovePr }) {
   const [view, setView] = useRemembered<PrView>(`initiatives:prs:${queue.projectId}`, DEFAULT_VIEW, isPrView);
   const { mode, by, filter, query = "" } = view;
   const setMode = (mode: PrView["mode"]) => setView({ ...view, mode });
@@ -240,13 +251,27 @@ function PrMap({ queue, loadNotes, loadDetail }: { queue: MergeQueue; loadNotes?
   const shown = filterPrs(inCategory, { ...filter, category: undefined });
   const hidden = found.length - shown.length;
   const pick = pickPr(all, shown, query);
-  const byNumber = numberIndex(all);
+  // R2: another Initiative's PR beneath one of these still names what it waits on.
+  const byNumber = numberIndex([...all, ...(queue.beneath ?? [])]);
   const stageCounts = new Map(queue.stages.map((s) => [s.id, inCategory.filter((pr) => pr.stage === s.id).length]));
   const toggleStage = (id: string) =>
     setFilter({ ...filter, stages: filter.stages.includes(id) ? filter.stages.filter((s) => s !== id) : [...filter.stages, id] });
   const filtered = category !== undefined || filter.stages.length > 0 || filter.availableOnly;
+  const mine = shown.filter((pr) => !pr.unassigned);
+  const unassigned = shown.filter((pr) => pr.unassigned).sort(stackOrder(all));
+  const [unassignedOpen, setUnassignedOpen] = useState(false);
+  const [menuAt, setMenuAt] = useState<PrMenuAt | null>(null);
+  const menuOf = (pr: QueuedPullRequest): MoveMenu | null => {
+    const { targets, pending } = moveTargets(pr, queue.projectId, queue.initiatives ?? []);
+    if (!onMove || (!targets.length && pr.unassigned && !pending)) return null;
+    return {
+      at: menuAt?.url === pr.url ? menuAt : null, projectId: queue.projectId, targets, pending, move: onMove,
+      open: (x, y) => setMenuAt({ url: pr.url, x, y }),
+      close: () => setMenuAt((at) => (at?.url === pr.url ? null : at)),
+    };
+  };
   const row = (pr: QueuedPullRequest) => (
-    <Row key={pr.url} pr={pr} login={queue.login} blocker={waitsOn(pr, byNumber)} loadNotes={loadNotes} open={pr === openPr} onOpen={setOpen} />
+    <Row key={pr.url} pr={pr} login={queue.login} blocker={waitsOn(pr, byNumber)} loadNotes={loadNotes} open={pr === openPr} onOpen={setOpen} menu={menuOf(pr)} />
   );
   const onSearchKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
@@ -312,13 +337,15 @@ function PrMap({ queue, loadNotes, loadDetail }: { queue: MergeQueue; loadNotes?
       ) : null}
       <div className="cr-pm-body" data-open={openPr ? true : undefined}>
       <div className="cr-pm-results">
-      {filter.availableOnly || query.trim() ? null : <NextUp prs={nextUp(inCategory)} repoOf={(pr) => (queue.repos.length > 1 ? repoLabel(pr.repo, queue.login) : null)} />}
+      {filter.availableOnly || query.trim() ? null : <NextUp prs={nextUp(inCategory).filter((pr) => !pr.unassigned)} repoOf={(pr) => (queue.repos.length > 1 ? repoLabel(pr.repo, queue.login) : null)} />}
       {!shown.length ? (
         <p className="cr-empty">No pull requests match {query.trim() ? "this search" : "these filters"}.</p>
+      ) : !mine.length ? (
+        <p className="cr-empty">{query.trim() || filtered ? "None of this Adventure's pull requests match." : "No pull request is this Adventure's yet."}</p>
       ) : mode === "graph" ? (
-        <PrGraph pullRequests={shown} all={all} stages={queue.stages} open={openPr} onOpen={setOpen} />
+        <PrGraph pullRequests={mine} all={all} beneath={queue.beneath} stages={queue.stages} open={openPr} onOpen={setOpen} menuOf={menuOf} />
       ) : (
-        groupPrs(shown, categorized ? by : "stage", queue.stages, all).map((g) => (
+        groupPrs(mine, categorized ? by : "stage", queue.stages, all).map((g) => (
           <section key={g.label} className="cr-mq-group" {...(categorized && by === "category" ? { "data-category": g.label } : { "data-stage": g.key! })} aria-label={g.label}>
             <h3>
               {g.label}
@@ -337,9 +364,20 @@ function PrMap({ queue, loadNotes, loadDetail }: { queue: MergeQueue; loadNotes?
           </section>
         ))
       )}
+      {unassigned.length ? (
+        <section className="cr-mq-group cr-mq-unassigned" aria-label="Unassigned">
+          <h3>
+            <button type="button" className="cr-mq-fold" aria-expanded={unassignedOpen || !!query.trim()} onClick={() => setUnassignedOpen(!unassignedOpen)}>
+              Unassigned<span className="cr-count">{unassigned.length}</span>
+            </button>
+            <span className="cr-pm-hint">shown in every Adventure with their repository{onMove ? "; right-click or long-press one to move it" : ""}</span>
+          </h3>
+          {unassignedOpen || query.trim() ? <ul>{unassigned.map(row)}</ul> : null}
+        </section>
+      ) : null}
       </div>
       {openPr ? (
-        <PrDetailPanel pr={openPr} all={all} stages={queue.stages}
+        <PrDetailPanel pr={openPr} all={all} beneath={queue.beneath} stages={queue.stages}
           login={queue.login} load={loadDetail} revision={queue} onOpen={setOpen} onClose={() => setOpen(null)} />
       ) : null}
       </div>
@@ -368,6 +406,7 @@ export function MergeQueueView({
   onRefresh,
   loadNotes,
   loadDetail,
+  onMove,
 }: {
   queue: MergeQueue | null;
   /** The read itself failed (not a `gh` fetch, which comes back per repository). */
@@ -376,6 +415,8 @@ export function MergeQueueView({
   onRefresh: () => void;
   loadNotes?: LoadNotes;
   loadDetail?: LoadDetail;
+  /** R2: the row menu's "Move to Initiative"; without it rows have no menu. */
+  onMove?: MovePr;
 }) {
   const failed = queue?.repos.filter((r) => r.error) ?? [];
   const neverLoaded = !!queue && queue.repos.length > 0 && queue.repos.every((r) => r.fetchedAt === null);
@@ -423,7 +464,7 @@ export function MergeQueueView({
       ) : !queue.pullRequests.length ? (
         <p className="cr-empty">No open pull requests{queue.login ? ` by ${queue.login}` : ""}.</p>
       ) : (
-        <PrMap queue={queue} loadNotes={loadNotes} loadDetail={loadDetail} />
+        <PrMap queue={queue} loadNotes={loadNotes} loadDetail={loadDetail} onMove={onMove} />
       )}
       {queue && queue.repos.length ? (
         <p className="cr-mq-foot">

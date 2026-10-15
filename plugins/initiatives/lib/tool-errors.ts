@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ProjectError } from "./bb";
-import { PR_NOTE_FIELDS, PR_STATE_FIELDS } from "./pr-stages";
+import { PR_ACTION_FIELDS, PR_STATE_FIELDS } from "./pr-stages";
 
 /**
  * T147: what a tool call that fails validation answers with. Help costs tokens only when a call
@@ -26,7 +26,7 @@ const HINTS: Record<string, Record<string, string>> = {
   initiative_report: { body: "`report`", details: "`report`", text: "`summary` (short) and `report` (full)" },
   initiative_read: { id: "`refs`", ref: "`refs`", kind: "`view`", type: "`view`", page: "`offset`", count: "`limit`", n: "`limit`", full: "`detailed`", verbose: "`detailed`" },
   initiative_batch: { calls: "`actions`", tools: "`actions`", operations: "`actions`" },
-  initiative_pr: Object.fromEntries(["url", "stage", "note", ...PR_STATE_FIELDS, ...PR_NOTE_FIELDS].map(key => [key, PR_FIELDS_HINT])),
+  initiative_pr: Object.fromEntries(["url", "stage", "note", ...PR_STATE_FIELDS, ...PR_ACTION_FIELDS].map(key => [key, PR_FIELDS_HINT])),
   "initiative_pr.prs[]": { status: "`stage`", link: "`url`", pr: "`url`", message: "`note`" },
 };
 /** Keys that exist for older sessions only; never listed as valid. */

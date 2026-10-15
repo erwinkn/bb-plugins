@@ -84,7 +84,7 @@ describe("W224 PR categories", () => {
     expect(await call(f, "initiative_read", { view: "prs" })).toEqual({
       repos: [], open: 0, next: [], byCategory: {}, stacks: [], state: {}, page: { total: 0, offset: 0, nextOffset: null }, noAction: 0, reads: expect.stringMatching(/PRs needing action/),
     });
-    await expect(call(f, "initiative_read", { view: "workers", stage: "working" })).rejects.toThrow(/category and stage select a slice of view prs/);
+    await expect(call(f, "initiative_read", { view: "workers", stage: "working" })).rejects.toThrow(/category, stage and unassigned select a slice of view prs/);
     await expect(call(f, "initiative_read", { view: "prs", refs: ["#1"], category: "CI" })).rejects.toThrow(/without refs/);
     expect(await call(f, "initiative_read", { view: "prs", refs: ["#1"] })).toEqual({ repos: [], open: 0, prs: {}, missingRefs: ["#1"], page: { total: 0, offset: 0, nextOffset: null } });
     expect(await call(f, "initiative_read", { view: "prs", category: "CI" })).toMatchObject({ matching: 0, categories: [], state: {} });
@@ -191,10 +191,10 @@ describe("W224 stacks", () => {
       { ...pr(40, "b2", "a"), repo: "erwinkn/other", url: url(40, "erwinkn/other") },
     ]);
     const stack = (n: number) => prs.find((p) => p.number === n)!.stack;
-    expect(stack(10)).toEqual({ root: 10, on: null, level: 1, levels: 3, size: 4 });
-    expect(stack(11)).toEqual({ root: 10, on: 10, level: 2, levels: 3, size: 4 });
-    expect(stack(12)).toEqual({ root: 10, on: 11, level: 3, levels: 3, size: 4 });
-    expect(stack(13)).toEqual({ root: 10, on: 10, level: 2, levels: 3, size: 4 });
+    expect(stack(10)).toEqual({ root: 10, on: null, level: 1, levels: 3, size: 4, rootCreatedAt: expect.any(Number) });
+    expect(stack(11)).toEqual({ root: 10, on: 10, level: 2, levels: 3, size: 4, rootCreatedAt: expect.any(Number) });
+    expect(stack(12)).toEqual({ root: 10, on: 11, level: 3, levels: 3, size: 4, rootCreatedAt: expect.any(Number) });
+    expect(stack(13)).toEqual({ root: 10, on: 10, level: 2, levels: 3, size: 4, rootCreatedAt: expect.any(Number) });
     expect([stack(20), stack(30), stack(40)]).toEqual([null, null, null]);
     expect(stackLabel(stack(12)!)).toBe("3 of 3 · on #11");
     expect(stackLabel(stack(10)!)).toBe("1 of 3");

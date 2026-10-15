@@ -3,6 +3,7 @@
 import { ProjectError } from "./bb";
 import type { Store } from "./store";
 import type { PrNotes } from "./pr-notes";
+import type { PrOwners } from "./pr-owners";
 import type { PrLinks } from "./merge-queue";
 import { PR_NOTE_MAX, blankPrRecord, canonicalPrUrl, categoryName, type PrToolInput } from "./pr-stages";
 
@@ -20,30 +21,48 @@ export interface PrCaller {
 export const COORDINATOR: PrCaller = { author: "coordinator", worker: null, threadId: null };
 
 /**
+ * R2: the open Initiative `name` names, by id or by its name in any case. A
+ * name two Initiatives share must be given as an id.
+ */
+export function initiativeNamed(store: Pick<Store, "projects">, name: string): { id: string; name: string } {
+  const open = store.projects();
+  const byId = open.find((p) => p.id === name.trim());
+  if (byId) return byId;
+  const named = open.filter((p) => p.name.trim().toLowerCase() === name.trim().toLowerCase());
+  if (named.length === 1) return named[0]!;
+  if (named.length > 1) throw new ProjectError(`${named.length} open Adventures are named "${name}"; give one's id: ${named.map((p) => p.id).join(", ")}.`);
+  throw new ProjectError(`No open Adventure is named "${name}". Open Adventures: ${open.map((p) => p.name).join(", ") || "none"}.`);
+}
+
+/**
  * Apply one initiative_pr call, in a transaction: renames first (into an
  * existing category merges them), then each PR's fields. Only the given fields
  * change; null clears one. A stage replaces its note; a changed stage or note
  * lands in the PR's stage history (T157). An assignment names its worker too,
  * unless the entry names one. Notes append to the PR's log and `answered`
- * closes its questions. The result lists every category with its PR
- * count, once there is one, so the coordinator reuses them.
+ * closes its questions. `initiative` moves the PR to an Initiative, or out of
+ * every one with null (R2); its records stay where they were written. The
+ * result lists every category with its PR count, once there is one, so the
+ * coordinator reuses them.
  */
 export function recordPrs(
-  store: Pick<Store, "prRecords" | "savePrRecord" | "addPrStageChange" | "renamePrCategory" | "worker" | "assignment">,
+  store: Pick<Store, "prRecords" | "savePrRecord" | "addPrStageChange" | "renamePrCategory" | "worker" | "assignment" | "projects">,
   notes: Pick<PrNotes, "append" | "answer">,
   projectId: string,
   input: PrToolInput,
   at: number,
   caller: PrCaller = COORDINATOR,
+  /** R2: moves, after `fits` refuses a destination the PR can't show in (it throws). */
+  owners?: Pick<PrOwners, "move"> & { fits(target: { id: string; name: string }, url: string): void },
 ) {
-  // v9: a worker keeps its own PRs' stage and notes; every other field is a lead's. Leads
-  // (the coordinator and discussions) set everything.
-  const own = caller.worker ? ["url", "stage", "note", "notes"] : null;
+  // v9: a worker keeps its own PRs' stage and notes, and moves them (R2); every other field is a
+  // lead's. Leads (the coordinator and discussions) set everything.
+  const own = caller.worker ? ["url", "stage", "note", "notes", "initiative"] : null;
   if (own) {
     const fields = [...new Set(input.rename ? ["rename"] : (input.prs ?? []).flatMap((pr) => Object.keys(pr).filter((k) => !own.includes(k))))];
     const is = `${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} a lead's to set`;
     if (fields.length)
-      throw new ProjectError(`Workers set their PRs' stage and add notes ({prs:[{url,stage,notes}]}); ${is}.`);
+      throw new ProjectError(`Workers set their PRs' stage, add notes and move them to an Adventure ({prs:[{url,stage,notes,initiative}]}); ${is}.`);
   }
   if (caller.worker) {
     const foreign = (input.prs ?? []).filter((pr) => !caller.worker!.owns(canonicalPrUrl(pr.url)!)).map((pr) => pr.url);
@@ -62,8 +81,14 @@ export function recordPrs(
   });
   const records = store.prRecords(projectId);
   const names = categories();
-  const prs = (input.prs ?? []).map(({ url, stage, note, category, worker, assignment, notes: added, answered, ...state }) => {
+  const prs = (input.prs ?? []).map(({ url, stage, note, category, worker, assignment, notes: added, answered, initiative, ...state }) => {
     const key = canonicalPrUrl(url)!;
+    const target = initiative ? initiativeNamed(store, initiative) : null;
+    if (initiative !== undefined) {
+      if (!owners) throw new ProjectError("PRs can't be moved from here.");
+      if (target) owners.fits(target, key);
+      owners.move(key, target?.id ?? null, at);
+    }
     const noted = (added ?? []).map((entry) =>
       notes.append(projectId, key, { at, author: caller.author, kind: entry.kind ?? "note", text: entry.text, link: entry.link ?? caller.threadId }));
     for (const { n, text } of answered ?? [])
@@ -71,6 +96,7 @@ export function recordPrs(
         throw new ProjectError(`${key} has no question ${n}; initiative_read view prs with refs:["${key}"] lists its open ones.`);
     const receipt = {
       url: key,
+      ...(initiative !== undefined ? { initiative: target?.name ?? null } : {}),
       ...(noted.length ? { noted } : {}),
       ...(answered?.length ? { answered: answered.map((a) => a.n) } : {}),
     };

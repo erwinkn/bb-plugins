@@ -95,8 +95,8 @@ const categorySchema = line(40).refine((name) => name.toLowerCase() !== UNCATEGO
 
 /** The fields of a PR record initiative_pr patches besides the stage; null clears one. */
 export const PR_STATE_FIELDS = ["category", "waitingOn", "changes", "decision", "worker", "assignment"] as const;
-/** What initiative_pr does besides patching the record: append notes, answer questions. */
-export const PR_NOTE_FIELDS = ["notes", "answered"] as const;
+/** What initiative_pr does besides patching the record: append notes, answer questions, move the PR to an Initiative (R2). */
+export const PR_ACTION_FIELDS = ["notes", "answered", "initiative"] as const;
 /** A note's text; a worker report's summary is clipped to it. */
 export const PR_NOTE_MAX = 1000;
 
@@ -121,10 +121,12 @@ export const prToolSchema = z
               .array(z.object({ kind: z.enum(PR_NOTE_KINDS).optional(), text: line(PR_NOTE_MAX), link: line(300).optional() }).strict())
               .min(1).max(10).optional(),
             answered: z.array(z.object({ n: z.number().int().positive(), text: line(300).optional() }).strict()).min(1).max(10).optional(),
+            /** R2: the Initiative that owns the PR, by name or id; null leaves it unassigned. */
+            initiative: line(200).nullable().optional(),
           })
           .strict()
-          .refine((pr) => pr.stage !== undefined || [...PR_STATE_FIELDS, ...PR_NOTE_FIELDS].some((field) => pr[field] !== undefined), {
-            message: `Give a stage or one of ${[...PR_STATE_FIELDS, ...PR_NOTE_FIELDS].join(", ")}`,
+          .refine((pr) => pr.stage !== undefined || [...PR_STATE_FIELDS, ...PR_ACTION_FIELDS].some((field) => pr[field] !== undefined), {
+            message: `Give a stage or one of ${[...PR_STATE_FIELDS, ...PR_ACTION_FIELDS].join(", ")}`,
           })
           .refine((pr) => pr.note === undefined || pr.stage !== undefined, { message: "A note goes with a stage", path: ["note"] }),
       )

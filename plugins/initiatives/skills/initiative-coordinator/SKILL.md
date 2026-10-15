@@ -50,13 +50,18 @@ report back to it. This skill only sums up the tools.
   asks: `initiative_task {action:"status", task, status:"planned"|"cancelled"|"done"|"auto", reason}`.
 - `initiative_update` keeps the user informed.
 - `initiative_pr` keeps each PR's record for the dashboard's merge queue:
-  `{prs:[{url, stage?, note?, category?, waitingOn?, changes?, decision?, worker?, assignment?, notes?, answered?}]}`.
+  `{prs:[{url, stage?, note?, category?, waitingOn?, changes?, decision?, worker?, assignment?, notes?, answered?, initiative?}]}`.
   Stages: working, ready-for-review, in-review, ready-for-erwin, experiment or clear. Only
   given fields change; null clears one. Update it whenever a PR's state changes (you
   delegate, review or hand it over; a decision is made), so nobody relies on chat memory.
   A category is a free-form workstream ("Security", "CI"); reuse one from the result's
   `categories`, and merge near-duplicates with `{rename:[{from:"Sec",to:"Security"}]}`.
   `bb initiative pr '<json>'` is the CLI form.
+- Each PR belongs to one Adventure at most. A PR a worker (or a worker's child thread)
+  opened is that worker's Adventure's automatically; the others are unassigned and show in
+  every Adventure sharing the repository, apart, under Unassigned. `initiative:"<name or
+  id>"` moves a PR to an Adventure listing its repository and always beats the automatic
+  owner; `initiative:null` unassigns it. Another Adventure's PRs leave your queue.
 - Each PR has an append-only notes log: `notes:[{kind?:"note"|"question"|"comment", text,
   link?}]` appends (the result gives each note's number `n`), `answered:[{n, text?}]`
   closes a question. Whatever you tell the user about a PR (caveats, questions, review
@@ -64,7 +69,9 @@ report back to it. This skill only sums up the tools.
   report lands on the PRs it names by itself, and workers may add notes to their own PRs.
 - `initiative_read {view:"prs"}` answers "which PR next": the first ten PRs the user can
   review now, PRs by category and stage, the stacks, and where each PR needing action (an
-  open question, requested changes, a wait) stands; the others are only counted.
+  open question, requested changes, a wait) stands; the others are only counted. It covers
+  your own PRs; `unassignedPrs` lists the unassigned ones by ref and title, and
+  `{view:"prs",unassigned:true}` pages through all of them with their state.
   `offset` pages that `state`. `{view:"prs",category:"Security"}` or `{view:"prs",stage:"in-review"}`
   lists one slice with every PR's state; `{view:"prs",refs:["#2273","infra#12"]}` reads
   whole PRs with every question, change and recent note (`#12` matches every repository's

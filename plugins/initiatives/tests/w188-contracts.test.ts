@@ -82,9 +82,9 @@ function parseAs(tool: string, raw: Record<string, unknown>) {
     case "initiative_question": return questionToolSchema.parse(raw);
     case "initiative_pr": return prToolSchema.parse(raw);
     case "initiative_read": {
-      const { view, category, stage, ...rest } = agentReadSchema.parse(raw);
+      const { view, category, stage, unassigned, ...rest } = agentReadSchema.parse(raw);
       const options = withImpliedDetail(readOptionsSchema.parse(rest));
-      if ((category !== undefined || stage !== undefined) && (view !== "prs" || options.refs)) throw new Error("category and stage select a slice of view prs");
+      if ((category !== undefined || stage !== undefined || unassigned !== undefined) && (view !== "prs" || options.refs)) throw new Error("category, stage and unassigned select a slice of view prs");
       // Like the server: mixed refs need a field for some kind, a view needs its own refs and fields.
       if (!view && options.refs || view === "records") validateFields([...new Set((options.refs ?? []).map(viewForRef))], options);
       else if (view && !["overview", "context"].includes(view)) validateSelection(view as ReadView, options);

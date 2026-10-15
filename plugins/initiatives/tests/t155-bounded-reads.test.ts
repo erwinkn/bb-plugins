@@ -288,7 +288,7 @@ describe("T155 initiative_read {view:prs} is bounded", () => {
     const call = async (input: unknown) => JSON.parse(await f.harness.callAgentTool("initiative_read", input, { threadId: "coordinator" }) as string);
     expect(await call({ view: "prs", stage: "in-review", limit: 5 })).toMatchObject({ matching: 0, page: { total: 0, offset: 0, nextOffset: null } });
     await expect(call({ view: "prs", stage: "nope" })).rejects.toThrow();
-    await expect(call({ category: "CI" })).rejects.toThrow(/category and stage select a slice of view prs/);
+    await expect(call({ category: "CI" })).rejects.toThrow(/category, stage and unassigned select a slice of view prs/);
     expect(await call({ view: "prs", refs: ["#1"], offset: 3, limit: 2 })).toMatchObject({ prs: {}, missingRefs: ["#1"], page: { total: 0, offset: 3, nextOffset: null } });
   });
 });

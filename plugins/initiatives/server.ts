@@ -62,7 +62,8 @@ import { Background, LiveThreads, Recent } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
 import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
 import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
-import { AssignedPrs, COORDINATOR, recordPrs, type PrCaller } from "./lib/pr-records";
+import { AssignedPrs, COORDINATOR, initiativeNamed, recordPrs, type PrCaller } from "./lib/pr-records";
+import { PrOwners, ledgerThreads } from "./lib/pr-owners";
 import { readPrDetail } from "./lib/pr-detail";
 import { branchThreadId } from "./lib/merge-queue";
 import { prsByRef, prSummary } from "./lib/pr-map";
@@ -448,6 +449,29 @@ export default function plugin(bb: BbPluginApi) {
     return { coordinatorThreadId, discussionThreadIds };
   };
   const assignedPrs = new AssignedPrs(store);
+  /**
+   * R2: a move's destination, by its stable id, once its repositories are known: the lookup may
+   * wait on BB (never GitHub). The write then checks it again as it is (prMoveFits), in the same
+   * synchronous step that moves the PR, so a rename, a member change or an archive meanwhile
+   * can't slip past.
+   */
+  const prMoveTarget = async (name: string) => {
+    const target = initiativeNamed(store, name);
+    await mergeQueue.reposOf(target.id);
+    return target.id;
+  };
+  /** R2: a PR moves only to an Initiative listing its repository; elsewhere it would show nowhere. */
+  const prMoveFits = (target: { id: string; name: string }, url: string) => {
+    const repo = /github\.com\/([^/]+\/[^/]+)\/pull\//.exec(url)![1]!;
+    const repos = mergeQueue.cachedRepos(target.id);
+    if (repos === null) throw new ProjectError(`${target.name}'s repositories are still being looked up; try again in a moment.`);
+    if (!repos.includes(repo))
+      throw new ProjectError(`${target.name} doesn't list ${repo}, so ${url} would show in no Adventure. Move it to an Adventure whose projects include ${repo}.`);
+  };
+  // R2: each PR's owner Initiative. An owner found behind a read tells the dashboards to read again.
+  const prOwners = new PrOwners(store.db,
+    ledgerThreads(store, async (threadId) => (await bb.sdk.threads.get({ threadId })).parentThreadId ?? null),
+    () => bb.realtime.publish("merge-queue-changed", { repo: null }));
   const mergeQueue = new MergeQueueCache({
     memberProjectIds: (projectId) => service.requireProject(projectId).memberProjectIds,
     project: async (bbProjectId) => {
@@ -459,6 +483,7 @@ export default function plugin(bb: BbPluginApi) {
     prRecords: (projectId) => store.prRecords(projectId),
     assignedPrs: (projectId) => assignedPrs.read(projectId),
     notes: (projectId) => service.prNotes.summaries(projectId),
+    owners: (pullRequests) => prOwners.owners(pullRequests),
     prStates: {
       markOpen: (urls, at) => store.markPrsOpen(urls, at),
       toLookUp: (listed, at, limit) => store.prsToLookUp(listed, at, limit),
@@ -468,7 +493,22 @@ export default function plugin(bb: BbPluginApi) {
   // D441: reads never wait on GitHub; a finished fetch tells the dashboards to read again.
   (repo) => bb.realtime.publish("merge-queue-changed", { repo }));
   bb.rpc.register(projectsContract, {
-    mergeQueue: ({ projectId, refresh }) => mergeQueue.read(projectId, { refresh }),
+    mergeQueue: async ({ projectId, refresh }) => {
+      const queue = await mergeQueue.read(projectId, { refresh });
+      // From the remotes cache; one never read is looked up behind the answer and announced.
+      return { ...queue, initiatives: store.projects().map((p) => ({ id: p.id, name: p.name, repos: mergeQueue.cachedRepos(p.id) })) };
+    },
+    prOwner: async ({ projectId, url, initiative }) => {
+      service.requireProject(projectId);
+      const key = canonicalPrUrl(url);
+      if (!key) throw new ProjectError("Expected a GitHub PR URL.");
+      const id = initiative === null ? null : await prMoveTarget(initiative);
+      const target = id === null ? null : initiativeNamed(store, id);
+      if (target) prMoveFits(target, key);
+      prOwners.move(key, target?.id ?? null, Date.now());
+      bb.realtime.publish("merge-queue-changed", { repo: null });
+      return { url: key, initiative: target?.name ?? null };
+    },
     prNotes: ({ projectId, url }) => {
       service.requireProject(projectId);
       const key = canonicalPrUrl(url);
@@ -1024,10 +1064,15 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
   /** initiative_pr and `bb initiative pr`: record PR stages, categories and notes, in one transaction. */
-  const setPrStages = (projectId: string, raw: unknown, tool: string, caller: PrCaller) => {
+  const setPrStages = async (projectId: string, raw: unknown, tool: string, caller: PrCaller) => {
     const input = parseToolInput(prToolSchema, raw, tool);
     service.requireProject(projectId);
-    return store.db.transaction(() => recordPrs(store, service.prNotes, projectId, input, Date.now(), caller))();
+    // Destinations by id from here, so a rename while their repositories are looked up changes nothing.
+    const prs = input.prs && await Promise.all(input.prs.map(async (pr) => (pr.initiative ? { ...pr, initiative: await prMoveTarget(pr.initiative) } : pr)));
+    const owners = { move: prOwners.move.bind(prOwners), fits: prMoveFits };
+    const result = store.db.transaction(() => recordPrs(store, service.prNotes, projectId, { ...input, prs }, Date.now(), caller, owners))();
+    if (input.prs?.some((pr) => pr.initiative !== undefined)) bb.realtime.publish("merge-queue-changed", { repo: null });
+    return result;
   };
   /** D442: a worker notes the PRs its assignments name, the coordinator gave it, or its branch opened. */
   const workerCaller = (projectId: string, worker: { num: number; ref: string; threadId: string | null }, threadId: string): PrCaller => ({
@@ -1045,17 +1090,17 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_pr",
     parameters: jsonSchema(prToolSchema),
-    description: 'Keep each pull request\'s record and notes, several PRs per call: {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note:"W14 reviewing",category:"Security",waitingOn:"W14: move the lock",changes:["drop the retry"],decision:{text:"Keep 5m TTL",link:"D437"},worker:"W14",notes:[{kind:"question",text:"No migration test?"}],answered:[{n:3,text:"Yes"}]}]}, every field but url optional. Only given fields change; null clears one. stage clear removes yours (the dashboard guesses from GitHub again). category is a free-form workstream: reuse one from the result\'s categories; {rename:[{from:"Sec",to:"Security"}]} renames or merges. changes replaces the list. notes append to the PR\'s log (the result numbers them n); answered closes questions by n. An assignment (A#) names its worker. Workers only add notes, to PRs their assignments name or their branch opened.',
+    description: 'Keep each pull request\'s record and notes, several PRs per call: {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note:"W14 reviewing",category:"Security",waitingOn:"W14: move the lock",changes:["drop the retry"],decision:{text:"Keep 5m TTL",link:"D437"},worker:"W14",notes:[{kind:"question",text:"No migration test?"}],answered:[{n:3,text:"Yes"}]}]}, every field but url optional. Only given fields change; null clears one. stage clear removes yours (the dashboard guesses from GitHub again). category is a free-form workstream: reuse one from the result\'s categories; {rename:[{from:"Sec",to:"Security"}]} renames or merges. changes replaces the list. notes append to the PR\'s log (the result numbers them n); answered closes questions by n. An assignment (A#) names its worker. initiative:"Equisafe UI" (a name or id) moves the PR to that Adventure, null unassigns it: a PR is listed by its one owner, or by every Adventure under Unassigned; a worker\'s PR is its Adventure\'s unless moved. Workers set stage, add notes and move PRs, only those their assignments name or their branch opened.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
       await ensureMember(threadId);
       const m = store.membership(threadId);
       if (m && !m.former && m.workerNum > 0 && m.worker) {
         const { project, worker } = service.workerOf(threadId);
-        return receipt(setPrStages(project.id, raw, "initiative_pr", workerCaller(project.id, worker, threadId)));
+        return receipt(await setPrStages(project.id, raw, "initiative_pr", workerCaller(project.id, worker, threadId)));
       }
       const p = await coordinatorProject(threadId);
-      return receipt(setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, author: m?.discussion ? "lead" : "coordinator", threadId }));
+      return receipt(await setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, author: m?.discussion ? "lead" : "coordinator", threadId }));
     },
   });
   registerTool({
@@ -1084,7 +1129,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_read",
-    description: 'Read the Initiative. {} is the overview; {view:"rules"} the standing rules; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state, refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
+    description: 'Read the Initiative. {} is the overview; {view:"rules"} the standing rules; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state (unassigned:true: the PRs no Adventure owns), refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
     parameters: agentReadSchema,
     async execute(input, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
@@ -1095,10 +1140,10 @@ export default function plugin(bb: BbPluginApi) {
         if (pending) return JSON.stringify(pending);
         throw new ProjectError("This thread does not belong to an Initiative.");
       }
-      const { view, category, stage, ...rawOptions } = input;
+      const { view, category, stage, unassigned, ...rawOptions } = input;
       const options = parseToolInput(readOptionsSchema, rawOptions, "initiative_read");
-      if ((category !== undefined || stage !== undefined) && (view !== "prs" || options.refs))
-        throw new ToolInputError('category and stage select a slice of view prs without refs, for example initiative_read {view:"prs",category:"CI"}.');
+      if ((category !== undefined || stage !== undefined || unassigned !== undefined) && (view !== "prs" || options.refs))
+        throw new ToolInputError('category, stage and unassigned select a slice of view prs without refs, for example initiative_read {view:"prs",category:"CI"}.');
       if (view === "overview" && Object.keys(rawOptions).length)
         throw new ToolInputError(`overview has no ${Object.keys(rawOptions).join(", ")} selectors. Omit view for refs, or select a collection such as workers or reports.`);
       if (!view && !options.refs && Object.keys(rawOptions).length)
@@ -1114,7 +1159,7 @@ export default function plugin(bb: BbPluginApi) {
       if (view === "prs") {
         const queue = await mergeQueue.read(m.project.id);
         const page = { offset: options.offset, limit: options.limit };
-        return JSON.stringify(options.refs ? prsByRef(queue, options.refs, page) : prSummary(queue, { category, stage, ...page }));
+        return JSON.stringify(options.refs ? prsByRef(queue, options.refs, page) : prSummary(queue, { category, stage, unassigned, ...page }));
       }
       return JSON.stringify(read(m.project.id, view, options));
     },
@@ -1303,8 +1348,8 @@ export default function plugin(bb: BbPluginApi) {
           if (!id) throw new ProjectError("Pass the initiative id: bb initiative pr '<json>' <initiative-id>.");
           // v9: an adopted worker whose tools predate the switch keeps its PRs from the shell.
           result = ctx.threadId && member?.worker
-            ? setPrStages(id, JSON.parse(value), "bb initiative pr", workerCaller(id, service.workerOf(ctx.threadId).worker, ctx.threadId))
-            : setPrStages(id, JSON.parse(value), "bb initiative pr", ctx.threadId ? { ...COORDINATOR, threadId: ctx.threadId } : { ...COORDINATOR, author: "user" });
+            ? await setPrStages(id, JSON.parse(value), "bb initiative pr", workerCaller(id, service.workerOf(ctx.threadId).worker, ctx.threadId))
+            : await setPrStages(id, JSON.parse(value), "bb initiative pr", ctx.threadId ? { ...COORDINATOR, threadId: ctx.threadId } : { ...COORDINATOR, author: "user" });
         } else if (
           action === "report" &&
           value &&

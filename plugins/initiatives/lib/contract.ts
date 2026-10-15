@@ -122,6 +122,15 @@ export const projectsContract = defineRpcContract({
     input: z.object({ projectId: id, refresh: z.boolean().optional() }),
     output: z.custom<MergeQueue>(),
   },
+  /**
+   * R2: move a PR to an open Initiative (by id), or out of every one with null.
+   * A manual choice, so no automatic owner replaces it; every dashboard is told
+   * on merge-queue-changed.
+   */
+  prOwner: {
+    input: z.object({ projectId: id, url: z.string().min(1).max(300), initiative: id.nullable() }),
+    output: z.object({ url: z.string(), initiative: z.string().nullable() }),
+  },
   /** D442: one PR's whole notes log, oldest first (the queue carries only the last few). */
   prNotes: {
     input: z.object({ projectId: id, url: z.string().min(1).max(300) }),

@@ -1171,7 +1171,7 @@ function WorkerStatusIcon({ v }: { v: WorkerView }) {
 /** A touch held still this long opens a row's menu, as in the sidebar's thread list. */
 const LONG_PRESS_MS = 450;
 /** The sidebar's long press (plugins/sidebar useLongPressMenu): a still primary touch, any move cancels. */
-function useLongPress(open: (x: number, y: number) => void) {
+export function useLongPress(open: (x: number, y: number) => void) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancel = () => {
     if (timer.current !== null) clearTimeout(timer.current);
@@ -1305,6 +1305,56 @@ function focusNear(list: HTMLElement, from: HTMLElement, gone: (row: HTMLElement
 const REFOCUS_MS = 10_000;
 /** The room a row menu keeps from the window's top and bottom edges. */
 const MENU_MARGIN = 8;
+
+/**
+ * A row menu opened at (x, y) in its row (the menu's parent): where it sits and its keys. It
+ * keeps within its row's width and the window's height: below the pointer, above it when it
+ * doesn't fit there, else as low as fits; again whenever a `step` or a `resize` (a message
+ * changing its height) changes. Each step focuses its first choice; a pending choice stays
+ * focusable (aria-disabled), so keys still reach the menu. Arrows move between choices; Escape
+ * closes it and refocuses the row, Tab and a press outside close it.
+ */
+export function useRowMenu(
+  menu: React.RefObject<HTMLDivElement | null>,
+  at: { x: number; y: number },
+  close: (refocus: boolean) => void,
+  step: readonly unknown[] = [],
+  resize: readonly unknown[] = [],
+) {
+  const [place, setPlace] = useState({ left: at.x, top: at.y });
+  useLayoutEffect(() => {
+    const el = menu.current!;
+    const row = el.parentElement!;
+    const box = row.getBoundingClientRect();
+    const height = el.offsetHeight;
+    const floor = window.innerHeight - MENU_MARGIN;
+    const y = box.top + at.y;
+    const top = y + height <= floor ? at.y
+      : y - height >= MENU_MARGIN ? at.y - height
+      : Math.max(MENU_MARGIN, floor - height) - box.top;
+    const left = row.clientWidth ? Math.max(0, Math.min(at.x, row.clientWidth - el.offsetWidth)) : at.x;
+    setPlace({ left, top });
+  }, [at.x, at.y, ...step, ...resize]);
+  useLayoutEffect(() => {
+    // A menu with no choice yet (still loading them) takes focus itself, so Escape reaches it.
+    (menu.current!.querySelector<HTMLButtonElement>("[role=menuitem]") ?? menu.current!).focus();
+  }, [at.x, at.y, ...step]);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node)) close(false); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, []);
+  const keys = (event: React.KeyboardEvent) => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); return; }
+    if (event.key === "Tab") { close(false); return; }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const choices = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? []);
+    const index = choices.indexOf(document.activeElement as HTMLButtonElement);
+    choices[(index + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length]?.focus();
+  };
+  return { place, keys };
+}
 /** The open row menu: whose, where in its row, and which step. */
 type RowMenu = { ref: string; x: number; y: number; confirm: "stop" | "retire" | null };
 /** A worker's latest Stop or Retire from its menu, kept whether or not the menu is still open. */
@@ -1430,44 +1480,11 @@ function WorkerMenu({ v, menu: state, menus, close, openThread, details }: {
   const { w } = v;
   const { confirm } = state;
   const menu = useRef<HTMLDivElement>(null);
-  const [place, setPlace] = useState({ left: state.x, top: state.y });
   const retired = w.state === "retired";
   // From what runs, not the group: a worker that needs you can still have a busy thread or child.
   const canStop = !!w.threadId && !retired && (BUSY_THREAD.has(w.runtime) || !!v.waiting?.on || !!w.open);
   const write = menus.writes[w.ref];
-  // Keep the menu within its row's width and the window's height: below the pointer, above it
-  // when it doesn't fit there, else as low as fits; again whenever a message changes its height.
-  useLayoutEffect(() => {
-    const el = menu.current!;
-    const row = el.parentElement!;
-    const box = row.getBoundingClientRect();
-    const height = el.offsetHeight;
-    const floor = window.innerHeight - MENU_MARGIN;
-    const y = box.top + state.y;
-    const top = y + height <= floor ? state.y
-      : y - height >= MENU_MARGIN ? state.y - height
-      : Math.max(MENU_MARGIN, floor - height) - box.top;
-    const left = row.clientWidth ? Math.max(0, Math.min(state.x, row.clientWidth - el.offsetWidth)) : state.x;
-    setPlace({ left, top });
-  }, [state.x, state.y, confirm, write?.slow, write?.error]);
-  // Each step takes focus; a pending choice stays focusable (aria-disabled), so keys still reach the menu.
-  useLayoutEffect(() => {
-    menu.current!.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
-  }, [state.x, state.y, confirm]);
-  useEffect(() => {
-    const outside = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node)) close(false); };
-    document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
-  }, []);
-  const keys = (event: React.KeyboardEvent) => {
-    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); return; }
-    if (event.key === "Tab") { close(false); return; }
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    const choices = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? []);
-    const index = choices.indexOf(document.activeElement as HTMLButtonElement);
-    choices[(index + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length]?.focus();
-  };
+  const { place, keys } = useRowMenu(menu, state, close, [confirm], [write?.slow, write?.error]);
   const question = confirm === "stop"
     ? `Stop ${w.ref}? Its running turn, open work and child threads stop.`
     : `Retire ${w.ref}? Its thread is archived.`;

@@ -26,10 +26,11 @@ current instructions, the reviewer command and the rules), which replaces anythi
   outcome, PR URL and head, review rounds and last verdict, what you need. `report` is your
   full report: what you did, what you verified (commands and results), what is left, and
   anything uncommitted or still running.
-- `initiative_pr {prs:[{url, stage?, notes?:[{kind?:"note"|"question"|"comment", text}]}]}`
+- `initiative_pr {prs:[{url, stage?, notes?:[{kind?:"note"|"question"|"comment", text}], initiative?}]}`
   keeps your own PRs' stage (set `ready-for-erwin` after a clean review) and notes, on PRs
   your assignment names or your branch opened. Your report's summary is added to the PRs it
-  names by itself.
+  names by itself. A PR your thread (or its child) opened belongs to your Adventure;
+  `initiative:"<name>"` moves one elsewhere, `initiative:null` unassigns it.
 - `initiative_message {to:"lead", text}` is for blockers or facts your lead needs now;
   `to:"W4"` reaches a peer. No progress pings. `to:"coordinator"` also reaches your lead.
 - `initiative_read {view:"rules"}` lists the standing rules; `{refs:["W4"]}` reads a peer

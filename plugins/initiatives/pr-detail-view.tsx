@@ -58,7 +58,14 @@ function Clamp({ text }: { text: string }) {
 }
 
 /** The PRs a stack puts beside this one: a chip that opens its detail. */
-function PrChip({ pr, onOpen }: { pr: QueuedPullRequest; onOpen: (pr: QueuedPullRequest) => void }) {
+/** A PR in the stack; another Initiative's (R2) only names itself, since it has no panel here. */
+function PrChip({ pr, onOpen }: { pr: QueuedPullRequest; onOpen: ((pr: QueuedPullRequest) => void) | null }) {
+  if (!onOpen)
+    return (
+      <span className="cr-pd-chip" title={`${pr.title} (another Adventure's)`}>
+        <span className="cr-pm-dot" data-stage={pr.stage} aria-hidden="true" />#{pr.number}
+      </span>
+    );
   return (
     <button type="button" className="cr-pd-chip" title={pr.title} onClick={() => onOpen(pr)}>
       <span className="cr-pm-dot" data-stage={pr.stage} aria-hidden="true" />#{pr.number}
@@ -96,10 +103,12 @@ function Bones() {
  * Initiative's (record, stage history, notes, work, decisions, updates) from prDetail.
  * Esc closes it, wherever focus is in the PRs tab.
  */
-export function PrDetailPanel({ pr, all, stages, login, load, revision, onOpen, onClose }: {
+export function PrDetailPanel({ pr, all, beneath = [], stages, login, load, revision, onOpen, onClose }: {
   pr: QueuedPullRequest;
   /** Every PR, for its stack. */
   all: readonly QueuedPullRequest[];
+  /** R2: other Initiatives' PRs this one's stack sits on. */
+  beneath?: readonly QueuedPullRequest[];
   /** The queue's stages, for their labels. */
   stages: readonly StageDefinition[];
   login: string | null;
@@ -167,7 +176,7 @@ export function PrDetailPanel({ pr, all, stages, login, load, revision, onOpen, 
     return () => document.removeEventListener("keydown", keys);
   });
 
-  const byNumber = numberIndex(all);
+  const byNumber = numberIndex([...all, ...beneath]);
   const below = pr.stack?.on != null ? byNumber.get(`${pr.repo}#${pr.stack.on}`) ?? null : null;
   const above = all.filter((p) => p.repo === pr.repo && p.stack?.on === pr.number);
   const blocker = waitsOn(pr, byNumber);
@@ -213,7 +222,7 @@ export function PrDetailPanel({ pr, all, stages, login, load, revision, onOpen, 
                 <dt>Stack</dt>
                 <dd className="cr-pd-stack">
                   level {pr.stack.level} of {pr.stack.levels} · {pr.stack.size} PRs
-                  {below ? <><span className="cr-pd-label">on</span><PrChip pr={below} onOpen={onOpen} /></> : null}
+                  {below ? <><span className="cr-pd-label">on</span><PrChip pr={below} onOpen={all.includes(below) ? onOpen : null} /></> : null}
                   {above.length ? <><span className="cr-pd-label">under</span>{above.map((p) => <PrChip key={p.url} pr={p} onOpen={onOpen} />)}</> : null}
                 </dd>
               </>

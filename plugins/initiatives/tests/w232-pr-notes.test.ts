@@ -128,7 +128,7 @@ describe("D442 notes per PR", () => {
     await expect(call(f, "initiative_pr", { prs: [{ url: url(8), notes: [{ text: "x" }] }] }, threadId)).rejects.toThrow(/W1 keeps only PRs its assignments name/);
     // v9: a worker keeps its own PRs' stage too; other fields stay a lead's.
     await call(f, "initiative_pr", { prs: [{ url: url(7), stage: "in-review" }] }, threadId);
-    await expect(call(f, "initiative_pr", { prs: [{ url: url(7), category: "Search" }] }, threadId)).rejects.toThrow(/Workers set their PRs' stage and add notes \(\{prs:\[\{url,stage,notes\}\]\}\); category is a lead's to set/);
+    await expect(call(f, "initiative_pr", { prs: [{ url: url(7), category: "Search" }] }, threadId)).rejects.toThrow(/Workers set their PRs' stage, add notes and move them to an Adventure \(\{prs:\[\{url,stage,notes,initiative\}\]\}\); category is a lead's to set/);
     await expect(call(f, "initiative_pr", { rename: [{ from: "a", to: "b" }] }, threadId)).rejects.toThrow(/rename/);
     // A PR the coordinator put on the worker counts too.
     await call(f, "initiative_pr", { prs: [{ url: url(8), worker: "W1" }] });

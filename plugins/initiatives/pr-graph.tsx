@@ -4,6 +4,7 @@ import type { QueuedPullRequest, StageDefinition } from "./lib/merge-queue";
 import type { PrNote } from "./lib/pr-notes";
 import { categoriesOf, compactCount, laneLayout, noteAuthor, sizeDetail, stackLabel, stateItems, workerLabel, type StackDrawing, type StateItem } from "./lib/pr-map";
 import { compactAge } from "./control-room";
+import { useMoveMenu, type MoveMenu } from "./pr-move-menu";
 
 /**
  * A plain click opens the PR in a tab of BB's built-in browser (or the
@@ -222,13 +223,17 @@ function Tip({ pr, stage, blocker }: { pr: QueuedPullRequest; stage: string; blo
   );
 }
 
-function Node({ pr, col, label, blocker, open, onOpen }: {
+function Node({ pr, col, label, blocker, open, onOpen, menu }: {
   pr: QueuedPullRequest; col: number; label: string; blocker: QueuedPullRequest | null; open: boolean; onOpen?: (pr: QueuedPullRequest) => void;
+  /** R2: its "Move to Initiative" menu, as on a list row. */
+  menu: MoveMenu | null;
 }) {
   const link = usePrLink(pr.url);
+  const { item, anchor, handlers, element } = useMoveMenu(pr, menu, link.onClick);
   return (
-    <li className="cr-pm-node" data-stage={pr.stage} data-available={pr.available || undefined} data-open={open || undefined} style={{ paddingLeft: col * INDENT }}>
-      <a {...link} aria-label={`#${pr.number} ${pr.title}, ${label}${pr.available ? ", review now" : ""}${pr.notes.open.length ? ", open questions" : ""}`}>
+    <li ref={item} className="cr-pm-node" data-stage={pr.stage} data-available={pr.available || undefined} data-open={open || undefined}
+      data-menu={element ? true : undefined} style={{ paddingLeft: col * INDENT }}>
+      <a ref={anchor} {...link} {...handlers} aria-label={`#${pr.number} ${pr.title}, ${label}${pr.available ? ", review now" : ""}${pr.notes.open.length ? ", open questions" : ""}`}>
         <span className="cr-pm-dot" data-stage={pr.stage} aria-hidden="true" />
         <span className="cr-pm-num">#{pr.number}</span>
         <span className="cr-pm-title">{pr.title}</span>
@@ -238,6 +243,7 @@ function Node({ pr, col, label, blocker, open, onOpen }: {
       <Tip pr={pr} stage={label} blocker={blocker} />
       {/* After the card: a focused link shows it as its next sibling. */}
       {onOpen ? <DetailsButton pr={pr} open={open} onOpen={onOpen} /> : null}
+      {element}
     </li>
   );
 }
@@ -272,20 +278,24 @@ function Edges({ drawing }: { drawing: StackDrawing }) {
  * The graph: one lane per category, each stack drawn as a tree from its
  * bottom PR up, the unstacked PRs after them; nodes colored by stage.
  */
-export function PrGraph({ pullRequests, all, stages, open = null, onOpen }: {
+export function PrGraph({ pullRequests, all, beneath = [], stages, open = null, onOpen, menuOf }: {
   pullRequests: readonly QueuedPullRequest[];
   /** Every PR, for stack roots and blockers the filters hide. */
   all: readonly QueuedPullRequest[];
+  /** R2: other Initiatives' PRs these are stacked on, for the blockers they are. */
+  beneath?: readonly QueuedPullRequest[];
   stages: readonly StageDefinition[];
   /** The PR whose detail panel is open, and how a node opens its own. */
   open?: QueuedPullRequest | null;
   onOpen?: (pr: QueuedPullRequest) => void;
+  /** R2: each node's "Move to Initiative" menu; none without it. */
+  menuOf?: (pr: QueuedPullRequest) => MoveMenu | null;
 }) {
   const labels = new Map(stages.map((s) => [s.id, s.label]));
-  const byNumber = numberIndex(all);
+  const byNumber = numberIndex([...all, ...beneath]);
   const categorized = all.some((pr) => pr.category !== null);
   const node = (pr: QueuedPullRequest, col: number) => (
-    <Node key={pr.url} pr={pr} col={col} label={labels.get(pr.stage) ?? pr.stage} blocker={waitsOn(pr, byNumber)} open={pr === open} onOpen={onOpen} />
+    <Node key={pr.url} pr={pr} col={col} label={labels.get(pr.stage) ?? pr.stage} blocker={waitsOn(pr, byNumber)} open={pr === open} onOpen={onOpen} menu={menuOf?.(pr) ?? null} />
   );
   return (
     <div className="cr-pm-graph">

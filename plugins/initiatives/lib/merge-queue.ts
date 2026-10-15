@@ -61,6 +61,18 @@ export interface QueuedPullRequest extends PrState {
   notes: PrNotesSummary;
   /** T156: the workers and assignments of every assignment naming it; search matches them. */
   links: PrLinks;
+  /**
+   * R2: no Initiative owns it yet, so every Initiative listing its repository shows it, apart,
+   * under Unassigned. The others are this Initiative's: another Initiative's PRs aren't listed.
+   */
+  unassigned: boolean;
+}
+
+/** R2: an open Initiative a PR can move to, and its repositories, lower case; null while being looked up. */
+export interface MoveTarget {
+  id: string;
+  name: string;
+  repos: string[] | null;
 }
 
 /** Refs linked to a PR, each once: W3, A301. */
@@ -105,6 +117,8 @@ export interface PrStack {
   level: number;
   /** The stack's height: its deepest level. */
   levels: number;
+  /** When the root opened: review order keeps a stack together even when its root isn't listed (R2: another Initiative's). */
+  rootCreatedAt: number;
   /** Every PR in the stack. */
   size: number;
 }
@@ -135,8 +149,15 @@ export interface MergeQueue {
   skipped: { project: string; reason: string }[];
   /** Every stage a PR may sit in, in queue order; groups follow it. */
   stages: StageDefinition[];
-  /** Sorted: by stage, then oldest first within a stage. */
+  /** Sorted: by stage, then oldest first within a stage. This Initiative's PRs and the unassigned ones (R2). */
   pullRequests: QueuedPullRequest[];
+  /**
+   * R2: other Initiatives' PRs that listed ones are stacked on, never listed themselves: they
+   * name what a listed PR waits on. Each at the stage its owner recorded.
+   */
+  beneath?: QueuedPullRequest[];
+  /** R2: the dashboard's "Move to Initiative" choices; agent reads leave it out. */
+  initiatives?: MoveTarget[];
 }
 
 /** `owner/repo` of a GitHub remote URL (https, ssh or scp-like), else null. */
@@ -290,6 +311,7 @@ export function parsePullRequests(repo: string, raw: string): QueuedPullRequest[
       available: false,
       notes: NO_NOTES,
       links: NO_LINKS,
+      unassigned: false,
     });
   }
   return pullRequests.map((pr) => ({ ...pr, stage: githubStage(pr) }));

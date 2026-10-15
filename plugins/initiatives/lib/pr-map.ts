@@ -68,7 +68,7 @@ export function linkStacks(pullRequests: readonly QueuedPullRequest[]): QueuedPu
     visit(root, 1);
     const levels = Math.max(...members.map(([, level]) => level));
     for (const [pr, level] of members)
-      stacks.set(pr, { root: root.number, on: parent.get(pr)?.number ?? null, level, levels, size: members.length });
+      stacks.set(pr, { root: root.number, on: parent.get(pr)?.number ?? null, level, levels, size: members.length, rootCreatedAt: root.createdAt });
   }
   return pullRequests.map((pr) => ({ ...pr, stack: stacks.get(pr) ?? null, available: ready.get(pr)! }));
 }
@@ -79,7 +79,10 @@ export function linkStacks(pullRequests: readonly QueuedPullRequest[]): QueuedPu
  */
 export function stackOrder(all: readonly QueuedPullRequest[]): (a: QueuedPullRequest, b: QueuedPullRequest) => number {
   const byNumber = new Map(all.map((pr) => [prKey(pr.repo, pr.number), pr]));
-  const root = (pr: QueuedPullRequest) => (pr.stack ? byNumber.get(prKey(pr.repo, pr.stack.root)) ?? pr : pr);
+  // A root `all` leaves out (another Initiative's, R2) still orders its stack, by what the stack says of it.
+  const root = (pr: QueuedPullRequest) => (pr.stack
+    ? byNumber.get(prKey(pr.repo, pr.stack.root)) ?? { repo: pr.repo, number: pr.stack.root, createdAt: pr.stack.rootCreatedAt }
+    : pr);
   return (a, b) => {
     const ra = root(a);
     const rb = root(b);
@@ -258,6 +261,8 @@ export interface PrRead {
   category?: string;
   /** A stage id, exactly as PR_STAGE_IDS spells it. */
   stage?: string;
+  /** R2: the unassigned PRs instead of the Initiative's own. */
+  unassigned?: boolean;
   offset: number;
   limit: number;
 }
@@ -285,18 +290,24 @@ const needsAction = (pr: QueuedPullRequest) => !!pr.waitingOn || pr.notes.open.l
  * a filter, `state` lists only the PRs needing action and counts the others; a
  * category or stage lists every PR in it. `state` pages with offset/limit and
  * its lines are clipped; prsByRef reads whole PRs. The answer fits
- * PRS_READ_CHARS and says what it left out.
+ * PRS_READ_CHARS and says what it left out. Like the dashboard (R2), it is
+ * about the Initiative's own PRs; the unassigned ones in the slice are only
+ * listed, by ref and title, in unassignedPrs, as far as they fit. `unassigned`
+ * reads them instead, as a slice: `state` lists and pages every one.
  */
 export function prSummary(queue: MergeQueue, read: PrRead = { offset: 0, limit: 20 }) {
-  const prs = queue.pullRequests;
-  const ref = prRef(prs);
-  const order = stackOrder(prs);
-  const filtered = read.category !== undefined || read.stage !== undefined;
+  const all = queue.pullRequests;
+  const prs = all.filter((pr) => !pr.unassigned === !read.unassigned);
+  const ref = prRef(all);
+  const order = stackOrder(all);
+  const filtered = read.category !== undefined || read.stage !== undefined || !!read.unassigned;
   const category = read.category?.toLowerCase();
-  const slice = prs.filter((pr) => (category === undefined || (pr.category ?? UNCATEGORIZED).toLowerCase() === category) && (read.stage === undefined || pr.stage === read.stage));
+  const inSlice = (pr: QueuedPullRequest) => (category === undefined || (pr.category ?? UNCATEGORIZED).toLowerCase() === category) && (read.stage === undefined || pr.stage === read.stage);
+  const slice = prs.filter(inSlice);
+  const unassigned = read.unassigned ? [] : all.filter((pr) => pr.unassigned && inSlice(pr)).sort(order).map((pr) => `${ref(pr)} ${clip(pr.title, 70)}`);
   const listed = (filtered ? slice : slice.filter(needsAction)).sort(order);
-  const inSlice = new Set(slice);
-  const next = nextUp(prs).filter((pr) => inSlice.has(pr));
+  const sliced = new Set(slice);
+  const next = nextUp(prs).filter((pr) => sliced.has(pr));
   const brief = (pr: QueuedPullRequest) => `${ref(pr)}${pr.stack ? ` (${stackLabel(pr.stack)})` : ""}`;
   const stackTree = (pr: QueuedPullRequest): string => {
     const up = prs.filter((p) => p.repo === pr.repo && p.stack?.on === pr.number).sort(order);
@@ -304,11 +315,14 @@ export function prSummary(queue: MergeQueue, read: PrRead = { offset: 0, limit: 
   };
 
   const categories = filtered && !slice.length ? categoriesOf(prs).map((c) => c.label) : [];
-  const groups = groupPrs(slice, "category", queue.stages, prs);
+  const groups = groupPrs(slice, "category", queue.stages, all);
   const named = groups.map((group) => [group.label, Object.fromEntries(group.groups.map((g) => [g.key!, g.pullRequests.map(brief)]))] as const);
   const counted = groups.map((group) => [group.label, Object.fromEntries(group.groups.map((g) => [g.key!, g.pullRequests.length]))] as const);
-  const roots = prs.filter((root) => root.stack?.level === 1 && (!filtered || slice.some((pr) => pr.repo === root.repo && pr.stack?.root === root.number)));
-  const trees = roots.sort(order).map(stackTree);
+  // Each stack from its lowest PR here: its root, or (R2) the first above a PR another Initiative owns.
+  const here = new Set(prs.map((pr) => `${pr.repo}#${pr.number}`));
+  const roots = prs.filter((root) => root.stack && (root.stack.on === null || !here.has(`${root.repo}#${root.stack.on}`))
+    && (!filtered || slice.some((pr) => pr.repo === root.repo && pr.stack?.root === root.stack!.root)));
+  const trees = roots.sort(order).map((root) => `${root.stack!.on === null ? "" : `(on #${root.stack!.on}) `}${stackTree(root)}`);
 
   return fitPage(listed, read, (pr) => [ref(pr), prState(pr, false)], (state, page, cut, lists) => {
     // The lists take their share in this order.
@@ -319,6 +333,7 @@ export function prSummary(queue: MergeQueue, read: PrRead = { offset: 0, limit: 
     // fromEntries: free-form category names ("__proto__") become plain keys.
     const byCategory = Object.fromEntries(lists.take<readonly [string, Record<string, string[] | number>]>(byNames ? named : counted, "categories"));
     const stacks = lists.take(trees, "stacks");
+    const unassignedPrs = lists.take(unassigned, "unassigned PRs");
     const cuts = [...lists.cuts, ...(cut ? ["state ends at page.nextOffset, read on with offset"] : [])];
     return {
       ...head,
@@ -336,6 +351,7 @@ export function prSummary(queue: MergeQueue, read: PrRead = { offset: 0, limit: 
       state,
       page,
       ...(filtered ? {} : { noAction: slice.length - listed.length }),
+      ...(unassigned.length ? { unassignedPrs, owners: UNASSIGNED_NOTE } : {}),
       ...(prs.some((pr) => pr.stageSource === "github") ? { note: "Stages without a coordinator record are guessed from GitHub." } : {}),
       ...(cuts.length ? { truncated: `Cut to fit ${PRS_READ_CHARS} characters: ${cuts.join("; ")}. Narrow with category, stage or refs.` } : {}),
       reads: filtered
@@ -374,14 +390,18 @@ export function prsByRef(queue: MergeQueue, refs: readonly string[], read: { off
   });
 }
 
-/** The repositories, whether the first read still runs, and how many PRs are open. */
+const UNASSIGNED_NOTE = 'Unassigned PRs show in every Adventure listing their repository; initiative_read {"view":"prs","unassigned":true} lists them all with their state, paged. Give one an owner with initiative_pr {"prs":[{"url":"<the PR URL>","initiative":"<Adventure name>"}]} (initiative null unassigns).';
+
+/** The repositories, whether the first read still runs, and how many open PRs are the Initiative's and unassigned (R2). */
 function queueHead(queue: MergeQueue, lists: Budget) {
   const loading = queue.repos.filter((r) => r.fetchedAt === null && r.fetching).map((r) => r.repo);
   const repos = queue.repos.map((r) => ({ repo: r.repo, fetchedAt: r.fetchedAt, ...(r.fetching ? { fetching: true } : {}), ...(r.error ? { error: clip(r.error, STATE_LINE) } : {}) }));
+  const unassigned = queue.pullRequests.filter((pr) => pr.unassigned).length;
   return {
     repos: lists.take(repos, "repositories"),
     ...(loading.length ? { loading: `The first read of ${clip(loading.join(", "), STATE_LINE)} from GitHub is running; read again in a few seconds.` } : {}),
-    open: queue.pullRequests.length,
+    open: queue.pullRequests.length - unassigned,
+    ...(unassigned ? { unassigned } : {}),
   };
 }
 
@@ -501,6 +521,7 @@ function prDetail(pr: QueuedPullRequest, whole: boolean) {
     ...(whole ? {} : { clipped: true }),
     title: line(pr.title),
     url: pr.url,
+    ...(pr.unassigned ? { unassigned: true } : {}),
     ...(pr.category ? { category: pr.category } : {}),
     ...(pr.stack ? { stack: stackLabel(pr.stack) } : {}),
     ...(pr.available ? { available: true } : {}),

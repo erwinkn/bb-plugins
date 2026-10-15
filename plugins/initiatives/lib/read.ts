@@ -25,7 +25,7 @@ export type ReadOptions = z.infer<typeof readOptionsSchema>;
 // "memory": an alias of Chat memory's memory_read for sessions built before T145 (A469).
 // category and stage select a slice of view prs (T155).
 export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", "context", "memory", "prs", "rules", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional(),
-  category: z.string().min(1).max(80).optional(), stage: z.enum(PR_STAGE_IDS).optional() }).strict();
+  category: z.string().min(1).max(80).optional(), stage: z.enum(PR_STAGE_IDS).optional(), unassigned: z.boolean().optional() }).strict();
 export const MAX_READ_BYTES = 65536;
 const refViews: Record<string, ReadView> = { T: "tasks", W: "workers", A: "assignments", D: "decisions", K: "decisions", U: "updates" };
 export const fieldsByView: Partial<Record<ReadView, readonly string[]>> = {

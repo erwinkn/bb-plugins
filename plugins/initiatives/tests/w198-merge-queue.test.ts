@@ -56,6 +56,7 @@ describe("parsing gh pr list", () => {
       repo: "erwinkn/bb-plugins",
       number: 68,
       title: "Questions: drop string maxLength from tool schemas",
+      unassigned: false,
       url: "https://github.com/erwinkn/bb-plugins/pull/68",
       draft: false,
       review: "none",

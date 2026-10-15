@@ -71,6 +71,8 @@
 /* Hover card: shown after a short pause, never in the pointer's way. */
 .cr-pm-tip { display: none; position: absolute; z-index: 20; left: 0; top: calc(100% + 3px); width: min(320px, calc(100cqw - 24px)); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--cr-surface); box-shadow: 0 8px 24px #0006; font-size: 11.5px; line-height: 1.4; color: var(--cr-ink-secondary); pointer-events: none; }
 .cr-pm-node:hover > .cr-pm-tip, .cr-pm-node > a:focus-visible + .cr-pm-tip { display: grid; gap: 3px; animation: cr-pm-tip-in .12s ease-out .35s both; }
+/* R2: a node's open "Move to Initiative" menu: its card would cover the choices. */
+.cr-pm-node[data-menu] > .cr-pm-tip { display: none; }
 @keyframes cr-pm-tip-in { from { opacity: 0; transform: translateY(-2px); } }
 .cr-pm-tip strong { font-weight: 600; color: var(--foreground); }
 .cr-pm-tip-line { display: flex; align-items: center; flex-wrap: wrap; gap: 0 5px; }
@@ -152,7 +154,7 @@
   .cr-pm-body[data-open] { display: block; }
   .cr-pm-body[data-open] > .cr-pm-results { display: none; }
 }
-.cr-mq-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 2px; }
+.cr-mq-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 2px; }
 .cr-mq-row > :not(.cr-mq-pr, .cr-pd-open) { grid-column: 1 / -1; }
 .cr-mq-row[data-open] > .cr-mq-pr { background: color-mix(in srgb, var(--primary) 9%, transparent); }
 .bb-projects .cr .cr-pd-open { width: 22px; min-width: 22px; height: 22px; min-height: 22px; margin-top: 5px; color: var(--cr-faint); }
@@ -236,3 +238,10 @@
 .cr-pd-cleared { color: var(--muted-foreground); }
 .cr-pd-by { font-size: 11px; color: var(--cr-ink-secondary); }
 .cr .cr-pd-stage-note { margin: 0; padding-left: 8px; border-left: 2px solid var(--border); font-size: 11px; line-height: 1.4; color: var(--cr-ink-secondary); overflow-wrap: anywhere; }
+
+/* R2: the PRs no Initiative owns, folded at the bottom of the list. */
+.cr-mq-unassigned { padding-top: 10px; border-top: 1px solid var(--border); }
+.bb-projects .cr-mq-fold { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.cr-mq-fold::before { content: "▸"; font-size: 9px; transition: transform .12s; }
+.cr-mq-fold[aria-expanded="true"]::before { transform: rotate(90deg); }
+.cr-mq-menu-here { color: var(--muted-foreground); }
