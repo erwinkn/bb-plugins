@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   lastActivity,
   orderedProjects,
+  owningProject,
   projectStatus,
   projectThreads,
 } from "../lib/project-mode-status";
@@ -165,5 +166,45 @@ describe("ordered projects", () => {
       "a",
     ]);
     expect(rows.map((row) => row.id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("owningProject", () => {
+  // B's coordinator and worker hang under A's coordinator natively.
+  const b = {
+    ...project,
+    id: "b",
+    coordinatorThreadId: "c-b",
+    nodes: [
+      { ...project.nodes[0]!, threadId: "c-b" },
+      { ...project.nodes[1]!, threadId: "w-b", worker: "W2" },
+    ],
+  };
+  // BB's list omits the archived reviewer between w and helper.
+  const native = [
+    thread({ id: "c" }),
+    thread({ id: "w", parentThreadId: "c" }),
+    thread({ id: "c-b", parentThreadId: "c" }),
+    thread({ id: "w-b", parentThreadId: "c-b" }),
+    thread({ id: "helper", parentThreadId: "reviewer" }),
+    thread({ id: "loop-a", parentThreadId: "loop-b" }),
+    thread({ id: "loop-b", parentThreadId: "loop-a" }),
+    thread({ id: "plain" }),
+  ];
+  const owner = (id: string | null, links?: Map<string, string | null>) =>
+    owningProject([project, b], native, id, links);
+  it("prefers the Adventure that names a thread over one it descends from", () => {
+    expect(owner("w-b").owner).toBe("b");
+    expect(owner("c-b").owner).toBe("b");
+    expect(owner("w").owner).toBe("p");
+  });
+  it("names the thread whose link it lacks, and follows the host's links past it", () => {
+    expect(owner("helper")).toEqual({ owner: null, unknown: "reviewer" });
+    expect(owner("helper", new Map([["reviewer", "w"]]))).toEqual({ owner: "p", unknown: null });
+  });
+  it("answers null outside every Adventure, through a parent cycle too", () => {
+    expect(owner("plain")).toEqual({ owner: null, unknown: null });
+    expect(owner("loop-a")).toEqual({ owner: null, unknown: null });
+    expect(owner(null)).toEqual({ owner: null, unknown: null });
   });
 });

@@ -119,6 +119,14 @@ describe("adventureRows", () => {
     ]);
   });
 
+  it("lists the live coordinator without the threads it spawned, or none once it is archived", () => {
+    const { coordinator } = adventureRows(project, native, [], undefined, "updated");
+    expect(coordinator?.thread.id).toBe("c");
+    expect(coordinator?.children).toEqual([]);
+    const archived = native.map((t) => (t.id === "c" ? { ...t, isArchived: true } : t));
+    expect(adventureRows(project, archived, [], undefined, "updated").coordinator).toBeNull();
+  });
+
   it("lets BB's live status win over the server's group, and orders by worker id on request", () => {
     const { workers } = adventureRows(
       project,

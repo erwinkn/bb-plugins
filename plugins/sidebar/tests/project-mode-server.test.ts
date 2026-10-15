@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { registerProjectMode } from "../lib/project-mode-server";
 // BB refuses an RPC to a plugin that is missing or not running.
 const refused = async () => { throw new Error('unknown plugin "initiatives"'); };
@@ -161,4 +161,40 @@ it("reads the saved listing, falling back to the legacy initiativesListing and i
   expect(stale.listing).toEqual(defaults);
   expect(stale).not.toHaveProperty("mode");
   expect(stale).not.toHaveProperty("spaceId");
+});
+
+it("walks a thread's parent links up through archived threads, stopping at a root, a cycle or a deleted ancestor", async () => {
+  const parents: Record<string, string | null> = {
+    helper: "reviewer", reviewer: "worker", worker: "coordinator", coordinator: null,
+    "loop-a": "loop-b", "loop-b": "loop-a", orphan: "deleted",
+  };
+  const h = createFakePluginHost({
+    sdk: {
+      threads: {
+        get: async ({ threadId }: { threadId: string }) => {
+          if (!(threadId in parents)) throw new Error("no such thread");
+          return makeThreadResponse({ id: threadId, parentThreadId: parents[threadId]!, archivedAt: threadId === "reviewer" ? 1 : null });
+        },
+      },
+    },
+  });
+  registerProjectMode(h.bb);
+  try {
+    expect(await h.harness.callRpc("threadAncestry", { threadId: "reviewer" })).toEqual({
+      links: [
+        { id: "reviewer", parentThreadId: "worker" },
+        { id: "worker", parentThreadId: "coordinator" },
+        { id: "coordinator", parentThreadId: null },
+      ],
+    });
+    expect(await h.harness.callRpc("threadAncestry", { threadId: "loop-a" })).toEqual({
+      links: [{ id: "loop-a", parentThreadId: "loop-b" }, { id: "loop-b", parentThreadId: "loop-a" }],
+    });
+    expect(await h.harness.callRpc("threadAncestry", { threadId: "orphan" })).toEqual({
+      links: [{ id: "orphan", parentThreadId: "deleted" }],
+    });
+    await expect(h.harness.callRpc("threadAncestry", { threadId: "deleted" })).rejects.toThrow(/no such thread/);
+  } finally {
+    await h.harness.dispose();
+  }
 });

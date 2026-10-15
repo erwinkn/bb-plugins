@@ -39,10 +39,11 @@ const GROUP_PAGE: Record<WorkerGroup, number> = {
 };
 
 /**
- * An open Adventure's rows under its entry: its workers, grouped by state or
- * in one list as this client chose, then its member threads.
- * Every row is the usual thread row; a worker's adds its id and model. Child
- * threads stay folded under a toggle that shows only when there are some.
+ * The selected Adventure's rows below the Adventures: its coordinator, its
+ * workers, grouped by state or in one list as this client chose, then its
+ * member threads. Every row is the usual thread row; a worker's adds its id
+ * and model. Child threads stay folded under a toggle that shows only when
+ * there are some.
  */
 export function AdventureWorkers({
   project,
@@ -67,7 +68,7 @@ export function AdventureWorkers({
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
-  const { workers, others } = useMemo(
+  const { coordinator, workers, others } = useMemo(
     () => adventureRows(project, native.threads, client.drafts, facts, listing.sortBy),
     [project, native.threads, client.drafts, facts, listing.sortBy],
   );
@@ -79,10 +80,11 @@ export function AdventureWorkers({
         collect(node.children);
       }
     };
+    collect(coordinator ? [coordinator] : []);
     collect(workers.map((w) => w.node));
     collect(others);
     return ids;
-  }, [workers, others]);
+  }, [coordinator, workers, others]);
   const branchPrEligible = useBranchPullRequestEligibility(listedIds);
   const byThread = new Map(workers.map((w) => [w.node.thread.id, w]));
   const providerNames = new Map(providers.map((p) => [p.id, p.displayName]));
@@ -92,7 +94,12 @@ export function AdventureWorkers({
   const projectNames = new Map(native.projects.map((p) => [p.id, projectLabel(p)]));
   const row = (node: ThreadNode, depth = 0): ReactNode => {
     const { thread } = node;
-    const worker = depth === 0 ? byThread.get(thread.id) : undefined;
+    const worker =
+      depth === 0
+        ? node === coordinator
+          ? { ref: "Coordinator", profile: null }
+          : byThread.get(thread.id)
+        : undefined;
     return (
       <ThreadRow
         key={thread.id}
@@ -144,12 +151,25 @@ export function AdventureWorkers({
   // the rows show in one list until it lands.
   const grouped = listing.groupBy === "state" && facts !== undefined;
   return (
-    <div
-      data-adventure-workers={project.id}
-      className="mb-1 ml-[0.9rem] border-l border-border/70 pl-1"
-    >
-      {!workers.length && !others.length && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">No live workers.</p>
+    <div data-adventure-workers={project.id} className="pb-3">
+      {native.status === "loading" ? (
+        <p role="status" className="p-2 text-sm text-muted-foreground">
+          Loading workers…
+        </p>
+      ) : native.status === "error" ? (
+        <div role="alert" className="p-2 text-sm">
+          Cannot load threads.
+        </div>
+      ) : (
+        !workers.length &&
+        !others.length && (
+          <p className="px-2 py-1 text-xs text-muted-foreground">No live workers.</p>
+        )
+      )}
+      {coordinator && (
+        <ul aria-label={`${project.name} coordinator`} className="m-0 list-none p-0">
+          {row(coordinator)}
+        </ul>
       )}
       {grouped
         ? WORKER_GROUPS.map((group) => {

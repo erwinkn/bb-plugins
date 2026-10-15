@@ -5,7 +5,7 @@ import {
   loadPluginApp,
   renderSlot,
 } from "@get-bb/plugin-sdk/testing/app";
-import { parseState, updateState } from "../lib/client-state";
+import { OTHER_THREADS, parseState, updateState } from "../lib/client-state";
 import { PROJECT_ORDER_CHANNEL } from "../lib/project-order-schema";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { thread } from "./fixtures";
@@ -17,6 +17,8 @@ const slots: ReturnType<typeof renderSlot>[] = [];
 beforeEach(() => {
   localStorage.clear();
 });
+/** Picks Other threads, so no Adventure's workers are listed or read. */
+const pickOther = () => updateState((current) => ({ ...current, selected: OTHER_THREADS }));
 afterEach(() => {
   for (const s of slots.splice(0)) s.unmount();
   cleanup();
@@ -326,7 +328,8 @@ describe("Projects sidebar mode", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
     try {
       const read = vi.fn((_input: unknown) => ({ available: true, tree, order: null, orderError: null }));
-      // No open Adventure, so no follow-up read for worker facts.
+      // No selected Adventure, so no follow-up read for worker facts.
+      pickOther();
       const slot = mount(true, { rpc: { projectMode: read }, props: { activeThreadId: null } });
       await slot.findByRole("link", { name: "Open Useful search" });
       expect(read).toHaveBeenCalledTimes(1);
@@ -349,6 +352,7 @@ describe("Projects sidebar mode", () => {
       input?.known === "r1"
         ? { available: true, tree: null, revision: "r1", unchanged: true, order: null, orderError: null }
         : { available: true, tree, revision: "r1", unchanged: false, order: null, orderError: null });
+    pickOther();
     const slot = mount(true, { rpc: { projectMode: read }, props: { activeThreadId: null } });
     const row = await slot.findByRole("link", { name: "Open Useful search" });
     expect(read.mock.calls[0]![0]).toEqual({ known: null });
@@ -398,8 +402,9 @@ describe("Projects sidebar mode", () => {
     expect(row.getAttribute("title")).toBe(
       "Find historical work\n1 needs you · 2 in flight · 3 remaining · 1 to revisit",
     );
-    expect(slot.queryByText("Search reviewer")).toBeNull();
-    expect(slot.queryByText("Coordinator")).toBeNull();
+    const picker = slot.getByRole("region", { name: "Adventures" });
+    expect(within(picker).queryByText("Search reviewer")).toBeNull();
+    expect(within(picker).queryByText("Coordinator")).toBeNull();
     expect(row.getAttribute("data-project-status")).toBe("attention");
     expect(within(row).getByLabelText("Needs you")).toBeTruthy();
     expect(row.querySelector("[data-project-hue]")).toBeTruthy();
@@ -450,7 +455,9 @@ describe("Projects sidebar mode", () => {
     },
   );
   it("lists the other threads under the Adventures, ungrouped and most recent first", async () => {
+    pickOther();
     const slot = mount(true, {
+      props: { activeThreadId: null },
       treeData: richTree,
       threads: [
         ...richThreads,
@@ -470,22 +477,23 @@ describe("Projects sidebar mode", () => {
     // No grouping: no status or project group headers.
     expect(slot.container.querySelector("[data-group-header]")).toBeNull();
   });
-  it("keeps the thread list the same whichever Initiative is open", async () => {
+  it("keeps Other threads picked and the same whichever other thread is open", async () => {
     const onNavigate = vi.fn();
     const threads = [
       ...richThreads,
       thread({ id: "plain", title: "Plain", updatedAt: 300 }),
       thread({ id: "other", title: "Other", updatedAt: 200, projectId: "project-2" }),
     ];
+    pickOther();
     const slot = mount(true, {
-      props: { activeThreadId: "c", onNavigate },
+      props: { activeThreadId: null, onNavigate },
       treeData: richTree,
       threads,
     });
     await waitFor(() => expect(listedThreads(slot)).toEqual(["plain", "other"]));
     for (const [activeThreadId, activeProjectId] of [
-      ["c2", "project-2"],
-      ["w", "project-1"],
+      ["plain", "project-1"],
+      ["other", "project-2"],
       [null, null],
     ] as const) {
       slot.rerender(
@@ -924,7 +932,9 @@ describe("Projects sidebar mode", () => {
     );
   });
   it("keeps an Initiative's threads and their descendants out of the thread list", async () => {
+    pickOther();
     const slot = mount(true, {
+      props: { activeThreadId: null },
       treeData: {
         ...tree,
         projects: [

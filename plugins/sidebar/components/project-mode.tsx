@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,11 +27,13 @@ import {
 import type { projectModeContract } from "../lib/project-mode-contract";
 import { INITIATIVES_CHANGED, INITIATIVES_PANEL } from "../lib/project-mode-names";
 import type { ProjectTree } from "../lib/project-tree-schema";
-import { updateState, useClientState } from "../lib/client-state";
+import { OTHER_THREADS, updateState, useClientState } from "../lib/client-state";
+import { STATUS_LABEL, type Status } from "../lib/status";
 import {
   lastActivity,
   needsYou,
   orderedProjects,
+  owningProject,
   projectStatus,
   projectThreads,
 } from "../lib/project-mode-status";
@@ -51,7 +54,6 @@ import { ThreadDragOverlay } from "./thread-drag-overlay";
 import { menuItemClass, WorkerListingMenu } from "./menus";
 import { SectionHeader } from "./section-header";
 import { AdventureWorkers } from "./adventure-workers";
-import { MAX_WORKERS_OF } from "../lib/adventure-workers";
 import {
   cacheTree,
   cacheWorkers,
@@ -60,19 +62,36 @@ import {
   type WorkerFacts,
 } from "../lib/initiative-tree-cache";
 import { ReadTimeoutError, claimReport, withReadTimeout } from "../lib/read-timeout";
+import { askAncestry, useHostLinks } from "../lib/thread-ancestry";
 
 type TreeProject = ProjectTree["projects"][number];
 
+/** The Other threads list, built by the thread list, for the section below the picker. */
+export interface OtherThreads {
+  /** The most urgent status among its threads, or null. */
+  status: Status | null;
+  /** The list options and New thread, for the section header. */
+  actions: ReactNode;
+  list: ReactNode;
+}
+
+const select = (selected: string) =>
+  updateState((current) => ({ ...current, selected }));
+
 /**
- * The Adventures list at the top of the sidebar: one dense row per Adventure
- * (icon, name, status, last activity) with drag reordering; an open row lists
- * its workers below it. The last tree and worker facts are cached, so the
- * list draws at once and refreshes in the background.
+ * The Adventures picker at the top of the sidebar, then what it selected.
+ * The picker is one dense row per Adventure (icon, name, status, last
+ * activity) with drag reordering, then an Other threads entry. Below it, one
+ * section lists the selection: the Adventure's coordinator and workers, or
+ * every thread outside the Adventures. Opening a thread of an Adventure
+ * selects it; with nothing picked yet the first Adventure is. The last tree
+ * and worker facts are cached, so both draw at once and refresh in the
+ * background.
  */
 export function AdventuresSection(props: {
   activeThreadId: string | null;
-  activeProjectId: string | null;
   onNavigate: () => void;
+  otherThreads: OtherThreads;
 }) {
   const navigate = useBbNavigate();
   const api = useRpc<typeof projectModeContract>();
@@ -90,8 +109,8 @@ export function AdventuresSection(props: {
     setError(cause instanceof Error ? cause.message : String(cause));
   // Each worker's model and group by Adventure, as the server last read them.
   const [facts, setFacts] = useState<WorkerFacts>(cachedWorkers);
-  // The open Adventures, whose worker facts each read asks for.
-  const openIds = useRef<string[]>([]);
+  // The selected Adventure, whose worker facts each read asks for.
+  const wanted = useRef<string | null>(null);
   const client = useClientState();
   const order = useProjectOrder(api);
   const { applySnapshot, commit } = order;
@@ -114,7 +133,7 @@ export function AdventuresSection(props: {
   const misses = useRef(0);
   const refresh = useCallback(function read(): Promise<void> {
     if (pending.current) return pending.current;
-    const call = withReadTimeout(apiRef.current.call("projectMode", { known: revision.current, ...(openIds.current.length ? { workersOf: openIds.current } : {}) })).then(result => {
+    const call = withReadTimeout(apiRef.current.call("projectMode", { known: revision.current, ...(wanted.current ? { workersOf: [wanted.current] } : {}) })).then(result => {
       misses.current = 0;
       if (mounted.current) {
         setAvailable(result.available);
@@ -212,33 +231,52 @@ export function AdventuresSection(props: {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
-  // Each Adventure's threads and whether the open thread is one of them.
+  // Each Adventure's threads.
   const rows = useMemo(
-    () =>
-      displayed.map((p) => {
-        const threads = projectThreads(p, native.threads);
-        const active =
-          threads.some((t) => t.id === props.activeThreadId) ||
-          p.nodes.some((n) => n.threadId === props.activeThreadId);
-        return { p, threads, active };
-      }),
-    [displayed, native.threads, props.activeThreadId],
+    () => displayed.map((p) => ({ p, threads: projectThreads(p, native.threads) })),
+    [displayed, native.threads],
   );
-  // An Adventure opened or closed by hand stays so; otherwise it is open
-  // while it holds the open thread, as the selected one was before.
-  const isOpen = (id: string, active: boolean) => client.adventures[id] ?? active;
-  const opened = rows.filter(({ p, active }) => isOpen(p.id, active)).map(({ p }) => p.id);
-  // Past the cap, the last opened rows show without models rather than
-  // failing the whole read.
-  openIds.current = opened.slice(0, MAX_WORKERS_OF);
-  // Opening an Adventure reads its worker facts.
-  const openKey = opened.join("|");
-  const lastOpenKey = useRef(openKey);
+  // Opening a thread of an Adventure selects it, once per opening (or once
+  // the tree shows where it belongs): a pick made while it stays open sticks.
+  // Before paint, so a reload onto a worker never flashes the stored
+  // selection first.
+  const links = useHostLinks();
+  const { owner: holder, unknown } = useMemo(
+    () => owningProject(displayed, native.threads, props.activeThreadId, links),
+    [displayed, native.threads, props.activeThreadId, links],
+  );
+  useLayoutEffect(() => {
+    if (holder) select(holder);
+  }, [props.activeThreadId, holder]);
+  // A walk that stopped at a thread BB's list omits (an archived reviewer
+  // between a worker and the open helper) asks the host for the rest of the
+  // chain in the background; each opening asks again after a failed read.
+  const missing = native.status === "ready" ? unknown : null;
   useEffect(() => {
-    if (openKey === lastOpenKey.current) return;
-    lastOpenKey.current = openKey;
-    schedule();
-  }, [openKey, schedule]);
+    if (missing)
+      askAncestry(missing, (threadId) =>
+        withReadTimeout(apiRef.current.call("threadAncestry", { threadId })),
+      );
+  }, [missing, props.activeThreadId]);
+  // A stored Adventure that left the tree falls back to the first one; with
+  // none (or no Adventures plugin), to Other threads. Null while the first
+  // read decides.
+  const selection: TreeProject | typeof OTHER_THREADS | null =
+    client.selected === OTHER_THREADS
+      ? OTHER_THREADS
+      : (displayed.find((p) => p.id === client.selected) ??
+        displayed[0] ??
+        (available === null && !error ? null : OTHER_THREADS));
+  const selectedId =
+    selection === null || selection === OTHER_THREADS ? null : selection.id;
+  wanted.current = selectedId;
+  // Selecting an Adventure reads its worker facts.
+  const lastSelected = useRef(selectedId);
+  useEffect(() => {
+    if (selectedId === lastSelected.current) return;
+    lastSelected.current = selectedId;
+    if (selectedId) schedule();
+  }, [selectedId, schedule]);
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -294,142 +332,183 @@ export function AdventuresSection(props: {
     { isActive: () => dragId != null, keyboardReorder: true },
   );
 
+  const other = props.otherThreads;
   return (
-    <section aria-label="Adventures" data-project-mode="" className="mt-2">
-      <SectionHeader
-        title="Adventures"
-        trailing={available !== false && <WorkerListingMenu />}
-      />
-      {error && (
-        <p role="alert" className="px-2 py-1 text-xs text-destructive">
-          {error}{" "}
-          <button className="underline" onClick={() => void refresh()}>
-            Retry
-          </button>
-        </p>
-      )}
-      {order.error && (
-        <p role="alert" className="px-2 py-1 text-xs text-destructive">
-          Could not save the Adventure order: {order.error}{" "}
-          <button className="underline" onClick={order.dismissError}>
-            Dismiss
-          </button>
-        </p>
-      )}
-      {available === false && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">
-          Install or enable the Adventures plugin to list Adventures here.
-        </p>
-      )}
-      {available === null && !error && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">Loading Adventures…</p>
-      )}
-      {available && !projects.length && (
-        <p className="px-2 py-1 text-xs text-muted-foreground">No Adventures yet.</p>
-      )}
-      <DndContext {...dnd.dndContextProps}>
-        <ul
-          aria-label="Adventures"
-          className="m-0 list-none p-0"
-          onClickCapture={dnd.onClickCapture}
-          onKeyDown={dnd.onEscape}
-        >
-          {rows.map(({ p, threads, active }) => {
-            const status = projectStatus(p, threads, client.drafts);
-            const coordinator = p.nodes.find(
-              (n) => n.role === "coordinator",
-            );
-            const open = isOpen(p.id, active);
-            const activity = lastActivity(threads);
-            const summary = [
-              needsYou(p) ? `${needsYou(p)} need${needsYou(p) === 1 ? "s" : ""} you` : null,
-              p.inFlight ? `${p.inFlight} in flight` : null,
-              p.remaining ? `${p.remaining} remaining` : null,
-              p.revisit ? `${p.revisit} to revisit` : null,
-              p.paused ? "Paused" : null,
-            ]
-              .filter(Boolean)
-              .join(" · ");
-            return (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                href={
-                  p.coordinatorThreadId && coordinator
-                    ? `/projects/${coordinator.bbProjectId}/threads/${p.coordinatorThreadId}`
-                    : `${INITIATIVES_PANEL}/${p.id}`
-                }
-                canReorder={displayed.length > 1}
-                // An open Adventure's worker row shows the open thread itself.
-                active={active && (!open || props.activeThreadId === p.coordinatorThreadId)}
-                status={status}
-                summary={summary}
-                age={activity === null ? null : relativeAge(activity, now)}
-                dropTarget={overId === p.id && dragId !== p.id}
-                onOpen={(event) => {
-                  if (
-                    event.metaKey ||
-                    event.ctrlKey ||
-                    event.shiftKey ||
-                    event.altKey ||
-                    event.button !== 0
-                  )
-                    return;
-                  if (dnd.consumeClickSuppression()) {
-                    event.preventDefault();
-                    return;
+    <>
+      <section aria-label="Adventures" data-project-mode="" className="mt-2">
+        <SectionHeader title="Adventures" />
+        {error && (
+          <p role="alert" className="px-2 py-1 text-xs text-destructive">
+            {error}{" "}
+            <button className="underline" onClick={() => void refresh()}>
+              Retry
+            </button>
+          </p>
+        )}
+        {order.error && (
+          <p role="alert" className="px-2 py-1 text-xs text-destructive">
+            Could not save the Adventure order: {order.error}{" "}
+            <button className="underline" onClick={order.dismissError}>
+              Dismiss
+            </button>
+          </p>
+        )}
+        {available === false && (
+          <p className="px-2 py-1 text-xs text-muted-foreground">
+            Install or enable the Adventures plugin to list Adventures here.
+          </p>
+        )}
+        {available === null && !error && (
+          <p className="px-2 py-1 text-xs text-muted-foreground">Loading Adventures…</p>
+        )}
+        {available && !projects.length && (
+          <p className="px-2 py-1 text-xs text-muted-foreground">No Adventures yet.</p>
+        )}
+        <DndContext {...dnd.dndContextProps}>
+          <ul
+            aria-label="Adventures"
+            className="m-0 list-none p-0"
+            onClickCapture={dnd.onClickCapture}
+            onKeyDown={dnd.onEscape}
+          >
+            {rows.map(({ p, threads }) => {
+              const status = projectStatus(p, threads, client.drafts);
+              const coordinator = p.nodes.find(
+                (n) => n.role === "coordinator",
+              );
+              const activity = lastActivity(threads);
+              const summary = [
+                needsYou(p) ? `${needsYou(p)} need${needsYou(p) === 1 ? "s" : ""} you` : null,
+                p.inFlight ? `${p.inFlight} in flight` : null,
+                p.remaining ? `${p.remaining} remaining` : null,
+                p.revisit ? `${p.revisit} to revisit` : null,
+                p.paused ? "Paused" : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <ProjectRow
+                  key={p.id}
+                  project={p}
+                  href={
+                    p.coordinatorThreadId && coordinator
+                      ? `/projects/${coordinator.bbProjectId}/threads/${p.coordinatorThreadId}`
+                      : `${INITIATIVES_PANEL}/${p.id}`
                   }
-                  if (p.coordinatorThreadId) {
-                    event.preventDefault();
-                    navigate.toThread(p.coordinatorThreadId);
-                  }
-                  props.onNavigate();
-                }}
-                onOverview={props.onNavigate}
-                onRename={(name) => renameProject(p.id, name)}
-                onAppearance={(patch) => restyleProject(p.id, patch)}
-                onNewThread={props.onNavigate}
-                onMenuOpen={() => {
-                  dnd.consumeClickSuppression();
-                }}
-                open={open}
-                onToggle={() =>
-                  updateState((current) => ({
-                    ...current,
-                    adventures: { ...current.adventures, [p.id]: !open },
-                  }))
+                  canReorder={displayed.length > 1}
+                  selected={p.id === selectedId}
+                  status={status}
+                  summary={summary}
+                  age={activity === null ? null : relativeAge(activity, now)}
+                  dropTarget={overId === p.id && dragId !== p.id}
+                  onOpen={(event) => {
+                    if (
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey ||
+                      event.button !== 0
+                    )
+                      return;
+                    if (dnd.consumeClickSuppression()) {
+                      event.preventDefault();
+                      return;
+                    }
+                    select(p.id);
+                    if (p.coordinatorThreadId) {
+                      event.preventDefault();
+                      navigate.toThread(p.coordinatorThreadId);
+                    }
+                    props.onNavigate();
+                  }}
+                  onOverview={props.onNavigate}
+                  onRename={(name) => renameProject(p.id, name)}
+                  onAppearance={(patch) => restyleProject(p.id, patch)}
+                  onNewThread={props.onNavigate}
+                  onMenuOpen={() => {
+                    dnd.consumeClickSuppression();
+                  }}
+                />
+              );
+            })}
+          </ul>
+          <DragOverlay dropAnimation={null}>
+            {dragId ? (
+              <ThreadDragOverlay
+                title={
+                  displayed.find((p) => p.id === dragId)?.name ?? "Adventure"
                 }
-              >
-                {open && dragId === null && (
-                  <AdventureWorkers
-                    project={p}
-                    facts={facts[p.id]}
-                    activeThreadId={props.activeThreadId}
-                    onNavigate={props.onNavigate}
-                    onError={report}
-                  />
-                )}
-              </ProjectRow>
-            );
-          })}
-        </ul>
-        <DragOverlay dropAnimation={null}>
-          {dragId ? (
-            <ThreadDragOverlay
-              title={
-                displayed.find((p) => p.id === dragId)?.name ?? "Adventure"
-              }
+              />
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+        <OtherThreadsEntry
+          selected={selection === OTHER_THREADS}
+          status={other.status}
+        />
+      </section>
+      {selection === OTHER_THREADS ? (
+        <section aria-label="Other threads" className="mt-2">
+          <SectionHeader title="Other threads" trailing={other.actions} />
+          {other.list}
+        </section>
+      ) : (
+        selection && (
+          <section aria-label={`${selection.name} workers`} className="mt-2">
+            <SectionHeader title={selection.name} trailing={<WorkerListingMenu />} />
+            <AdventureWorkers
+              key={selection.id}
+              project={selection}
+              facts={facts[selection.id]}
+              activeThreadId={props.activeThreadId}
+              onNavigate={props.onNavigate}
+              onError={report}
             />
-          ) : null}
-        </DragOverlay>
-      </DndContext>
-    </section>
+          </section>
+        )
+      )}
+    </>
   );
 }
 
 /**
- * One dense Adventure row: icon in its hue, name, status, the age of its last
- * activity, and a chevron that opens its workers below it. The row itself is
+ * The picker's last entry, below the Adventures: every thread outside them,
+ * in their rows' style (icon, title, the most urgent status of its threads).
+ */
+function OtherThreadsEntry({
+  selected,
+  status,
+}: {
+  selected: boolean;
+  status: Status | null;
+}) {
+  return (
+    <button
+      type="button"
+      data-other-threads=""
+      aria-current={selected ? "true" : undefined}
+      onClick={() => select(OTHER_THREADS)}
+      className={`flex min-h-7 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] leading-5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-9 ${selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
+    >
+      <span
+        aria-hidden="true"
+        className="flex size-4 shrink-0 items-center justify-center text-[var(--subtle-foreground)]"
+      >
+        <HostIcon name="ListView" fallback="MessageSquare" className="size-3.5" />
+      </span>
+      <span className="min-w-0 flex-1 truncate">Other threads</span>
+      {status && (
+        <span role="img" aria-label={STATUS_LABEL[status]} className="flex shrink-0 items-center">
+          <StatusIcon status={status} size="small" />
+        </span>
+      )}
+    </button>
+  );
+}
+
+/**
+ * One dense Adventure row: icon in its hue, name, status and the age of its
+ * last activity. A click selects it and opens its coordinator. The row itself is
  * the drag handle (mouse drag after a few pixels, touch after a short hold
  * with movement — a flick still scrolls, a stationary long press opens the
  * context menu instead). Right-click, the ContextMenu/Shift+F10 keys, or the
@@ -440,7 +519,7 @@ function ProjectRow({
   project,
   href,
   canReorder,
-  active,
+  selected,
   status,
   summary,
   age,
@@ -451,14 +530,12 @@ function ProjectRow({
   onAppearance,
   onNewThread,
   onMenuOpen,
-  open,
-  onToggle,
-  children,
 }: {
   project: TreeProject;
   href: string;
   canReorder: boolean;
-  active: boolean;
+  /** Its workers are the section below the picker. */
+  selected: boolean;
   status: ReturnType<typeof projectStatus>;
   /** Counts for the tooltip: what needs you, what is in flight. */
   summary: string;
@@ -471,11 +548,6 @@ function ProjectRow({
   onAppearance: (patch: AppearancePatch) => Promise<void>;
   onNewThread: () => void;
   onMenuOpen: () => void;
-  /** Its workers show below it. */
-  open: boolean;
-  onToggle: () => void;
-  /** The workers, while open. */
-  children?: ReactNode;
 }) {
   const scope = usePortalScopeProps();
   // toPluginPanel is scoped to Sidebar. A cross-plugin link opens the frozen
@@ -543,243 +615,224 @@ function ProjectRow({
       data-drop-target={dropTarget ? "" : undefined}
       className={`relative rounded-md ${dropTarget ? "ring-1 ring-ring" : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
     >
-      <div className="flex items-center gap-1">
-        {editing ? (
-          <form
-            aria-label={`Rename ${project.name}`}
-            className="flex min-w-0 flex-1 flex-wrap items-center gap-2 px-3 py-2"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                if (!saving) closeEditor();
-              }
-            }}
-            onSubmit={submitRename}
-          >
-            <input
-              aria-label="Adventure name"
-              autoFocus
-              onFocus={(event) => event.currentTarget.select()}
-              value={draft}
-              readOnly={saving}
-              onChange={(event) => setDraft(event.target.value)}
-              className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-            <button
-              type="submit"
-              disabled={saving || !draft.trim()}
-              className="rounded-md px-2 py-1.5 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              disabled={saving}
-              onClick={closeEditor}
-              className="rounded-md px-2 py-1.5 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            {renameError && (
-              <p role="alert" className="w-full text-xs text-destructive">
-                {renameError}
-              </p>
-            )}
-          </form>
-        ) : styling ? (
-          <ProjectAppearanceEditor
-            name={project.name}
-            appearance={project.appearance}
-            onChange={onAppearance}
-            onClose={() => {
-              setStyling(false);
-              requestAnimationFrame(() => anchorRef.current?.focus());
-            }}
+      {editing ? (
+        <form
+          aria-label={`Rename ${project.name}`}
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-2 px-3 py-2"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!saving) closeEditor();
+            }
+          }}
+          onSubmit={submitRename}
+        >
+          <input
+            aria-label="Adventure name"
+            autoFocus
+            onFocus={(event) => event.currentTarget.select()}
+            value={draft}
+            readOnly={saving}
+            onChange={(event) => setDraft(event.target.value)}
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
-        ) : (
-          <ContextMenu.Root
-            onOpenChange={(open) => {
-              setMenuOpen(open);
-              if (open) {
-                suppressClick.current = true;
-                // Long press cancels an armed drag. The row guards its release
-                // click; clear the global guard so menu actions work at once.
-                onMenuOpen();
-              }
-            }}
+          <button
+            type="submit"
+            disabled={saving || !draft.trim()}
+            className="rounded-md px-2 py-1.5 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
-            <ContextMenu.Trigger asChild>
-              <a
-                ref={setAnchor}
-                {...(canReorder ? draggable.listeners : {})}
-                {...(canReorder
-                  ? { "aria-roledescription": "draggable Adventure" }
-                  : {})}
-                {...longPress}
-                draggable={false}
-                href={href}
-                aria-label={`Open ${project.name}`}
-                aria-haspopup="menu"
-                aria-current={active ? "page" : undefined}
-                data-project-status={status}
-                title={[project.objective, summary].filter(Boolean).join("\n")}
-                onPointerDown={(event) => {
-                  suppressClick.current = false;
-                  longPress.onPointerDown(event);
-                }}
-                onKeyDown={(event) => {
-                  suppressClick.current = false;
-                  if (canReorder)
-                    draggable.listeners?.onKeyDown?.(event);
-                  if (event.defaultPrevented) return;
-                  if (
-                    event.key === "ContextMenu" ||
-                    (event.shiftKey && event.key === "F10")
-                  ) {
-                    event.preventDefault();
-                    const bounds =
-                      event.currentTarget.getBoundingClientRect();
-                    event.currentTarget.dispatchEvent(
-                      new MouseEvent("contextmenu", {
-                        bubbles: true,
-                        cancelable: true,
-                        clientX: bounds.left + 16,
-                        clientY: bounds.bottom,
-                      }),
-                    );
-                  }
-                }}
-                onClick={(event) => {
-                  if (suppressClick.current && event.detail !== 0) {
-                    // A long-press release still lands as a click after the
-                    // timed drag window has expired; block the href too.
-                    event.preventDefault();
-                    return;
-                  }
-                  onOpen(event);
-                }}
-                // A held finger should start the drag, never the link callout
-                // or a text selection.
-                style={{ WebkitTouchCallout: "none" }}
-                className={`flex min-h-7 min-w-0 flex-1 select-none items-center gap-2 rounded-md px-2 py-1 text-[13px] leading-5 no-underline outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-9 ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
-              >
-                <span
-                  aria-hidden="true"
-                  data-project-hue={hue}
-                  data-project-icon={appearanceIcon(project.appearance?.icon)}
-                  className="flex size-4 shrink-0 items-center justify-center"
-                >
-                  <HostIcon
-                    name={appearanceIcon(project.appearance?.icon)}
-                    fallback="Folder"
-                    className="size-3.5"
-                  />
-                </span>
-                <span
-                  className={`min-w-0 flex-1 truncate ${project.paused ? "text-muted-foreground" : ""}`}
-                >
-                  {project.name}
-                </span>
-                {status !== "done" && (
-                  <span
-                    role="img"
-                    className="flex shrink-0 items-center"
-                    aria-label={
-                      status === "attention"
-                        ? "Needs you"
-                        : status === "unread"
-                          ? "Unread"
-                          : status === "working"
-                            ? "Working"
-                            : "Draft"
-                    }
-                  >
-                    <StatusIcon status={status} size="small" />
-                  </span>
-                )}
-                {age && (
-                  <span
-                    data-initiative-age=""
-                    className="w-7 shrink-0 text-right text-xs tabular-nums text-[var(--subtle-foreground)]"
-                  >
-                    {age}
-                  </span>
-                )}
-              </a>
-            </ContextMenu.Trigger>
-            <ContextMenu.Portal>
-              <ContextMenu.Content
-                {...scope}
-                aria-label={`Actions for ${project.name}`}
-                onCloseAutoFocus={(event) => {
-                  if (!focusEditor.current) return;
-                  focusEditor.current = false;
-                  event.preventDefault();
-                }}
-                className="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
-              >
-                <ContextMenu.Item className={menuItemClass} asChild>
-                  <UrlLink
-                    href={composeHref}
-                    onClick={() => {
-                      focusEditor.current = true;
-                      onNewThread();
-                    }}
-                  >
-                    New thread
-                  </UrlLink>
-                </ContextMenu.Item>
-                <ContextMenu.Item
-                  className={menuItemClass}
-                  onSelect={() => {
-                    focusEditor.current = true;
-                    setDraft(project.name);
-                    setRenameError(null);
-                    setEditing(true);
-                  }}
-                >
-                  Rename…
-                </ContextMenu.Item>
-                <ContextMenu.Item
-                  className={menuItemClass}
-                  onSelect={() => {
-                    focusEditor.current = true;
-                    setStyling(true);
-                  }}
-                >
-                  Icon and color…
-                </ContextMenu.Item>
-                <ContextMenu.Item className={menuItemClass} asChild>
-                  <a
-                    href={`${INITIATIVES_PANEL}/${project.id}`}
-                    onClick={onOverview}
-                  >
-                    Adventure overview
-                  </a>
-                </ContextMenu.Item>
-              </ContextMenu.Content>
-            </ContextMenu.Portal>
-          </ContextMenu.Root>
-        )}
-        {!editing && !styling && (
+            {saving ? "Saving…" : "Save"}
+          </button>
           <button
             type="button"
-            aria-expanded={open}
-            aria-label={`${open ? "Hide" : "Show"} the workers of ${project.name}`}
-            title={open ? "Hide workers" : "Show workers"}
-            onClick={onToggle}
-            className="flex size-6 shrink-0 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-md:size-9"
+            disabled={saving}
+            onClick={closeEditor}
+            className="rounded-md px-2 py-1.5 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
-            <HostIcon
-              name="ChevronDown"
-              fallback="ArrowDown"
-              className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`}
-            />
+            Cancel
           </button>
-        )}
-      </div>
-      {children}
+          {renameError && (
+            <p role="alert" className="w-full text-xs text-destructive">
+              {renameError}
+            </p>
+          )}
+        </form>
+      ) : styling ? (
+        <ProjectAppearanceEditor
+          name={project.name}
+          appearance={project.appearance}
+          onChange={onAppearance}
+          onClose={() => {
+            setStyling(false);
+            requestAnimationFrame(() => anchorRef.current?.focus());
+          }}
+        />
+      ) : (
+        <ContextMenu.Root
+          onOpenChange={(open) => {
+            setMenuOpen(open);
+            if (open) {
+              suppressClick.current = true;
+              // Long press cancels an armed drag. The row guards its release
+              // click; clear the global guard so menu actions work at once.
+              onMenuOpen();
+            }
+          }}
+        >
+          <ContextMenu.Trigger asChild>
+            <a
+              ref={setAnchor}
+              {...(canReorder ? draggable.listeners : {})}
+              {...(canReorder
+                ? { "aria-roledescription": "draggable Adventure" }
+                : {})}
+              {...longPress}
+              draggable={false}
+              href={href}
+              aria-label={`Open ${project.name}`}
+              aria-haspopup="menu"
+              aria-current={selected ? "true" : undefined}
+              data-project-status={status}
+              title={[project.objective, summary].filter(Boolean).join("\n")}
+              onPointerDown={(event) => {
+                suppressClick.current = false;
+                longPress.onPointerDown(event);
+              }}
+              onKeyDown={(event) => {
+                suppressClick.current = false;
+                if (canReorder)
+                  draggable.listeners?.onKeyDown?.(event);
+                if (event.defaultPrevented) return;
+                if (
+                  event.key === "ContextMenu" ||
+                  (event.shiftKey && event.key === "F10")
+                ) {
+                  event.preventDefault();
+                  const bounds =
+                    event.currentTarget.getBoundingClientRect();
+                  event.currentTarget.dispatchEvent(
+                    new MouseEvent("contextmenu", {
+                      bubbles: true,
+                      cancelable: true,
+                      clientX: bounds.left + 16,
+                      clientY: bounds.bottom,
+                    }),
+                  );
+                }
+              }}
+              onClick={(event) => {
+                if (suppressClick.current && event.detail !== 0) {
+                  // A long-press release still lands as a click after the
+                  // timed drag window has expired; block the href too.
+                  event.preventDefault();
+                  return;
+                }
+                onOpen(event);
+              }}
+              // A held finger should start the drag, never the link callout
+              // or a text selection.
+              style={{ WebkitTouchCallout: "none" }}
+              className={`flex min-h-7 min-w-0 flex-1 select-none items-center gap-2 rounded-md px-2 py-1 text-[13px] leading-5 no-underline outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-9 ${selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
+            >
+              <span
+                aria-hidden="true"
+                data-project-hue={hue}
+                data-project-icon={appearanceIcon(project.appearance?.icon)}
+                className="flex size-4 shrink-0 items-center justify-center"
+              >
+                <HostIcon
+                  name={appearanceIcon(project.appearance?.icon)}
+                  fallback="Folder"
+                  className="size-3.5"
+                />
+              </span>
+              <span
+                className={`min-w-0 flex-1 truncate ${project.paused ? "text-muted-foreground" : ""}`}
+              >
+                {project.name}
+              </span>
+              {status !== "done" && (
+                <span
+                  role="img"
+                  className="flex shrink-0 items-center"
+                  aria-label={
+                    status === "attention"
+                      ? "Needs you"
+                      : status === "unread"
+                        ? "Unread"
+                        : status === "working"
+                          ? "Working"
+                          : "Draft"
+                  }
+                >
+                  <StatusIcon status={status} size="small" />
+                </span>
+              )}
+              {age && (
+                <span
+                  data-initiative-age=""
+                  className="w-7 shrink-0 text-right text-xs tabular-nums text-[var(--subtle-foreground)]"
+                >
+                  {age}
+                </span>
+              )}
+            </a>
+          </ContextMenu.Trigger>
+          <ContextMenu.Portal>
+            <ContextMenu.Content
+              {...scope}
+              aria-label={`Actions for ${project.name}`}
+              onCloseAutoFocus={(event) => {
+                if (!focusEditor.current) return;
+                focusEditor.current = false;
+                event.preventDefault();
+              }}
+              className="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+            >
+              <ContextMenu.Item className={menuItemClass} asChild>
+                <UrlLink
+                  href={composeHref}
+                  onClick={() => {
+                    focusEditor.current = true;
+                    onNewThread();
+                  }}
+                >
+                  New thread
+                </UrlLink>
+              </ContextMenu.Item>
+              <ContextMenu.Item
+                className={menuItemClass}
+                onSelect={() => {
+                  focusEditor.current = true;
+                  setDraft(project.name);
+                  setRenameError(null);
+                  setEditing(true);
+                }}
+              >
+                Rename…
+              </ContextMenu.Item>
+              <ContextMenu.Item
+                className={menuItemClass}
+                onSelect={() => {
+                  focusEditor.current = true;
+                  setStyling(true);
+                }}
+              >
+                Icon and color…
+              </ContextMenu.Item>
+              <ContextMenu.Item className={menuItemClass} asChild>
+                <a
+                  href={`${INITIATIVES_PANEL}/${project.id}`}
+                  onClick={onOverview}
+                >
+                  Adventure overview
+                </a>
+              </ContextMenu.Item>
+            </ContextMenu.Content>
+          </ContextMenu.Portal>
+        </ContextMenu.Root>
+      )}
     </li>
   );
 }

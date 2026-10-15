@@ -11,7 +11,7 @@ import {
   loadPluginApp,
   renderSlot as renderSdkSlot,
 } from "@get-bb/plugin-sdk/testing/app";
-import { parseState, updateState, recordDraft } from "../lib/client-state";
+import { OTHER_THREADS, parseState, updateState, recordDraft } from "../lib/client-state";
 import { thread, visibleStatus, seedInitiativeCache } from "./fixtures";
 
 const splitOverride = vi.hoisted(() => ({ enabled: false, drag: vi.fn() }));
@@ -83,11 +83,12 @@ const threads = [
   }),
   thread({ id: "archived", title: "Archived", isArchived: true }),
 ];
-// The Adventures section is a region too; group assertions look past it.
+// The Adventures picker and the Other threads section are regions too; group
+// assertions look past them.
 const groupRegions = (scope: Pick<ReturnType<typeof renderSdkSlot>, "queryAllByRole">) =>
   scope
     .queryAllByRole("region")
-    .filter((region) => region.getAttribute("aria-label") !== "Adventures");
+    .filter((region) => !["Adventures", "Other threads"].includes(region.getAttribute("aria-label")!));
 const mount = () =>
   renderSlot(app.threadLists[0], props, {
     sidebarThreads: { threads, projects },
@@ -106,9 +107,11 @@ function touch(target: Element, type: string, pointerType = "touch") {
 beforeEach(() => {
   localStorage.clear();
   seedInitiativeCache();
+  // These tests read the Other threads list, grouped by status.
   updateState(() => ({
     ...parseState(null),
     listing: { ...parseState(null).listing, groupBy: "status" },
+    selected: OTHER_THREADS,
   }));
   vi.clearAllMocks();
   renameOverride.handler = null;
@@ -1986,7 +1989,7 @@ describe("activity sidebar", () => {
     expect(slot.queryByRole("list", { name: /Children of/ })).toBeNull();
   });
   it("shows Other threads without filters and ignores the old saved project selector", () => {
-    updateState(() => parseState(JSON.stringify({ projectId: "project-1" })));
+    updateState(() => parseState(JSON.stringify({ projectId: "project-1", selected: OTHER_THREADS })));
     const slot = mount();
     expect(slot.getByRole("button", { name: /^Other threads/ })).toBeTruthy();
     expect(slot.queryByRole("textbox")).toBeNull();

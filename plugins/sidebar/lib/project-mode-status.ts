@@ -107,3 +107,37 @@ export function lastActivity(
     if (latest === null || thread.updatedAt > latest) latest = thread.updatedAt;
   return latest;
 }
+
+/**
+ * The Adventure a thread belongs to: the one whose tree names it, else the
+ * one naming its nearest ancestor. Explicit membership wins over ancestry, so
+ * a thread one Adventure owns stays its own when it hangs under another's
+ * coordinator. Parent links come from BB's list, then from `links` (read from
+ * the host for threads that list omits, such as archived ones). `unknown` is
+ * the first thread up the chain whose link neither knows, so the walk stopped
+ * short; null when it reached an owner or a root.
+ */
+export function owningProject(
+  projects: readonly Project[],
+  native: readonly PluginSidebarThread[],
+  threadId: string | null,
+  links: ReadonlyMap<string, string | null> = new Map(),
+): { owner: string | null; unknown: string | null } {
+  const owner = new Map<string, string>();
+  for (const project of projects) {
+    const ids = project.nodes.flatMap((n) => (n.threadId ? [n.threadId] : []));
+    if (project.coordinatorThreadId) ids.push(project.coordinatorThreadId);
+    for (const id of ids) if (!owner.has(id)) owner.set(id, project.id);
+  }
+  const parent = new Map(native.map((t) => [t.id, t.parentThreadId]));
+  const seen = new Set<string>();
+  for (let id = threadId; id && !seen.has(id); ) {
+    const found = owner.get(id);
+    if (found) return { owner: found, unknown: null };
+    seen.add(id);
+    const next = parent.has(id) ? parent.get(id) : links.get(id);
+    if (next === undefined) return { owner: null, unknown: id };
+    id = next;
+  }
+  return { owner: null, unknown: null };
+}

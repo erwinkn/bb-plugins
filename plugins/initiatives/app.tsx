@@ -1111,7 +1111,7 @@ export function ProjectsPage({ subPath }: PluginNavPanelProps) {
     <div className="project-page">
       {id.endsWith("/compose") ? <InitiativeCompose projectId={id.slice(0, -8)} />
         : id ? <Dashboard key={projectId} projectId={projectId!} routeTab={routeTab} />
-        : <p className="bb-projects project-muted">Initiatives are listed in the sidebar: open one there, or start one with its +.</p>}
+        : <p className="bb-projects project-muted">Adventures are listed in the sidebar: pick one there to see its workers.</p>}
     </div>
   );
 }

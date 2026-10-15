@@ -6,14 +6,14 @@ import {
   type SortDirection,
 } from "./status";
 
-/** Grouping and order of the threads under the Initiatives list, local to this client. */
+/** Grouping and order of the Other threads list, local to this client. */
 export interface ThreadListing {
   groupBy: "none" | "status" | "project";
   sortBy: SortBy;
   sortDirection: SortDirection;
 }
 
-/** Grouping and order of the worker rows under each Adventure, local to this client. */
+/** Grouping and order of the selected Adventure's worker rows, local to this client. */
 export interface WorkerListing {
   groupBy: "state" | "none";
   /** Most recent activity first, or the newest worker (highest W#) first. */
@@ -24,10 +24,10 @@ export interface ClientState {
   listing: ThreadListing;
   workerListing: WorkerListing;
   /**
-   * Adventures opened or closed by hand; one without a choice is open while
-   * it holds the active thread.
+   * What the section below the Adventures lists: an Adventure's id (its
+   * workers) or OTHER_THREADS. Null before the first pick.
    */
-  adventures: Record<string, boolean>;
+  selected: string | null;
   hidden: Status[];
   showArchives: boolean;
   showSnoozed: boolean;
@@ -35,10 +35,13 @@ export interface ClientState {
   drafts: string[];
   expandedArchives: string[];
 }
+/** The `selected` value of the Other threads entry. */
+export const OTHER_THREADS = "other-threads";
 /**
  * Local-storage key of this client's state. Fields of removed features (the
- * view switch's `mode`, the Threads view's grouping and order, `spaceId`)
- * may linger in it; parsing drops them.
+ * view switch's `mode`, the Threads view's grouping and order, `spaceId`,
+ * the open Adventures, the folded Other threads entry) may linger in it;
+ * parsing drops them.
  */
 const KEY = "bb-plugin-sidebar:v1";
 export const DEFAULT_LISTING: ThreadListing = {
@@ -53,7 +56,7 @@ export const DEFAULT_WORKER_LISTING: WorkerListing = {
 const DEFAULT: ClientState = {
   listing: DEFAULT_LISTING,
   workerListing: DEFAULT_WORKER_LISTING,
-  adventures: {},
+  selected: null,
   hidden: [],
   showArchives: false,
   showSnoozed: true,
@@ -89,15 +92,6 @@ function parseWorkerListing(value: unknown): WorkerListing {
   };
 }
 
-function parseOpen(value: unknown): Record<string, boolean> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value).filter(
-      (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
-    ),
-  );
-}
-
 export function parseState(raw: string | null): ClientState {
   try {
     const value = JSON.parse(raw ?? "null");
@@ -106,13 +100,13 @@ export function parseState(raw: string | null): ClientState {
       // Stored as `initiativesListing` while it belonged to one of two views.
       listing: parseListing(value.listing ?? value.initiativesListing),
       workerListing: parseWorkerListing(value.workerListing),
-      adventures: parseOpen(value.adventures),
+      selected: typeof value.selected === "string" ? value.selected : null,
       hidden: strings(value.hidden).filter((s): s is Status =>
         STATUSES.includes(s as Status),
       ),
       showArchives: value.showArchives === true,
       showSnoozed: value.showSnoozed !== false,
-      collapsed: strings(value.collapsed),
+      collapsed: strings(value.collapsed).filter((key) => key !== OTHER_THREADS),
       expandedArchives: strings(value.expandedArchives),
       drafts: strings(value.drafts).filter(
         (key) => key.startsWith("thread:") || key.startsWith("new:"),

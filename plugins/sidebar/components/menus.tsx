@@ -222,7 +222,7 @@ const WORKER_ORDER: [WorkerListing["sortBy"], string][] = [
 ];
 
 /**
- * The Adventures header's options: how each open Adventure groups (by state,
+ * The workers section's options: how the picked Adventure groups (by state,
  * or in one list) and orders its workers. Choices stay on this client.
  */
 export function WorkerListingMenu() {

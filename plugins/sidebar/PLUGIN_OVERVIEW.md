@@ -1,22 +1,26 @@
 # Threads plugin
 
-- `app.tsx`: sidebar registration and the one view: the Adventures section,
-  then the Other threads entry with its sorting and group rendering.
-- `components/project-mode.tsx`: the Adventures section (rows, reordering,
-  open/closed state, the tree read that carries the worker facts).
-- `components/adventure-workers.tsx`: an open Adventure's worker rows (by
-  state or in one list), their child-thread toggles, the coordinator's other
-  threads.
-- `lib/adventure-rows.ts`: which threads an open Adventure lists and each
+- `app.tsx`: sidebar registration and the one view, with the Other threads
+  list (sorting and group rendering) it hands to the Adventures picker.
+- `components/project-mode.tsx`: the Adventures picker (rows, reordering, the
+  Other threads entry, which entry is picked, the tree read that carries the
+  worker facts) and the section below it that lists the pick.
+- `components/adventure-workers.tsx`: the picked Adventure's rows: its
+  coordinator, its workers (by state or in one list), their child-thread
+  toggles, its member threads.
+- `lib/adventure-rows.ts`: which threads a picked Adventure lists and each
   worker's group, from the tree, BB's threads and the worker facts.
 - `lib/adventure-workers.ts`: worker facts (model, group) from the Adventures
   overview, by the Workers tab's rules, and the model label.
 - `lib/adventure-workers-server.ts`: the server's bounded, shared cache of
-  worker facts for the Adventures clients have open.
+  worker facts for the Adventures clients have picked.
+- `lib/thread-ancestry.ts`: the session store of parent links read from the
+  host for threads BB's list omits, so an opened thread finds its Adventure.
 - `lib/status.ts`: pure status rules and within-group order.
 - `lib/thread-tree.ts`: parent/child nesting, sibling order, and family status.
-- `lib/client-state.ts`: versioned per-client preferences (the thread list's
-  grouping and order), archive visibility, and draft flags.
+- `lib/client-state.ts`: versioned per-client preferences (the picked entry,
+  the thread list's and workers' grouping and order), archive visibility, and
+  draft flags.
 - `lib/mobile-sidebar-scroll.ts`: scoped mobile whole-sidebar scroll styles.
 - `lib/host-icon-names.ts`: the icon names bb ships, generated from the pinned
   bb tag by `scripts/host-icon-names.mjs`; do not edit by hand.
@@ -27,7 +31,8 @@
 - `components/pull-request.tsx`: pull request icon and summary text.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
 - `components/menus.tsx`: grouping, date sorting, order, and status visibility
-  controls for Other threads; worker grouping and order for the Adventures.
+  controls for Other threads; worker grouping and order for the picked
+  Adventure.
 - `lib/ui-preferences-schema.ts`: the two BB sidebar preferences the plugin
   mirrors (collapsed Pinned and project groups), shared by server and frontend.
 - `lib/ui-preferences-contract.ts`, `lib/ui-preferences-store.ts`: read and

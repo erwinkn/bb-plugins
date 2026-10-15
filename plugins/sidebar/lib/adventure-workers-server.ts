@@ -13,13 +13,13 @@ import { withReadTimeout } from "./read-timeout";
  * every few seconds, costs one read per interval at most.
  */
 export const FACTS_INTERVAL_MS = 30_000;
-/** A client's open Adventures stay refreshed this long after its last read. */
+/** A client's picked Adventure stays refreshed this long after its last read. */
 export const WANTED_MS = 120_000;
 
 type Entry = { workers: AdventureWorker[] | null; readAt: number; dirty: boolean };
 
 /**
- * The model and group of each open Adventure's workers, which the tree does
+ * The model and group of each picked Adventure's workers, which the tree does
  * not carry, shared by every client. `read` answers at once from what the
  * last reads found and marks the Adventures as wanted; a background loop,
  * one read at a time, reads the wanted ones that are new or announced as

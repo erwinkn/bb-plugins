@@ -5,6 +5,8 @@ import { PROJECT_COLORS, PROJECT_ICONS, treeSchema } from "./project-tree-schema
 import { adventureWorkerSchema, MAX_WORKERS_OF } from "./adventure-workers";
 
 const projectId = z.string().min(1).max(80);
+/** The most parent links one `threadAncestry` read returns. */
+export const MAX_ANCESTRY = 32;
 
 // Mirrors the Initiatives `command`/`thread-create` reply; also validates the
 // remote response when the sidebar server forwards the call.
@@ -86,6 +88,19 @@ export const projectModeContract = defineRpcContract({
       available: z.boolean(),
       threadIds: z.array(z.string().min(1).max(80)),
       status: z.enum(["loading", "failed", "ready"]),
+    }),
+  },
+  /**
+   * A thread's parent links, its own first, then up the chain (at most
+   * MAX_ANCESTRY): BB's sidebar list omits archived threads, so a client
+   * cannot walk up through one to find the Adventure a thread belongs to.
+   */
+  threadAncestry: {
+    input: z.object({ threadId: z.string().min(1).max(80) }),
+    output: z.object({
+      links: z
+        .array(z.object({ id: z.string(), parentThreadId: z.string().nullable() }))
+        .max(MAX_ANCESTRY),
     }),
   },
   // Compare-and-swap on the stored revision; a stale revision rejects so a

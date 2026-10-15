@@ -107,7 +107,7 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
   it("D536: the bare route is no overview: it reads no Initiative list and points to the sidebar", async () => {
     const list = vi.fn(async () => []);
     const slot = renderSlot({ component: ProjectsPage }, { subPath: "" }, { rpc: { list } }); slots.push(slot);
-    await slot.findByText(/Initiatives are listed in the sidebar/);
+    await slot.findByText(/Adventures are listed in the sidebar: pick one there/);
     await slot.behavior.emitRealtime("initiatives-changed", {}); await beat();
     expect(list).not.toHaveBeenCalled();
     expect(slot.queryByRole("button", { name: "New initiative" })).toBeNull();

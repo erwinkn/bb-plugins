@@ -26,7 +26,6 @@ import {
   STATUS_LABEL,
   statusOf,
   threadTitle,
-  type Status,
 } from "./lib/status";
 import {
   toggleValue,
@@ -239,70 +238,11 @@ function useStableArray<T>(value: readonly T[]): readonly T[] {
   return result;
 }
 
-/** The client-state key of the closed Other threads entry. */
-const OTHER_THREADS = "other-threads";
-
 /**
- * The entry below the Adventures that folds every other thread: a row in the
- * Adventures' style (icon, title, the most urgent status of its threads, a
- * chevron), with the list options and New thread over its right end.
- */
-function OtherThreadsEntry({
-  open,
-  status,
-  trailing,
-}: {
-  open: boolean;
-  status: Status | null;
-  trailing: ReactNode;
-}) {
-  return (
-    <div data-other-threads="" className="relative">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() =>
-          updateState((current) => ({
-            ...current,
-            collapsed: toggleValue(current.collapsed, OTHER_THREADS),
-          }))
-        }
-        className="flex min-h-7 w-full items-center gap-2 rounded-md pl-2 text-left text-[13px] leading-5 outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-9"
-      >
-        <span
-          aria-hidden="true"
-          className="flex size-4 shrink-0 items-center justify-center text-[var(--subtle-foreground)]"
-        >
-          <HostIcon name="MessageSquare" fallback="Folder" className="size-3.5" />
-        </span>
-        <span className="min-w-0 flex-1 truncate">Other threads</span>
-        {status && (
-          <span role="img" aria-label={STATUS_LABEL[status]} className="flex shrink-0 items-center">
-            <StatusIcon status={status} size="small" />
-          </span>
-        )}
-        {/* The slot the list options and New thread sit over. */}
-        <span aria-hidden="true" className="w-9 shrink-0" />
-        <span aria-hidden="true" className="flex size-6 shrink-0 items-center justify-center text-[var(--subtle-foreground)] max-md:size-9">
-          <HostIcon
-            name="ChevronDown"
-            fallback="ArrowDown"
-            className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`}
-          />
-        </span>
-      </button>
-      <span className="absolute right-7 top-1/2 flex -translate-y-1/2 items-center gap-2.5 max-md:right-10">
-        {trailing}
-      </span>
-    </div>
-  );
-}
-
-/**
- * The Adventures list first, then the Other threads entry: every thread
- * outside the Adventures, grouped and sorted by this client's choices (no
- * grouping, most recent first by default); the open Adventure never changes
- * that list.
+ * The Adventures picker, then the selected Adventure's workers or, when
+ * Other threads is picked, every thread outside the Adventures, grouped and
+ * sorted by this client's choices (no grouping, most recent first by
+ * default); the selected Adventure never changes that list.
  */
 function ThreadsList(props: PluginThreadListProps) {
   const { status, threads: rawThreads, projects } =
@@ -829,7 +769,6 @@ function ThreadsList(props: PluginThreadListProps) {
       renderDraft={draftRow}
     />
   );
-  const otherOpen = !state.collapsed.includes(OTHER_THREADS);
   const otherStatuses = new Set([
     ...families.map((family) => family.status),
     ...pinned.map(familyStatus),
@@ -838,35 +777,28 @@ function ThreadsList(props: PluginThreadListProps) {
     (["attention", "unread", "working"] as const).find((s) =>
       otherStatuses.has(s),
     ) ?? null;
-  const threadSection = (
+  const otherActions = (
+    <>
+      <ListingMenu />
+      <button
+        type="button"
+        aria-label="New thread"
+        title="New thread"
+        onClick={() => openNew(props.activeProjectId || undefined)}
+        className={sectionActionClass}
+      >
+        <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
+      </button>
+    </>
+  );
+  const otherList = (
     <DndContext {...dnd.dndContextProps}>
       <ThreadDndContext.Provider value={status === "ready" ? dnd.state : null}>
-        <div className="px-2">
-          <OtherThreadsEntry
-            open={otherOpen}
-            status={otherStatus}
-            trailing={
-              <>
-                <ListingMenu />
-                <button
-                  type="button"
-                  aria-label="New thread"
-                  title="New thread"
-                  onClick={() => openNew(props.activeProjectId || undefined)}
-                  className={sectionActionClass}
-                >
-                  <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
-                </button>
-              </>
-            }
-          />
-        </div>
-        {otherOpen && (
         <div
           data-activity-thread-groups=""
           onClickCapture={dnd.onClickCapture}
           onKeyDown={dnd.onEscape}
-          className="px-2 pb-3"
+          className="pb-3"
         >
           {status === "loading" || initiativeIds === null ? (
             <p role="status" className="p-2 text-sm text-muted-foreground">
@@ -1110,7 +1042,6 @@ function ThreadsList(props: PluginThreadListProps) {
             </>
           )}
         </div>
-        )}
       </ThreadDndContext.Provider>
       <DragOverlay dropAnimation={null}>
         {dnd.activeThreadId && dnd.state.dragMoved ? (
@@ -1165,11 +1096,14 @@ function ThreadsList(props: PluginThreadListProps) {
         <div className="px-2">
           <AdventuresSection
             activeThreadId={props.activeThreadId}
-            activeProjectId={props.activeProjectId || null}
             onNavigate={props.onNavigate}
+            otherThreads={{
+              status: otherStatus,
+              actions: otherActions,
+              list: otherList,
+            }}
           />
         </div>
-        {threadSection}
       </div>
     </div>
   );
@@ -1185,7 +1119,7 @@ export default definePluginApp((app) => {
     id: "sidebar",
     title: "Threads",
     description:
-      "Adventures with their workers first, then every other thread, recent first or grouped by status or project.",
+      "Pick an Adventure to list its workers, or Other threads for every thread outside them, recent first or grouped by status or project.",
     component: ThreadsList,
   });
   app.composer.customize({

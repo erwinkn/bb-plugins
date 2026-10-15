@@ -6,56 +6,85 @@ window, automatically archive threads, or run cleanup jobs.
 
 ## Layout
 
-The sidebar is one view: the Adventures, each of which opens onto its
-workers, then an **Other threads** entry holding every thread outside them.
+The sidebar is one view in two parts. At the top, a picker: every Adventure,
+then an **Other threads** entry. Below it, one section lists what is picked:
+the Adventure's coordinator and workers, or every thread outside the
+Adventures.
 
 ```
-Adventures                                    ≡
-  ◎ bb-plugins                          ◌  2m ⌄
-  │ Needs you                                  1
-  │   ⚙ Sidebar review                         ⓘ
-  │     W476                    Sol 6.1 · xhigh  4m
-  │ Working                                    2
-  │   ⚙ Sidebar: workers under Adventures      ◌
-  │     W474  #812              Opus 5.5 · high  1m
-  │     › 1 child thread
-  │   ⚙ Workers tab prefetch                   ◌
-  │     W473                    Opus 5.5 · high  6m
-  │ › 3 member threads
-  ◍ Equisafe: infra                     ⓘ  1m ›
-  ◌ Other threads                       ◌ ≡ +  ⌄
+Adventures
+  ◎ bb-plugins                          ◌  2m   ← picked
+  ◍ Equisafe: infra                     ⓘ  1m
+  ☰ Other threads                       ◌
+bb-plugins                                    ≡   ← group/order workers
+  ⚙ Plan the sidebar rework                   ◌
+    Coordinator                              1m
+  Needs you                                   1
+  ⚙ Sidebar review                            ⓘ
+    W476                    Sol 6.1 · xhigh  4m
+  Working                                     2
+  ⚙ Sidebar: selected Adventure's workers     ◌
+    W478  #812              Opus 5.5 · high  1m
+    › 1 child thread
+  ⚙ Workers tab prefetch                      ◌
+    W473                    Opus 5.5 · high  6m
+  › 3 member threads
+```
+
+Pick Other threads and the lower section becomes the thread list:
+
+```
+  ☰ Other threads                       ◌       ← picked
+Other threads                               ≡ +
   Fix flaky snooze test                        ◌
   bb-plugins · fix-snooze                     2m
 ```
 
 **Adventures.** One dense line per Adventure: its icon in its color, its
-name (muted while paused), its status, how long ago its threads last changed,
-and a chevron. The status prioritizes an unread coordinator reply or a
+name (muted while paused), its status and how long ago its threads last
+changed. The status prioritizes an unread coordinator reply or a
 decision/input needing you, then any working thread (including native
 descendants), then an observed unsent text or attachment draft. Routine
 unread worker reports wait for the coordinator. The counts (needs you, in
 flight, remaining, to revisit, paused) are in the row's tooltip, under the
-objective. A click opens the coordinator. There is no create button: Adventures
-are started from the Adventures plugin itself.
+objective. A click picks the Adventure and opens its coordinator (its
+overview when it has none). There is no create button: Adventures are started
+from the Adventures plugin itself.
 
-**Workers.** The chevron opens an Adventure onto its current workers. An
-Adventure you never opened or closed by hand is open while it holds the open
-thread (its coordinator, a worker, or one of their child threads), as the
-selected one was before; a choice made with the chevron sticks, per client.
-Each worker is an ordinary thread row (status, hover prefetch, the row menu,
-split and PR chip) whose title drops the leading worker id BB titles start
-with; its second line starts with the id (W474) and ends with the model and
-reasoning level from its Adventures execution profile ("Opus 5.5 · high",
-the full profile on hover), then its age. A worker's child threads
-(reviewers, helpers) fold under a "› 2 child threads" toggle shown only when
-it has some, closed until clicked or while it holds the open thread; a child
-with children of its own gets its own toggle. The Adventure's member threads
-(discussions and threads attached to it, the ones its tree names whose parent
-is the coordinator or gone) fold the same way under "member threads" at the
-end. Other threads under the coordinator, such as a former worker's thread
-nobody archived, are not listed.
+**Picking.** Exactly one entry is picked and shows highlighted. The pick is
+kept in this client's storage (`selected`), so a reload keeps it. Opening a
+thread of an Adventure (its coordinator, a worker, or one of their child
+threads) picks that Adventure, once per opening: picking Other threads while
+that thread stays open sticks. The Adventure whose tree names the thread
+wins; otherwise the one naming its nearest ancestor. BB's thread list leaves
+archived threads out, so when the walk up reaches a parent it does not list
+(a live helper under an archived reviewer), the client asks the sidebar
+server once, in the background, for that thread's parent links
+(`threadAncestry`, read from the host, at most 32) and keeps them for the
+session; a read in flight is shared, and a failed one is asked again on the
+next opening. Opening a thread outside the Adventures keeps
+the pick. With nothing picked yet, or once the picked Adventure has left the
+tree, the first Adventure is shown; Other threads only when there are no
+Adventures or the Adventures plugin is not running. Before the first tree read
+of a fresh client (no cached tree) the lower section waits under "Loading
+Adventures…"; a picked Other threads draws at once.
 
-The Adventures header's options button chooses, for every Adventure at once:
+**Workers.** The section of a picked Adventure is titled with its name. The
+coordinator comes first, labelled "Coordinator", without the threads it
+spawned. Each worker is an ordinary thread row (status, hover prefetch, the
+row menu, split and PR chip) whose title drops the leading worker id BB
+titles start with; its second line starts with the id (W474) and ends with
+the model and reasoning level from its Adventures execution profile ("Opus
+5.5 · high", the full profile on hover), then its age. A worker's child
+threads (reviewers, helpers) fold under a "› 2 child threads" toggle shown
+only when it has some, closed until clicked or while it holds the open
+thread; a child with children of its own gets its own toggle. The
+Adventure's member threads (discussions and threads attached to it, the ones
+its tree names whose parent is the coordinator or gone) fold the same way
+under "member threads" at the end. Other threads under the coordinator, such
+as a former worker's thread nobody archived, are not listed.
+
+The workers section's options button chooses, for every Adventure at once:
 **Group workers by** State (Needs you, Working, Done, Stopped, Idle, the
 Workers tab's rules) or None, and **Order workers by** Recent activity or
 Newest worker (highest W# first). The choice is kept in this client's
@@ -65,10 +94,10 @@ Working show whole; Done, Stopped and Idle show five rows before Show more,
 and the ungrouped list fifteen.
 
 Where the model and state come from: BB threads carry no model, so the
-sidebar server reads each open Adventure's Adventures `overview` (summary
+sidebar server reads the picked Adventure's Adventures `overview` (summary
 tier) and keeps only each worker's id, profile and group. That read is heavy
 (about 1.2 MB and 1.5 s for an Adventure of 80 workers), so it is bounded: only
-Adventures some client opened in the last two minutes are read, one read at a
+Adventures some client picked in the last two minutes are read, one read at a
 time, a first read at once and a changed one again at most every 30 s
 (`FACTS_INTERVAL_MS`). The tree read (`projectMode`) answers with the facts
 the server already has, never waiting on a read; a read that changes them
@@ -82,18 +111,17 @@ order, so the list draws at once and the first read refreshes it in the
 background; only a confirmed read replaces it, and a read that finds
 Adventures gone clears it.
 
-**Other threads.** Below the Adventures, an entry in their style folds every
-thread outside them, with pins, snoozes, drafts and archive; it is open
-until you fold it, and remembers it. Its status shows the most urgent of its
-threads (needs attention, unread, working). Its grouping and order are this
-client's own (they default to no grouping, most recent first) and never follow
-the open Adventure. Its options button holds Grouping (None, Status, Project)
-and Ordering (date updated or created, newest or oldest first) submenus that
-name the current choice, then Show options for each status, Snoozed and
-Archived. Its + opens BB's new-thread composer in the open thread's project.
-Ungrouped, new-thread drafts lead the list and 25 threads show before Show
-more; under a Pinned group the list gets a "Recent" title so it does not read
-as pinned.
+**Other threads.** The picker's last entry, in the Adventures' style with a
+list glyph, lists every thread outside them, with pins, snoozes, drafts and
+archive. Its status shows the most urgent of its threads (needs attention,
+unread, working). Its grouping and order are this client's own (they default
+to no grouping, most recent first) and never follow the picked Adventure. Its
+section's options button holds Grouping (None, Status, Project) and Ordering
+(date updated or created, newest or oldest first) submenus that name the
+current choice, then Show options for each status, Snoozed and Archived. Its
++ opens BB's new-thread composer in the open thread's project. Ungrouped,
+new-thread drafts lead the list and 25 threads show before Show more; under a
+Pinned group the list gets a "Recent" title so it does not read as pinned.
 
 Adventure order is fixed until you change it: activity, selection, polling and
 reloads never move a row. Drag a row to reorder it — the whole row is the

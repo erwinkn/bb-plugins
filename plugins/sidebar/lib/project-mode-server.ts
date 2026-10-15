@@ -10,6 +10,7 @@ import { withReadTimeout } from "./read-timeout";
 import { createWorkerFacts } from "./adventure-workers-server";
 import { treeSchema } from "./project-tree-schema";
 import {
+  MAX_ANCESTRY,
   projectModeContract,
   threadCreateResultSchema,
 } from "./project-mode-contract";
@@ -205,6 +206,24 @@ export function registerProjectMode(bb: BbPluginApi) {
             threadIds: [],
             status: firstReadFailed ? ("failed" as const) : ("loading" as const),
           };
+    },
+    threadAncestry: async ({ threadId }) => {
+      const links: { id: string; parentThreadId: string | null }[] = [];
+      const seen = new Set<string>();
+      for (let id: string | null = threadId; id && !seen.has(id) && links.length < MAX_ANCESTRY; ) {
+        seen.add(id);
+        let thread;
+        try {
+          thread = await bb.sdk.threads.get({ threadId: id });
+        } catch (cause) {
+          // A deleted ancestor ends the chain; the links below it still help.
+          if (!links.length) throw cause;
+          break;
+        }
+        links.push({ id, parentThreadId: thread.parentThreadId });
+        id = thread.parentThreadId;
+      }
+      return { links };
     },
     saveProjectOrder: ({ expectedRevision, order: ids }) =>
       order.save(expectedRevision, ids),

@@ -6,7 +6,7 @@ import {
   renderSlot as renderSdkSlot,
 } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginSidebarPullRequest } from "@get-bb/plugin-sdk/app";
-import { parseState, updateState } from "../lib/client-state";
+import { OTHER_THREADS, parseState, updateState } from "../lib/client-state";
 import { projectHueStep } from "../lib/project-hue";
 import { STATUS_COLOR_CLASS } from "../components/status-icon";
 import { pullRequestColorClass } from "../components/pull-request";
@@ -76,10 +76,11 @@ const originalMatchMedia = window.matchMedia;
 beforeEach(() => {
   window.localStorage.clear();
   seedInitiativeCache();
-  // Most tests read the status groups; the default listing is ungrouped.
+  // Most tests read the Other threads status groups; the default listing is
+  // ungrouped.
   updateState(() => {
     const state = parseState(null);
-    return { ...state, listing: { ...state.listing, groupBy: "status" } };
+    return { ...state, listing: { ...state.listing, groupBy: "status" }, selected: OTHER_THREADS };
   });
   vi.clearAllMocks();
   finePointer = false;

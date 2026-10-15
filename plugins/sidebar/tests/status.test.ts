@@ -168,6 +168,13 @@ describe("client storage boundary", () => {
       ).listing.groupBy,
     ).toBe("project");
   });
+  it("keeps the selection and drops the folded Other threads entry", () => {
+    const state = parseState(
+      JSON.stringify({ selected: "p1", collapsed: ["other-threads", "status:done"] }),
+    );
+    expect(state.selected).toBe("p1");
+    expect(state.collapsed).toEqual(["status:done"]);
+  });
   it("drops leftover mode, grouping, order and space fields", () => {
     const state = parseState(
       JSON.stringify({
@@ -231,7 +238,8 @@ describe("client storage boundary", () => {
           collapsed: false,
           listing: { groupBy: "bad", sortBy: "created", sortDirection: 1 },
           workerListing: { groupBy: "none", sortBy: "bad" },
-          adventures: { p1: true, p2: false, p3: "yes" },
+          adventures: { p1: true },
+          selected: 7,
         }),
       ),
     ).toEqual({
@@ -241,7 +249,7 @@ describe("client storage boundary", () => {
         sortDirection: "descending",
       },
       workerListing: { groupBy: "none", sortBy: "updated" },
-      adventures: { p1: true, p2: false },
+      selected: null,
       hidden: ["done"],
       showArchives: false,
       showSnoozed: true,
