@@ -300,6 +300,21 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Background commands: show command, Stop, reconcile stale tasks (2026-10-15)
+
+Candidate from Erwin's screenshot of the promptbox background-commands card;
+not filed. Being built in our fork first (W472). The card
+(`ThreadBackgroundCommandsCard.tsx`) only displays rows: there is no way to
+stop a task, a row shows the agent's description instead of the command, and a
+task whose finish event never arrived (session restart, turn ended) keeps a
+live timer forever (seen: two rows at "14h 18m" with no process on the host).
+
+- **Smallest change:** a per-row Stop that asks the provider to stop the task
+  (when the provider supports it), click a row for the full command and
+  output, and mark leftover rows lost when the provider session restarts or
+  reports its live tasks without them.
+- **Suggested issue title:** `Background commands: show command, Stop, reconcile stale tasks`.
+
 ### Plugin RPCs: tell handlers who called (2026-10-08)
 
 Candidate from the memory switch (D452: only the user changes a memory's mode);
