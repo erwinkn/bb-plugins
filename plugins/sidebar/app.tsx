@@ -1096,6 +1096,7 @@ function ThreadsList(props: PluginThreadListProps) {
         <div className="px-2">
           <AdventuresSection
             activeThreadId={props.activeThreadId}
+            activeProjectId={props.activeProjectId || null}
             onNavigate={props.onNavigate}
             otherThreads={{
               status: otherStatus,

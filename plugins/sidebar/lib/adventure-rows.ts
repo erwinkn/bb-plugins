@@ -27,8 +27,9 @@ const workerNumber = (ref: string) => Number(/\d+/.exec(ref)?.[0] ?? 0);
  * workers. A worker's thread is listed once, as its own row, never again as
  * another thread's child. The group follows the
  * server's facts, except that BB's live status wins at once: a thread
- * waiting for input needs you, a running one (or one with a running
- * descendant) is working.
+ * waiting for input needs you, a running one is working, and a quiet one
+ * with a live descendant is waiting, as the Workers tab says. A descendant
+ * BB lists as quiet but Initiatives knows is queued shows through the facts.
  */
 export function adventureRows(
   project: Project,
@@ -73,14 +74,21 @@ export function adventureRows(
   };
   // Over every live descendant, listed under this worker or not (another
   // worker's thread nested under it is its own row, a thread under an
-  // archived one is not listed).
-  const runningBelow = (id: string): boolean => {
+  // archived one is not listed). Live as Initiatives' running() counts it:
+  // running, or asking for input.
+  const liveBelow = (id: string): boolean => {
     const pending = [id];
     const visited = new Set(pending);
     while (pending.length)
       for (const child of allChildren.get(pending.pop()!) ?? []) {
         if (visited.has(child.id)) continue;
-        if (!child.isArchived && statusFor(child) === "working") return true;
+        if (
+          !child.isArchived &&
+          (statusFor(child) === "working" ||
+            child.hasPendingInteraction ||
+            child.indicator === "waiting-for-input")
+        )
+          return true;
         visited.add(child.id);
         pending.push(child.id);
       }
@@ -93,13 +101,15 @@ export function adventureRows(
     const children = subtree(thread.id);
     const known = factsByRef.get(n.worker!);
     const waitsForInput = status === "attention" && thread.indicator !== "unread-error";
-    // A worker waiting on a running child works, as the Workers tab says.
+    // A quiet worker over a live review waits, whatever its last report said.
     const group: WorkerGroup =
       known?.group === "needs" || waitsForInput
         ? "needs"
-        : status === "working" || runningBelow(thread.id) || known?.group === "working"
+        : status === "working"
           ? "working"
-          : (known?.group ?? (thread.indicator === "unread-error" ? "stopped" : "idle"));
+          : liveBelow(thread.id)
+            ? "waiting"
+            : (known?.group ?? (thread.indicator === "unread-error" ? "stopped" : "idle"));
     return {
       node: { thread, status, children },
       ref: n.worker!,

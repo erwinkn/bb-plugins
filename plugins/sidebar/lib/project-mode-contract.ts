@@ -32,6 +32,46 @@ export const readTimeoutReportSchema = z.object({
 });
 export type ReadTimeoutReport = z.infer<typeof readTimeoutReportSchema>;
 
+/**
+ * What the Initiatives `command` RPC answers to a keyed `create`: a WriteAnswer
+ * wrapping `{ project, note }`. An unkeyed (older) reply is the bare answer.
+ */
+const createdSchema = z.object({
+  project: z.object({
+    id: projectId,
+    coordinatorThreadId: z.string().nullable().optional(),
+  }),
+  note: z.string().nullable().optional(),
+});
+export const createReplySchema = z.union([
+  z.object({ write: z.literal("done"), answer: createdSchema }),
+  z.object({
+    write: z.enum(["rejected", "unknown"]),
+    message: z.string(),
+  }),
+  createdSchema,
+]);
+
+/**
+ * The create's outcome. rejected: Adventures refused it with nothing saved.
+ * unknown: an earlier send of the key failed midway, so what it saved is
+ * unknown. Either settles the key; a failed call (no answer) does not.
+ */
+export const createdInitiativeSchema = z.discriminatedUnion("write", [
+  z.object({
+    write: z.literal("done"),
+    projectId,
+    coordinatorThreadId: z.string().nullable(),
+    /** Why the coordinator is not confirmed yet, or null. */
+    note: z.string().nullable(),
+  }),
+  z.object({
+    write: z.enum(["rejected", "unknown"]),
+    message: z.string(),
+  }),
+]);
+export type CreatedInitiative = z.infer<typeof createdInitiativeSchema>;
+
 export const projectModeContract = defineRpcContract({
   projectMode: {
     /**
@@ -145,6 +185,22 @@ export const projectModeContract = defineRpcContract({
       prompt: z.string().trim().min(1).max(4000),
     }),
     output: threadCreateResultSchema,
+  },
+  /**
+   * Starts an Adventure through the Adventures plugin's user-scoped `command`
+   * RPC ("create"), with a new coordinator on the first member's default
+   * checkout, as its own create form does. `key` makes the write idempotent:
+   * sending the same request with the same key again (after a timeout or a
+   * lost answer) runs it at most once.
+   */
+  createInitiative: {
+    input: z.object({
+      name: z.string().trim().min(1).max(200),
+      objective: z.string().trim().min(1).max(4000),
+      memberProjectIds: z.array(projectId).min(1).max(30),
+      key: z.string().min(1).max(100),
+    }),
+    output: createdInitiativeSchema,
   },
   /**
    * Cross-plugin bump the Initiatives plugin calls on every ledger mutation.

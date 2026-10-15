@@ -3,11 +3,11 @@ import { z } from "zod";
 /**
  * Where a worker stands, in the Workers tab's terms (plugins/initiatives
  * workerView): Needs you holds an open blocker nobody answered; Working a
- * running thread or one waiting on a running child; Done a finished report;
- * Stopped work that ended without finishing and nothing picked up; Idle the
- * quiet rest.
+ * running thread; Waiting a quiet thread with a live descendant (a review
+ * running, queued or asking for input); Done a finished report; Stopped work
+ * that ended without finishing and nothing picked up; Idle the quiet rest.
  */
-export const WORKER_GROUPS = ["needs", "working", "done", "stopped", "idle"] as const;
+export const WORKER_GROUPS = ["needs", "working", "waiting", "done", "stopped", "idle"] as const;
 export type WorkerGroup = (typeof WORKER_GROUPS)[number];
 
 /** The most Adventures one tree read asks worker facts for; clients send no more. */
@@ -60,15 +60,17 @@ export function adventureWorkers(overview: OverviewSlice): AdventureWorker[] {
     const report = w.latestReport;
     const group: WorkerGroup = blocked.has(w.ref)
       ? "needs"
-      : BUSY_THREAD.has(w.runtime) || overview.workerWaiting?.[w.ref]?.on
+      : BUSY_THREAD.has(w.runtime)
         ? "working"
-        : FAILED_THREAD.has(w.runtime) || w.open || w.stopReason
-          ? "stopped"
-          : report?.outcome === "done"
-            ? "done"
-            : report
-              ? "stopped"
-              : "idle";
+        : overview.workerWaiting?.[w.ref]?.on
+          ? "waiting"
+          : FAILED_THREAD.has(w.runtime) || w.open || w.stopReason
+            ? "stopped"
+            : report?.outcome === "done"
+              ? "done"
+              : report
+                ? "stopped"
+                : "idle";
     return { ref: w.ref, profile: w.profile, group };
   });
 }

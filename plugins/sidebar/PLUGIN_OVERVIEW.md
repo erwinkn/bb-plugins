@@ -3,11 +3,14 @@
 - `app.tsx`: sidebar registration and the one view, with the Other threads
   list (sorting and group rendering) it hands to the Adventures picker.
 - `components/project-mode.tsx`: the Adventures picker (rows, reordering, the
-  Other threads entry, which entry is picked, the tree read that carries the
-  worker facts) and the section below it that lists the pick.
+  header's + that opens the create dialog, pending creates, the Other threads
+  entry, which entry is picked, the tree read that carries the worker facts)
+  and the section below it that lists the pick.
+- `components/create-initiative.tsx`, `lib/initiative-submissions.ts`: the
+  New Adventure dialog and its per-create pending entries.
 - `components/adventure-workers.tsx`: the picked Adventure's rows: its
-  coordinator, its workers (by state or in one list), their child-thread
-  toggles, its member threads.
+  workers (by state or in one list), their child-thread toggles, its member
+  threads.
 - `lib/adventure-rows.ts`: which threads a picked Adventure lists and each
   worker's group, from the tree, BB's threads and the worker facts.
 - `lib/adventure-workers.ts`: worker facts (model, group) from the Adventures

@@ -22,17 +22,20 @@ import { ThreadChildren } from "./thread-children";
 import { ThreadRoots } from "./thread-roots";
 import { ThreadRow, type ProviderIconRecord } from "./thread-row";
 
+/** The Workers tab's group names; Idle drops its "· nothing open". */
 const GROUP_LABEL: Record<WorkerGroup, string> = {
   needs: "Needs you",
   working: "Working",
-  done: "Done",
+  waiting: "Waiting",
+  done: "Done · PR waiting",
   stopped: "Stopped",
   idle: "Idle",
 };
-/** Rows a group shows before Show more: what needs you or runs shows whole. */
+/** Rows a group shows before Show more: what needs you, runs or waits shows whole. */
 const GROUP_PAGE: Record<WorkerGroup, number> = {
   needs: 50,
   working: 50,
+  waiting: 50,
   done: 5,
   stopped: 5,
   idle: 5,

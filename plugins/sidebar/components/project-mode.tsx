@@ -52,7 +52,19 @@ import { ProjectAppearanceEditor, type AppearancePatch } from "./project-appeara
 import { HostIcon } from "../lib/host-icon";
 import { ThreadDragOverlay } from "./thread-drag-overlay";
 import { menuItemClass, WorkerListingMenu } from "./menus";
-import { SectionHeader } from "./section-header";
+import { SectionHeader, sectionActionClass } from "./section-header";
+import { CreateInitiativeDialog } from "./create-initiative";
+import {
+  dismissNotice,
+  dismissSubmission,
+  newDraft,
+  resumeSubmissions,
+  submitDraft,
+  useSubmissions,
+  type CreateInitiative,
+  type InitiativeDraft,
+} from "../lib/initiative-submissions";
+import { projectLabel } from "../lib/project-schema";
 import { AdventureWorkers } from "./adventure-workers";
 import {
   cacheTree,
@@ -75,13 +87,24 @@ export interface OtherThreads {
   list: ReactNode;
 }
 
-const select = (selected: string) =>
+/**
+ * A created Adventure, picked when its create answered, and the thread open
+ * then. While that thread stays open, a later read (the tree, a thread's
+ * ancestry) that finds where the thread belongs leaves the pick alone; opening
+ * another thread, or another pick in any tab, ends it. The pick is stored
+ * once, and the picker shows it as soon as the tree lists it.
+ */
+let createdPick: { projectId: string; openThread: string | null } | null = null;
+const select = (selected: string) => {
+  createdPick = null;
   updateState((current) => ({ ...current, selected }));
+};
 
 /**
  * The Adventures picker at the top of the sidebar, then what it selected.
  * The picker is one dense row per Adventure (icon, name, status, last
- * activity) with drag reordering, then an Other threads entry. Below it, one
+ * activity) with drag reordering, the Adventures being created, then an
+ * Other threads entry; the header's + starts a new Adventure. Below it, one
  * section lists the selection: the Adventure's coordinator and workers, or
  * every thread outside the Adventures. Opening a thread of an Adventure
  * selects it; with nothing picked yet the first Adventure is. The last tree
@@ -90,6 +113,7 @@ const select = (selected: string) =>
  */
 export function AdventuresSection(props: {
   activeThreadId: string | null;
+  activeProjectId: string | null;
   onNavigate: () => void;
   otherThreads: OtherThreads;
 }) {
@@ -245,7 +269,13 @@ export function AdventuresSection(props: {
     () => owningProject(displayed, native.threads, props.activeThreadId, links),
     [displayed, native.threads, props.activeThreadId, links],
   );
+  // A pick made since, here or in another tab, ends a created Adventure's.
   useLayoutEffect(() => {
+    if (createdPick && client.selected !== createdPick.projectId) createdPick = null;
+  }, [client.selected]);
+  useLayoutEffect(() => {
+    if (createdPick?.openThread === props.activeThreadId) return;
+    createdPick = null;
     if (holder) select(holder);
   }, [props.activeThreadId, holder]);
   // A walk that stopped at a thread BB's list omits (an archived reviewer
@@ -277,6 +307,65 @@ export function AdventuresSection(props: {
     lastSelected.current = selectedId;
     if (selectedId) schedule();
   }, [selectedId, schedule]);
+
+  const memberChoices = useMemo(
+    () =>
+      native.projects
+        .filter((project) => !project.isPersonal)
+        .map((project) => ({ id: project.id, name: projectLabel(project) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [native.projects],
+  );
+  const [editing, setEditing] = useState<InitiativeDraft | null>(null);
+  const { submissions, notice } = useSubmissions();
+  // A listed draft's dialog closes once it is created or dismissed, here or
+  // in another tab: there is nothing left to send.
+  const dialogDraft =
+    editing && (editing.key === null || submissions.some((s) => s.key === editing.key))
+      ? editing
+      : null;
+  const openCreate = () =>
+    setEditing(
+      newDraft(
+        memberChoices.some((p) => p.id === props.activeProjectId)
+          ? props.activeProjectId
+          : null,
+      ),
+    );
+  // The dialog closes at once; the draft shows in the picker while Adventures
+  // creates it. A failed one stays there with its reason until sent again or
+  // dismissed, and sending it again unchanged keeps its key, so it cannot
+  // duplicate. Drafts a reload cut off are sent again once, without opening.
+  const create: CreateInitiative = (input) =>
+    apiRef.current.call("createInitiative", input);
+  // A created Adventure becomes the pick; the picker shows it once the tree
+  // lists it.
+  const openThread = useRef(props.activeThreadId);
+  openThread.current = props.activeThreadId;
+  const created = (projectId: string) => {
+    select(projectId);
+    createdPick = { projectId, openThread: openThread.current };
+    schedule();
+  };
+  useEffect(() => resumeSubmissions(create, (answer) => created(answer.projectId)), []);
+  const submit = (draft: InitiativeDraft) => {
+    setEditing(null);
+    const from = window.location.pathname;
+    submitDraft(draft, create, (answer) => {
+      created(answer.projectId);
+      // Open its coordinator unless the user has moved on to another page
+      // meanwhile. Without one yet the new row and the note say what
+      // happened.
+      if (
+        !answer.coordinatorThreadId ||
+        !mounted.current ||
+        window.location.pathname !== from
+      )
+        return;
+      navigate.toThread(answer.coordinatorThreadId);
+      props.onNavigate();
+    });
+  };
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -336,7 +425,22 @@ export function AdventuresSection(props: {
   return (
     <>
       <section aria-label="Adventures" data-project-mode="" className="mt-2">
-        <SectionHeader title="Adventures" />
+        <SectionHeader
+          title="Adventures"
+          trailing={
+            available !== false && (
+              <button
+                type="button"
+                aria-label="New Adventure"
+                title="New Adventure"
+                onClick={openCreate}
+                className={sectionActionClass}
+              >
+                <HostIcon name="Plus" fallback="FolderPlus" className="size-3.5" />
+              </button>
+            )
+          }
+        />
         {error && (
           <p role="alert" className="px-2 py-1 text-xs text-destructive">
             {error}{" "}
@@ -353,6 +457,14 @@ export function AdventuresSection(props: {
             </button>
           </p>
         )}
+        {notice && (
+          <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
+            {notice}{" "}
+            <button className="underline" onClick={dismissNotice}>
+              Dismiss
+            </button>
+          </p>
+        )}
         {available === false && (
           <p className="px-2 py-1 text-xs text-muted-foreground">
             Install or enable the Adventures plugin to list Adventures here.
@@ -361,8 +473,13 @@ export function AdventuresSection(props: {
         {available === null && !error && (
           <p className="px-2 py-1 text-xs text-muted-foreground">Loading Adventures…</p>
         )}
-        {available && !projects.length && (
-          <p className="px-2 py-1 text-xs text-muted-foreground">No Adventures yet.</p>
+        {available && !projects.length && !submissions.length && (
+          <p className="px-2 py-1 text-xs text-muted-foreground">
+            No Adventures yet.{" "}
+            <button type="button" className="underline" onClick={openCreate}>
+              Start one
+            </button>
+          </p>
         )}
         <DndContext {...dnd.dndContextProps}>
           <ul
@@ -431,6 +548,54 @@ export function AdventuresSection(props: {
                 />
               );
             })}
+            {submissions.map(({ key, draft, error: failure }) => (
+              <li
+                key={key}
+                data-initiative-submission={failure ? "failed" : "pending"}
+                className="flex min-h-7 items-center gap-2 rounded-md px-2 py-1 text-[13px] leading-5"
+              >
+                <span aria-hidden="true" className="flex size-4 shrink-0 items-center justify-center text-[var(--subtle-foreground)]">
+                  <HostIcon
+                    name={failure ? "AlertCircle" : "Loading"}
+                    fallback="Circle"
+                    className={`size-3.5 ${failure ? "text-destructive" : "animate-spin"}`}
+                  />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-muted-foreground">
+                    {draft.name}
+                  </span>
+                  {failure && (
+                    <span role="alert" className="block text-xs text-destructive">
+                      {failure}
+                    </span>
+                  )}
+                </span>
+                {failure ? (
+                  <>
+                    <button
+                      type="button"
+                      className="shrink-0 text-xs underline"
+                      onClick={() => setEditing({ key, ...draft })}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Dismiss ${draft.name}`}
+                      className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => dismissSubmission(key)}
+                    >
+                      <HostIcon name="X" className="size-3.5" />
+                    </button>
+                  </>
+                ) : (
+                  <span className="shrink-0 text-xs text-[var(--subtle-foreground)]">
+                    Creating…
+                  </span>
+                )}
+              </li>
+            ))}
           </ul>
           <DragOverlay dropAnimation={null}>
             {dragId ? (
@@ -445,6 +610,12 @@ export function AdventuresSection(props: {
         <OtherThreadsEntry
           selected={selection === OTHER_THREADS}
           status={other.status}
+        />
+        <CreateInitiativeDialog
+          draft={dialogDraft}
+          projects={memberChoices}
+          onSubmit={submit}
+          onClose={() => setEditing(null)}
         />
       </section>
       {selection === OTHER_THREADS ? (

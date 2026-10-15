@@ -12,7 +12,7 @@ the Adventure's coordinator and workers, or every thread outside the
 Adventures.
 
 ```
-Adventures
+Adventures                                    +
   ◎ bb-plugins                          ◌  2m   ← picked
   ◍ Equisafe: infra                     ⓘ  1m
   ☰ Other threads                       ◌
@@ -48,8 +48,36 @@ descendants), then an observed unsent text or attachment draft. Routine
 unread worker reports wait for the coordinator. The counts (needs you, in
 flight, remaining, to revisit, paused) are in the row's tooltip, under the
 objective. A click picks the Adventure and opens its coordinator (its
-overview when it has none). There is no create button: Adventures are started
-from the Adventures plugin itself.
+overview when it has none).
+
+**New Adventure.** The + level with the Adventures title (or "Start one"
+while there are none) opens a dialog: a name, what it should achieve, and its
+repositories, where the open thread's repository is preselected and the first
+checked one hosts the coordinator. Only the header creates; no Adventure row
+offers it. It creates through the Adventures plugin's own `command` RPC
+(`create`, with a new coordinator on the first repository's default checkout),
+like its create form. The dialog closes at once and the draft shows in the
+picker as "Creating…" while Adventures spawns the coordinator, so nothing
+waits on it. Once created, the new Adventure becomes the pick (the picker
+shows it as soon as the tree lists it) and its coordinator opens unless you
+have navigated away meanwhile. A failed draft stays in the picker with its
+reason; Edit reopens it, and resending it unchanged reuses its idempotency
+key, so a create that did land but whose answer was lost is never made twice.
+Past 90 s without an answer the draft shows as unconfirmed, and a late answer
+still settles it. Sent drafts and their keys are kept in this client's
+storage, so a reload keeps them; after a reload, drafts still waiting for an
+answer are sent again under their keys. Each send is its own storage entry,
+named by its key and holding only what that key's answers decided, so tabs
+sending at once never overwrite each other's, and every tab shows what another
+sent or settled. A send that got no answer shows as failed only in its own
+tab. Only an answer from Adventures settles a key: when it refused the create,
+or cannot tell what an earlier send saved, the draft gets a new key and
+resending it is a new create, which you check and send on purpose. A key first
+sent over 7 days ago is never sent again, by a reload or by hand, because
+Adventures keeps its receipt only a day longer: the draft stays listed with a
+warning, so you can check whether it was created before sending it as new. An
+Edit dialog always sends the draft's current key, even one that settled while
+it was open, and closes if the draft is created meanwhile.
 
 **Picking.** Exactly one entry is picked and shows highlighted. The pick is
 kept in this client's storage (`selected`), so a reload keeps it. Opening a
@@ -85,13 +113,20 @@ under "member threads" at the end. Other threads under the coordinator, such
 as a former worker's thread nobody archived, are not listed.
 
 The workers section's options button chooses, for every Adventure at once:
-**Group workers by** State (Needs you, Working, Done, Stopped, Idle, the
-Workers tab's rules) or None, and **Order workers by** Recent activity or
-Newest worker (highest W# first). The choice is kept in this client's
-storage. BB's live status wins over the last read at once: a worker waiting
-for input shows under Needs you and a running one under Working. Needs you and
-Working show whole; Done, Stopped and Idle show five rows before Show more,
-and the ungrouped list fifteen.
+**Group workers by** State (Needs you, Working, Waiting, Done · PR waiting,
+Stopped, Idle: the Workers tab's groups and rules) or None, and **Order
+workers by** Recent activity or Newest worker (highest W# first). The choice
+is kept in this client's storage. Waiting holds a worker whose own thread is
+quiet while a descendant is live (a review running, queued for a slot or
+asking for input), whatever its last report said: a worker that reported done
+and then took more work never shows as done while its review runs. BB's live
+status wins over the last read at once: a worker waiting for input shows
+under Needs you, a running one under Working, and a quiet one over a running
+or input-waiting descendant under Waiting. A descendant queued for a slot
+looks quiet in BB's sidebar list, so only the server's facts (Adventures'
+child cache) put that worker under Waiting. Needs you, Working and Waiting
+show whole; Done, Stopped and Idle show five rows before Show more, and the
+ungrouped list fifteen.
 
 Where the model and state come from: BB threads carry no model, so the
 sidebar server reads the picked Adventure's Adventures `overview` (summary

@@ -37,6 +37,10 @@ describe("adventureWorkers", () => {
           worker("W7", { runtime: "failed", latestReport: { outcome: "done" } }),
           worker("W8"),
           worker("W9", { stopReason: "Superseded", latestReport: { outcome: "done" } }),
+          // Waiting on a queued review outranks its earlier done report and
+          // an open assignment, as in the tab.
+          worker("W10", { latestReport: { outcome: "done" } }),
+          worker("W11", { open: {} }),
         ],
       },
       blockers: [
@@ -45,7 +49,12 @@ describe("adventureWorkers", () => {
         // An answered one no longer needs you.
         { owner: { worker: "W5" }, answer: { note: "Go" } },
       ],
-      workerWaiting: { W8: { on: { title: "Reviewer" } }, W6: { on: null } },
+      workerWaiting: {
+        W8: { on: { title: "Reviewer" } },
+        W6: { on: null },
+        W10: { on: { title: "Review r2", running: "pending" } },
+        W11: { on: { title: "Review r1", running: "active" } },
+      },
     }).map((w) => `${w.ref}:${w.group}`);
     expect(groups).toEqual([
       "W1:needs",
@@ -55,8 +64,10 @@ describe("adventureWorkers", () => {
       "W5:stopped",
       "W6:idle",
       "W7:stopped",
-      "W8:working",
+      "W8:waiting",
       "W9:stopped",
+      "W10:waiting",
+      "W11:waiting",
     ]);
   });
 
@@ -142,18 +153,53 @@ describe("adventureRows", () => {
     expect(workers.map((w) => `${w.ref}:${w.group}:${w.profile}`)).toEqual(["W2:needs:null", "W1:working:p"]);
   });
 
-  it("counts a worker with a running descendant as working, below needs you", () => {
+  // W2, nested under W1, waits for input in `native`; these walks need it quiet.
+  const quiet = [...native.filter((t) => t.id !== "w2"), thread({ id: "w2", parentThreadId: "w1", updatedAt: 300 })];
+
+  it("counts a worker with a running descendant as waiting, below needs you", () => {
+    const group = (deep: Parameters<typeof thread>[0]) =>
+      adventureRows(
+        project,
+        [...quiet, thread({ id: "deep", parentThreadId: "child", ...deep })],
+        [],
+        [
+          { ref: "W1", profile: null, group: "stopped" },
+          { ref: "W2", profile: null, group: "needs" },
+        ],
+        "worker",
+      ).workers.map((w) => `${w.ref}:${w.group}`);
+    expect(group({ indicator: "runtime" })).toEqual(["W2:needs", "W1:waiting"]);
+    // Once it ends, the facts decide again.
+    expect(group({})).toEqual(["W2:needs", "W1:stopped"]);
+  });
+
+  // The sidebar folded the tab's Waiting into Working and counted only a
+  // running descendant: a done worker whose reviewer asked for input fell
+  // back to its stale "done" fact.
+  it.each([
+    ["running", { indicator: "runtime" as const }],
+    ["asking for input", { hasPendingInteraction: true, indicator: "waiting-for-input" as const }],
+    ["asking for approval", { hasPendingInteraction: true }],
+  ])("never lists a done worker whose review is %s as done", (_, review) => {
     const { workers } = adventureRows(
       project,
-      [...native, thread({ id: "deep", parentThreadId: "child", indicator: "runtime" })],
+      [...native.filter((t) => t.id !== "w2"), thread({ id: "review", parentThreadId: "w1", ...review })],
       [],
-      [
-        { ref: "W1", profile: null, group: "stopped" },
-        { ref: "W2", profile: null, group: "needs" },
-      ],
+      [{ ref: "W1", profile: null, group: "done" }],
       "worker",
     );
-    expect(workers.map((w) => `${w.ref}:${w.group}`)).toEqual(["W2:needs", "W1:working"]);
+    expect(workers.find((w) => w.ref === "W1")?.group).toBe("waiting");
+  });
+
+  it("keeps the server's Waiting for a review BB lists as quiet, until the facts change", () => {
+    // Initiatives knows a review queued for a slot; BB's sidebar list shows it as quiet.
+    const quiet = native.filter((t) => t.id !== "w2");
+    const facts = (group: "waiting" | "done") => [{ ref: "W1", profile: null, group }];
+    expect(adventureRows(project, quiet, [], facts("waiting"), "worker").workers[0]?.group).toBe("waiting");
+    expect(adventureRows(project, quiet, [], facts("done"), "worker").workers[0]?.group).toBe("done");
+    // The worker's own run outranks it.
+    const running = [...quiet.filter((t) => t.id !== "w1"), thread({ id: "w1", parentThreadId: "c", indicator: "runtime" })];
+    expect(adventureRows(project, running, [], facts("waiting"), "worker").workers[0]?.group).toBe("working");
   });
 
   it("counts a running worker nested under another as the other's running descendant", () => {
@@ -167,22 +213,25 @@ describe("adventureRows", () => {
       ],
       "worker",
     );
-    expect(workers.map((w) => `${w.ref}:${w.group}`)).toEqual(["W2:working", "W1:working"]);
+    expect(workers.map((w) => `${w.ref}:${w.group}`)).toEqual(["W2:working", "W1:waiting"]);
   });
 
   it("follows liveness through an archived thread in between", () => {
-    const { workers } = adventureRows(
-      project,
-      [
-        ...native,
-        thread({ id: "old-rev", parentThreadId: "w1", isArchived: true, indicator: "runtime" }),
-        thread({ id: "helper", parentThreadId: "old-rev", indicator: "runtime" }),
-      ],
-      [],
-      [{ ref: "W1", profile: null, group: "stopped" }],
-      "worker",
-    );
-    expect(workers.find((w) => w.ref === "W1")?.group).toBe("working");
+    const group = (helper: Parameters<typeof thread>[0]) =>
+      adventureRows(
+        project,
+        [
+          ...quiet,
+          thread({ id: "old-rev", parentThreadId: "w1", isArchived: true, indicator: "runtime" }),
+          thread({ id: "helper", parentThreadId: "old-rev", ...helper }),
+        ],
+        [],
+        [{ ref: "W1", profile: null, group: "stopped" }],
+        "worker",
+      ).workers.find((w) => w.ref === "W1")?.group;
+    expect(group({ indicator: "runtime" })).toBe("waiting");
+    // The archived thread's own stale indicator counts for nothing.
+    expect(group({})).toBe("stopped");
   });
 
   it("drops only a leading worker id from a title", () => {
