@@ -291,10 +291,10 @@ export default function plugin(bb: BbPluginApi) {
         return children === null ? [] : [[w.ref, { ...cache.waitingOn(w.threadId!), children }]];
       }),
     ]);
-    const blocked = new Set(result.blockers.filter((b) => !b.answer).map((b) => b.owner.worker));
+    const asksUser = new Set(result.blockers.filter((b) => !b.answer).map((b) => b.owner.worker));
     result.workerGroups = Object.fromEntries(result.workers.current.map((w) => {
       const facts = {
-        blocked: blocked.has(w.ref), runtime: w.runtime, waiting: !!result.workerWaiting?.[w.ref]?.on,
+        asksUser: asksUser.has(w.ref), runtime: w.runtime, waiting: !!result.workerWaiting?.[w.ref]?.on,
         open: !!w.open, stopReason: !!w.stopReason, outcome: w.latestReport?.outcome ?? null,
       };
       return [w.ref, {

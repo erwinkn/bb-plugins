@@ -2,10 +2,12 @@ import { z } from "zod";
 
 /**
  * Where a worker stands, in the Workers tab's terms (plugins/initiatives
- * lib/worker-group.ts): Needs you holds an open blocker nobody answered; Working a
- * running thread; Waiting a quiet thread with a live descendant (a review
- * running, queued or asking for input); Done a finished report; Stopped work
- * that ended without finishing and nothing picked up; Idle the quiet rest.
+ * lib/worker-group.ts): Needs you holds a blocker open in the user's Inbox,
+ * neither answered nor dismissed; Working a running thread; Waiting a quiet
+ * thread with a live descendant (a review running, queued or asking for
+ * input), or a blocked worker with nothing left for the user to answer, which
+ * waits on its coordinator; Done a finished report; Stopped work that ended
+ * without finishing and nothing picked up; Idle the quiet rest.
  */
 export const WORKER_GROUPS = ["needs", "working", "waiting", "done", "stopped", "idle"] as const;
 export type WorkerGroup = (typeof WORKER_GROUPS)[number];

@@ -116,10 +116,14 @@ The workers section's options button chooses, for every Adventure at once:
 **Group workers by** State (Needs you, Working, Waiting, Done · PR waiting,
 Stopped, Idle: the Workers tab's groups and rules) or None, and **Order
 workers by** Recent activity or Newest worker (highest W# first). The choice
-is kept in this client's storage. Waiting holds a worker whose own thread is
-quiet while a descendant is live (a review running, queued for a slot or
-asking for input), whatever its last report said: a worker that reported done
-and then took more work never shows as done while its review runs. BB's live
+is kept in this client's storage. Needs you holds a worker only while its
+blocker is an open card in your Inbox, neither answered nor dismissed. Waiting
+holds a worker whose own thread is quiet while a descendant is live (a review
+running, queued for a slot or asking for input), whatever its last report
+said: a worker that reported done and then took more work never shows as done
+while its review runs. It also holds a blocked worker with nothing left for you
+to answer (you answered or dismissed its blocker, or the coordinator took it
+back): it waits on the coordinator. BB's live
 status wins over the last read at once: a worker waiting for input shows
 under Needs you, a running one under Working, and a quiet one over a running
 or input-waiting descendant under Waiting. A descendant queued for a slot

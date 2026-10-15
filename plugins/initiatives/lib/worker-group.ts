@@ -11,13 +11,14 @@ export const FAILED_THREAD = new Set(["error", "failed"]);
 export type WorkerGroup = "needs" | "working" | "waiting" | "done" | "stopped" | "idle";
 
 /** Why a worker is in its group: the finer cases the Workers tab words differently. */
-export type WorkerKind = "blocked" | "input" | "running" | "waiting" | "failed" | "open" | "stopReason" | "done" | "reported" | "none";
+export type WorkerKind = "asksUser" | "input" | "running" | "waiting" | "failed" | "open" | "stopReason" | "done" | "onCoordinator" | "reported" | "none";
 
 export const KIND_GROUP: Record<WorkerKind, WorkerGroup> = {
-  blocked: "needs",
+  asksUser: "needs",
   input: "needs",
   running: "working",
   waiting: "waiting",
+  onCoordinator: "waiting",
   failed: "stopped",
   open: "stopped",
   stopReason: "stopped",
@@ -27,8 +28,11 @@ export const KIND_GROUP: Record<WorkerKind, WorkerGroup> = {
 };
 
 export interface WorkerFacts {
-  /** An open blocker the user has neither answered nor dismissed. */
-  blocked: boolean;
+  /**
+   * Its blocker is an open question in the user's Inbox: a blocker card they have neither
+   * answered nor dismissed, the rule the Inbox's Needs you count follows (needsYouCount).
+   */
+  asksUser: boolean;
   /** The thread's status (see `workerRuntime`). */
   runtime: string;
   /** A live descendant it waits on. */
@@ -40,7 +44,7 @@ export interface WorkerFacts {
 }
 
 export function workerKind(f: WorkerFacts): WorkerKind {
-  if (f.blocked) return "blocked";
+  if (f.asksUser) return "asksUser";
   if (f.runtime === INPUT_THREAD) return "input";
   if (BUSY_THREAD.has(f.runtime)) return "running";
   if (f.waiting) return "waiting";
@@ -48,6 +52,8 @@ export function workerKind(f: WorkerFacts): WorkerKind {
   if (f.open) return "open";
   if (f.stopReason) return "stopReason";
   if (f.outcome === "done") return "done";
+  // Blocked, with nothing left for the user to answer: the coordinator acts next.
+  if (f.outcome === "blocked") return "onCoordinator";
   return f.outcome ? "reported" : "none";
 }
 

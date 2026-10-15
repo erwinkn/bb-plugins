@@ -87,7 +87,7 @@ describe("v9 Workers tab", () => {
     const { slot } = mount(fleet());
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
     expect(slot.getByRole("tab", { name: /Workers/ }).textContent).toBe("Workers5");
-    expect(slot.getByText("1 working · 1 waiting on a child · 1 needs you · 1 done · 1 stopped · 7.9M tokens")).toBeTruthy();
+    expect(slot.getByText("1 working · 1 waiting · 1 needs you · 1 done · 1 stopped · 7.9M tokens")).toBeTruthy();
     const rows = (group: string) => within(slot.getByRole("region", { name: group })).getAllByRole("button", { name: /^W\d+ / }).map((b) => b.getAttribute("aria-label"));
     expect(rows("Needs you")).toEqual(["W1406 PDF Worker perf"]);
     expect(rows("Stopped")).toEqual(["W1247 Catalog binding fixes"]);

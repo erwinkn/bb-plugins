@@ -62,7 +62,7 @@ const rows = (slot: ReturnType<typeof renderSlot>, group: string) =>
   within(slot.getByRole("region", { name: group })).getAllByRole("button", { name: /^W\d+ / }).map((b) => b.getAttribute("aria-label"));
 
 describe("W465 Needs you means the user has to act", () => {
-  it("failed threads, cancelled and quiet work go to Stopped; only an open, unanswered blocker needs you", async () => {
+  it("failed threads, cancelled and quiet work go to Stopped; only an open, unanswered blocker needs you; an answered or dismissed one waits on the coordinator", async () => {
     const o = base();
     o.workers.current = [
       worker("W1", { label: "Asking", latestReport: report("blocked", "CPU capped.", "Pages or a queue?") }),
@@ -80,11 +80,17 @@ describe("W465 Needs you means the user has to act", () => {
     const slot = await workersTab(o);
     expect(rows(slot, "Needs you")).toEqual(["W1 Asking", "W8 Crashed while asking"]);
     expect(rows(slot, "Needs you").length).toBe(needsYouCount(o));
-    expect(rows(slot, "Stopped")).toEqual(["W2 Crashed", "W3 Cancelled", "W4 Went quiet", "W5 Answered", "W6 Dismissed", "W7 Gave up", "W9 Done then cancelled"]);
-    expect(slot.getByText("2 need you · 7 stopped")).toBeTruthy();
+    expect(rows(slot, "Waiting")).toEqual(["W5 Answered", "W6 Dismissed"]);
+    expect(rows(slot, "Stopped")).toEqual(["W2 Crashed", "W3 Cancelled", "W4 Went quiet", "W7 Gave up", "W9 Done then cancelled"]);
+    expect(slot.getByText("2 waiting · 2 need you · 5 stopped")).toBeTruthy();
+    const waiting = within(slot.getByRole("region", { name: "Waiting" }));
+    expect(waiting.getByText("Waiting on the coordinator: Which table? · you answered")).toBeTruthy();
+    expect(waiting.getByText("Waiting on the coordinator: Which column?")).toBeTruthy();
+    // Nothing runs on a worker waiting on its coordinator: no working glyph.
+    expect(slot.getByRole("button", { name: "W5 Answered" }).closest("li")!.querySelector(".cr-w-status")).toBeNull();
     const stopped = within(slot.getByRole("region", { name: "Stopped" }));
     for (const text of ["Thread failed: claude-code exited with code 0", "Stopped: Replaced by W12", "Idle without a report",
-      "Blocked: Which table? · answered", "Blocked: Which column?", "Failed: Tests never pass.", "Stopped: Superseded"])
+      "Failed: Tests never pass.", "Stopped: Superseded"])
       expect(stopped.getByText(text)).toBeTruthy();
     expect(within(slot.getByRole("region", { name: "Needs you" })).getByText("Blocked: Retry?")).toBeTruthy();
     expect(stopped.getByRole("button", { name: "Retire all" })).toBeTruthy();

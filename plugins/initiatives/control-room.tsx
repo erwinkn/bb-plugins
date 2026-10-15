@@ -937,11 +937,13 @@ const UNCHECKED = " · child threads not checked yet";
 
 /**
  * Needs you holds only what waits on the user: a worker's open blocker they have neither answered
- * nor dismissed, the rule the Inbox and its Needs you count follow (needsYouCount). Stopped holds
- * work that ended without finishing and that nothing has picked up: a failed thread, stopped or
- * cancelled work, open work whose thread went quiet without reporting, a failed report, a blocker
- * already answered or dismissed. Idle holds the quiet rest, nothing open, no report and no stop.
- * Both are usually superseded workers nobody retired, safe to retire in bulk.
+ * nor dismissed, the rule the Inbox and its Needs you count follow (needsYouCount). Waiting holds
+ * a worker waiting on a live child, or blocked with nothing left for the user to answer: an
+ * answered or dismissed blocker, or one the coordinator took back, waits on the coordinator.
+ * Stopped holds work that ended without finishing and that nothing has picked up: a failed
+ * thread, stopped or cancelled work, open work whose thread went quiet without reporting, a failed
+ * report. Idle holds the quiet rest, nothing open, no report and no stop. Both are usually
+ * superseded workers nobody retired, safe to retire in bulk.
  */
 function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: number | null, blocker: BlockerItem | null): WorkerView {
   const report = w.latestReport;
@@ -953,10 +955,10 @@ function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: num
   if (w.state === "retired")
     return { ...base, group: "earlier", status: report ? `Retired · ${report.outcome}: ${firstLine(report.summary)}` : "Retired" };
   // The group is the shared derivation's; this only words each case from the recorded text.
-  const kind = workerKind({ blocked: !!blocker && !blocker.answer, runtime: w.runtime, waiting: !!live, open: !!w.open, stopReason: !!w.stopReason, outcome: report?.outcome ?? null });
+  const kind = workerKind({ asksUser: !!blocker && !blocker.answer, runtime: w.runtime, waiting: !!live, open: !!w.open, stopReason: !!w.stopReason, outcome: report?.outcome ?? null });
   const group = KIND_GROUP[kind];
   switch (kind) {
-    case "blocked":
+    case "asksUser":
       return { ...base, group, tone: "warn", status: `Blocked: ${firstLine(blocker!.question)}` };
     case "input":
       return { ...base, group, tone: "warn", status: "Waiting for your input" };
@@ -972,10 +974,13 @@ function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: num
       return { ...base, group, status: `${stopped}${thread}${unchecked}` };
     case "done":
       return { ...base, group, status: `Done: ${firstLine(report!.summary)}${unchecked}` };
+    case "onCoordinator": {
+      const answered = blocker ? " · you answered" : "";
+      return { ...base, group, status: `Waiting on the coordinator: ${firstLine(report!.question ?? report!.summary)}${answered}${thread}${unchecked}` };
+    }
     case "reported": {
       const failed = report!.outcome === "failed";
-      const answered = blocker ? " · answered" : "";
-      return { ...base, group, tone: failed ? "error" : null, status: `${failed ? "Failed" : "Blocked"}: ${firstLine(report!.question ?? report!.summary)}${answered}${thread}${unchecked}` };
+      return { ...base, group, tone: failed ? "error" : null, status: `${failed ? "Failed" : capital(report!.outcome)}: ${firstLine(report!.question ?? report!.summary)}${thread}${unchecked}` };
     }
     default:
       return { ...base, group, status: `No report${thread}${unchecked}` };
@@ -1047,7 +1052,7 @@ function Workers({
   const tokens = o.workers.current.reduce((sum, w) => sum + (w.tokens ?? 0), 0);
   const summary = [
     count("working") ? `${count("working")} working` : null,
-    count("waiting") ? `${count("waiting")} waiting on a child` : null,
+    count("waiting") ? `${count("waiting")} waiting` : null,
     count("needs") ? `${count("needs")} need${count("needs") === 1 ? "s" : ""} you` : null,
     count("done") ? `${count("done")} done` : null,
     count("stopped") ? `${count("stopped")} stopped` : null,
@@ -1161,9 +1166,12 @@ function RetireAll({ bulk, group, refs }: { bulk: ReturnType<typeof useBulkRetir
   );
 }
 
-/** The sidebar's thread status glyphs (plugins/sidebar StatusIcon): attention, working, archived. */
+/**
+ * The sidebar's thread status glyphs (plugins/sidebar StatusIcon): attention, working, archived.
+ * A worker waiting on the coordinator runs nothing, so it shows none.
+ */
 function WorkerStatusIcon({ v }: { v: WorkerView }) {
-  const shape = v.group === "needs" ? "attention" : v.group === "working" || v.group === "waiting" ? "working" : v.group === "earlier" ? "archived" : null;
+  const shape = v.group === "needs" ? "attention" : v.group === "working" || (v.group === "waiting" && v.waiting?.on) ? "working" : v.group === "earlier" ? "archived" : null;
   if (!shape) return null;
   return (
     <svg className="cr-w-status" data-status={shape} data-group={v.group} data-tone={v.tone ?? undefined} viewBox="0 0 20 20" fill="none" stroke="currentColor"
