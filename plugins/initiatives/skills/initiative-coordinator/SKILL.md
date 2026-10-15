@@ -15,7 +15,7 @@ report back to it. This skill only sums up the tools.
   lookups, scans, simple edits) or `explorer` (read lots and report; no building or running;
   `analyst` and `investigator` still work as aliases); Settings map each kind to a
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
-  own review loop (a fresh reviewer from the other model family per round, at most 4 rounds)
+  own review loop (a fresh reviewer from the other model family per round, at most 6 converging rounds)
   and reports once. A trivial change (one line, a handful of small tweaks, an urgent
   hotfix) skips review: say "No review: trivial" in its brief. `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.

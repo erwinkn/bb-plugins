@@ -18,8 +18,9 @@ current instructions, the reviewer command and the rules), which replaces anythi
   review", skips the review loop: verify it and report done with "review skipped (trivial)".
 - Fix the findings you agree with. A disagreement goes, with your evidence, into the next
   reviewer's brief and a PR note; a standing rule settles a dispute it covers.
-- At most 4 review rounds. Report done when the last verdict is clean; still rejected after
-  round 4, report blocked with each open finding, your view and the options. Your lead may
+- At most 6 review rounds, and they should converge: fewer, milder findings each round.
+  Report done when the last verdict is clean; still rejected after round 6, or after round 4
+  if it still found a P1 or no fewer findings than round 3, report blocked with each open finding, your view and the options. Your lead may
   grant 4 more rounds when a rule or the user's instruction settles the finding.
 - Finish with `initiative_report {outcome, summary, report}`, the only thing that ends your
   work. It goes to your lead, the tab that gave you the work. The summary stands on its own:

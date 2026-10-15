@@ -80,9 +80,9 @@ describe("v9 §6.1 the instruction budget", () => {
 });
 
 describe("v9 §3 the worker owns its review loop", () => {
-  it("guidance: fresh reviewer each round from the other family, at most 4 rounds, then blocked; leads grant 4 more only on a rule or the user's word", () => {
+  it("guidance: fresh reviewer each round from the other family, at most 6 converging rounds, then blocked; leads grant 4 more only on a rule or the user's word", () => {
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("a fresh reviewer each round, from the other model family, started with the reviewer command in your brief");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("At most 4 review rounds. Report done when the last verdict is clean. If it still isn't after round 4, report blocked");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("At most 6 review rounds, converging: fewer, milder findings each round. Done when the last verdict is clean. Blocked (each open finding, your view, the options) after round 6, or after round 4 if it still found a P1");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child runs, end your turn; its result wakes you. Ending a turn reports nothing.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("if a standing rule or the user's explicit instruction settles it, answer the worker, with 4 more review rounds if it needs them");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Otherwise ask the user with initiative_question.");
