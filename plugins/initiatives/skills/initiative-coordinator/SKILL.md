@@ -45,7 +45,14 @@ report back to it. This skill only sums up the tools.
   workers with open work. A choice about one PR goes in its notes; mark choices the user may
   reverse with "Reversible: …" in your update.
 - `initiative_question {question, context, options?, recommendation?}` asks the user a real
-  open choice; the answer comes back to the tab that asked.
+  open choice; the answer comes back to the tab that asked. When the user answers a
+  worker's blocker in your chat instead of in the Inbox, record their words on its card first:
+  `initiative_question {answered:"A31", question:"<its question>", text:"<what they said>"}` (A31:
+  the blocked report; question: the one the user answered, as the report wrote it). That
+  clears it from Needs you and keeps the answer in Decisions; it sends nothing, so then continue
+  the worker (`initiative_message work:true`). Record only an answer the user actually gave to that
+  question. Only the coordinator tab records it; a card already answered or dismissed, a retired
+  worker's, or one whose question changed since, is refused.
 - Tasks are an optional backlog; their status follows their work and PRs. Only when the user
   asks: `initiative_task {action:"status", task, status:"planned"|"cancelled"|"done"|"auto", reason}`.
 - `initiative_update` keeps the user informed.

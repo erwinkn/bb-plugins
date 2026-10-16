@@ -1920,10 +1920,11 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
       {item.answer && !revising ? (
         <>
           <div className="cr-blocker-answer">
-            <span className="project-meta">Your answer · {item.answer.ref}{item.answer.to === "worker" ? ` · sent to ${worker}` : ""}</span>
+            <span className="project-meta">{item.answer.inChat ? "Your answer in chat, recorded by the coordinator" : "Your answer"} · {item.answer.ref}{item.answer.to === "worker" ? ` · sent to ${worker}` : ""}</span>
             {item.answer.choice ? <p className="cr-blocker-choice">{item.answer.choice}</p> : null}
             {item.answer.note ? <Markdown content={item.answer.note} /> : null}
           </div>
+          {item.answer.inChat && !item.answer.notification ? <p role="status" className="project-muted">This stays here until the coordinator continues {worker} or settles {item.assignment}.</p> : null}
           <AnswerReceipts receipts={answerReceipts(item.answer, worker)}
             settled={item.answer.to === "worker" ? `This stays here until ${worker} reports again.` : `This stays here until it continues ${worker} or settles ${item.assignment}.`} />
           {error ? <p role="alert" className="project-error">{error}</p> : null}
@@ -2306,7 +2307,8 @@ function RuleForm({ label, initial, save, close }: {
 
 type DecisionRow = Overview["decisions"][number];
 const owner = (d: DecisionRow) =>
-  d.madeBy === "user" ? "Yours" : d.recordedBy.author === "worker" ? "Worker" : "Coordinator";
+  // W488: a blocker answer's author is whoever wrote it down; the coordinator only records what the user said in its chat.
+  d.madeBy === "user" ? (d.blockerAnswer && d.recordedBy.author !== "user" ? "Yours, in chat" : "Yours") : d.recordedBy.author === "worker" ? "Worker" : "Coordinator";
 
 /** One decision: its text first, then who made it and when, with any delivery that still needs a retry. */
 function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: Overview["answered"][number] }) {

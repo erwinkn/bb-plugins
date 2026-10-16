@@ -111,9 +111,10 @@ export interface BlockerItem {
    * The user's answer, kept until the coordinator acts on the report. choice:
    * the option picked (W476). to: who received it (T130). delivery: the
    * worker's receipt; notification: the coordinator's notice, or for a worker
-   * answer its FYI (T132).
+   * answer its FYI (T132). inChat: the user gave it in the coordinator's chat,
+   * and the coordinator recorded it (W488).
    */
-  answer: { ref: string; choice: string | null; note: string; at: number; to: "coordinator" | "worker"; delivery: Delivery | null; notification: DecisionRecord["notification"] } | null;
+  answer: { ref: string; choice: string | null; note: string; at: number; to: "coordinator" | "worker"; delivery: Delivery | null; notification: DecisionRecord["notification"]; inChat: boolean } | null;
 }
 
 /** T132: the user's blocker answer as its decision row carries it, so an undelivered one can retry after its card is gone. */
@@ -581,7 +582,7 @@ export function buildOverview(
       options: blocker?.options ?? [],
       recommendation: blocker?.recommendation ?? null,
       reportedAt: assignment.reportedAt,
-      answer: answer ? { ref: answer.ref, choice: answer.body.answer?.choice ?? null, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", delivery: answer.body.answer?.delivery ?? null, notification: answer.notification } : null,
+      answer: answer ? { ref: answer.ref, choice: answer.body.answer?.choice ?? null, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", delivery: answer.body.answer?.delivery ?? null, notification: answer.notification, inChat: answer.provenance.author !== "user" } : null,
     };
   });
 

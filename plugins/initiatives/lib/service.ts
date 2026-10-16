@@ -3746,15 +3746,18 @@ export class ProjectsService {
    * different answer or target supersedes the previous one and is sent again.
    * `seen` is the blocker the user answered; an answer to an older question or
    * context is refused. W476: `choice` is the option the user picked, if the
-   * report gave options; the note is then optional detail.
+   * report gave options; the note is then optional detail. W488: `recordedBy` is
+   * the coordinator tab that recorded an answer the user gave in its chat (recordChatBlockerAnswer).
    */
-  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator", choice: string | null = null) {
+  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator", choice: string | null = null, recordedBy?: Provenance) {
     const project = this.requireProject(projectId);
     const text = note.trim();
     if (!text && choice === null) throw new ProjectError("Pick an option or write an answer.");
     const key = blockerKey(this.requireAssignment(project, ref).num, seen);
+    if (recordedBy) this.refuseSettledBlocker(project, ref, seen);
     const previous = this.store.decisions(project.id).find((item) => item.body.blocker && item.body.answer && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
-    const same = previous?.body.answer?.note === text && previous.body.answer.choice === choice && (previous.body.answer.to ?? "coordinator") === to ? previous : null;
+    // A chat answer never retries or replaces an earlier answer (refuseSettledBlocker).
+    const same = !recordedBy && previous?.body.answer?.note === text && previous.body.answer.choice === choice && (previous.body.answer.to ?? "coordinator") === to ? previous : null;
     const failed = (state?: string) => state === "failed";
     const redeliver = to === "worker" && failed(same?.body.answer?.delivery?.state);
     // A failed FYI is retried even after the worker reported again; it only informs the coordinator.
@@ -3776,16 +3779,27 @@ export class ProjectsService {
     const coordinatorThreadId = await this.workerLead(project, assignment.workerNum);
     const deliveryOp = newOpId();
     const item = same ?? this.store.tx(() => {
-      const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref})${to === "worker" ? `, sent to ${worker.ref}` : ""}: ${said}`;
+      // An Inbox answer may have landed, or the coordinator been replaced, while the lead was looked
+      // up: the ledger as it is now decides.
+      if (recordedBy) {
+        this.refuseSettledBlocker(project, ref, seen);
+        if (recordedBy.threadId !== this.requireProject(project.id).coordinatorThreadId)
+          throw new ProjectError("The coordinator was replaced while your answer was being saved. Tell the new coordinator what the user said. Your answer was not saved.");
+      }
+      const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref})${to === "worker" ? `, sent to ${worker.ref}` : ""}${recordedBy ? ", given in chat" : ""}: ${said}`;
       const added = this.store.addDecision({
         projectId: project.id, title: description.slice(0, 100),
         topic: previous?.topic ?? `blocker-${assignment.ref.toLowerCase()}`, scope: "project", status: "active",
         body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context },
           answer: { choice, note: text, at: this.now(), ...(to === "worker" ? { to, delivery: { op: deliveryOp, state: "pending" as const, threadId: workerThreadId! } } : {}) } },
         madeBy: "user", humanAttention: "none", blocks: [], deadline: null,
-        provenance: { author: "user", threadId: null, assignment: null }, supersedes: previous?.num ?? null,
+        // W488: the recorder is the record's author; the previous build's strict answer decoder still reads it.
+        provenance: recordedBy ?? { author: "user", threadId: null, assignment: null }, supersedes: previous?.num ?? null,
       });
-      this.store.log(project.id, "decision", `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref})${to === "worker" ? ` and sent it to ${worker.ref}` : ""}: ${said}`);
+      this.store.log(project.id, "decision", recordedBy
+        ? `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref}) in chat; the coordinator recorded it: ${said}`
+        : `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref})${to === "worker" ? ` and sent it to ${worker.ref}` : ""}: ${said}`,
+      recordedBy?.threadId ? { threadId: recordedBy.threadId } : undefined);
       return added;
     });
     const about = `${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref}`;
@@ -3795,6 +3809,8 @@ export class ProjectsService {
       await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, saved, message, { mode });
     };
     if (to === "coordinator") {
+      // W488: the coordinator recorded the chat answer and relays it itself; there is nobody to tell.
+      if (recordedBy) return this.store.decisionItem(project.id, item.num)!;
       await notify("Your answer is saved.",
         `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\n${answerLines(choice, text)}\n\nContinue ${worker.ref} with this answer (initiative_message work:true, with 4 more review rounds if it needs them). The Inbox item clears when ${worker.ref} reports again.`);
       return this.store.decisionItem(project.id, item.num)!;
@@ -3818,6 +3834,43 @@ export class ProjectsService {
         `Initiative · ${project.name} · FYI: the user answered ${worker.ref}'s blocker (${about}) directly to ${worker.ref}\n\nBlocker: ${blocker.question}\n${answerLines(choice, text)}\n\n${worker.ref} continues ${assignment.ref} with it and reports again. Nothing to send; review its next report as usual.`,
         "queue-if-active");
     return this.store.decisionItem(project.id, item.num)!;
+  }
+
+  /**
+   * W488: the user answered a worker's blocker in the coordinator's chat, and the
+   * coordinator records it on the Inbox card, as the user's answer to the
+   * coordinator: the card shows it, the worker leaves Needs you, and the card
+   * clears once the coordinator continues the worker (initiative_message
+   * work:true). Only the coordinator tab records it (R3: no Discussions), and it
+   * relays it itself, so nothing is sent: not to the worker, and no notice to a
+   * lead. Only an open blocker the user has neither answered nor dismissed takes
+   * one, and only while it still asks `question`, the one the user answered: a
+   * worker that re-filed another question on the same A# gets it refused.
+   */
+  async recordChatBlockerAnswer(projectId: string, ref: string, question: string, note: string, by: Provenance) {
+    const project = this.requireProject(projectId);
+    const assignment = this.requireAssignment(project, ref);
+    if (by.author !== "coordinator" || !by.threadId || by.threadId !== project.coordinatorThreadId)
+      throw new ProjectError("Only this Adventure's coordinator tab records the user's chat answer to a worker's blocker. Your answer was not saved.");
+    if (!note.trim()) throw new ProjectError("Write the user's answer: what they said, quoted or faithfully summed up.");
+    const blocker = assignment.report?.blocker;
+    // Word for word, up to spacing and case. From here on the filing itself must not change (seenBlocker).
+    const words = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+    if (blocker && words(blocker.question) !== words(question))
+      throw new ProjectError(`${assignment.ref}'s blocker now asks: "${blocker.question}". That is not the question the user answered: ask them this one. Your answer was not saved.`);
+    return this.answerBlocker(projectId, ref, { question: blocker?.question ?? "", context: blocker?.context ?? "" }, note, "coordinator", null, by);
+  }
+
+  /** W488: a chat answer goes only on an open blocker the user has neither answered nor dismissed; it never replaces theirs. */
+  private refuseSettledBlocker(project: ProjectRecord, ref: string, seen: { question: string; context: string }) {
+    const { assignment, blocker } = this.seenBlocker(project, ref, seen, "answer");
+    const key = blockerKey(assignment.num, blocker);
+    // The Needs you count's rule (summaryBlockers): any kept answer, or a dismissal not undone.
+    const settled = this.store.decisions(project.id).find((item) =>
+      item.body.blocker && blockerKey(item.body.blocker.assignment, item.body.blocker) === key &&
+      (item.body.answer ? !["superseded", "removed"].includes(item.status) : !!item.body.dismissal && item.status === "active"));
+    if (settled)
+      throw new ProjectError(`The user already ${settled.body.answer ? "answered" : "dismissed"} ${assignment.ref}'s blocker (${settled.ref}). Your answer was not saved.`);
   }
 
   /** The open blocker on `ref`, refused unless it is still exactly the one the user saw. */

@@ -66,14 +66,16 @@ export const ruleToolSchema = z.object({
   sources: ruleSources.optional().describe("add: where it comes from, e.g. D12."),
 }).strict();
 
-/** v9: a question for the user (the question half of the old initiative_decision). */
+/** v9: a question for the user (the question half of the old initiative_decision); W488: or the answer the user gave to one in chat. */
 export const questionToolSchema = z.object({
-  question: text(1000).optional().describe("The question, in plain words."),
+  question: text(1000).optional().describe("The question, in plain words. answered: the blocker's question the user answered."),
   context: text(2000).optional().describe("What the user needs to know to answer."),
   options: answerOptionsSchema.optional(),
   recommendation: z.string().max(1000).optional(),
   withdraw: ref.optional().describe("D# of your own open question to withdraw instead (with reason)."),
   reason: text().optional().describe("withdraw: why the user no longer needs to answer."),
+  answered: ref.optional().describe("A# of a worker's blocked report whose question the user answered in this chat instead of in the Inbox (with text)."),
+  text: text(4000).optional().describe("answered: what the user said, quoted or faithfully summed up."),
 }).strict();
 
 export const workerToolSchema = z.object({

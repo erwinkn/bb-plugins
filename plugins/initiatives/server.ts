@@ -1163,11 +1163,19 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_question",
     parameters: jsonSchema(questionToolSchema),
-    description: 'Ask the user a real open choice (never inferred from prose): {question,context,options?:[{label,consequences}],recommendation?}. It shows in the Inbox; the answer comes back to this tab. {withdraw:"D12",reason} retracts your own open question. Decide routine things yourself.',
+    description: 'Ask the user a real open choice (never inferred from prose): {question,context,options?:[{label,consequences}],recommendation?}. It shows in the Inbox; the answer comes back to this tab. {withdraw:"D12",reason} retracts your own open question. {answered:"A31",question:"<the blocker\'s question, as the user answered it>",text:"<the user\'s words>"} (coordinator tab only) records on its Inbox card the answer the user gave you in chat to the blocker a worker reported on A31, which clears it from Needs you; use it only after the user actually answered that question, never for your own guess. It sends nothing: then continue the worker as usual (initiative_message work:true). Decide routine things yourself.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
       const input = parseToolInput(questionToolSchema, raw, "initiative_question");
       const provenance = { author: "coordinator" as const, threadId: threadId!, assignment: null };
+      if (input.answered) {
+        if (input.context || input.options || input.recommendation || input.withdraw || input.reason) throw new ToolInputError("answered records an answer; ask or withdraw in a separate call.");
+        if (!input.question) throw new ToolInputError("answered needs question: the blocker's question the user answered, as written on its report.");
+        if (!input.text) throw new ToolInputError("answered needs text: what the user said, quoted or faithfully summed up.");
+        if (!/^A\d+$/i.test(input.answered)) throw new ToolInputError(`answered takes the A# of the blocked report (from "W12 reported (blocked) on A301"); got ${input.answered}.`);
+        const recorded = await service.recordChatBlockerAnswer(p.id, input.answered, input.question, input.text, provenance);
+        return receipt({ ref: recorded.ref, status: recorded.status });
+      }
       if (input.withdraw) {
         if (!input.reason) throw new ToolInputError("withdraw needs a reason: why the user no longer needs to answer.");
         const withdrawn = service.withdrawQuestion(p.id, input.withdraw, input.reason, provenance);
