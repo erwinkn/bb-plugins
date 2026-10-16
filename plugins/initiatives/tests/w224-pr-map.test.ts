@@ -93,7 +93,7 @@ describe("W224 PR categories", () => {
 
 /** A parsed PR with the given branches, stage and category. */
 function pr(number: number, head: string, base: string, stage: PrStage = "ready-for-review", extra: Partial<QueuedPullRequest> = {}): QueuedPullRequest {
-  const [parsed] = parsePullRequests("erwinkn/bb", JSON.stringify([{ number, url: url(number), title: `PR ${number}`, headRefName: head, baseRefName: base, createdAt: new Date(Date.UTC(2026, 9, 1) + number * 60_000).toISOString() }]));
+  const [parsed] = parsePullRequests("erwinkn/bb", [{ number, url: url(number), title: `PR ${number}`, headRefName: head, baseRefName: base, createdAt: new Date(Date.UTC(2026, 9, 1) + number * 60_000).toISOString() }]);
   return { ...parsed!, stage, stageSource: "coordinator", ...extra };
 }
 

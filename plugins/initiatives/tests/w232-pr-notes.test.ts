@@ -13,7 +13,7 @@ const call = async (f: Fx, tool: string, input: unknown, threadId = "coordinator
   JSON.parse(await f.harness.callAgentTool(tool, input, { threadId }) as string);
 const url = (n: number, repo = "erwinkn/bb") => `https://github.com/${repo}/pull/${n}`;
 const pr = (number: number, head: string, base: string, stage: PrStage = "ready-for-erwin", extra: Partial<QueuedPullRequest> = {}): QueuedPullRequest => ({
-  ...parsePullRequests("erwinkn/bb", JSON.stringify([{ number, url: url(number), title: `PR ${number}`, headRefName: head, baseRefName: base }]))[0]!,
+  ...parsePullRequests("erwinkn/bb", [{ number, url: url(number), title: `PR ${number}`, headRefName: head, baseRefName: base }])[0]!,
   stage, stageSource: "coordinator", ...extra,
 });
 const queue = (pullRequests: QueuedPullRequest[]): MergeQueue => ({

@@ -17,10 +17,10 @@ const url = (n: number) => `https://github.com/erwinkn/bb/pull/${n}`;
 const queue = (): MergeQueue => ({
   projectId: "p", login: "erwinkn", repos: [{ repo: "erwinkn/bb", fetchedAt: NOW, error: null, fetching: false, detailsFetchedAt: null, detailsError: null }], skipped: [],
   stages: PR_STAGES.map((s) => ({ ...s })),
-  pullRequests: parsePullRequests("erwinkn/bb", JSON.stringify([7, 8, 9].map((number) => ({
+  pullRequests: parsePullRequests("erwinkn/bb", [7, 8, 9].map((number) => ({
     number, title: `PR ${number}`, url: url(number), isDraft: false, reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED",
-    headRefName: `feat/${number}`, baseRefName: "main", createdAt: new Date(NOW - 9 * H).toISOString(), updatedAt: new Date(NOW).toISOString(), statusCheckRollup: [],
-  })))),
+    headRefName: `feat/${number}`, baseRefName: "main", createdAt: new Date(NOW - 9 * H).toISOString(), updatedAt: new Date(NOW).toISOString(),
+  }))),
 });
 const change = (n: number, from: string | null, to: string | null, author = "coordinator", note: string | null = null): PrStageChange => ({ n, at: NOW - (10 - n) * H, author, from, to, note });
 const changes = [

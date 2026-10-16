@@ -26,7 +26,6 @@ const url = (n: number) => `https://github.com/equisafe/infra/pull/${n}`;
 const ghPr = (number: number) => ({
   number, title: `PR ${number}`, url: url(number), isDraft: false, reviewDecision: "APPROVED", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
   headRefName: `feature-${number}`, baseRefName: "main", createdAt: new Date(Date.now() - number * 60_000).toISOString(), updatedAt: new Date().toISOString(),
-  statusCheckRollup: [],
 });
 /** Equisafe's view: #1 is its own, #2 and #3 are unassigned. */
 const queue = (): MergeQueue => ({
@@ -35,7 +34,7 @@ const queue = (): MergeQueue => ({
   repos: [{ repo: "equisafe/infra", fetchedAt: Date.now(), error: null, fetching: false, detailsFetchedAt: null, detailsError: null }],
   skipped: [],
   stages: PR_STAGES.map((stage) => ({ ...stage })),
-  pullRequests: orderQueue(linkStacks(parsePullRequests("equisafe/infra", JSON.stringify([ghPr(1), ghPr(2), ghPr(3)])).map((pr) => ({ ...pr, unassigned: pr.number !== 1 })))),
+  pullRequests: orderQueue(linkStacks(parsePullRequests("equisafe/infra", [ghPr(1), ghPr(2), ghPr(3)]).map((pr) => ({ ...pr, unassigned: pr.number !== 1 })))),
   initiatives: [
     { id: "eq", name: "Equisafe", repos: ["equisafe/infra"] },
     { id: "ui", name: "Equisafe UI", repos: ["equisafe/infra"] },
@@ -162,10 +161,10 @@ describe("W464 the PRs tab (R2)", () => {
   });
 
   it("says what a PR waits on when another Initiative owns the PR beneath it (r3 #2)", () => {
-    const [five, six] = linkStacks(parsePullRequests("equisafe/infra", JSON.stringify([
+    const [five, six] = linkStacks(parsePullRequests("equisafe/infra", [
       { ...ghPr(5), headRefName: "five", isDraft: true },
       { ...ghPr(6), headRefName: "six", baseRefName: "five" },
-    ])));
+    ]));
     const q: MergeQueue = { ...queue(), pullRequests: [six!], beneath: [five!] };
     expect([five!.stage, six!.stage, six!.available]).toEqual(["working", "ready-for-erwin", false]);
     const slot = renderSlot({ component: MergeQueueView }, { queue: q, error: null, refreshing: false, onRefresh: () => {}, onMove: vi.fn(async () => {}) }, { openUrl: () => true });
@@ -182,10 +181,10 @@ describe("W464 the PRs tab (R2)", () => {
   });
 
   it("opens an unassigned parent from its chip: it is listed here (r4)", () => {
-    const [five, six] = linkStacks(parsePullRequests("equisafe/infra", JSON.stringify([
+    const [five, six] = linkStacks(parsePullRequests("equisafe/infra", [
       { ...ghPr(5), headRefName: "five", isDraft: true },
       { ...ghPr(6), headRefName: "six", baseRefName: "five" },
-    ])));
+    ]));
     const q: MergeQueue = { ...queue(), pullRequests: [six!, { ...five!, unassigned: true }], beneath: [] };
     const slot = renderSlot({ component: MergeQueueView }, { queue: q, error: null, refreshing: false, onRefresh: () => {}, onMove: vi.fn(async () => {}) }, { openUrl: () => true });
     slots.push(slot);

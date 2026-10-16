@@ -423,6 +423,7 @@ export function MergeQueueView({
   const fetching = refreshing || !!queue?.repos.some((r) => r.fetching);
   // Sizes kept from an older read; reviewer states are withheld until the details load again.
   const staleDetails = queue?.repos.filter((r) => r.fetchedAt !== null && !r.error && r.detailsError) ?? [];
+  const capped = queue?.repos.filter((r) => r.capped) ?? [];
   return (
     <section className="cr-mq" aria-label="Merge queue" aria-busy={fetching}>
       <div className="cr-mq-head">
@@ -441,6 +442,11 @@ export function MergeQueueView({
       {failed.length && !neverLoaded ? (
         <p className="cr-mq-note" role="status">
           {failed.map((r) => `${r.repo}: ${r.error}`).join(" · ")}. Showing the last data that loaded.
+        </p>
+      ) : null}
+      {capped.length ? (
+        <p className="cr-mq-note" role="status">
+          {capped.map((r) => `${r.repo}: read ${r.capped!.listed} of ${r.capped!.total} open PRs`).join(" · ")}, as many as GitHub's search returns.
         </p>
       ) : null}
       {staleDetails.length ? (

@@ -22,9 +22,9 @@ const repo = (extra: Partial<MergeQueueRepo> = {}): MergeQueueRepo => ({
 });
 const queue = (patch: (pr: QueuedPullRequest) => QueuedPullRequest = (pr) => pr, repos = [repo()]): MergeQueue => ({
   projectId: "p", login: "erwinkn", repos, skipped: [], stages: PR_STAGES.map((s) => ({ ...s })),
-  pullRequests: orderQueue(linkStacks(parsePullRequests("erwinkn/bb", JSON.stringify([1, 2].map((number) => ({
+  pullRequests: orderQueue(linkStacks(parsePullRequests("erwinkn/bb", [1, 2].map((number) => ({
     number, title: `PR ${number}`, url: url(number), headRefName: `h${number}`, baseRefName: "main", createdAt: new Date(NOW - number * 3_600_000).toISOString(),
-  })))).map((pr) => patch({ ...pr, stage: "ready-for-erwin", stageSource: "coordinator" })))),
+  }))).map((pr) => patch({ ...pr, stage: "ready-for-erwin", stageSource: "coordinator" })))),
 });
 const view = (props: Partial<Parameters<typeof MergeQueueView>[0]> = {}) => {
   const slot = renderSlot({ component: MergeQueueView }, { queue: queue(), error: null, refreshing: false, onRefresh: () => {}, ...props });

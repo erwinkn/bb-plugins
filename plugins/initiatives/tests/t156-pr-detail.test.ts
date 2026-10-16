@@ -13,6 +13,7 @@ const { mentionsNumber, readPrDetail, DETAIL_LIMITS } = await import("../lib/pr-
 const { PrNotes } = await import("../lib/pr-notes");
 const { blankPrRecord } = await import("../lib/pr-stages");
 const { memoryStore } = await import("./helpers");
+const { ghCall, searchPage } = await import("./gh-fixtures");
 import type { PrDetail } from "../lib/pr-detail";
 import type { QueuedPullRequest } from "../lib/merge-queue";
 
@@ -21,7 +22,7 @@ const call = async (f: Fx, tool: string, input: unknown, threadId = "coordinator
   JSON.parse(await f.harness.callAgentTool(tool, input, { threadId }) as string);
 const url = (n: number, repo = "erwinkn/bb") => `https://github.com/${repo}/pull/${n}`;
 const pr = (number: number, extra: Partial<QueuedPullRequest> = {}, repo = "erwinkn/bb"): QueuedPullRequest => ({
-  ...parsePullRequests(repo, JSON.stringify([{ number, url: url(number, repo), title: `PR ${number}`, headRefName: `feat/${number}`, baseRefName: "main" }]))[0]!,
+  ...parsePullRequests(repo, [{ number, url: url(number, repo), title: `PR ${number}`, headRefName: `feat/${number}`, baseRefName: "main" }])[0]!,
   ...extra,
 });
 
@@ -293,8 +294,7 @@ describe("T156 mergeQueue links (W356 #2)", () => {
     const notes = new PrNotes(db);
     recordPrs(store, notes, "p", { prs: [{ url: url(7), assignment: "A1", worker: null }] }, 1);
     const gh = async (args: string[]) => args[1] === "user" ? "erwinkn"
-      : args[0] === "pr" ? JSON.stringify([{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }])
-      : JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } });
+      : searchPage(ghCall(args) === "list" ? [{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }] : []);
     const assigned = new AssignedPrs(store);
     const cache = new MergeQueueCache({
       memberProjectIds: () => ["proj"], project: async () => ({ name: "bb", gitRemoteUrl: "https://github.com/erwinkn/bb.git" }),
@@ -318,8 +318,7 @@ describe("T156 mergeQueue links (W356 #2)", () => {
     });
     execFile.mockImplementation((_cmd: string, args: string[], _options: unknown, done: (error: Error | null, stdout: string, stderr: string) => void) => {
       const out = args[1] === "user" ? "erwinkn"
-        : args[1] === "graphql" ? JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } })
-        : JSON.stringify([{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }]);
+        : searchPage(ghCall(args) === "list" ? [{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }] : []);
       done(null, out, "");
     });
     await call(f, "initiative_spawn", { label: "SWC", purpose: "pr", text: `Implement ${url(7)}.` });

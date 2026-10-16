@@ -5,7 +5,7 @@ import { PR_STAGES } from "../lib/pr-stages";
 import { isPrRef, MAX_READ_BYTES, readOptionsSchema, readMixedRefs } from "../lib/read";
 
 const pr = (repo: string, number: number): QueuedPullRequest => ({
-  ...parsePullRequests(repo, JSON.stringify([{ number, url: `https://github.com/${repo}/pull/${number}`, title: `PR ${number}`, headRefName: `h${number}`, baseRefName: "main", createdAt: new Date(Date.UTC(2026, 8, 1)).toISOString() }]))[0]!,
+  ...parsePullRequests(repo, [{ number, url: `https://github.com/${repo}/pull/${number}`, title: `PR ${number}`, headRefName: `h${number}`, baseRefName: "main", createdAt: new Date(Date.UTC(2026, 8, 1)).toISOString() }])[0]!,
   stage: "working", stageSource: "coordinator",
 });
 const queue = (pullRequests: QueuedPullRequest[]): MergeQueue => ({

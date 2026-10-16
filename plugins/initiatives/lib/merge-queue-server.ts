@@ -1,21 +1,23 @@
-import { execFile } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import {
-  DETAILS_PAGE,
   GH_DETAILS_QUERY,
-  GH_PR_FIELDS,
+  GH_LIST_QUERY,
   attachDetails,
   attachLinks,
   attachNotes,
-  detailsSearch,
-  parseDetailsPage,
   assignStages,
   attachWorkers,
+  ghJson,
   githubRepo,
   orderQueue,
+  parseDetails,
   parsePullRequests,
+  parseSearchPage,
+  prSearch,
   type MergeQueue,
   type PrDetails,
   type QueuedPullRequest,
+  type SearchPage,
 } from "./merge-queue";
 import { PR_STAGES, canonicalPrUrl, type PrRecord } from "./pr-stages";
 import type { PrNotesSummary } from "./pr-notes";
@@ -32,30 +34,50 @@ export const REFRESH_MS = 2 * 60_000;
 export const MIN_FORCED_REFRESH_MS = 10_000;
 /** A project's remote is looked up again after this long. */
 export const REMOTE_TTL_MS = 5 * 60_000;
-/** Each `gh` call's bound; a hung one reads as a failed fetch. Reads never wait for it. */
-const GH_TIMEOUT_MS = 20_000;
-/** Open PRs read per repository: Equisafe alone had 93 open in October 2026. */
-const PR_LIMIT = 200;
+/** Each `gh` call's bound; a hung one reads as a failed page. Reads never wait for it. */
+export const GH_TIMEOUT_MS = 20_000;
+/** All of one query's pages, retry included; reads never wait for them (D441). */
+export const FETCH_BUDGET_MS = 60_000;
+/**
+ * Open PRs read per repository: all GitHub's search returns. The user had 209 open in Equisafe
+ * in October 2026, past the earlier cap of 200 (W490); a list cut short says so (`capped`).
+ */
+export const PR_LIMIT = 1000;
 
-/** Spawns `gh` asynchronously: the event loop never waits on it. */
+/**
+ * Spawns `gh` asynchronously: the event loop never waits on it. The bound is our own timer, not
+ * execFile's `timeout`: that one destroys stdout before it signals, so a gh that exited 0 while
+ * the event loop was busy resolved with its output unread, empty or cut off (W490). Here a gh
+ * that exited before the timer still hands over all it wrote.
+ */
 export const runGh: GhRunner = (args, timeoutMs = GH_TIMEOUT_MS) =>
   new Promise((resolve, reject) => {
-    execFile(
+    const command = `gh ${args.slice(0, 2).join(" ")}`;
+    let child: ChildProcess | undefined;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child?.kill();
+    }, timeoutMs);
+    child = execFile(
       "gh",
       args,
       {
-        timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
         env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" },
       },
       (error, stdout, stderr) => {
+        clearTimeout(timer);
         if (!error) return resolve(stdout);
         const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+        const code = (error as { code?: unknown }).code;
         reject(
           new Error(
             missing
               ? "the GitHub CLI (gh) is not installed on the BB server"
-              : (stderr.trim().split("\n").pop() ?? "") || error.message,
+              : timedOut
+                ? `${command} timed out after ${Math.ceil(timeoutMs / 1000)} s`
+                : (stderr.trim().split("\n").pop() ?? "") || (typeof code === "number" ? `${command} exited with code ${code}` : error.message),
           ),
         );
       },
@@ -68,6 +90,8 @@ interface RepoEntry {
   pullRequests: QueuedPullRequest[] | null;
   fetchedAt: number | null;
   error: string | null;
+  /** The last list stopped short of every open PR (PR_LIMIT); null once one doesn't. */
+  capped: { listed: number; total: number } | null;
   /** The last details that loaded (a failed details query keeps them), and their own freshness. */
   details: { data: PrDetails | null; fetchedAt: number | null; error: string | null };
   attemptedAt: number;
@@ -199,6 +223,7 @@ export class MergeQueueCache {
         return {
           repo: display.get(repo)!, fetchedAt: entry.fetchedAt, error: entry.error, fetching: entry.pending !== null,
           detailsFetchedAt: entry.details.fetchedAt, detailsError: entry.details.error,
+          ...(entry.capped ? { capped: entry.capped } : {}),
         };
       }),
       skipped,
@@ -339,7 +364,7 @@ export class MergeQueueCache {
   private refresh(repo: string, name: string, force: boolean): void {
     let entry = this.repos.get(repo);
     if (!entry) {
-      entry = { name, pullRequests: null, fetchedAt: null, error: null, details: { data: null, fetchedAt: null, error: null }, attemptedAt: -Infinity, pending: null };
+      entry = { name, pullRequests: null, fetchedAt: null, error: null, capped: null, details: { data: null, fetchedAt: null, error: null }, attemptedAt: -Infinity, pending: null };
       this.repos.set(repo, entry);
     }
     if (entry.pending) return;
@@ -369,19 +394,19 @@ export class MergeQueueCache {
     // Both settle before the guard is released, so a failed list never lets a second
     // details query start beside the first. The details are extra: their failure keeps
     // the last sizes (reviewers are withheld) and never fails the list.
+    const q = prSearch(target.name, login);
     const [list, details] = await Promise.allSettled([
-      this.gh([
-        "pr", "list", "--repo", target.name, "--author", login, "--state", "open",
-        "--limit", String(PR_LIMIT), "--json", GH_PR_FIELDS,
-      ]).then((out) => parsePullRequests(target.name, out)),
-      this.details(target.name, login),
+      this.search(GH_LIST_QUERY, q, "the PR list query"),
+      this.search(GH_DETAILS_QUERY, q, "the details query").then((found) => parseDetails(found.nodes)),
     ]);
     if (list.status === "fulfilled") {
-      target.pullRequests = list.value;
+      const { nodes, total, complete } = list.value;
+      target.pullRequests = parsePullRequests(target.name, nodes);
+      target.capped = complete ? null : { listed: nodes.length, total };
       target.fetchedAt = this.now();
       target.error = null;
       try {
-        this.sources.prStates?.markOpen(list.value.flatMap((pr) => canonicalPrUrl(pr.url) ?? []), this.now());
+        this.sources.prStates?.markOpen(target.pullRequests.flatMap((pr) => canonicalPrUrl(pr.url) ?? []), this.now());
       } catch { /* the states are a cache; the next fetch writes them again */ }
       this.lookUp();
     } else target.error = message(list.reason);
@@ -407,7 +432,7 @@ export class MergeQueueCache {
     if (!urls.length) return;
     const one = async (url: string) => {
       try {
-        const out = JSON.parse(await this.gh(["pr", "view", url, "--json", "state,mergedAt,closedAt"])) as { state?: string; mergedAt?: string | null; closedAt?: string | null };
+        const out = ghJson(await this.gh(["pr", "view", url, "--json", "state,mergedAt,closedAt"]), "gh pr view") as { state?: string; mergedAt?: string | null; closedAt?: string | null };
         const state = out.state === "MERGED" || out.state === "CLOSED" || out.state === "OPEN" ? out.state : null;
         if (!state) throw new Error(`unexpected state ${String(out.state)}`);
         states.save(url, this.now(), { state, mergedAt: out.mergedAt ? Date.parse(out.mergedAt) : null, closedAt: out.closedAt ? Date.parse(out.closedAt) : null });
@@ -428,25 +453,50 @@ export class MergeQueueCache {
   }
 
   /**
-   * The details query, page by page, never past the list's PR_LIMIT nor GH_TIMEOUT_MS in all:
-   * each page gets only the time left, and none starts once it is spent.
+   * Every page of one search query, one `gh api graphql` each, up to PR_LIMIT results, each PR
+   * once (results shift as PRs open). The pages share FETCH_BUDGET_MS: each gets at most
+   * GH_TIMEOUT_MS of the time left, and a failed one is retried once, quietly, while time is left.
+   * One that fails twice, a budget spent before the last page, or an empty page that promises
+   * more fails the query: no list stops short unannounced. `complete` is false when it stopped
+   * at PR_LIMIT short of GitHub's count.
    */
-  private async details(name: string, login: string): Promise<PrDetails> {
-    const all: PrDetails = new Map();
-    const deadline = this.now() + GH_TIMEOUT_MS;
+  private async search(query: string, q: string, what: string): Promise<{ nodes: unknown[]; total: number; complete: boolean }> {
+    const deadline = this.now() + FETCH_BUDGET_MS;
+    const nodes: unknown[] = [];
+    const seen = new Set<number>();
+    /** Results GitHub returned, repeats included: its 1000 ceiling counts these. */
+    let returned = 0;
+    let total = 0;
     let cursor: string | null = null;
-    for (let page = 0; page < Math.ceil(PR_LIMIT / DETAILS_PAGE); page++) {
-      const left = deadline - this.now();
-      if (left <= 0) break;
-      const out = await this.gh([
-        "api", "graphql", "-f", `query=${GH_DETAILS_QUERY}`, "-f", `q=${detailsSearch(name, login)}`,
-        ...(cursor ? ["-f", `endCursor=${cursor}`] : []),
-      ], left);
-      const { details, next } = parseDetailsPage(out);
-      for (const [number, d] of details) all.set(number, d);
-      if (!next) break;
-      cursor = next;
-    }
-    return all;
+    do {
+      const args = ["api", "graphql", "-f", `query=${query}`, "-f", `q=${q}`, ...(cursor ? ["-f", `endCursor=${cursor}`] : [])];
+      const attempt = (): Promise<SearchPage> => {
+        const left = deadline - this.now();
+        if (left <= 0) throw new Error(`${what} took over ${FETCH_BUDGET_MS / 1000} s (read ${nodes.length} of ${total} PRs)`);
+        return this.gh(args, Math.min(left, GH_TIMEOUT_MS)).then((out) => parseSearchPage(out, what));
+      };
+      let page: SearchPage;
+      try {
+        page = await attempt();
+      } catch (error) {
+        if (deadline - this.now() <= 0) throw error;
+        page = await attempt();
+      }
+      returned += page.nodes.length;
+      for (const node of page.nodes) {
+        const number = (node as { number?: unknown } | null)?.number;
+        if (typeof number === "number") {
+          if (seen.has(number)) continue;
+          seen.add(number);
+        }
+        nodes.push(node);
+      }
+      total = page.total;
+      cursor = page.next;
+      // It would page on until the budget is spent, and a list cut short here isn't GitHub's limit.
+      if (!page.nodes.length && cursor) throw new Error(`${what} returned an empty page before the last (read ${nodes.length} of ${total} PRs)`);
+    } while (cursor && returned < PR_LIMIT);
+    // GitHub ends the pages at its 1000th result however many match: only its count tells.
+    return { nodes, total, complete: nodes.length >= total || (cursor === null && returned < PR_LIMIT) };
   }
 }

@@ -7,6 +7,7 @@ import { projectFixture } from "./fake-native";
 import { MIGRATIONS, Store } from "../lib/store";
 import { PR_OWNER_MIGRATIONS, PrOwners, MISS_TTL_MS, ledgerThreads } from "../lib/pr-owners";
 import { MergeQueueCache, REMOTE_TTL_MS, type GhRunner } from "../lib/merge-queue-server";
+import { ghCall, searchPage } from "./gh-fixtures";
 import { prSummary, prsByRef } from "../lib/pr-map";
 import { blankPrRecord, type PrRecord } from "../lib/pr-stages";
 
@@ -14,7 +15,7 @@ const url = (n: number) => `https://github.com/equisafe/infra/pull/${n}`;
 const ghPr = (number: number, headRefName: string) => ({
   number, title: `PR ${number}`, url: url(number), isDraft: false, reviewDecision: "", mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN", headRefName, baseRefName: "main", createdAt: new Date(Date.UTC(2026, 9, 1) + number * 60_000).toISOString(),
-  updatedAt: "2026-10-01T00:00:00Z", statusCheckRollup: [],
+  updatedAt: "2026-10-01T00:00:00Z",
 });
 // #1 from W1's thread, #2 from a child of W1's thread, #3 from the user's own branch, #4 from Equisafe UI's W1.
 const OPEN = [ghPr(1, "bb/w1-api-thr_w1"), ghPr(2, "bb/review-thr_child"), ghPr(3, "fix/typo"), ghPr(4, "bb/w1-ui-thr_ui1")];
@@ -37,7 +38,7 @@ function setup(open = OPEN, held?: Promise<void>, gone = new Set<string>()) {
   /** Each Initiative's PR records, by URL. */
   const records = new Map<string, Map<string, PrRecord>>();
   const owners = new PrOwners(db, ledgerThreads(store, parentOf), changed, () => clock.now);
-  const gh = vi.fn<GhRunner>(async (args) => (args[1] === "user" ? "erwinkn" : args[1] === "graphql" ? JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false }, nodes: [] } } }) : JSON.stringify(open)));
+  const gh = vi.fn<GhRunner>(async (args) => (args[1] === "user" ? "erwinkn" : searchPage(ghCall(args) === "list" ? open : [])));
   // `held` holds bb-plugins' remote lookup; a project in `gone` answers 404.
   const project = vi.fn(async (id: string) => {
     if (gone.has(id)) throw new Error("404 project not found");

@@ -16,7 +16,7 @@ const NOW = Date.now();
 const gh = (number: number, head: string, base: string) => ({
   number, title: `PR ${number}`, url: `https://github.com/erwinkn/bb/pull/${number}`, isDraft: false, reviewDecision: "",
   mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefName: head, baseRefName: base,
-  createdAt: new Date(NOW - (100 - number) * 3_600_000).toISOString(), updatedAt: new Date(NOW - 60_000).toISOString(), statusCheckRollup: [],
+  createdAt: new Date(NOW - (100 - number) * 3_600_000).toISOString(), updatedAt: new Date(NOW - 60_000).toISOString(),
 });
 const records: Record<number, [PrStage, string | null, string?]> = {
   1: ["ready-for-erwin", "Security", "Rebased, clean"],
@@ -30,9 +30,9 @@ const queue = (): MergeQueue => ({
   projectId: "p", login: "erwinkn", repos: [{ repo: "erwinkn/bb", fetchedAt: NOW - 60_000, error: null, fetching: false, detailsFetchedAt: null, detailsError: null }], skipped: [],
   stages: PR_STAGES.map((s) => ({ ...s })),
   // #1 ← #2 ← #3 ← #4: #4 is ready but waits on #3.
-  pullRequests: orderQueue(linkStacks(parsePullRequests("erwinkn/bb", JSON.stringify([
+  pullRequests: orderQueue(linkStacks(parsePullRequests("erwinkn/bb", [
     gh(1, "a", "main"), gh(2, "b", "a"), gh(3, "c", "b"), gh(4, "d", "c"), gh(5, "ci", "main"), gh(6, "misc", "main"),
-  ])).map((pr): QueuedPullRequest => {
+  ]).map((pr): QueuedPullRequest => {
     const [stage, category, note] = records[pr.number]!;
     return { ...pr, stage, category, stageSource: "coordinator", stageNote: note ?? null, stageSetAt: NOW };
   }))),

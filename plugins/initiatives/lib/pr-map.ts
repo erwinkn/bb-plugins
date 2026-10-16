@@ -395,7 +395,7 @@ const UNASSIGNED_NOTE = 'Unassigned PRs show in every Adventure listing their re
 /** The repositories, whether the first read still runs, and how many open PRs are the Initiative's and unassigned (R2). */
 function queueHead(queue: MergeQueue, lists: Budget) {
   const loading = queue.repos.filter((r) => r.fetchedAt === null && r.fetching).map((r) => r.repo);
-  const repos = queue.repos.map((r) => ({ repo: r.repo, fetchedAt: r.fetchedAt, ...(r.fetching ? { fetching: true } : {}), ...(r.error ? { error: clip(r.error, STATE_LINE) } : {}) }));
+  const repos = queue.repos.map((r) => ({ repo: r.repo, fetchedAt: r.fetchedAt, ...(r.fetching ? { fetching: true } : {}), ...(r.error ? { error: clip(r.error, STATE_LINE) } : {}), ...(r.capped ? { capped: `read ${r.capped.listed} of ${r.capped.total} open PRs, as many as GitHub's search returns` } : {}) }));
   const unassigned = queue.pullRequests.filter((pr) => pr.unassigned).length;
   return {
     repos: lists.take(repos, "repositories"),

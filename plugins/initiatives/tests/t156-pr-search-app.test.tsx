@@ -7,6 +7,7 @@ import { orderQueue, parsePullRequests, type MergeQueue, type QueuedPullRequest 
 import { PR_STAGES } from "../lib/pr-stages";
 import { linkStacks } from "../lib/pr-map";
 import type { PrDetail } from "../lib/pr-detail";
+import { rollup } from "./gh-fixtures";
 await loadPluginApp(() => import("../app"));
 const { MergeQueueView } = await import("../merge-queue-view");
 const slots: ReturnType<typeof renderSlot>[] = [];
@@ -17,15 +18,15 @@ const url = (n: number) => `https://github.com/erwinkn/bb/pull/${n}`;
 const gh = (number: number, title: string, head: string, base: string) => ({
   number, title, url: url(number), isDraft: false, reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED",
   headRefName: head, baseRefName: base, createdAt: new Date(NOW - (3000 - number) * 60_000).toISOString(), updatedAt: new Date(NOW - 60_000).toISOString(),
-  statusCheckRollup: [{ __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" }],
+  statusCheckRollup: rollup({ SUCCESS: 1 }),
 });
 const queue = (): MergeQueue => ({
   projectId: "p", login: "erwinkn", repos: [{ repo: "erwinkn/bb", fetchedAt: NOW - 60_000, error: null, fetching: false, detailsFetchedAt: null, detailsError: null }], skipped: [],
   stages: PR_STAGES.map((s) => ({ ...s })),
   // #2251 ← #2254: a stack.
-  pullRequests: orderQueue(linkStacks(parsePullRequests("erwinkn/bb", JSON.stringify([
+  pullRequests: orderQueue(linkStacks(parsePullRequests("erwinkn/bb", [
     gh(2251, "SWC prep: circular imports", "chore/swc-prep", "dev"), gh(2254, "SWC: Swagger types", "chore/swagger", "chore/swc-prep"), gh(22, "Old docs", "docs", "dev"),
-  ])).map((pr): QueuedPullRequest => pr.number === 2254
+  ]).map((pr): QueuedPullRequest => pr.number === 2254
     ? { ...pr, stage: "in-review", stageSource: "coordinator", stageNote: "W12 reviewing", stageSetAt: NOW - 3_600_000, category: "SWC", links: { workers: ["W12"], assignments: ["A41"] } }
     : pr.number === 2251 ? { ...pr, category: "SWC", size: { additions: 908, deletions: 386, files: 48, commits: 5 }, reviewers: [{ login: "alice", state: "approved" }] } : pr))),
 });
@@ -158,7 +159,7 @@ describe("T156 PR search and detail", () => {
 
   it("opens nothing on Enter for a ref two repositories share, even when a filter shows one (W358 #2)", () => {
     const forks = ["erwinkn/bb", "fork/bb"].map((repo, i): QueuedPullRequest => ({
-      ...parsePullRequests(repo, JSON.stringify([{ ...gh(2251, repo, "feature", "main"), url: `https://github.com/${repo}/pull/2251` }]))[0]!,
+      ...parsePullRequests(repo, [{ ...gh(2251, repo, "feature", "main"), url: `https://github.com/${repo}/pull/2251` }])[0]!,
       stage: i ? "in-review" : "working",
     }));
     const slot = renderSlot({ component: MergeQueueView }, { queue: { ...queue(), pullRequests: forks }, error: null, refreshing: false, onRefresh: () => {}, loadDetail: vi.fn(async () => detail(2251)) });

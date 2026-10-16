@@ -5,6 +5,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { orderQueue, parsePullRequests, type MergeQueue } from "../lib/merge-queue";
 import { PR_STAGES } from "../lib/pr-stages";
 import { projectFixture } from "./fake-native";
+import { rollup } from "./gh-fixtures";
 await loadPluginApp(() => import("../app"));
 const { Dashboard } = await import("../app");
 const { MergeQueueView } = await import("../merge-queue-view");
@@ -25,21 +26,21 @@ const ghPr = (number: number, overrides: Record<string, unknown> = {}) => ({
   baseRefName: "main",
   createdAt: iso(600 - number),
   updatedAt: iso(30),
-  statusCheckRollup: [{ __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" }],
+  statusCheckRollup: rollup({ SUCCESS: 1 }),
   ...overrides,
 });
 const queue = (overrides: Partial<MergeQueue> = {}, prs = [
   ghPr(68, { title: "Questions: drop string maxLength", headRefName: "bb/w198-merge-queue-thr_5t6t6jjct3" }),
   ghPr(70, { title: "Sidebar: branch chip", isDraft: true, reviewDecision: "" }),
-  ghPr(71, { title: "Editor: conflicts", mergeable: "CONFLICTING", statusCheckRollup: [{ __typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE" }, { __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" }] }),
-  ghPr(72, { title: "Plans: checks running", reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ __typename: "CheckRun", status: "IN_PROGRESS" }] }),
+  ghPr(71, { title: "Editor: conflicts", mergeable: "CONFLICTING", statusCheckRollup: rollup({ FAILURE: 1, SUCCESS: 1 }) }),
+  ghPr(72, { title: "Plans: checks running", reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: rollup({ IN_PROGRESS: 1 }) }),
 ]): MergeQueue => ({
   projectId: "init-1",
   login: "erwinkn",
   repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: NOW - 60_000, error: null, fetching: false, detailsFetchedAt: null, detailsError: null }],
   skipped: [],
   stages: PR_STAGES.map((stage) => ({ ...stage })),
-  pullRequests: orderQueue(parsePullRequests("erwinkn/bb-plugins", JSON.stringify(prs)).map((pr) =>
+  pullRequests: orderQueue(parsePullRequests("erwinkn/bb-plugins", prs).map((pr) =>
     pr.number === 68 ? { ...pr, worker: { ref: "W198", threadId: "thr_5t6t6jjct3", assignment: null, role: null, source: "branch" as const } } : pr)),
   ...overrides,
 });
@@ -127,6 +128,11 @@ describe("W198 merge queue view", () => {
     expect(slot.getByText("Couldn't refresh · from 12m ago")).toBeTruthy();
     expect(slot.getByRole("status").textContent).toBe("erwinkn/bb-plugins: HTTP 502: Server Error. Showing the last data that loaded.");
     expect(slot.getAllByRole("link")).toHaveLength(4);
+  });
+
+  it("says when a repository has more open PRs than it read, rather than dropping them silently (W490)", () => {
+    const slot = view({ queue: queue({ repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: NOW - 60_000, error: null, fetching: false, detailsFetchedAt: NOW - 60_000, detailsError: null, capped: { listed: 1000, total: 1012 } }] }) });
+    expect(slot.getByRole("status").textContent).toBe("erwinkn/bb-plugins: read 1000 of 1012 open PRs, as many as GitHub's search returns.");
   });
 
   it("explains a fetch that never succeeded and retries from the alert", () => {

@@ -1,21 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  DETAILS_PAGE,
+  LIST_PAGE,
   assignStages,
   attachWorkers,
   branchThreadId,
   classify,
   githubRepo,
   orderQueue,
-  parseDetailsPage,
+  parseDetails,
+  parseSearchPage,
   parsePullRequests,
   githubStage,
   summarizeChecks,
 } from "../lib/merge-queue";
 import { PR_STAGES, blankPrRecord, type PrRecord } from "../lib/pr-stages";
 import { groupPrs } from "../lib/pr-map";
-import { MergeQueueCache, REFRESH_MS, type GhRunner, type MergeQueueSources } from "../lib/merge-queue-server";
+import { MergeQueueCache, PR_LIMIT, REFRESH_MS, type GhRunner, type MergeQueueSources } from "../lib/merge-queue-server";
+import { cursorOf, ghCall, rollup, searchPage } from "./gh-fixtures";
 
-/** One `gh pr list --json` entry, shaped like real output. */
+/** One list query node, shaped like real output. */
 const ghPr = (overrides: Record<string, unknown> = {}) => ({
   number: 68,
   title: "Questions: drop string maxLength from tool schemas",
@@ -28,15 +32,11 @@ const ghPr = (overrides: Record<string, unknown> = {}) => ({
   baseRefName: "main",
   createdAt: "2026-09-18T18:31:58Z",
   updatedAt: "2026-09-18T18:41:56Z",
-  statusCheckRollup: [
-    { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
-    { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SKIPPED" },
-    { __typename: "StatusContext", context: "ci/legacy", state: "SUCCESS" },
-  ],
+  statusCheckRollup: rollup({ SUCCESS: 1, SKIPPED: 1, FAILURE: 0 }, { SUCCESS: 1 }),
   ...overrides,
 });
 const parseOne = (overrides: Record<string, unknown> = {}) =>
-  parsePullRequests("erwinkn/bb-plugins", JSON.stringify([ghPr(overrides)]))[0]!;
+  parsePullRequests("erwinkn/bb-plugins", [ghPr(overrides)])[0]!;
 
 describe("githubRepo", () => {
   it("reads owner/repo from https, ssh and scp-like remotes only", () => {
@@ -88,29 +88,37 @@ describe("parsing gh pr list", () => {
     });
   });
 
-  it("rolls up check runs and status contexts", () => {
-    expect(summarizeChecks([])).toEqual({ state: "none", passed: 0, failed: 0, pending: 0, total: 0 });
-    expect(summarizeChecks([
-      { __typename: "CheckRun", status: "IN_PROGRESS", conclusion: "" },
-      { __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" },
-      { __typename: "StatusContext", state: "PENDING" },
-    ])).toEqual({ state: "pending", passed: 1, failed: 0, pending: 2, total: 3 });
+  it("rolls up check runs and status contexts from their counts by state", () => {
+    expect(summarizeChecks(rollup())).toEqual({ state: "none", passed: 0, failed: 0, pending: 0, total: 0 });
+    // A check run counts by its conclusion once completed; one completed without a conclusion is pending.
+    expect(summarizeChecks(rollup({ IN_PROGRESS: 1, SUCCESS: 1, COMPLETED: 1 }, { PENDING: 1 })))
+      .toEqual({ state: "pending", passed: 1, failed: 0, pending: 3, total: 4 });
     // One failure outranks pending checks.
-    expect(summarizeChecks([
-      { __typename: "CheckRun", status: "QUEUED", conclusion: "" },
-      { __typename: "CheckRun", status: "COMPLETED", conclusion: "TIMED_OUT" },
-      { __typename: "StatusContext", state: "ERROR" },
-    ]).state).toBe("fail");
+    expect(summarizeChecks(rollup({ QUEUED: 1, TIMED_OUT: 1 }, { ERROR: 1 }))).toMatchObject({ state: "fail", failed: 2, pending: 1 });
+    // A commit without checks, a PR without commits, or a malformed count: nothing to count.
+    expect(summarizeChecks({ nodes: [{ commit: { statusCheckRollup: null } }] }).state).toBe("none");
+    expect(summarizeChecks({ nodes: [] }).state).toBe("none");
     expect(summarizeChecks(null).state).toBe("none");
+    expect(summarizeChecks(rollup({ SUCCESS: -2, FAILURE: 1.5 })).state).toBe("none");
   });
 
-  it("drops malformed entries one by one and throws on non-list output", () => {
-    const raw = JSON.stringify([ghPr(), null, { number: "7" }, ghPr({ number: 0 }), ghPr({ number: 70, url: "javascript:alert(1)" }), ghPr({ number: 71, title: "" })]);
-    const parsed = parsePullRequests("erwinkn/bb-plugins", raw);
+  it("drops malformed entries one by one", () => {
+    const parsed = parsePullRequests("erwinkn/bb-plugins", [ghPr(), null, {}, { number: "7" }, ghPr({ number: 0 }), ghPr({ number: 70, url: "javascript:alert(1)" }), ghPr({ number: 71, title: "" })]);
     expect(parsed.map((pr) => pr.number)).toEqual([68, 71]);
     expect(parsed[1]!.title).toBe("erwinkn/bb-plugins#71");
-    expect(() => parsePullRequests("erwinkn/bb-plugins", '{"message":"Not Found"}')).toThrow(/list/);
-    expect(() => parsePullRequests("erwinkn/bb-plugins", "not json")).toThrow();
+  });
+
+  it("reads a search page, and names empty or cut-off output rather than JSON.parse's error (W490)", () => {
+    expect(parseSearchPage(searchPage([ghPr()], "c1", 209), "the PR list query")).toEqual({ nodes: [ghPr()], total: 209, next: "c1" });
+    // A gh that exits 0 with nothing on stdout: what execFile's timeout left of a finished gh.
+    expect(() => parseSearchPage("", "the PR list query")).toThrow(/^the PR list query returned no output$/);
+    expect(() => parseSearchPage(" \n", "the PR list query")).toThrow("the PR list query returned no output");
+    // Cut off: every cut point names the size, whether JSON.parse would say "Unexpected end" or "Unterminated string".
+    const full = searchPage([ghPr(), ghPr({ number: 69 })]);
+    for (const at of [1, 9, 80, full.length - 1])
+      expect(() => parseSearchPage(full.slice(0, at), "the PR list query")).toThrow(`the PR list query returned malformed JSON (${at} bytes)`);
+    expect(() => parseSearchPage('{"message":"Not Found"}', "the PR list query")).toThrow("the PR list query returned no search results");
+    expect(() => parseSearchPage('{"data":{"search":null},"errors":[{"message":"timeout"}]}', "the details query")).toThrow("the details query returned no search results");
   });
 });
 
@@ -120,24 +128,24 @@ describe("merge-queue order", () => {
     expect(parseOne({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" })).toMatchObject({ group: "waiting", reasons: ["mergeability unknown"] });
     expect(parseOne({ reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED" })).toMatchObject({ group: "waiting", reasons: ["review required"] });
     expect(parseOne({ mergeStateStatus: "BEHIND" })).toMatchObject({ group: "waiting", reasons: ["behind base"] });
-    expect(parseOne({ statusCheckRollup: [{ __typename: "CheckRun", status: "IN_PROGRESS" }] })).toMatchObject({ group: "waiting", reasons: ["1 check running"] });
+    expect(parseOne({ statusCheckRollup: rollup({ IN_PROGRESS: 1 }) })).toMatchObject({ group: "waiting", reasons: ["1 check running"] });
     expect(parseOne({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" })).toMatchObject({ group: "fix", reasons: ["conflicts"] });
     expect(parseOne({
       reviewDecision: "CHANGES_REQUESTED",
-      statusCheckRollup: [{ __typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE" }, { __typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE" }],
+      statusCheckRollup: rollup({ FAILURE: 2 }),
     })).toMatchObject({ group: "fix", reasons: ["2 checks failing", "changes requested"] });
     // A draft is a draft whatever else is true, and keeps its reasons.
     expect(parseOne({ isDraft: true, mergeable: "CONFLICTING" })).toMatchObject({ group: "draft", reasons: ["conflicts"] });
-    expect(classify({ draft: false, review: "none", mergeable: "mergeable", mergeState: "blocked", checks: summarizeChecks([]) }))
+    expect(classify({ draft: false, review: "none", mergeable: "mergeable", mergeState: "blocked", checks: summarizeChecks(rollup()) }))
       .toEqual({ group: "waiting", reasons: ["blocked by branch rules"] });
   });
 
   it("guesses a stage from GitHub: drafts are worked on, approved green mergeable PRs are ready for the user", () => {
     expect(githubStage(parseOne({ isDraft: true, reviewDecision: "APPROVED" }))).toBe("working");
     expect(githubStage(parseOne({ reviewDecision: "APPROVED" }))).toBe("ready-for-erwin");
-    expect(githubStage(parseOne({ reviewDecision: "APPROVED", statusCheckRollup: [] }))).toBe("ready-for-erwin");
+    expect(githubStage(parseOne({ reviewDecision: "APPROVED", statusCheckRollup: rollup() }))).toBe("ready-for-erwin");
     expect(githubStage(parseOne({ reviewDecision: "APPROVED", mergeable: "UNKNOWN" }))).toBe("ready-for-review");
-    expect(githubStage(parseOne({ reviewDecision: "APPROVED", statusCheckRollup: [{ __typename: "CheckRun", status: "IN_PROGRESS" }] }))).toBe("ready-for-review");
+    expect(githubStage(parseOne({ reviewDecision: "APPROVED", statusCheckRollup: rollup({ IN_PROGRESS: 1 }) }))).toBe("ready-for-review");
     expect(githubStage(parseOne({ reviewDecision: "" }))).toBe("ready-for-review");
     expect(githubStage(parseOne({ mergeable: "CONFLICTING" }))).toBe("ready-for-review");
   });
@@ -145,14 +153,14 @@ describe("merge-queue order", () => {
   it("groups by stage, the coordinator's where recorded, oldest first within a stage", () => {
     const at = (day: number) => `2026-09-${String(day).padStart(2, "0")}T10:00:00Z`;
     const url = (n: number) => `https://github.com/erwinkn/bb/pull/${n}`;
-    const prs = parsePullRequests("erwinkn/bb", JSON.stringify([
+    const prs = parsePullRequests("erwinkn/bb", [
       ghPr({ number: 1, url: url(1), isDraft: true, createdAt: at(1) }),
       ghPr({ number: 2, url: url(2), mergeable: "CONFLICTING", createdAt: at(2) }),
       ghPr({ number: 3, url: url(3), reviewDecision: "APPROVED", createdAt: at(3) }),
       ghPr({ number: 4, url: url(4), createdAt: at(9) }),
       ghPr({ number: 5, url: url(5), createdAt: at(4) }),
       ghPr({ number: 6, url: url(6), isDraft: true, createdAt: at(5) }),
-    ]));
+    ]);
     const record = (n: number, stage: PrRecord["stage"], note: string | null = null): [string, PrRecord] =>
       [url(n), { ...blankPrRecord(url(n), 1000 + n), stage, note, setAt: 1000 + n }];
     // Recorded keys are canonical (lower case); PR #4 matches whatever its case.
@@ -181,10 +189,10 @@ describe("merge-queue order", () => {
   it("labels a PR with the worker whose BB worktree branch opened it", () => {
     expect(branchThreadId("bb/w198-merge-queue-github-cleanup-initiative-dashb-thr_5t6t6jjct3")).toBe("thr_5t6t6jjct3");
     expect(branchThreadId("fix/questions-tool-schema-grammar")).toBeNull();
-    const prs = parsePullRequests("erwinkn/bb-plugins", JSON.stringify([
+    const prs = parsePullRequests("erwinkn/bb-plugins", [
       ghPr({ number: 1, headRefName: "bb/w198-merge-queue-thr_5t6t6jjct3" }),
       ghPr({ number: 2, headRefName: "bb/w12-other-thr_unknown" }),
-    ]));
+    ]);
     const labelled = attachWorkers(prs, new Map([["thr_5t6t6jjct3", "W198"]]));
     expect(labelled.map((pr) => pr.worker)).toEqual([{ ref: "W198", threadId: "thr_5t6t6jjct3", assignment: null, role: null, source: "branch" }, null]);
   });
@@ -218,14 +226,14 @@ describe("MergeQueueCache", () => {
     await cache.settled();
     return cache.read(id);
   };
-  const page = (nodes: unknown[], next: string | null = null) =>
-    JSON.stringify({ data: { search: { pageInfo: { hasNextPage: next !== null, endCursor: next }, nodes } } });
+  const page = searchPage;
+  /** The repository a search call reads, from its `q=repo:… ` argument. */
+  const repoOf = (args: readonly string[]) => /^q=repo:(\S+)/.exec(args.find((a) => a.startsWith("q=")) ?? "")?.[1];
   const answers = (lists: Record<string, unknown[]>) =>
     vi.fn<GhRunner>(async (args) => {
       if (args[1] === "user") return "erwinkn\n";
-      if (args[1] === "graphql") return page([]);
-      const repo = args[args.indexOf("--repo") + 1]!;
-      return JSON.stringify(lists[repo] ?? []);
+      if (ghCall(args) === "details") return page([]);
+      return page(lists[repoOf(args)!] ?? []);
     });
   const fresh = (at: number) => ({ fetchedAt: at, error: null, fetching: false, detailsFetchedAt: at, detailsError: null });
 
@@ -235,7 +243,7 @@ describe("MergeQueueCache", () => {
     const gh = vi.fn<GhRunner>(async (args) => {
       await gate;
       if (args[1] === "user") return "erwinkn";
-      return args[1] === "graphql" ? page([]) : JSON.stringify([ghPr()]);
+      return ghCall(args) === "details" ? page([]) : page([ghPr()]);
     });
     const { cache, fetched } = setup(gh, ["proj-plugins"]);
     // gh hangs: the read still answers, with the first fetch running.
@@ -268,13 +276,13 @@ describe("MergeQueueCache", () => {
       ["erwinkn/bb-plugins", 68, "ready-for-review", "W7"],
       ["erwinkn/bb", 9, "working", null],
     ]);
-    // The account resolves once; each repo is one batched list call, with its details query beside it.
+    // The account resolves once; each repo is one list query, with its details query beside it over the same search.
     expect(gh.mock.calls.filter(([args]) => args[0] === "api" && args[1] === "user")).toHaveLength(1);
-    const list = gh.mock.calls.find(([args]) => args[0] === "pr")![0];
-    expect(list).toEqual(expect.arrayContaining(["--repo", "erwinkn/bb-plugins", "--author", "erwinkn", "--state", "open", "--json"]));
-    const details = gh.mock.calls.find(([args]) => args[1] === "graphql")![0];
-    expect(details).toEqual(expect.arrayContaining(["q=repo:erwinkn/bb-plugins is:pr is:open author:erwinkn"]));
-    expect(details).not.toContain("--paginate");
+    const [list, details] = (["list", "details"] as const).map((kind) => gh.mock.calls.find(([args]) => ghCall(args) === kind)![0]);
+    for (const call of [list!, details!]) {
+      expect(call).toEqual(expect.arrayContaining(["api", "graphql", "q=repo:erwinkn/bb-plugins is:pr is:open author:erwinkn"]));
+      expect(call).not.toContain("--paginate");
+    }
     expect(gh).toHaveBeenCalledTimes(5);
 
     // Within two minutes reads come from the cache.
@@ -321,7 +329,7 @@ describe("MergeQueueCache", () => {
     const gh = vi.fn<GhRunner>(async (args) => {
       if (args[1] === "user") return "erwinkn";
       await gate;
-      return args[1] === "graphql" ? page([]) : JSON.stringify([ghPr()]);
+      return ghCall(args) === "details" ? page([]) : page([ghPr()]);
     });
     const { cache, advance } = setup(gh, ["proj-plugins"]);
     await Promise.all([cache.read("a"), cache.read("b"), cache.read("a", { refresh: true })]);
@@ -344,7 +352,7 @@ describe("MergeQueueCache", () => {
     let most = 0;
     const gh = vi.fn<GhRunner>(async (args) => {
       if (args[1] === "user") return "erwinkn";
-      if (args[1] === "graphql") {
+      if (ghCall(args) === "details") {
         most = Math.max(most, ++detailsRunning);
         await detailsGate;
         detailsRunning--;
@@ -362,7 +370,7 @@ describe("MergeQueueCache", () => {
     releaseDetails();
     await cache.settled();
     expect(most).toBe(1);
-    expect(gh.mock.calls.filter(([args]) => args[1] === "graphql")).toHaveLength(1);
+    expect(gh.mock.calls.filter(([args]) => ghCall(args) === "details")).toHaveLength(1);
   });
 
   it("adds each PR's size and reviewers; a failed details query keeps sizes, withholds reviewers and says so (W229)", async () => {
@@ -374,8 +382,8 @@ describe("MergeQueueCache", () => {
     ]);
     const gh = vi.fn<GhRunner>(async (args) => {
       if (args[1] === "user") return "erwinkn";
-      if (args[1] === "graphql") { if (details instanceof Error) throw details; return details; }
-      return JSON.stringify([ghPr(), ghPr({ number: 69, url: "https://github.com/erwinkn/bb-plugins/pull/69" })]);
+      if (ghCall(args) === "details") { if (details instanceof Error) throw details; return details; }
+      return page([ghPr(), ghPr({ number: 69, url: "https://github.com/erwinkn/bb-plugins/pull/69" })]);
     });
     const { cache, advance, at } = setup(gh, ["proj-plugins"]);
     const first = await settledRead(cache, "a");
@@ -398,30 +406,122 @@ describe("MergeQueueCache", () => {
   it("keeps a successful list when the details answer has a malformed shape (W229)", async () => {
     const gh = vi.fn<GhRunner>(async (args) => {
       if (args[1] === "user") return "erwinkn";
-      if (args[1] === "graphql") return args.some((a) => a.startsWith("endCursor=")) ? "{}" : page([{ number: 68, latestReviews: { nodes: {} }, reviewRequests: null }], "c1");
-      return JSON.stringify([ghPr()]);
+      if (ghCall(args) === "details") return cursorOf(args) ? "{}" : page([{ number: 68, latestReviews: { nodes: {} }, reviewRequests: null }], "c1");
+      return page([ghPr()]);
     });
     const { cache } = setup(gh, ["proj-plugins"]);
     const q = await settledRead(cache, "a");
     expect(q.pullRequests.map((pr) => pr.number)).toEqual([68]);
     expect(q.repos[0]).toMatchObject({ error: null, detailsError: "the details query returned no search results" });
-    expect(parseDetailsPage(page([{ number: 68, additions: 3, latestReviews: { nodes: {} } }])).details.get(68)).toEqual({
+    expect(parseDetails([{ number: 68, additions: 3, latestReviews: { nodes: {} } }]).get(68)).toEqual({
       size: { additions: 3, deletions: 0, files: 0, commits: 0 }, reviewers: [],
     });
   });
 
-  it("pages the details query no further than the list's 200 PRs (W229)", async () => {
-    let pages = 0;
+  /** A GitHub with `open` PRs by number, each query paging through them; like GitHub's search, it returns 1000 at most. */
+  const github = (open: number) => vi.fn<GhRunner>(async (args) => {
+    if (args[1] === "user") return "erwinkn";
+    const size = ghCall(args) === "list" ? LIST_PAGE : DETAILS_PAGE;
+    const from = Number(cursorOf(args) ?? 0);
+    const to = Math.min(from + size, open, 1000);
+    const nodes = Array.from({ length: to - from }, (_, k) => ghCall(args) === "list"
+      ? ghPr({ number: from + k + 1, url: `https://github.com/erwinkn/bb-plugins/pull/${from + k + 1}` })
+      : { number: from + k + 1, additions: 1 });
+    return page(nodes, to < Math.min(open, 1000) ? String(to) : null, open);
+  });
+
+  it("lists every open PR past the old cap of 200, with the details of each (W490)", async () => {
+    const gh = github(209);
+    const { cache } = setup(gh, ["proj-plugins"]);
+    const q = await settledRead(cache, "a");
+    expect(q.pullRequests).toHaveLength(209);
+    expect(q.pullRequests.every((pr) => pr.size?.additions === 1)).toBe(true);
+    expect(q.repos[0]).toMatchObject({ error: null, detailsError: null });
+    expect(q.repos[0]!.capped).toBeUndefined();
+    // Each query pages to the end of the search: 3 list pages of 100, 5 details pages of 50.
+    const cursors = (kind: "list" | "details") => gh.mock.calls.filter(([args]) => ghCall(args) === kind).map(([args]) => cursorOf(args));
+    expect(cursors("list")).toEqual([null, "100", "200"]);
+    expect(cursors("details")).toEqual([null, "50", "100", "150", "200"]);
+  });
+
+  it("stops at GitHub search's 1000 results and says how many it listed of how many (W490)", async () => {
+    const gh = github(1012);
+    const { cache } = setup(gh, ["proj-plugins"]);
+    const q = await settledRead(cache, "a");
+    expect(q.pullRequests).toHaveLength(PR_LIMIT);
+    expect(q.repos[0]).toMatchObject({ error: null, capped: { listed: PR_LIMIT, total: 1012 } });
+    expect(gh.mock.calls.filter(([args]) => ghCall(args) === "list")).toHaveLength(PR_LIMIT / LIST_PAGE);
+    expect(gh.mock.calls.filter(([args]) => ghCall(args) === "details")).toHaveLength(PR_LIMIT / DETAILS_PAGE);
+  });
+
+  it("counts GitHub's 1000 results with their repeats: one PR shifted onto two pages still reads as capped", async () => {
+    const pr = (n: number) => ghPr({ number: n, url: `https://github.com/erwinkn/bb-plugins/pull/${n}` });
     const gh = vi.fn<GhRunner>(async (args) => {
       if (args[1] === "user") return "erwinkn";
-      if (args[1] === "graphql") return page([{ number: ++pages }], `cursor-${pages}`);
-      return "[]";
+      if (ghCall(args) === "details") return page([], null, 1012);
+      // Page k > 0 starts with the last PR of page k - 1: ten pages, 1000 results, 999 PRs.
+      const k = Number(cursorOf(args) ?? 0);
+      const first = k === 0 ? 1 : k * LIST_PAGE;
+      return page(Array.from({ length: LIST_PAGE }, (_, i) => pr(first + i)), k < 9 ? String(k + 1) : null, 1012);
     });
     const { cache } = setup(gh, ["proj-plugins"]);
-    await settledRead(cache, "a");
-    expect(pages).toBe(4);
-    const cursors = gh.mock.calls.filter(([args]) => args[1] === "graphql").map(([args]) => args.find((a) => a.startsWith("endCursor=")) ?? null);
-    expect(cursors).toEqual([null, "endCursor=cursor-1", "endCursor=cursor-2", "endCursor=cursor-3"]);
+    const q = await settledRead(cache, "a");
+    expect(q.pullRequests).toHaveLength(999);
+    expect(q.repos[0]).toMatchObject({ error: null, capped: { listed: 999, total: 1012 } });
+  });
+
+  it("fails a query whose page is empty yet promises more, rather than paging on or calling it GitHub's limit", async () => {
+    const gh = vi.fn<GhRunner>(async (args) => {
+      if (args[1] === "user") return "erwinkn";
+      return cursorOf(args) ? page([], "c2", 5) : page(ghCall(args) === "list" ? [ghPr()] : [{ number: 68 }], "c1", 5);
+    });
+    const { cache } = setup(gh, ["proj-plugins"]);
+    const q = await settledRead(cache, "a");
+    expect(q.repos[0]).toMatchObject({
+      error: "the PR list query returned an empty page before the last (read 1 of 5 PRs)",
+      detailsError: "the details query returned an empty page before the last (read 1 of 5 PRs)",
+    });
+    expect(q.repos[0]!.capped).toBeUndefined();
+    expect(gh).toHaveBeenCalledTimes(5);
+  });
+
+  it("lists a PR once when the search shifts it onto the next page as well", async () => {
+    const gh = vi.fn<GhRunner>(async (args) => {
+      if (args[1] === "user") return "erwinkn";
+      const second = ghPr({ number: 69, url: "https://github.com/erwinkn/bb-plugins/pull/69" });
+      if (ghCall(args) === "details") return page([]);
+      return cursorOf(args) ? page([second, ghPr({ number: 70, url: "https://github.com/erwinkn/bb-plugins/pull/70" })]) : page([ghPr(), second], "c1");
+    });
+    const { cache } = setup(gh, ["proj-plugins"]);
+    expect((await settledRead(cache, "a")).pullRequests.map((pr) => pr.number).sort()).toEqual([68, 69, 70]);
+  });
+
+  it("retries a failed page once, quietly; two failures, or empty output, keep the last good list and say why (W490)", async () => {
+    let failures = 1;
+    let answer = () => page([ghPr()]);
+    const gh = vi.fn<GhRunner>(async (args) => {
+      if (args[1] === "user") return "erwinkn";
+      if (ghCall(args) === "details") return page([]);
+      if (failures-- > 0) throw new Error("HTTP 502: Server Error");
+      return answer();
+    });
+    const { cache, advance, at } = setup(gh, ["proj-plugins"]);
+    const first = await settledRead(cache, "a");
+    const goodAt = at();
+    expect(first.repos[0]).toMatchObject({ fetchedAt: goodAt, error: null });
+    expect(first.pullRequests.map((pr) => pr.number)).toEqual([68]);
+    expect(gh.mock.calls.filter(([args]) => ghCall(args) === "list")).toHaveLength(2);
+    // gh exits 0 with nothing on stdout, twice: a plain error, not JSON.parse's.
+    answer = () => "";
+    advance(REFRESH_MS);
+    const empty = await settledRead(cache, "a");
+    expect(empty.repos[0]).toMatchObject({ fetchedAt: goodAt, error: "the PR list query returned no output" });
+    expect(empty.pullRequests.map((pr) => pr.number)).toEqual([68]);
+    expect(gh.mock.calls.filter(([args]) => ghCall(args) === "list")).toHaveLength(4);
+    // Cut off mid-answer.
+    answer = () => page([ghPr()]).slice(0, 40);
+    advance(REFRESH_MS);
+    expect((await settledRead(cache, "a")).repos[0]!.error).toBe("the PR list query returned malformed JSON (40 bytes)");
   });
 
   it("keeps the last good list beside a failed refresh and retries on the next one", async () => {
@@ -429,7 +529,7 @@ describe("MergeQueueCache", () => {
     const gh = vi.fn<GhRunner>(async (args) => {
       if (args[1] === "user") return "erwinkn";
       if (failing) throw new Error("HTTP 502: Server Error");
-      return args[1] === "graphql" ? page([]) : JSON.stringify([ghPr()]);
+      return ghCall(args) === "details" ? page([]) : page([ghPr()]);
     });
     const { cache, advance, at } = setup(gh, ["proj-plugins"]);
     await settledRead(cache, "a");
@@ -452,7 +552,7 @@ describe("MergeQueueCache", () => {
         if (!signedIn) throw new Error("To get started with GitHub CLI, please run: gh auth login");
         return "erwinkn";
       }
-      return args[1] === "graphql" ? page([]) : "[]";
+      return page([]);
     });
     const { cache, advance } = setup(gh, ["proj-plugins"]);
     const first = await settledRead(cache, "a");

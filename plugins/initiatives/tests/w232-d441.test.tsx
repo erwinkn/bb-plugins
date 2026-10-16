@@ -4,7 +4,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { MergeQueueCache, MIN_FORCED_REFRESH_MS, REFRESH_MS, type GhRunner } from "../lib/merge-queue-server";
+import { FETCH_BUDGET_MS, GH_TIMEOUT_MS, MergeQueueCache, MIN_FORCED_REFRESH_MS, REFRESH_MS, type GhRunner } from "../lib/merge-queue-server";
+import { ghCall, searchPage } from "./gh-fixtures";
 import { PR_STAGES } from "../lib/pr-stages";
 import { parsePullRequests, type MergeQueue } from "../lib/merge-queue";
 import { appReads } from "../lib/dashboard-data";
@@ -17,7 +18,7 @@ const slots: ReturnType<typeof renderSlot>[] = [];
 afterEach(() => { slots.splice(0).forEach((s) => s.unmount()); cleanup(); appReads.clear(); vi.restoreAllMocks(); });
 
 const raw = [{ number: 1, title: "Cached PR", url: "https://github.com/o/r/pull/1", headRefName: "a", baseRefName: "main" }];
-const page = JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } });
+const page = searchPage([]);
 /** Settles within this many macrotasks or reports that it is still waiting. */
 const promptly = <T,>(promise: Promise<T>) =>
   Promise.race([promise, new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 20))]);
@@ -33,15 +34,15 @@ const setup = () => {
     return release;
   };
   const gh = vi.fn<GhRunner>(async (args) => {
-    const kind = args[1] === "user" ? "user" : args[1] === "graphql" ? "graphql" : "list";
+    const kind = args[1] === "user" ? "user" : ghCall(args) === "details" ? "graphql" : "list";
     await held.get(kind)?.promise;
-    return kind === "user" ? "o" : kind === "graphql" ? page : JSON.stringify(raw);
+    return kind === "user" ? "o" : kind === "graphql" ? page : searchPage(raw);
   });
   const cache = new MergeQueueCache({
     memberProjectIds: () => ["b"], project: async () => ({ name: "R", gitRemoteUrl: "https://github.com/o/r" }),
     workers: () => new Map(), prRecords: () => new Map(), assignedPrs: () => new Map(), notes: () => new Map(),
   }, gh, () => now);
-  const calls = (kind: "graphql" | "list") => gh.mock.calls.filter(([args]) => (kind === "graphql" ? args[1] === "graphql" : args[0] === "pr")).length;
+  const calls = (kind: "graphql" | "list") => gh.mock.calls.filter(([args]) => ghCall(args) === (kind === "graphql" ? "details" : "list")).length;
   return { cache, gh, hold, calls, advance: (ms: number) => { now += ms; }, releaseAll: () => held.forEach((h) => h.release()) };
 };
 
@@ -98,7 +99,7 @@ describe("D441: nor on BB, nor past the details budget (W229)", () => {
   const sources = (project: () => Promise<{ name: string; gitRemoteUrl: string | null }>) => ({
     memberProjectIds: () => ["b"], project, workers: () => new Map(), prRecords: () => new Map(), assignedPrs: () => new Map(), notes: () => new Map(),
   });
-  const answer = async (args: string[]) => args[1] === "user" ? "o" : args[1] === "graphql" ? page : JSON.stringify(raw);
+  const answer = async (args: string[]) => args[1] === "user" ? "o" : ghCall(args) === "details" ? page : searchPage(raw);
 
   it("serves the last member remote to every read while BB is asked again, and asks once", async () => {
     let now = 1;
@@ -118,17 +119,19 @@ describe("D441: nor on BB, nor past the details budget (W229)", () => {
     await cache.settled();
   });
 
-  it("gives each details page only the time left of the 20s budget, and starts none once it is spent", async () => {
+  it("gives each page at most 20 s of the 60 s budget left, retries a failed one once, and starts none once it is spent", async () => {
     let now = 1;
-    /** A gh whose pages take these many ms, killed like the real one once its time is up. */
-    const run = async (durations: number[]) => {
+    /** A gh whose details attempts take these many ms, killed like the real one once its time is up; `pages` pages, one PR each. */
+    const run = async (durations: number[], pages: number) => {
       const timeouts: (number | undefined)[] = [];
+      let read = 0;
       const gh: GhRunner = async (args, timeoutMs) => {
-        if (args[1] !== "graphql") return answer(args);
+        if (ghCall(args) !== "details") return answer(args);
         const took = durations[timeouts.push(timeoutMs) - 1]!;
         now += Math.min(took, timeoutMs!);
         if (took > timeoutMs!) throw new Error("gh timed out");
-        return JSON.stringify({ data: { search: { pageInfo: { hasNextPage: true, endCursor: `c${timeouts.length}` }, nodes: [] } } });
+        read++;
+        return searchPage([{ number: read }], read < pages ? `c${read}` : null, pages);
       };
       const start = now;
       const cache = new MergeQueueCache(sources(async () => ({ name: "R", gitRemoteUrl: "https://github.com/o/r" })), gh, () => now);
@@ -136,10 +139,19 @@ describe("D441: nor on BB, nor past the details budget (W229)", () => {
       await cache.settled();
       return { timeouts, took: now - start, repo: (await cache.read("p")).repos[0]! };
     };
-    // Two pages spend the budget: no third starts, and the pages read count.
-    expect(await run([10_000, 10_000, 1])).toMatchObject({ timeouts: [20_000, 10_000], took: 20_000, repo: { detailsError: null, error: null } });
-    // A first page ends a millisecond short: the second gets that millisecond, not another 20s.
-    expect(await run([19_999, 5_000])).toMatchObject({ timeouts: [20_000, 1], took: 20_000, repo: { detailsError: "gh timed out", error: null } });
+    expect(GH_TIMEOUT_MS * 3).toBe(FETCH_BUDGET_MS);
+    // Four pages spend the budget, the fourth getting the 15 s left: no fifth starts, and the query says so.
+    expect(await run([15_000, 15_000, 15_000, 15_000, 1], 5)).toMatchObject({
+      timeouts: [20_000, 20_000, 20_000, 15_000], took: 60_000, repo: { detailsError: "the details query took over 60 s (read 4 of 5 PRs)", error: null },
+    });
+    // A page that times out is tried once more, quietly, with the time left.
+    expect(await run([25_000, 5_000], 1)).toMatchObject({ timeouts: [20_000, 20_000], took: 25_000, repo: { detailsError: null } });
+    // Twice: the query fails with the page's own error, and no third attempt starts.
+    expect(await run([25_000, 25_000, 1], 1)).toMatchObject({ timeouts: [20_000, 20_000], took: 40_000, repo: { detailsError: "gh timed out" } });
+    // A page ends a millisecond short: the next gets that millisecond, and no retry once it is spent.
+    expect(await run([20_000, 20_000, 19_999, 5_000, 1], 5)).toMatchObject({
+      timeouts: [20_000, 20_000, 20_000, 1], took: 60_000, repo: { detailsError: "gh timed out", error: null },
+    });
   });
 });
 
@@ -170,7 +182,7 @@ describe("D441: the dashboard", () => {
   const cached: MergeQueue = {
     projectId: "p", login: "o", skipped: [], stages: PR_STAGES.map((s) => ({ ...s })),
     repos: [{ repo: "o/r", fetchedAt: 1, error: null, fetching: false, detailsFetchedAt: 1, detailsError: null }],
-    pullRequests: parsePullRequests("o/r", JSON.stringify(raw)),
+    pullRequests: parsePullRequests("o/r", raw),
   };
   const cold: MergeQueue = { ...cached, login: null, pullRequests: [], repos: [{ ...cached.repos[0]!, fetchedAt: null, detailsFetchedAt: null, fetching: true }] };
 

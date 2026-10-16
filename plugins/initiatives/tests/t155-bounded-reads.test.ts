@@ -19,10 +19,10 @@ const note = (n: number, kind: PrNote["kind"], text: string): PrNote => ({ n, at
 function pr(i: number): QueuedPullRequest {
   const repo = REPOS[i % 7 === 0 ? 1 : 0]!;
   const number = 1000 + i;
-  const [parsed] = parsePullRequests(repo, JSON.stringify([{
+  const [parsed] = parsePullRequests(repo, [{
     number, url: `https://github.com/${repo}/pull/${number}`, title: `Fix the ${i}th thing `.repeat(12),
     headRefName: `b${i}`, baseRefName: i % 10 === 1 ? `b${i - 1}` : "main", createdAt: new Date(Date.UTC(2026, 8, 1) + i * 60_000).toISOString(),
-  }]));
+  }]);
   const questions = i % 25 === 0 ? Array.from({ length: 12 }, (_, q) => note(q + 1, "question", `Q${q}: ${"why ".repeat(400)}`))
     : i % 7 === 0 ? [note(1, "question", "Keep the 5m TTL?")] : [];
   const recent = [...questions.slice(-2), note(questions.length + 1, "note", `Rebased; ${"details ".repeat(150)}`)];
@@ -40,7 +40,7 @@ const queue = (pullRequests: QueuedPullRequest[], error: string | null = null): 
 });
 /** PR `number` of `repo` with nothing recorded but `fields`. */
 const plain = (repo: string, number: number, fields: Partial<QueuedPullRequest> = {}): QueuedPullRequest => ({
-  ...parsePullRequests(repo, JSON.stringify([{ number, url: `https://github.com/${repo}/pull/${number}`, title: `PR ${number}`, headRefName: `h${number}`, baseRefName: "main", createdAt: new Date(Date.UTC(2026, 8, 1) + number * 60_000).toISOString() }]))[0]!,
+  ...parsePullRequests(repo, [{ number, url: `https://github.com/${repo}/pull/${number}`, title: `PR ${number}`, headRefName: `h${number}`, baseRefName: "main", createdAt: new Date(Date.UTC(2026, 8, 1) + number * 60_000).toISOString() }])[0]!,
   stage: "working", stageSource: "coordinator", ...fields,
 });
 const prs = linkStacks(Array.from({ length: 180 }, (_, i) => pr(i + 1)));
@@ -86,6 +86,12 @@ describe("T155 initiative_read {view:prs} is bounded", () => {
     expect(heavy.questions).toHaveLength(4);
     expect(heavy.questions!.at(-1)).toBe("+9 more");
     expect(heavy.changes!.at(-1)).toBe("+6 more");
+  });
+
+  it("says when a repository has more open PRs than were read (W490)", () => {
+    const capped = { ...big, repos: big.repos.map((r) => ({ ...r, capped: { listed: 1000, total: 1012 } })) };
+    expect(prSummary(capped).repos[0]).toMatchObject({ capped: "read 1000 of 1012 open PRs, as many as GitHub's search returns" });
+    expect(prSummary(big).repos[0]).not.toHaveProperty("capped");
   });
 
   it("cuts a page that would not fit, says so, and continues from where it stopped", () => {

@@ -138,6 +138,8 @@ export interface MergeQueueRepo {
    */
   detailsFetchedAt: number | null;
   detailsError: string | null;
+  /** Set when the last list read stopped short of every open PR GitHub counts (PR_LIMIT): how many it read of how many. */
+  capped?: { listed: number; total: number };
 }
 
 export interface MergeQueue {
@@ -170,44 +172,44 @@ export function githubRepo(remoteUrl: string | null | undefined): string | null 
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
-/** The fields requested from `gh pr list --json`. */
-export const GH_PR_FIELDS = [
-  "number",
-  "title",
-  "url",
-  "isDraft",
-  "reviewDecision",
-  "mergeable",
-  "mergeStateStatus",
-  "headRefName",
-  "baseRefName",
-  "createdAt",
-  "updatedAt",
-  "statusCheckRollup",
-].join(",");
+/**
+ * The open PRs a search finds, one page of LIST_PAGE. The keys are `gh pr list --json`'s, but
+ * the checks come as counts by state, every check of the last commit: `gh pr list --json
+ * statusCheckRollup` reads the first 100 one by one, each with its workflow's name. W490, 209
+ * PRs in 3 pages: 11–12 s as counts, 11–13 s check by check, 6–7 s without mergeability (which
+ * the queue needs). Details beside it on the same pages fail with a 502 or 504 (GH_DETAILS_QUERY).
+ */
+export const LIST_PAGE = 100;
+export const GH_LIST_QUERY = `query($q: String!, $endCursor: String) {
+  search(query: $q, type: ISSUE, first: ${LIST_PAGE}, after: $endCursor) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest {
+      number title url isDraft reviewDecision mergeable mergeStateStatus headRefName baseRefName createdAt updatedAt
+      statusCheckRollup: commits(last: 1) { nodes { commit { statusCheckRollup { contexts {
+        checkRunCountsByState { state count } statusContextCountsByState { state count }
+      } } } } }
+    } }
+  }
+}`;
 
 const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"]);
 
-type CheckVerdict = "passed" | "failed" | "pending";
-
-/** One `statusCheckRollup` entry: a CheckRun (status + conclusion) or a StatusContext (state). */
-function checkVerdict(entry: Record<string, unknown>): CheckVerdict {
-  const upper = (value: unknown) => (typeof value === "string" ? value.toUpperCase() : "");
-  if (entry.__typename === "StatusContext" || ("state" in entry && !("status" in entry))) {
-    const state = upper(entry.state);
-    return PASSED.has(state) ? "passed" : FAILED.has(state) ? "failed" : "pending";
-  }
-  if (upper(entry.status) !== "COMPLETED") return "pending";
-  const conclusion = upper(entry.conclusion);
-  return PASSED.has(conclusion) ? "passed" : FAILED.has(conclusion) ? "failed" : "pending";
-}
-
+/**
+ * The checks of the PR's last commit, from the list query's counts: check runs by CheckRunState
+ * (their conclusion once completed), status contexts by StatusState. Any other state is pending.
+ */
 export function summarizeChecks(rollup: unknown): QueuedPullRequest["checks"] {
   const counts = { passed: 0, failed: 0, pending: 0 };
-  for (const entry of Array.isArray(rollup) ? rollup : []) {
-    if (typeof entry !== "object" || entry === null) continue;
-    counts[checkVerdict(entry as Record<string, unknown>)]++;
+  const contexts = (rollup as { nodes?: { commit?: { statusCheckRollup?: { contexts?: Record<string, unknown> } | null } }[] } | null)
+    ?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  for (const byState of [contexts?.checkRunCountsByState, contexts?.statusContextCountsByState]) {
+    for (const entry of Array.isArray(byState) ? (byState as { state?: unknown; count?: unknown }[]) : []) {
+      const n = typeof entry?.count === "number" && Number.isInteger(entry.count) && entry.count > 0 ? entry.count : 0;
+      const state = typeof entry?.state === "string" ? entry.state.toUpperCase() : "";
+      counts[PASSED.has(state) ? "passed" : FAILED.has(state) ? "failed" : "pending"] += n;
+    }
   }
   const total = counts.passed + counts.failed + counts.pending;
   const state: ChecksState = counts.failed ? "fail" : counts.pending ? "pending" : total ? "pass" : "none";
@@ -265,14 +267,41 @@ export function branchThreadId(branch: string): string | null {
 }
 
 /**
- * Parse `gh pr list --json GH_PR_FIELDS` output for one repository. Malformed
- * entries drop out one by one; output that is not a JSON array throws.
+ * `gh` output as JSON. Empty or cut-off output says so, with its size, rather than in
+ * JSON.parse's words ("Unexpected end of JSON input", W490).
  */
-export function parsePullRequests(repo: string, raw: string): QueuedPullRequest[] {
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("gh pr list returned something other than a list");
+export function ghJson(raw: string, what: string): unknown {
+  if (!raw.trim()) throw new Error(`${what} returned no output`);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`${what} returned malformed JSON (${raw.length} bytes)`);
+  }
+}
+
+/** One page of a search query: its nodes, how many results GitHub counts in all, and the next page's cursor. */
+export interface SearchPage {
+  nodes: unknown[];
+  total: number;
+  next: string | null;
+}
+
+/** One page of GH_LIST_QUERY or GH_DETAILS_QUERY (`gh api graphql` output); a response without search results throws. */
+export function parseSearchPage(raw: string, what: string): SearchPage {
+  const page = (ghJson(raw, what) as { data?: { search?: { nodes?: unknown; issueCount?: unknown; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } } } } | null)?.data?.search;
+  if (!page || !Array.isArray(page.nodes)) throw new Error(`${what} returned no search results`);
+  const info = page.pageInfo;
+  return {
+    nodes: page.nodes,
+    total: typeof page.issueCount === "number" ? page.issueCount : page.nodes.length,
+    next: info?.hasNextPage === true && typeof info.endCursor === "string" ? info.endCursor : null,
+  };
+}
+
+/** One repository's open PRs from the list query's nodes; malformed entries drop out one by one. */
+export function parsePullRequests(repo: string, nodes: readonly unknown[]): QueuedPullRequest[] {
   const pullRequests: QueuedPullRequest[] = [];
-  for (const entry of parsed) {
+  for (const entry of nodes) {
     if (typeof entry !== "object" || entry === null) continue;
     const e = entry as Record<string, unknown>;
     if (typeof e.number !== "number" || !Number.isInteger(e.number) || e.number <= 0) continue;
@@ -319,13 +348,14 @@ export function parsePullRequests(repo: string, raw: string): QueuedPullRequest[
 
 /**
  * Diff size and reviewers come from a second, lighter query: GitHub times out
- * (502) when `gh pr list` asks for additions and deletions beside the checks
- * rollup at 100 PRs a page. One `gh api graphql` per page of 50 (about 3 s
- * each), run beside the list, and never more pages than the list holds.
+ * (502) when one query asks for additions and deletions beside the checks and
+ * mergeability at 100 PRs a page. One `gh api graphql` per page of 50 (about
+ * 3 s each), run beside the list over the same search.
  */
 export const DETAILS_PAGE = 50;
 export const GH_DETAILS_QUERY = `query($q: String!, $endCursor: String) {
   search(query: $q, type: ISSUE, first: ${DETAILS_PAGE}, after: $endCursor) {
+    issueCount
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number additions deletions changedFiles commits { totalCount }
@@ -335,8 +365,8 @@ export const GH_DETAILS_QUERY = `query($q: String!, $endCursor: String) {
   }
 }`;
 
-/** The search the details query runs: the same PRs `gh pr list --author` lists. */
-export const detailsSearch = (repo: string, login: string) => `repo:${repo} is:pr is:open author:${login}`;
+/** The search both queries run: the user's open PRs in the repository. */
+export const prSearch = (repo: string, login: string) => `repo:${repo} is:pr is:open author:${login}`;
 
 const REVIEW_STATES: Record<string, Reviewer["state"]> = {
   APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", COMMENTED: "commented", DISMISSED: "dismissed",
@@ -344,21 +374,15 @@ const REVIEW_STATES: Record<string, Reviewer["state"]> = {
 
 export type PrDetails = Map<number, { size: PrSize; reviewers: Reviewer[] }>;
 
-/**
- * One page of the details query (`gh api graphql` output): each PR's size and
- * reviewers by number, and the cursor of the next page. A malformed PR drops
- * out alone; a response without search results throws.
- */
-export function parseDetailsPage(raw: string): { details: PrDetails; next: string | null } {
-  const page = (JSON.parse(raw) as { data?: { search?: { nodes?: unknown; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } } } } | null)?.data?.search;
-  if (!page || !Array.isArray(page.nodes)) throw new Error("the details query returned no search results");
+/** Each PR's size and reviewers by number, from the details query's nodes; a malformed PR drops out alone. */
+export function parseDetails(nodes: readonly unknown[]): PrDetails {
   const details: PrDetails = new Map();
   const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0);
   const list = (value: unknown): unknown[] => {
     const nodes = (value as { nodes?: unknown } | null | undefined)?.nodes;
     return Array.isArray(nodes) ? nodes : [];
   };
-  for (const node of page.nodes) {
+  for (const node of nodes) {
     const e = node as Record<string, any> | null;
     if (!e || typeof e !== "object" || typeof e.number !== "number") continue;
     const reviewers: Reviewer[] = [];
@@ -376,8 +400,7 @@ export function parseDetailsPage(raw: string): { details: PrDetails; next: strin
       reviewers,
     });
   }
-  const info = page.pageInfo;
-  return { details, next: info?.hasNextPage === true && typeof info.endCursor === "string" ? info.endCursor : null };
+  return details;
 }
 
 /** Each PR with its size and, unless withheld as stale, its reviewers, when the details query had it. */
