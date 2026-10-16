@@ -10,6 +10,7 @@ import {
   persistedQueries,
   seedInitiativeCache,
   thread,
+  threadsGet,
   threadsList,
   type ThreadLink,
 } from "./fixtures";
@@ -285,7 +286,7 @@ async function serverHost(opts: {
   const links = opts.links ?? [];
   const h = createFakePluginHost({
     sdk: {
-      threads: { list: opts.list ?? threadsList(links) },
+      threads: { list: opts.list ?? threadsList(links), get: threadsGet(links) },
       plugins: {
         list: async () => ({
           plugins: [{ id: "initiatives", enabled: true, status: "running" }],
@@ -421,10 +422,10 @@ it("keeps a reviewer restored mid-walk, and its subtree, in the cache of a clien
   const list = threadsList(links);
   const h = await serverHost({
     tree: () => treeOf("worker"),
-    // The reviewer is restored right after the first read of its parent.
+    // The reviewer is restored right after the archived threads are read.
     list: async (q) => {
       const page = await list(q);
-      if (q?.parentThreadId === "worker") links[0]!.archived = false;
+      if (q?.archived === true) links[0]!.archived = false;
       return page;
     },
   });

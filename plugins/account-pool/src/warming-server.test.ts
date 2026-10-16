@@ -1249,6 +1249,29 @@ describe("W211 corrections through the hub", () => {
     );
   });
 
+  it("2: the wait-state read lists active threads only, across the project for a thread without an environment", async () => {
+    const f = await fixture();
+    f.host.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({
+      id: threadId,
+      projectId: "project-one",
+      environmentId: null,
+    }));
+    await setMode(f.host, "warm");
+    expect(await nativeRequest(f.host)).toBe(200);
+    await leased(f.host);
+    const queries: Record<string, unknown>[] = [];
+    f.host.harness.sdk.stub("threads.list", async (query: Record<string, unknown>) => {
+      queries.push(query);
+      return [];
+    });
+    await f.clock.advanceTo(120 * MINUTE);
+    await vi.waitFor(() => expect(queries.length).toBeGreaterThan(0));
+    for (const query of queries) {
+      expect(query).toMatchObject({ projectId: "project-one", archived: false, includeHidden: true });
+      expect(query).not.toHaveProperty("environmentId");
+    }
+  });
+
   it.each([
     ["one identity read fails", (threadId: string) => {
       if (threadId === "thr_other") throw new Error("BB read failed");

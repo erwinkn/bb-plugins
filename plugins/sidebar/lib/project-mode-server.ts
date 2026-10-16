@@ -6,8 +6,8 @@ import {
   INITIATIVES_CHANGED,
   INITIATIVE_THREADS_CHANGED,
 } from "./project-mode-names";
-import { initiativeThreadIds, withDescendants } from "./initiative-threads";
-import { withReadTimeout } from "./read-timeout";
+import { createThreadForest, initiativeThreadIds } from "./initiative-threads";
+import { READ_TIMEOUT_MS, withReadTimeout } from "./read-timeout";
 import { createWorkerFacts } from "./adventure-workers-server";
 import { treeSchema } from "./project-tree-schema";
 import {
@@ -44,20 +44,17 @@ const readTree = async (bb: BbPluginApi) => {
   }
 };
 
-// Reading the descendants is many small host calls, so it gets longer than
-// the tree read.
-const DESCENDANTS_TIMEOUT_MS = 60_000;
-
 type ThreadIdsSnapshot = { available: boolean; threadIds: string[] };
 const snapshotKey = (s: ThreadIdsSnapshot) =>
   JSON.stringify([s.available, [...s.threadIds].sort()]);
 
-// Walking the forest is hundreds of host calls, so walks start at least this
-// far apart however often the snapshot is read.
+// A walk reads the tree and the thread list, so walks start at least this far
+// apart however often the snapshot is read.
 export const MIN_WALK_INTERVAL_MS = 30_000;
 
 export function registerProjectMode(bb: BbPluginApi) {
   const order = createProjectOrderStore(bb);
+  const forest = createThreadForest(bb);
   // The hidden thread ids (Initiative threads and all their descendants) as of
   // the last finished walk, shared by every client. `initiativeThreads`
   // answers from it, so no caller waits on Initiatives. A walk that fails or
@@ -76,20 +73,16 @@ export function registerProjectMode(bb: BbPluginApi) {
   ): Promise<ThreadIdsSnapshot> => {
     const tree = await withReadTimeout(readTree(bb));
     if (!tree) return { available: false, threadIds: [] };
-    const walk = withDescendants(
-      bb,
-      initiativeThreadIds(tree),
-      controller.signal,
-    );
+    const walk = forest.withDescendants(initiativeThreadIds(tree), controller.signal);
     try {
       const threadIds = await withReadTimeout(
         walk,
-        DESCENDANTS_TIMEOUT_MS,
+        READ_TIMEOUT_MS,
         "Reading the Initiative thread descendants took too long.",
       );
       return { available: true, threadIds };
     } finally {
-      // A timed-out walk stops its readers before the next one may start.
+      // A timed-out walk stops its read before the next one may start.
       controller.abort();
       await walk.catch(() => {});
     }
@@ -324,4 +317,11 @@ export function registerProjectMode(bb: BbPluginApi) {
       return { ok: true as const };
     },
   });
+  return {
+    /** A move made through the Sidebar, which BB announces to no plugin. */
+    threadMoved: (threadId: string, parentThreadId: string | null) => {
+      forest.moved(threadId, parentThreadId);
+      refreshSnapshot(true);
+    },
+  };
 }

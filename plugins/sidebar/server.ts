@@ -11,7 +11,7 @@ import { registerBranchPullRequests } from "./lib/branch-pull-request-server";
 import { nestingContract } from "./lib/nesting-contract";
 
 export default function plugin(bb: BbPluginApi) {
-  registerProjectMode(bb);
+  const projectMode = registerProjectMode(bb);
   const snoozes = registerSnoozes(bb);
   registerSidebarCli(bb, { snoozes });
   registerProjects(bb);
@@ -25,6 +25,7 @@ export default function plugin(bb: BbPluginApi) {
           await bb.sdk.threads.unpin({ threadId });
       }
       await bb.sdk.threads.update({ threadId, parentThreadId });
+      projectMode.threadMoved(threadId, parentThreadId);
       return { ok: true as const };
     },
   });

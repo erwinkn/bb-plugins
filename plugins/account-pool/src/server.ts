@@ -288,7 +288,8 @@ export function createAccountPoolPlugin(
         .finally(() => clearTimeout(timer));
     };
     // What a thread waits on comes from BB's thread list, the one read that carries background
-    // activity and pending questions; the list is narrowed to the thread's environment.
+    // activity and pending questions; the list is narrowed to the thread's environment (its
+    // project without one) and to active threads: an archived thread waits on nothing.
     const threadScopes = new Map<string, { environmentId: string | null; projectId: string }>();
     const waitState = async (threadId: string, signal: AbortSignal) => {
       let scope = threadScopes.get(threadId);
@@ -305,6 +306,7 @@ export function createAccountPoolPlugin(
         ...(scope.environmentId === null
           ? { projectId: scope.projectId }
           : { environmentId: scope.environmentId }),
+        archived: false,
         includeHidden: true,
         signal,
       });

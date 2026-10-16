@@ -252,9 +252,24 @@ threads, and its member threads), and in its panel.
 The ids come from the `initiativeThreads` RPC. The server keeps one snapshot
 for all clients and answers at once from it, announcing a change on its own
 realtime channel. A walk reads the Initiatives tree, then the host's parent
-links (active and archived in one read per parent, 8 reads at a time, 60 s
-deadline) to collect every descendant, so the client needs no ancestry walk of
-its own for threads the server has seen. At most one walk runs, walks start at
+links by the page (`threads.list`, hidden threads included, 200 rows a page,
+30 s deadline), and collects every descendant in memory, so the client needs
+no ancestry walk of its own for threads the server has seen. Each walk reads
+the active threads (about two pages); the archived ones, thousands that seldom
+change, are read on the first walk and then every 6 hours; in between, BB's
+`thread.archived` and `thread.unarchived` events and the Sidebar's own **Make
+child of…** record each thread's link as it changes, winning over a read sent
+before. A link is kept once seen. Each walk also reads on its own every
+archived ancestor of an active thread (archiving cascades, so live there are
+none), and any parent no read listed (a restore while the archived pages are
+read can shift a row past a page boundary). A deleted thread (a 404, or BB's
+`thread.deleted`) is cut from its parent, so its surviving children show
+again; any other failure fails the walk, keeping the last snapshot. Only an archived thread moved outside the Sidebar (BB's
+CLI) keeps its old link, for its own row in Archived, until the next archived
+read. Before, a walk read each thread's children with one call per
+thread: about 3,500 calls and 6.5 s of server time on the live install; now
+it is 2 calls and about 70 ms, or 26 calls and about 1 s with the archived
+read. At most one walk runs, walks start at
 least 30 s apart however often the snapshot is read, and Initiatives ledger
 changes in between are coalesced into the next allowed walk. A walk that times
 out or fails cancels its reads before the next may start. `status` is `loading` until the first read

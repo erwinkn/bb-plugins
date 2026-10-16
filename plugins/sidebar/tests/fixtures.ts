@@ -99,8 +99,8 @@ export function seedInitiativeCache(ids: string[] = []) {
   seedQueryCache([[["initiative-threads"], ids]]);
 }
 
-export type ThreadLink = { id: string; parent: string; archived?: boolean };
-/** A host thread store: `threads.list` filters the links by parent and, when given, archive flag. */
+export type ThreadLink = { id: string; parent: string | null; archived?: boolean };
+/** A host thread store: `threads.list` filters the links by parent and archive flag, when given. */
 export const threadsList =
   (links: ThreadLink[]) =>
   async (
@@ -109,7 +109,16 @@ export const threadsList =
     links
       .filter(
         (link) =>
-          link.parent === q.parentThreadId && (q.archived === undefined || !!link.archived === q.archived),
+          (q.parentThreadId === undefined || link.parent === q.parentThreadId) &&
+          (q.archived === undefined || !!link.archived === q.archived),
       )
       .slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 200))
-      .map((link) => ({ id: link.id }));
+      .map((link) => ({ id: link.id, parentThreadId: link.parent }));
+/** The same store's `threads.get`: a thread it does not hold is a 404, as BB's is. */
+export const threadsGet =
+  (links: ThreadLink[]) =>
+  async ({ threadId }: { threadId: string }) => {
+    const link = links.find((l) => l.id === threadId);
+    if (!link) throw Object.assign(new Error(`Thread ${threadId} not found`), { status: 404 });
+    return { id: link.id, parentThreadId: link.parent };
+  };
