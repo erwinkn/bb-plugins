@@ -267,6 +267,9 @@ export const archivesQuery = (api: PluginRpcClient<typeof archiveContract>) =>
     },
   });
 
+/** The most thread ids the contract takes in one call. */
+const ELIGIBILITY_BATCH = 1000;
+
 /**
  * Whether each listed thread's environment branch PR is its own, in one bulk
  * call per id set. Each new set is read, even one seen before (a thread's
@@ -283,13 +286,23 @@ export const branchPullRequestsQuery = (
     // another set: a late answer for a set nobody shows is never cached, so it
     // cannot pass for newer than the answer that followed it.
     queryFn: async ({ signal }) => {
-      const { eligible } = await deadline(
-        api.call("branchPullRequestEligibility", {
-          threadIds: idsKey === "" ? [] : idsKey.split("\0"),
-        }),
+      // No ids, no call. The contract caps one call at ELIGIBILITY_BATCH ids
+      // (an open archive list holds thousands), so a larger set reads in
+      // several calls whose answers merge.
+      const ids = idsKey === "" ? [] : idsKey.split("\0");
+      const batches: string[][] = [];
+      for (let start = 0; start < ids.length; start += ELIGIBILITY_BATCH)
+        batches.push(ids.slice(start, start + ELIGIBILITY_BATCH));
+      const answers = await Promise.all(
+        batches.map((threadIds) =>
+          deadline(api.call("branchPullRequestEligibility", { threadIds })),
+        ),
       );
       signal.throwIfAborted();
-      return eligible;
+      return Object.assign({}, ...answers.map((answer) => answer.eligible)) as Record<
+        string,
+        boolean
+      >;
     },
     staleTime: 0,
     refetchOnWindowFocus: false,

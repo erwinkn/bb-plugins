@@ -327,13 +327,15 @@ function ThreadsList(props: PluginThreadListProps) {
         : [],
     [state.showArchives, archives.threads, initiativeHidden],
   );
-  // Branch-PR eligibility for every listed thread in one bulk call; archived
-  // rows get the same chip when the archive list is open.
+  // Branch-PR eligibility for every active thread in one bulk call. Archived
+  // rows are not asked about (an archive holds thousands of threads, each one
+  // a server lookup) and show no branch PR.
   const branchPrEligible = useBranchPullRequestEligibility(
-    useMemo(
-      () => [...archives.threads, ...threads].map((thread) => thread.id),
-      [threads, archives.threads],
-    ),
+    useMemo(() => threads.map((thread) => thread.id), [threads]),
+  );
+  const archivedIds = useMemo(
+    () => new Set(archives.threads.map((thread) => thread.id)),
+    [archives.threads],
   );
   const { providers } = experimental_useProviders();
   const actions = experimental_useSidebarThreadActions();
@@ -695,7 +697,9 @@ function ThreadsList(props: PluginThreadListProps) {
           onSetParent: (parentThreadId) =>
             reparent(thread.id, parentThreadId),
         }}
-        branchPullRequestEligible={branchPrEligible.get(thread.id)}
+        branchPullRequestEligible={
+          archivedIds.has(thread.id) ? false : branchPrEligible.get(thread.id)
+        }
         snooze={{
           until: sleeping.get(thread.id)?.until ?? null,
           woke: wokeIds.has(thread.id),

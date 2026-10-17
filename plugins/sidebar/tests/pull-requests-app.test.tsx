@@ -46,14 +46,15 @@ const props = {
   Original: () => <p>BB fallback</p>,
 };
 const mounted: ReturnType<typeof renderSlot>[] = [];
-const mount = (openUrl = vi.fn(() => true)) => {
+const mount = (openUrl = vi.fn(() => true), extraRpc: object = {}) => {
   const slot = renderSlot(app.threadLists[0], props, {
     sidebarThreads: { threads, projects },
     sidebarPullRequests: {
       worktree: pullRequest(7),
       shared: pullRequest(1438),
+      archived: pullRequest(99),
     },
-    rpc,
+    rpc: { ...rpc, ...extraRpc },
     openUrl,
   });
   mounted.push(slot);
@@ -99,6 +100,39 @@ describe("branch pull request chip", () => {
       within(row(slot, "worktree")).getByRole("link", { name: /#7/ }),
     ).toBeTruthy();
     expect(within(row(slot, "plain")).queryByRole("link", { name: /pull request/ })).toBeNull();
+  });
+
+  it("never asks about archived threads and shows them no branch PR", async () => {
+    const slot = mount(vi.fn(() => true), {
+      listArchived: async () => [
+        {
+          id: "archived",
+          projectId: "project-1",
+          title: "Archived thread",
+          titleFallback: null,
+          parentThreadId: null,
+          providerId: "codex",
+          createdAt: 1,
+          updatedAt: 1,
+          environmentId: null,
+          environmentName: null,
+          environmentBranchName: null,
+          environmentProviderId: null,
+          environmentWorkspaceDisplayKind: "other",
+        },
+      ],
+    });
+    act(() => updateState((current) => ({ ...current, showArchives: true })));
+    fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+    const archived = row(slot, "archived");
+    expect(archived.getAttribute("data-thread-status")).toBe("archived");
+    await waitFor(() =>
+      expect(branchPullRequestEligibility).toHaveBeenCalled(),
+    );
+    await tick();
+    for (const [input] of branchPullRequestEligibility.mock.calls)
+      expect((input as { threadIds: string[] }).threadIds).not.toContain("archived");
+    expect(within(archived).queryByRole("link", { name: /#99/ })).toBeNull();
   });
 
   it("opens the PR in BB's browser without selecting the row", async () => {

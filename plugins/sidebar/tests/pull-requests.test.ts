@@ -67,4 +67,32 @@ describe("branch pull request eligibility RPC", () => {
       await h.harness.lifecycle.dispose();
     }
   });
+
+  // The cause of the "rpc input validation failed" log lines: the sidebar sent
+  // every listed thread (the open archive list alone holds thousands) in one
+  // call, past the contract's cap.
+  it("rejects more than 1,000 ids and accepts exactly 1,000", async () => {
+    const h = createFakePluginHost({
+      pluginId: "sidebar",
+      sdk: {
+        threads: { get: async ({ threadId }: { threadId: string }) => ({ id: threadId, environmentId: null }) },
+        environments: { get: async () => ({}) },
+      },
+    });
+    plugin(h.bb);
+    const ids = (count: number) => Array.from({ length: count }, (_, i) => `thr-${i}`);
+    try {
+      await expect(
+        h.harness.behavior.callRpc("branchPullRequestEligibility", { threadIds: ids(1001) }),
+      ).rejects.toThrow(/input validation failed/);
+      await expect(
+        h.harness.behavior.callRpc("branchPullRequestEligibility", { threadIds: ids(1000) }),
+      ).resolves.toEqual({ eligible: {} });
+      await expect(
+        h.harness.behavior.callRpc("branchPullRequestEligibility", { threadIds: [""] }),
+      ).rejects.toThrow(/input validation failed/);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
 });

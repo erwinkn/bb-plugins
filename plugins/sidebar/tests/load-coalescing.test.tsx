@@ -188,6 +188,34 @@ describe("branch pull request eligibility reconcile", () => {
   });
 });
 
+describe("branch pull request eligibility input", () => {
+  it("never calls with no ids", async () => {
+    const branchPullRequestEligibility = vi.fn(async () => ({ eligible: {} }));
+    mount(EligibilityProbe, { ids: [] }, { branchPullRequestEligibility });
+    await settle();
+    await tick();
+    expect(branchPullRequestEligibility).not.toHaveBeenCalled();
+  });
+
+  it("splits more than 1,000 ids into calls the contract accepts", async () => {
+    const ids = Array.from({ length: 2500 }, (_, i) => `t${String(i).padStart(4, "0")}`);
+    const branchPullRequestEligibility = vi.fn(async (input: unknown) => ({
+      eligible: Object.fromEntries(
+        (input as { threadIds: string[] }).threadIds
+          .filter((id) => id === "t2400")
+          .map((id) => [id, true]),
+      ),
+    }));
+    const slot = mount(EligibilityProbe, { ids }, { branchPullRequestEligibility });
+    await waitFor(() => expect(slot.container.textContent).toBe("t2400"));
+    const calls = branchPullRequestEligibility.mock.calls.map(
+      ([input]) => (input as unknown as { threadIds: string[] }).threadIds,
+    );
+    expect(calls.map((chunk) => chunk.length)).toEqual([1000, 1000, 500]);
+    expect(calls.flat().sort()).toEqual(ids);
+  });
+});
+
 describe("branch pull request eligibility revalidation", () => {
   it("reads a set seen before again, showing its last answer meanwhile", async () => {
     let aEligible = false;
