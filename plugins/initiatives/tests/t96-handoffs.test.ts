@@ -178,10 +178,11 @@ describe("T96 standard handoff from the canonical report", () => {
     expect(f.store.assignment(project.id, 2)!.handoffSources).toBeNull();
   });
 
-  it("retirement keeps its native guards: a busy worker is refused and nothing is archived", async () => {
+  it("retirement keeps its native guards: a busy worker is archived only once quiet (W492)", async () => {
     const { f, project, w1Thread } = await finished();
     f.threads.set(w1Thread, { ...f.threads.get(w1Thread)!, status: "active" });
-    expect(await refused(tool(f, "initiative_worker", { action: "worker-retire", worker: "W1", reason: "Done." }))).not.toBe("");
+    expect(JSON.parse(await tool(f, "initiative_worker", { action: "worker-retire", worker: "W1", reason: "Done." }) as string)).toMatchObject(
+      { ref: "W1", state: "retiring", note: "W1 retires by itself once that ends (its thread is still running). More work for it before then cancels this." });
     expect(f.store.worker(project.id, 1)!.state).toBe("active");
     expect(f.archive).not.toHaveBeenCalled();
   });

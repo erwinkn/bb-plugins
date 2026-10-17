@@ -108,7 +108,7 @@ describe("T143 tool surface", () => {
     expect((tools.find((t) => t.name === "initiative_message")!.inputSchema as { properties: object }).properties).not.toHaveProperty("target");
     await expect(f.harness.callAgentTool("initiative_spawn", { label: "x".repeat(201), purpose: "p", text: "t" }, { threadId: "coordinator" })).rejects.toThrow(/label/);
     // An older session's target is still read: it resolves (to the caller itself, here).
-    await expect(f.harness.callAgentTool("initiative_message", { target: "coordinator", text: "hi" }, { threadId: "coordinator" })).rejects.toThrow(/yourself/);
+    await expect(f.harness.callAgentTool("initiative_message", { target: "coordinator", text: "hi" }, { threadId: "coordinator" })).rejects.toThrow(/This tab is the coordinator: name another recipient/);
   });
 });
 

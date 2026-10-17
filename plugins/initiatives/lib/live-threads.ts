@@ -1,7 +1,7 @@
-import type { LiveThread } from "./overview";
+import type { LiveFacts, LiveThread, UnreadStatus } from "./overview";
 
 /** The lifecycle fields of a native thread DTO the dashboard shows. */
-interface NativeThread {
+export interface NativeThread {
   id: string;
   status: string;
   archivedAt: number | null;
@@ -16,8 +16,10 @@ interface NativeThread {
 export const LIVE_TTL_MS = 30_000;
 /** Facts no read asked for in this long are dropped. */
 const LIVE_IDLE_MS = 2 * 60 * 60_000;
+/** W496: how long a dashboard read waits for threads it has no fact for before answering them as loading. */
+export const FIRST_READ_WAIT_MS = 200;
 
-const liveOf = (thread: NativeThread): LiveThread => ({
+export const liveOf = (thread: NativeThread): LiveThread => ({
   status: thread.deletedAt !== null ? "deleted" : thread.status,
   archived: thread.archivedAt !== null,
   title: thread.title,
@@ -37,16 +39,23 @@ const GONE: LiveThread = { status: "deleted", archived: true, title: null };
 export class LiveThreads {
   private facts = new Map<string, { live: LiveThread; at: number; asked: number; version: number }>();
   private reads = new Map<string, Promise<void>>();
+  /** W496: direct (`fresh`) reads in flight, so an event during one still lands. */
+  private direct = new Map<string, number>();
+  /** W496: threads whose read failed with no fact to keep; asked again at most every LIVE_TTL_MS. */
+  private failures = new Map<string, number>();
 
   constructor(
     private readonly read: (threadId: string) => Promise<NativeThread>,
     private readonly now: () => number = () => Date.now(),
+    /** W496: a thread with no fact could not be read; called once until a read of it succeeds. */
+    private readonly failed: (threadId: string, error: unknown) => void = () => {},
   ) {}
 
   /** A lifecycle event carries the current DTO: refresh a thread already shown. */
   observe(thread: NativeThread) {
     const fact = this.facts.get(thread.id);
-    if (!fact && !this.reads.has(thread.id)) return;
+    if (!fact && !this.reads.has(thread.id) && !this.direct.has(thread.id)) return;
+    this.failures.delete(thread.id);
     this.facts.set(thread.id, {
       live: liveOf(thread),
       at: this.now(),
@@ -55,20 +64,33 @@ export class LiveThreads {
     });
   }
 
+  /** The latest fact for a thread, events included; undefined if none. */
+  current(threadId: string): LiveThread | undefined {
+    return this.facts.get(threadId)?.live;
+  }
+
   /**
    * Facts for `threadIds`. Unknown threads are read before answering; stale
    * ones are answered as they are and re-read in the background, calling
    * `revalidated` if that changed any of them. `fresh` starts its own read of
    * every thread and answers from those, never from a read already in
    * flight. A 404 reads as deleted.
+   *
+   * W496: with `wait`, unknown threads are waited for at most that long. One
+   * still being read is answered in `unread` as "loading", one whose read
+   * failed as "unreadable" (asked again after LIVE_TTL_MS, still shown
+   * unreadable meanwhile); `revalidated` runs once those reads settle if any
+   * of them changed what was answered.
    */
   async get(
     threadIds: string[],
-    { fresh = false, revalidated }: { fresh?: boolean; revalidated?: () => void } = {},
-  ): Promise<Map<string, LiveThread>> {
+    { fresh = false, revalidated, wait }: { fresh?: boolean; revalidated?: () => void; wait?: number } = {},
+  ): Promise<LiveFacts> {
     const now = this.now();
     for (const [id, fact] of this.facts)
       if (now - fact.asked > LIVE_IDLE_MS) this.facts.delete(id);
+    for (const [id, at] of this.failures)
+      if (now - at > LIVE_IDLE_MS) this.failures.delete(id);
     if (fresh) {
       const ids = [...new Set(threadIds)];
       const read = await Promise.all(ids.map((id) => this.readNow(id)));
@@ -83,8 +105,23 @@ export class LiveThreads {
       else if (now - fact.at >= LIVE_TTL_MS) stale.push(id);
     }
     if (stale.length) void this.revalidate(stale, revalidated);
-    await Promise.all(missing.map((id) => this.load(id)));
-    const live = new Map<string, LiveThread>();
+    const live: LiveFacts = new Map<string, LiveThread>();
+    if (wait === undefined) await Promise.all(missing.map((id) => this.load(id)));
+    else {
+      const reading = new Set(missing.filter((id) => now - (this.failures.get(id) ?? -Infinity) >= LIVE_TTL_MS));
+      const loads = Promise.allSettled([...reading].map((id) => this.load(id)));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([loads, new Promise<void>((resolve) => { timer = setTimeout(resolve, wait); })]);
+      clearTimeout(timer);
+      const unread = new Map<string, UnreadStatus>();
+      for (const id of missing)
+        if (!this.facts.has(id)) unread.set(id, this.failures.has(id) || !this.reads.has(id) ? "unreadable" : "loading");
+      if (unread.size) live.unread = unread;
+      if ([...unread.keys()].some((id) => reading.has(id)))
+        void loads.then(() => {
+          if ([...unread].some(([id, shown]) => reading.has(id) && (this.facts.has(id) || shown === "loading"))) revalidated?.();
+        });
+    }
     for (const id of threadIds) {
       const fact = this.facts.get(id);
       if (fact) live.set(id, fact.live);
@@ -96,12 +133,18 @@ export class LiveThreads {
   private async readNow(threadId: string): Promise<LiveThread> {
     const version = this.facts.get(threadId)?.version;
     let live: LiveThread;
+    this.direct.set(threadId, (this.direct.get(threadId) ?? 0) + 1);
     try {
       live = liveOf(await this.read(threadId));
     } catch (error) {
       if ((error as { status?: number }).status !== 404) throw error;
       live = GONE;
+    } finally {
+      const left = this.direct.get(threadId)! - 1;
+      if (left) this.direct.set(threadId, left);
+      else this.direct.delete(threadId);
     }
+    this.failures.delete(threadId);
     const fact = this.facts.get(threadId);
     // A newer event keeps its fact; an older pending read is superseded by the version bump.
     if (fact?.version === version)
@@ -122,6 +165,7 @@ export class LiveThreads {
     if (pending) return pending;
     const version = this.facts.get(threadId)?.version ?? 0;
     const settle = (live: LiveThread) => {
+      this.failures.delete(threadId);
       // An event that landed during the read is newer than this response.
       if ((this.facts.get(threadId)?.version ?? 0) !== version) return;
       this.facts.set(threadId, { live, at: this.now(), asked: this.now(), version });
@@ -130,7 +174,13 @@ export class LiveThreads {
       .then(
         (thread) => settle(liveOf(thread)),
         (error) => {
-          if ((error as { status?: number }).status !== 404) throw error;
+          if ((error as { status?: number }).status !== 404) {
+            if (!this.facts.has(threadId)) {
+              if (!this.failures.has(threadId)) this.failed(threadId, error);
+              this.failures.set(threadId, this.now());
+            }
+            throw error;
+          }
           settle(GONE);
         },
       )

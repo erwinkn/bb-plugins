@@ -67,6 +67,10 @@ export class Runtime {
     // only when no queued or background native work can still execute.
     if (membership.workerNum > 0) {
       await this.service.settleCancelledExecutions(thread);
+      // W492: a retirement asked for while this turn ran.
+      await this.service.finishRetirements(thread.id).catch((error) =>
+        this.log.warn(`Waiting retirement failed: ${errorMessage(error)}`),
+      );
       // v9: only initiative_report finishes work; a turn end records nothing, so a worker can
       // end its turn to wait for its reviewer.
     }
@@ -100,6 +104,10 @@ export class Runtime {
     // brief just like idle — subject to the same queued/background check.
     if (membership.workerNum > 0) {
       await this.service.settleCancelledExecutions(thread);
+      // W492: a retirement asked for while this turn ran.
+      await this.service.finishRetirements(thread.id).catch((error) =>
+        this.log.warn(`Waiting retirement failed: ${errorMessage(error)}`),
+      );
       // v9: only initiative_report finishes work; a turn end records nothing, so a worker can
       // end its turn to wait for its reviewer.
     }
@@ -294,7 +302,8 @@ export class Runtime {
   /**
    * Reconcile unconfirmed operations against native receipts and drain any
    * recorded handover whose predecessor went quiet without an idle event
-   * reaching this runtime. Nothing here delivers, retries or retires work.
+   * reaching this runtime. Nothing here delivers or retries work, and it
+   * retires only the workers a lead already asked to retire (W492).
    * After `service` aborts no new unit of work starts; a native call already
    * issued still settles with its receipt, and the ledger keeps every
    * unconfirmed op for the next sweep.
@@ -334,8 +343,19 @@ export class Runtime {
             );
         });
     }
+    await this.service.reviveUnarchivedNested(signal).catch((error) => {
+      if (!signal?.aborted) this.log.warn(`Could not look for unarchived nested threads: ${errorMessage(error)}`);
+    });
+    await this.service.verifyEndedNested(signal).catch((error) => {
+      if (!signal?.aborted) this.log.warn(`Could not read an archived nested thread again: ${errorMessage(error)}`);
+    });
     await this.service.checkWorkers().catch((error) =>
       this.log.warn(`Worker check failed: ${errorMessage(error)}`),
+    );
+    // W492: retirements a lead asked for while the worker's thread was busy, whose children
+    // went quiet without an idle event of the worker's own.
+    await this.service.finishRetirements().catch((error) =>
+      this.log.warn(`Waiting retirements failed: ${errorMessage(error)}`),
     );
     await this.service.pumpHandoverWriters().catch((error) =>
       this.log.warn(`Handover writer start failed: ${errorMessage(error)}`),

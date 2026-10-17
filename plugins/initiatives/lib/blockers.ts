@@ -53,6 +53,8 @@ export const blockerKey = (assignment: number, blocker: { question: string; cont
  * like an answer, so an identical re-file stays dismissed and a changed
  * question or context shows again. Everything that lists or counts blockers
  * for the user (Inbox, dashboard pill, tree, catalog) goes through here.
+ * W492: a blocked report without a question waits on its lead, not the user,
+ * so it is no blocker of theirs (the worker shows Waiting, on the coordinator).
  */
 export const undismissed = <T extends { num: number }>(
   open: T[],
@@ -60,7 +62,7 @@ export const undismissed = <T extends { num: number }>(
   dismissed: ReadonlySet<string>,
 ) => open.filter((a) => {
   const blocker = blockerOf(a);
-  return !blocker || !dismissed.has(blockerKey(a.num, blocker));
+  return !!blocker && !dismissed.has(blockerKey(a.num, blocker));
 });
 
 /** T128: a dismissal record as the dashboard shows it. */

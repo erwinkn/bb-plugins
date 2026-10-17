@@ -28,6 +28,7 @@ import {
   messageCommand,
   messageToolAdvertised,
   messageToolSchema,
+  normalizeReport,
   reportToolSchema,
   questionToolSchema,
   ruleCommand,
@@ -40,6 +41,7 @@ import {
   taskToolSchema,
   updateToolSchema,
   workerCommand,
+  workerMessageToolSchema,
   workerToolSchema,
 } from "./lib/agent-tools";
 import { legacyReportSchema, LEGACY_TOOL_NAMES } from "./lib/legacy";
@@ -58,11 +60,12 @@ import {
   type LiveThread,
   type OverviewDetail,
 } from "./lib/overview";
-import { Background, LiveThreads, Recent } from "./lib/live-threads";
+import { Background, FIRST_READ_WAIT_MS, LiveThreads, Recent, liveOf } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
-import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
+import { canonicalPrUrl, prToolSchema, workerPrToolSchema } from "./lib/pr-stages";
 import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
 import { AssignedPrs, COORDINATOR, initiativeNamed, recordPrs, type PrCaller } from "./lib/pr-records";
+import { prsReferenced } from "./lib/task-status";
 import { PrOwners, ledgerThreads } from "./lib/pr-owners";
 import { readPrDetail } from "./lib/pr-detail";
 import { branchThreadId } from "./lib/merge-queue";
@@ -80,7 +83,7 @@ const BATCH_TOOLS = ["spawn", "message", "task", "worker", "question", "rule", "
 const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | rules (import <id> <file> | export <id> [file]) | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
-import { ProjectError, errorMessage } from "./lib/bb";
+import { BUSY_STATUSES, ProjectError, errorMessage } from "./lib/bb";
 import { codeReviewSkillMissing } from "./lib/service";
 import { assembleInstructions, clip80, leadRulesPointer, workerRulesPointer } from "./lib/instructions";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -90,7 +93,7 @@ import { scopedNativeEvent } from "./lib/native-events";
 import { workerGroup } from "./lib/worker-group";
 import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
 import {
-  readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection, withImpliedDetail,
+  readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, agentReadAdvertised, validateSelection, withImpliedDetail,
   readOptionsSchema, isPrRef, readMixedRefs,
   READ_VIEWS,
   MAX_READ_BYTES,
@@ -154,6 +157,7 @@ export default function plugin(bb: BbPluginApi) {
     writes = next.catch(() => undefined);
     return next;
   };
+  service.serialize = serialized;
   // W244, W248: a dashboard write sent again after its answer was lost runs once.
   const receipts = new WriteReceipts(db, ledgerVersion);
   const perform = (
@@ -174,7 +178,16 @@ export default function plugin(bb: BbPluginApi) {
   // Dashboard reads share native facts: lifecycle events keep them current,
   // and a stale fact is answered at once, then re-read in the background; a
   // change found that way announces the Initiative. Agent and CLI reads stay fresh.
-  const liveThreads = new LiveThreads((threadId) => bb.sdk.threads.get({ threadId }));
+  const liveThreads = new LiveThreads(
+    (threadId) => bb.sdk.threads.get({ threadId }),
+    undefined,
+    (threadId, error) => bb.log.warn(`Could not read thread ${threadId} for the dashboard: ${errorMessage(error)}`),
+  );
+  service.revivedNested = (thread) => liveThreads.observe(thread);
+  /** W496: a nested thread seen archived or deleted keeps that fact and is no longer read for the dashboard. */
+  const endNested = (threadId: string, fact: LiveThread) => {
+    if (fact.archived || fact.status === "deleted") store.endNestedThread(threadId, fact);
+  };
   const nativeContext = new Recent<unknown>(10_000);
   const childPages = new Background<{ rows: Omit<ChildPage["rows"][number], "children">[]; next: ChildPage["next"] }>(10_000);
   /** W473: each cached page's listing, as RunningChildren.begin() numbers it, so a newer complete listing wins over it. */
@@ -256,10 +269,21 @@ export default function plugin(bb: BbPluginApi) {
     service.requireProject(projectId);
     const recent = <T,>(key: string, load: () => Promise<T>) =>
       fresh ? load() : (nativeContext.get(key, load) as Promise<T>);
+    // W496: a dashboard read waits at most FIRST_READ_WAIT_MS for threads it has never read; their
+    // rows show loading (or unreadable) until the reads land and announce the Initiative.
     const live = await liveThreads.get(threadsToWatch(store, projectId), {
       fresh,
       revalidated: () => changed(projectId),
+      ...(fresh ? {} : { wait: FIRST_READ_WAIT_MS }),
     });
+    for (const t of store.nestedProjectThreads(projectId)) {
+      if (t.ended) {
+        if (!live.has(t.threadId)) live.set(t.threadId, t.ended);
+      } else {
+        const fact = liveThreads.current(t.threadId);
+        if (fact) endNested(t.threadId, fact);
+      }
+    }
     const profileDefaults = (await preferences.read()).profiles;
     const result = buildOverview(
       store,
@@ -807,6 +831,16 @@ export default function plugin(bb: BbPluginApi) {
     )
       await service.confirmCreated(a.projectId, a.num, thread);
   };
+  /**
+   * A worker's tools. W492: initiative_message and initiative_pr are offered without the lead's
+   * fields (giving work, categories, waitingOn, worker…), which workers kept copying in.
+   */
+  const WORKER_TOOLS = [
+    "initiative_read",
+    "initiative_report",
+    { name: "initiative_message", parameters: advertisedSchema(workerMessageToolSchema) },
+    { name: "initiative_pr", parameters: advertisedSchema(workerPrToolSchema) },
+  ];
   /** v9: every lead tab (the coordinator and each discussion) gets the same tools. */
   const leadTools = [
     "initiative_read",
@@ -928,7 +962,7 @@ export default function plugin(bb: BbPluginApi) {
     const projectId = m?.project.id ?? pending?.project.id;
     if (worker && projectId)
       return {
-        tools: ["initiative_read", "initiative_report", "initiative_message", "initiative_pr"],
+        tools: WORKER_TOOLS,
         skills: ["initiative-worker"],
         instructions: assembleInstructions([
           `You are ${worker.ref} "${clip80(worker.label)}" (${clip80(worker.area)}), role ${worker.role}${m && !m.former ? "" : " (membership still being confirmed)"}.`,
@@ -1047,8 +1081,21 @@ export default function plugin(bb: BbPluginApi) {
     await ensureMember(threadId);
     const command = messageCommand(parseToolInput(messageToolSchema, raw, "initiative_message"));
     if (command.action === "message") return service.message(threadId, command);
+    const p = await coordinatorProject(threadId);
+    // W492: more work for a worker still running its open work, on no task beyond it, is that work's
+    // too: it steers in as a message, and the open work's report covers it. Only mid-turn: an idle
+    // thread (waiting on its reviewer, say) takes more work the usual way, cold-cache check included.
+    if (command.action === "delegate" && command.delivery === "steer" && command.worker) {
+      const worker = /^W(\d+)$/i.exec(command.worker) ? store.worker(p.id, Number(command.worker.slice(1))) : null;
+      const open = worker ? store.openAssignment(p.id, worker.num) : null;
+      if (worker?.threadId && command.note && open?.state === "running" && open.opState === "done" && !open.cancelRequested && worker.role === "work"
+        && (command.tasks ?? []).every((task) => open.taskNums.includes(Number(task.replace(/^T/i, ""))))
+        && BUSY_STATUSES.has((await bb.sdk.threads.get({ threadId: worker.threadId })).status))
+        return { ...await service.message(threadId, { target: worker.ref, text: command.note, mode: "steer" }),
+          note: `${worker.ref} is still working on ${open.ref}, so this went to it as a steer message; its ${open.ref} report covers it.` };
+    }
     // Work for a reviewer is refused: each review round gets a fresh reviewer (W239).
-    return perform((await coordinatorProject(threadId)).id, command, "coordinator", threadId);
+    return perform(p.id, command, "coordinator", threadId);
   };
   const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>;
   /** W215: write tools answer with a short receipt; initiative_read has the full records. */
@@ -1209,23 +1256,45 @@ export default function plugin(bb: BbPluginApi) {
     if (input.prs?.some((pr) => pr.initiative !== undefined)) bb.realtime.publish("merge-queue-changed", { repo: null });
     return result;
   };
-  /** D442: a worker notes the PRs its assignments name, the coordinator gave it, or its branch opened. */
+  /**
+   * D442: a worker keeps the PRs its assignments name, the coordinator gave it, or its branch
+   * opened. W492: and a PR no one else holds, which it then holds: most branches don't name
+   * their thread, and a PR opened a minute ago isn't in the cache yet.
+   */
   const workerCaller = (projectId: string, worker: { num: number; ref: string; threadId: string | null }, threadId: string): PrCaller => ({
     author: worker.ref,
     threadId,
     worker: {
       ref: worker.ref,
-      owns: (url) => {
-        if (assignedPrs.ofWorker(projectId, worker.num).has(url) || store.prRecords(projectId).get(url)?.worker === worker.ref) return true;
+      heldBy: (url) => {
+        const recorded = store.prRecords(projectId).get(url)?.worker ?? null;
+        if (assignedPrs.ofWorker(projectId, worker.num).has(url) || recorded === worker.ref) return null;
         const head = mergeQueue.cachedPr(url)?.head;
-        return !!head && branchThreadId(head) === worker.threadId;
+        const opener = head ? branchThreadId(head) : null;
+        if (opener && opener === worker.threadId) return null;
+        if (recorded) return `${recorded} holds it`;
+        // F4: a PR a standing rule names is every worker's reference and none's to change.
+        const rule = store.rules(projectId).find((r) => prsReferenced(r.text).includes(url));
+        if (rule) return `${rule.ref} names it`;
+        const named = assignedPrs.referencing(projectId, url);
+        if (named) return `${named.worker}'s ${named.assignment} names it`;
+        const other = opener ? store.membership(opener)?.worker : null;
+        if (other) return `${other.ref}'s branch opened it`;
+        // Nor one another Adventure holds: its records, its owner (R2) or its assignments.
+        const name = (id: string) => store.project(id)?.name ?? id;
+        const elsewhere = store.prHolders(url).find((h) => h.projectId !== projectId && store.project(h.projectId)?.archivedAt === null);
+        if (elsewhere) return `${elsewhere.worker} in ${name(elsewhere.projectId)} holds it`;
+        const owner = prOwners.all().get(url)?.projectId;
+        if (owner && owner !== projectId && store.project(owner)?.archivedAt === null) return `${name(owner)} owns it`;
+        const mentioned = store.projects().find((p) => p.id !== projectId && assignedPrs.referencing(p.id, url));
+        return mentioned ? `${assignedPrs.referencing(mentioned.id, url)!.worker} in ${mentioned.name} works on it` : null;
       },
     },
   });
   registerTool({
     name: "initiative_pr",
     parameters: jsonSchema(prToolSchema),
-    description: 'Keep each pull request\'s record and notes, several PRs per call: {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note:"W14 reviewing",category:"Security",waitingOn:"W14: move the lock",changes:["drop the retry"],decision:{text:"Keep 5m TTL",link:"D437"},worker:"W14",notes:[{kind:"question",text:"No migration test?"}],answered:[{n:3,text:"Yes"}]}]}, every field but url optional. Only given fields change; null clears one. stage clear removes yours (the dashboard guesses from GitHub again). category is a free-form workstream: reuse one from the result\'s categories; {rename:[{from:"Sec",to:"Security"}]} renames or merges. changes replaces the list. notes append to the PR\'s log (the result numbers them n); answered closes questions by n. An assignment (A#) names its worker. initiative:"Equisafe UI" (a name or id) moves the PR to that Adventure, null unassigns it: a PR is listed by its one owner, or by every Adventure under Unassigned; a worker\'s PR is its Adventure\'s unless moved. Workers set stage, add notes and move PRs, only those their assignments name or their branch opened.',
+    description: 'Keep each pull request\'s record and notes, several PRs per call, every field but url optional. Anyone: {prs:[{url:"https://github.com/o/r/pull/12",stage:"ready-for-erwin",note:"Clean review r2",notes:[{kind:"question",text:"No migration test?"}]}]}. Workers do only that, and initiative, on their own PRs: those their assignment names, they opened, or no one else holds. Leads also set category, waitingOn, changes, decision, worker and answered: {prs:[{url,category:"Security",waitingOn:"W14: move the lock",changes:["drop the retry"],decision:{text:"Keep 5m TTL",link:"D437"},worker:"W14",answered:[{n:3,text:"Yes"}]}]}. Only given fields change; null clears one. stage clear removes yours (the dashboard guesses from GitHub again). category is a free-form workstream: reuse one from the result\'s categories; {rename:[{from:"Sec",to:"Security"}]} renames or merges. changes replaces the list. notes append to the PR\'s log (the result numbers them n); answered closes questions by n. An assignment (A#) names its worker. initiative:"Equisafe UI" (a name or id) moves the PR to that Adventure, null unassigns it: a PR is listed by its one owner, or by every Adventure under Unassigned; a worker\'s PR is its Adventure\'s unless moved.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
       await ensureMember(threadId);
@@ -1265,9 +1334,10 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_read",
     description: 'Read the Initiative. {} is the overview; {view:"rules"} the standing rules; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state (unassigned:true: the PRs no Adventure owns), refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
-    parameters: agentReadSchema,
-    async execute(input, { threadId }) {
+    parameters: jsonSchema(agentReadAdvertised),
+    async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
+      const input = parseToolInput(agentReadSchema, raw, "initiative_read");
       await ensureMember(threadId);
       const m = store.membership(threadId);
       if (!m) {
@@ -1290,7 +1360,13 @@ export default function plugin(bb: BbPluginApi) {
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
       if (view === "rules") return JSON.stringify(readRules(m.project.id));
-      if (view === "memory") return JSON.stringify(await chatMemory("read", { threadId }, z.object({ messages: z.number(), view: z.string(), note: z.string() })));
+      // W492: a thread without chat memory (every worker) is told so, not answered with Chat memory's HTTP 500.
+      if (view === "memory") return JSON.stringify(await chatMemory("read", { threadId }, z.object({ messages: z.number(), view: z.string(), note: z.string() })).catch((error) => {
+        if (!/no chat memory/i.test(errorMessage(error))) throw error;
+        return { messages: 0, view: "", note: m.worker
+          ? `Workers have no chat memory: your brief and messages are in this thread. initiative_read {refs:["${m.worker.ref}"],fields:["brief"]} reads your latest brief.`
+          : "This thread has no chat memory: turn it on in the thread's Memory panel." };
+      }));
       if (view === "prs") {
         const queue = await mergeQueue.read(m.project.id);
         const page = { offset: options.offset, limit: options.limit };
@@ -1349,9 +1425,16 @@ export default function plugin(bb: BbPluginApi) {
       return render();
     },
   });
+  /** initiative_report and `bb initiative report`: W492 reads what it can (normalizeReport) and says so. */
+  const shortReport = async (threadId: string, raw: unknown, tool: string) => {
+    const normalized = normalizeReport(raw);
+    const result = await service.shortReport(threadId, parseToolInput(reportToolSchema, normalized.raw, tool));
+    if (!normalized.notes.length) return result;
+    return { ...result, note: [result.note, ...normalized.notes].filter(Boolean).join(" ") };
+  };
   registerTool({
     name: "initiative_report",
-    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. The coordinator gets summary (which must stand on its own: outcome, PR URL and head, merge order, what you need) and reads report, your full report, on demand; a short report is sent whole. blocked needs question; add options [{label,consequences}] and recommendation (starting with its label) so the user can pick one in the Inbox.',
+    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. The coordinator gets summary (which must stand on its own: outcome, PR URL and head, merge order, what you need) and reads report, your full report, on demand; a short report is sent whole. blocked waits on your lead; when only the user can answer, add question, options [{label,consequences}] and recommendation (starting with its label), and the user picks one in the Inbox.',
     parameters: jsonSchema(reportToolSchema),
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Report from the worker thread.");
@@ -1359,9 +1442,7 @@ export default function plugin(bb: BbPluginApi) {
       // An older session's full structured report still records as it always did.
       if (typeof raw === "object" && raw !== null && "handoff" in raw)
         return JSON.stringify(await service.report(threadId, parseToolInput(reportSchema.safeExtend({ assignment: z.string().optional() }), raw, "initiative_report")));
-      const input = parseToolInput(reportToolSchema, raw, "initiative_report");
-      if (input.outcome === "blocked" && !input.question) throw new ToolInputError("A blocked report needs the question you need answered.");
-      return JSON.stringify(await service.shortReport(threadId, input));
+      return JSON.stringify(await shortReport(threadId, raw, "initiative_report"));
     },
   });
   registerTool({
@@ -1496,9 +1577,7 @@ export default function plugin(bb: BbPluginApi) {
           if (typeof raw === "object" && raw !== null && "handoff" in raw)
             result = await service.report(ctx.threadId, reportSchema.safeExtend({ assignment: z.string().optional() }).parse(raw));
           else {
-            const input = parseToolInput(reportToolSchema, raw, "bb initiative report");
-            if (input.outcome === "blocked" && !input.question) throw new ToolInputError("A blocked report needs the question you need answered.");
-            result = await service.shortReport(ctx.threadId, input);
+            result = await shortReport(ctx.threadId, raw, "bb initiative report");
           }
         } else if (action === "rules" && (value === "import" || value === "export") && args.length >= 3 && args.length <= 4) {
           // v9: `rules import <id> <file>` makes the live list exactly the file's, after writing the
@@ -1580,6 +1659,10 @@ export default function plugin(bb: BbPluginApi) {
     bb.events.on(name, ({ thread }) => {
       liveThreads.observe(thread);
       runningChildren.observe(thread);
+      // W496: an archived or deleted nested thread is no longer read for the dashboard; an
+      // unarchived one is again.
+      if (name === "thread.unarchived") store.reviveNestedThread(thread.id);
+      else if (name === "thread.archived" || name === "thread.deleted") endNested(thread.id, liveOf(thread));
     });
   bb.events.on(
     "message.dispatched",

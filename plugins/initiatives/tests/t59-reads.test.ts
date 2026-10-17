@@ -55,7 +55,7 @@ describe("T59 selective agent reads", () => {
     // A single ref whose kind lacks the one field, and mixed refs none of whose kinds has any.
     expect(await fails({ refs: [task.ref], fields: ["report"] })).toMatch(/^report applies to none of the records read/);
     await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
-    expect(await fails({ refs: [task.ref, "W1"], fields: ["body", "resolution"] })).toContain("Valid fields by kind: tasks: brief; workers: handoff, report.");
+    expect(await fails({ refs: [task.ref, "W1"], fields: ["body", "resolution"] })).toContain("Valid fields by kind: tasks: brief; workers: brief, handoff, report.");
   });
 
   it("T143: mixed refs read each record's own fields in one call (W238 and D446–D449)", async () => {

@@ -63,7 +63,7 @@ describe("T66 trusted thin native messaging", () => {
       f.threads.set(target, { ...f.threads.get(target)!, status: "pending" });
       await f.service.message("coordinator", plain);
       expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: target, mode: "queue-if-active" });
-      await expect(f.service.message("coordinator", { ...plain, mode: "steer" })).rejects.toThrow(/queue mode only/);
+      await expect(f.service.message("coordinator", { ...plain, mode: "steer" })).rejects.toThrow(/W2 has not started yet: send with mode:"queue"/);
     });
     it("the tool leaves a plain message's mode to the sender/target rule and steers more work", () => {
       expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x" }))).toEqual({ action: "message", target: "W2", text: "x" });
@@ -90,6 +90,12 @@ describe("T66 trusted thin native messaging", () => {
       if (kind === "former") f.store.updateWorker(project.id, num, { threadId: "new-generation", generation: 2 });
       if (kind === "foreign") f.threads.set(tid, { ...f.threads.get(tid)!, projectId: "foreign" });
       if (kind === "adhoc") f.store.db.prepare("DELETE FROM workers WHERE project_id=? AND num=?").run(project.id, num);
+      // W492: a sender's own unsettled Stop or start keeps nothing it says from going out; it is
+      // running, so nothing is woken. Only a target in that state is refused.
+      if (side === "caller" && (kind === "cancelled" || kind === "uncertain")) {
+        await f.service.message(caller, message); expect(f.send).toHaveBeenCalledTimes(1);
+        continue;
+      }
       await expect(f.service.message(caller, message)).rejects.toThrow(); expect(f.send).not.toHaveBeenCalled();
     }
   });
@@ -150,7 +156,8 @@ it.each(["error", "stopping", "archived", "deleted"])("native unavailable %s tar
   const { f, caller, target } = await peers();
   const row = f.threads.get(target)!;
   f.threads.set(target, { ...row, ...(state === "archived" ? { archivedAt: Date.now() } : state === "deleted" ? { deletedAt: Date.now() } : { status: state as "error" | "stopping" }) });
-  await expect(f.service.message(caller, message)).rejects.toThrow(/unavailable/); expect(f.send).not.toHaveBeenCalled();
+  await expect(f.service.message(caller, message)).rejects.toThrow(state === "archived" || state === "deleted" ? /W2's thread is archived, deleted or outside this Initiative/
+    : new RegExp(`W2's thread is not running \\(status ${state}\\), and a message never resumes stopped or finished work. Give it more work with work:true, or spawn a fresh worker with handoffs:\\["W2"\\]`)); expect(f.send).not.toHaveBeenCalled();
 });
 it("definite native refusal is distinct from uncertainty, with resolved receipt-inspection target", async () => {
   const { f, caller, target } = await peers(); f.send.mockRejectedValueOnce(Object.assign(new Error("Refused"), { status: 400 }));

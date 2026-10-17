@@ -191,9 +191,12 @@ describe("A35 lifecycle cleanup callers", () => {
           },
         }))),
     );
+    // W492: a running grandchild is waited out, not refused: nothing archives until it is quiet.
     await expect(
       x.f.service.retireWorker(x.project.id, x.worker.ref, "done"),
-    ).rejects.toThrow(/active/);
+    ).resolves.toMatchObject({ state: "retiring", note: expect.stringMatching(/active/) });
+    await x.f.service.finishRetirements();
     expect(x.f.archive).not.toHaveBeenCalled();
+    expect(x.f.store.retireRequests()).toHaveLength(1);
   });
 });

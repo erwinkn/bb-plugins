@@ -100,31 +100,32 @@ export const PR_ACTION_FIELDS = ["notes", "answered", "initiative"] as const;
 /** A note's text; a worker report's summary is clipped to it. */
 export const PR_NOTE_MAX = 1000;
 
+const prEntrySchema = z
+  .object({
+    url: z.string().min(1).max(300).refine((url) => canonicalPrUrl(url) !== null, {
+      message: "Expected a GitHub PR URL (https://github.com/owner/repo/pull/12) or owner/repo#12",
+    }),
+    stage: z.enum([...PR_STAGE_IDS, "clear"]).optional(),
+    note: z.string().trim().max(200).optional(),
+    category: categorySchema.nullable().optional(),
+    waitingOn: line(160).nullable().optional(),
+    changes: z.array(line(200)).max(10).nullable().optional(),
+    decision: z.object({ text: line(300), link: line(300).optional() }).strict().nullable().optional(),
+    worker: z.string().regex(/^W\d+$/i, "Expected a worker ref like W12").nullable().optional(),
+    assignment: z.string().regex(/^A\d+$/i, "Expected an assignment ref like A301").nullable().optional(),
+    notes: z
+      .array(z.object({ kind: z.enum(PR_NOTE_KINDS).optional(), text: line(PR_NOTE_MAX), link: line(300).optional() }).strict())
+      .min(1).max(10).optional(),
+    answered: z.array(z.object({ n: z.number().int().positive(), text: line(300).optional() }).strict()).min(1).max(10).optional(),
+    /** R2: the Initiative that owns the PR, by name or id; null leaves it unassigned. */
+    initiative: line(200).nullable().optional(),
+  })
+  .strict();
 export const prToolSchema = z
   .object({
     prs: z
       .array(
-        z
-          .object({
-            url: z.string().min(1).max(300).refine((url) => canonicalPrUrl(url) !== null, {
-              message: "Expected a GitHub PR URL (https://github.com/owner/repo/pull/12) or owner/repo#12",
-            }),
-            stage: z.enum([...PR_STAGE_IDS, "clear"]).optional(),
-            note: z.string().trim().max(200).optional(),
-            category: categorySchema.nullable().optional(),
-            waitingOn: line(160).nullable().optional(),
-            changes: z.array(line(200)).max(10).nullable().optional(),
-            decision: z.object({ text: line(300), link: line(300).optional() }).strict().nullable().optional(),
-            worker: z.string().regex(/^W\d+$/i, "Expected a worker ref like W12").nullable().optional(),
-            assignment: z.string().regex(/^A\d+$/i, "Expected an assignment ref like A301").nullable().optional(),
-            notes: z
-              .array(z.object({ kind: z.enum(PR_NOTE_KINDS).optional(), text: line(PR_NOTE_MAX), link: line(300).optional() }).strict())
-              .min(1).max(10).optional(),
-            answered: z.array(z.object({ n: z.number().int().positive(), text: line(300).optional() }).strict()).min(1).max(10).optional(),
-            /** R2: the Initiative that owns the PR, by name or id; null leaves it unassigned. */
-            initiative: line(200).nullable().optional(),
-          })
-          .strict()
+        prEntrySchema
           .refine((pr) => pr.stage !== undefined || [...PR_STATE_FIELDS, ...PR_ACTION_FIELDS].some((field) => pr[field] !== undefined), {
             message: `Give a stage or one of ${[...PR_STATE_FIELDS, ...PR_ACTION_FIELDS].join(", ")}`,
           })
@@ -137,6 +138,14 @@ export const prToolSchema = z
   })
   .strict()
   .refine((input) => input.prs || input.rename, { message: "Give prs, rename or both" });
+/**
+ * W492: initiative_pr as a worker's session advertises it (agents.configure): only what a worker
+ * sets on its own PRs, so the lead's fields it can't set are never offered. Execution still parses
+ * prToolSchema, which this narrows.
+ */
+export const workerPrToolSchema = z
+  .object({ prs: z.array(prEntrySchema.pick({ url: true, stage: true, note: true, notes: true, initiative: true })).min(1).max(100) })
+  .strict();
 export type PrToolInput = z.infer<typeof prToolSchema>;
 
 /**

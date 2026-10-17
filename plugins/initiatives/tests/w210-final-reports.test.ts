@@ -100,10 +100,10 @@ describe("W210 report delivery", () => {
     expect(f.store.assignment(project.id, 1)!.report!.finalMessage).toBe(REPORT);
   });
 
-  it("the report text is required and bounded; a long one is sent as its summary", async () => {
+  it("a report needs some text; a long one is sent as its summary", async () => {
     const { f, project, w } = await spawned();
-    await expect(tool(f, "initiative_report", { outcome: "done", summary: "No text" }, w.threadId)).rejects.toThrow(/report/);
-    await expect(tool(f, "initiative_report", { outcome: "done", summary: "Too long", report: "x".repeat(20001) }, w.threadId)).rejects.toThrow();
+    // W492: either of summary and report stands in for the other (w492-tool-friction), but not neither.
+    await expect(tool(f, "initiative_report", { outcome: "done" }, w.threadId)).rejects.toThrow(/summary/);
     const long = `Start. ${"x".repeat(12000)} End.`;
     await tool(f, "initiative_report", { outcome: "done", summary: "Long", report: long }, w.threadId);
     expect(f.store.assignment(project.id, 1)!.report!.finalMessage).toBe(long);

@@ -6,18 +6,24 @@ import type { PrNotes } from "./pr-notes";
 import type { PrOwners } from "./pr-owners";
 import type { PrLinks } from "./merge-queue";
 import { PR_NOTE_MAX, blankPrRecord, canonicalPrUrl, categoryName, type PrToolInput } from "./pr-stages";
+import { prsReferenced, reportPrs } from "./task-status";
 
 /** Who calls initiative_pr: the coordinator, a worker (notes only), a discussion (notes and answers) or the user's terminal. */
 export interface PrCaller {
   /** "coordinator", "user", "discussion", or the worker's ref (W12). */
   author: string;
-  /** Set for a worker: it may only add notes, to the PRs `owns` admits. */
-  worker: { ref: string; owns: (url: string) => boolean } | null;
+  /**
+   * Set for a worker: it keeps its PRs' stage and notes and moves them. `heldBy` names who else
+   * holds a PR ("W43: A812 names it"), or null when it is this worker's or nobody's yet.
+   */
+  worker: { ref: string; heldBy: (url: string) => string | null } | null;
   /** Historical (D480): a discussion is a lead since v9 and sets everything. */
   discussion?: boolean;
   /** The caller's thread: a note's link when it gives none. */
   threadId: string | null;
 }
+/** What a worker sets on its own PRs; the rest of initiative_pr is a lead's. */
+export const WORKER_PR_FIELDS = ["url", "stage", "note", "notes", "initiative"] as const;
 export const COORDINATOR: PrCaller = { author: "coordinator", worker: null, threadId: null };
 
 /**
@@ -56,18 +62,28 @@ export function recordPrs(
   owners?: Pick<PrOwners, "move"> & { fits(target: { id: string; name: string }, url: string): void },
 ) {
   // v9: a worker keeps its own PRs' stage and notes, and moves them (R2); every other field is a
-  // lead's. Leads (the coordinator and discussions) set everything.
-  const own = caller.worker ? ["url", "stage", "note", "notes", "initiative"] : null;
-  if (own) {
-    const fields = [...new Set(input.rename ? ["rename"] : (input.prs ?? []).flatMap((pr) => Object.keys(pr).filter((k) => !own.includes(k))))];
-    const is = `${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} a lead's to set`;
-    if (fields.length)
-      throw new ProjectError(`Workers set their PRs' stage, add notes and move them to an Adventure ({prs:[{url,stage,notes,initiative}]}); ${is}.`);
-  }
+  // lead's. Leads (the coordinator and discussions) set everything. W492: a worker's lead-only
+  // fields are left out with a note rather than failing the whole call.
+  const ignored = new Set<string>();
   if (caller.worker) {
-    const foreign = (input.prs ?? []).filter((pr) => !caller.worker!.owns(canonicalPrUrl(pr.url)!)).map((pr) => pr.url);
-    if (foreign.length)
-      throw new ProjectError(`${caller.worker.ref} keeps only PRs its assignments name or its branch opened, not ${foreign.join(", ")}. Tell your lead instead.`);
+    const self = caller.worker.ref.toUpperCase();
+    if (input.rename) ignored.add("rename");
+    // An entry left with only its url records nothing, and claims nothing.
+    const prs = (input.prs ?? []).map((pr) => Object.fromEntries(Object.entries(pr).filter(([key, value]) => {
+      // Its own ref as the PR's worker claims the PR, as any write of its own does.
+      if (WORKER_PR_FIELDS.includes(key as typeof WORKER_PR_FIELDS[number]) || key === "worker" && typeof value === "string" && value.toUpperCase() === self) return true;
+      ignored.add(key);
+      return false;
+    })) as NonNullable<PrToolInput["prs"]>[number]).filter((pr) => Object.keys(pr).length > 1);
+    if (!prs.length)
+      throw new ProjectError(`Workers set their PRs' stage, add notes and move them to an Adventure ({prs:[{url,stage,notes,initiative}]}); ${[...ignored].join(", ")} ${ignored.size === 1 ? "is" : "are"} a lead's to set.`);
+    input = { prs };
+    const held = prs.flatMap((pr) => {
+      const holder = caller.worker!.heldBy(canonicalPrUrl(pr.url)!);
+      return holder ? [`${pr.url} (${holder})`] : [];
+    });
+    if (held.length)
+      throw new ProjectError(`${caller.worker.ref} keeps only its own PRs: those its assignments name, it opened or recorded first. Not ${held.join(", ")}. Tell your lead instead.`);
   }
   const categories = () => new Set([...store.prRecords(projectId).values()].flatMap((r) => (r.category ? [r.category] : [])));
   // A failure rolls the whole call back: name the categories as they were before it.
@@ -100,10 +116,13 @@ export function recordPrs(
       ...(noted.length ? { noted } : {}),
       ...(answered?.length ? { answered: answered.map((a) => a.n) } : {}),
     };
-    const patched = stage !== undefined || category !== undefined || worker !== undefined || assignment !== undefined
+    // W492: a worker's write claims a PR no one holds yet, so its next call needs no other proof.
+    const claim = caller.worker && !records.get(key)?.worker ? caller.worker.ref : null;
+    const patched = stage !== undefined || category !== undefined || worker !== undefined || assignment !== undefined || claim !== null
       || Object.values(state).some((value) => value !== undefined);
     if (!patched) return receipt;
     const r = { ...(records.get(key) ?? blankPrRecord(key, at)), updatedAt: at };
+    if (claim) r.worker = claim;
     const was = { stage: r.stage, note: r.note };
     if (stage !== undefined) {
       const set = stage === "clear" ? null : stage;
@@ -142,7 +161,8 @@ export function recordPrs(
       ...(updated.length ? { updated } : {}),
     };
   });
-  if (caller.worker || caller.discussion) return { prs };
+  const note = ignored.size ? `Left out ${[...ignored].join(", ")}: ${ignored.size === 1 ? "it is" : "they are"} a lead's to set; tell your lead if ${ignored.size === 1 ? "it needs" : "they need"} changing. Everything else was recorded.` : null;
+  if (caller.worker || caller.discussion) return { prs, ...(note ? { note } : {}) };
   // A Map: category names are free-form, and "constructor" or "__proto__" must count like any other.
   const counts = new Map<string, number>();
   for (const r of records.values()) if (r.category) counts.set(r.category, (counts.get(r.category) ?? 0) + 1);
@@ -155,6 +175,16 @@ const PR_URL = /https?:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/gi
 /** The canonical URLs of the GitHub PRs a text names, in order, once each. */
 export function prsNamed(text: string): string[] {
   return [...new Set([...text.matchAll(PR_URL)].flatMap((match) => canonicalPrUrl(match[0]) ?? []))];
+}
+
+/** The PRs a stored report's text names; an unreadable one names none. */
+function storedReportPrs(report: string | null): string[] {
+  if (!report) return [];
+  try {
+    return reportPrs(JSON.parse(report));
+  } catch {
+    return [];
+  }
 }
 
 /** The latest assignment about a PR: who works on it, through which assignment, in which role; and (T156) every assignment naming it. */
@@ -172,7 +202,7 @@ export interface PrWork {
  * assignment changes.
  */
 export class AssignedPrs {
-  private cache = new Map<string, { stamp: string; value: ReadonlyMap<string, PrWork>; byWorker: ReadonlyMap<number, ReadonlySet<string>> }>();
+  private cache = new Map<string, { stamp: string; value: ReadonlyMap<string, PrWork>; byWorker: ReadonlyMap<number, ReadonlySet<string>>; referenced: ReadonlyMap<string, Omit<PrWork, "links">> }>();
 
   constructor(private store: Pick<Store, "assignmentsStamp" | "prMentions">) {}
 
@@ -181,21 +211,30 @@ export class AssignedPrs {
     const cached = this.cache.get(projectId);
     if (cached?.stamp === stamp) return cached;
     const latest = new Map<string, Omit<PrWork, "links">>();
+    const referenced = new Map<string, Omit<PrWork, "links">>();
     const byWorker = new Map<number, Set<string>>();
     // Sets while scanning: thousands of assignments can name one base PR.
     const workers = new Map<string, Set<string>>();
     const assignments = new Map<string, Set<string>>();
-    for (const row of this.store.prMentions(projectId))
+    for (const row of this.store.prMentions(projectId)) {
+      const work = { worker: `W${row.workerNum}`, assignment: `A${row.num}`, role: row.role };
       // Both: a review's report rarely repeats the PR its brief gave it.
       for (const url of prsNamed(`${row.brief}\n${row.report ?? ""}`)) {
-        latest.set(url, { worker: `W${row.workerNum}`, assignment: `A${row.num}`, role: row.role });
-        byWorker.set(row.workerNum, (byWorker.get(row.workerNum) ?? new Set()).add(url));
+        latest.set(url, work);
         workers.set(url, (workers.get(url) ?? new Set<string>()).add(`W${row.workerNum}`));
         assignments.set(url, (assignments.get(url) ?? new Set<string>()).add(`A${row.num}`));
       }
+      // W492: whose a PR is (a worker's initiative_pr) counts owner/repo#12 too; the report read
+      // from its values, since its JSON would glue an escaped "\n" onto a name. Who works on a
+      // PR, above, stays by URL.
+      for (const url of new Set([...prsReferenced(row.brief), ...storedReportPrs(row.report)])) {
+        referenced.set(url, work);
+        byWorker.set(row.workerNum, (byWorker.get(row.workerNum) ?? new Set()).add(url));
+      }
+    }
     const value = new Map([...latest].map(([url, work]) =>
       [url, { ...work, links: { workers: [...workers.get(url)!], assignments: [...assignments.get(url)!] } }]));
-    const entry = { stamp, value, byWorker };
+    const entry = { stamp, value, byWorker, referenced };
     this.cache.set(projectId, entry);
     return entry;
   }
@@ -204,9 +243,14 @@ export class AssignedPrs {
     return this.scan(projectId).value;
   }
 
-  /** Every PR any of this worker's assignments names, latest or not. */
+  /** Every PR any of this worker's assignments names, by URL or owner/repo#12, latest or not. */
   ofWorker(projectId: string, workerNum: number): ReadonlySet<string> {
     return this.scan(projectId).byWorker.get(workerNum) ?? new Set();
+  }
+
+  /** W492: the latest assignment naming a PR, by URL or owner/repo#12. */
+  referencing(projectId: string, url: string): Omit<PrWork, "links"> | null {
+    return this.scan(projectId).referenced.get(url) ?? null;
   }
 }
 

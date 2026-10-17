@@ -35,8 +35,8 @@ export function queueTargets(store: Store, projectId: string): Map<string, strin
   if (!project) return targets;
   for (const generation of store.generations(projectId, 0).filter((g) => g.threadId !== project.coordinatorThreadId).slice(-5))
     targets.set(generation.threadId, "a former coordinator");
-  for (const worker of store.workers(projectId))
-    if (worker.threadId && worker.state !== "retired") targets.set(worker.threadId, worker.ref);
+  for (const worker of store.liveWorkers(projectId))
+    if (worker.threadId) targets.set(worker.threadId, worker.ref);
   if (project.coordinatorThreadId) targets.set(project.coordinatorThreadId, "the coordinator");
   // v9: discussions are lead tabs; reports and notices reach them too.
   for (const tab of store.projectThreads(projectId))

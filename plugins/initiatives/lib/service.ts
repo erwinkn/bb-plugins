@@ -91,6 +91,8 @@ import {
   type WorkerRecord,
 } from "./store";
 import { DiscoveryMemory, DISCOVERY_PARENT_CAP } from "./discovery";
+import { liveOf, type NativeThread } from "./live-threads";
+import type { LiveThread } from "./overview";
 import { RunningChildren } from "./context";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
@@ -186,6 +188,15 @@ type HandoverRecheck =
   | { kind: "hold"; reason: string }
   | { kind: "drop"; reason: string };
 
+/** W492: a thread that can't be archived yet but will be once it is quiet. */
+class ThreadBusy extends ProjectError {}
+/** W492: how long a retirement waits for its worker's thread to go quiet. */
+const RETIRE_WAIT_MS = 24 * 3_600_000;
+/** W496: how often the sweep looks for archived nested threads unarchived while no event reached the plugin. */
+export const NESTED_REVIVE_MS = 60 * 60_000;
+/** W497: how many nested threads ended before this run each sweep reads again. */
+export const NESTED_VERIFY_BATCH = 20;
+
 /** Thrown out of a replacement's final revalidation to settle the drain. */
 class HandoverAbort extends Error {
   constructor(readonly outcome: Exclude<HandoverRecheck, { kind: "ok" }>) {
@@ -267,6 +278,11 @@ function seedHandover(draft: HandoverDraft): string {
 }
 
 export class ProjectsService {
+  /**
+   * W492: the server's write queue (every command an RPC, tool or CLI runs), for writes this
+   * service starts on its own; the server sets it. Runs at once without one (tests of the service).
+   */
+  serialize: <T>(run: () => Promise<T>) => Promise<T> = (run) => run();
   private coordinatorSwitches = new Map<string, string | null>();
   /** What discovery reads learned in this instance; never persisted, never authorizes a mutation. */
   discovery = new DiscoveryMemory();
@@ -286,6 +302,15 @@ export class ProjectsService {
   private parkedOps = new Map<string, string>();
   /** Unarchive events seen per thread: a lifecycle read that an unarchive overtook never parks. */
   private unarchives = new Map<string, number>();
+  /** W496: when reviveUnarchivedNested last read BB's list of unarchived threads. */
+  private nestedRevivedAt = -Infinity;
+  /** W497: nested threads seen archived before this run, still to be read once each; null until the first sweep. */
+  private nestedUnverified: { threadId: string; ended: LiveThread }[] | null = null;
+  /**
+   * W496: a revived nested thread's listed row, for the dashboard's cache of native facts, so its
+   * next read does not end it again from a fact older than the revival. The server sets it.
+   */
+  revivedNested: (thread: NativeThread) => void = () => {};
   /** Initiatives whose handover replacement has passed the journal boundary. */
   private handoverSpawnInflight = new Set<string>();
   /**
@@ -3271,7 +3296,7 @@ export class ProjectsService {
         ? ["policy"]
         : []),
     ];
-    return this.store.tx(() => {
+    const result = this.store.tx(() => {
       const result = this.store.updateProject(project.id, next);
       if (changedFields.length)
         this.store.log(
@@ -3282,6 +3307,28 @@ export class ProjectsService {
         );
       return result;
     });
+    if (next.name !== undefined && next.name !== project.name) void this.retitleCoordinators(project.id, project.name, next.name);
+    return result;
+  }
+
+  /**
+   * A renamed Initiative retitles its coordinator thread, and a successor still being started,
+   * while the title is the one given at creation (`<old name> · coordinator`): a title the user
+   * set stays. Worker threads keep theirs. A failed read or rename is logged; the rename stands.
+   */
+  private async retitleCoordinators(projectId: string, from: string, to: string) {
+    const start = this.store.db
+      .prepare("SELECT thread_id FROM coordinator_starts WHERE project_id=? AND state IN ('pending','uncertain')")
+      .get(projectId) as { thread_id: string | null } | undefined;
+    const threadIds = new Set([this.store.project(projectId)?.coordinatorThreadId, start?.thread_id].filter((id): id is string => !!id));
+    for (const threadId of threadIds) {
+      try {
+        const thread = await this.sdk.threads.get({ threadId });
+        if (thread.title === `${from} · coordinator`) await this.sdk.threads.update({ threadId, title: `${to} · coordinator` });
+      } catch (error) {
+        this.bb.log.warn(`Could not retitle coordinator thread ${threadId} after renaming "${from}" to "${to}": ${errorMessage(error)}`);
+      }
+    }
   }
 
   /** Icon and color are cosmetic: no activity entry, no order change. Omitted keeps a field; null resets it. */
@@ -3749,7 +3796,7 @@ export class ProjectsService {
    * report gave options; the note is then optional detail. W488: `recordedBy` is
    * the coordinator tab that recorded an answer the user gave in its chat (recordChatBlockerAnswer).
    */
-  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator", choice: string | null = null, recordedBy?: Provenance) {
+  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator", choice: string | null = null, recordedBy?: Provenance, queued = false): Promise<DecisionRecord> {
     const project = this.requireProject(projectId);
     const text = note.trim();
     if (!text && choice === null) throw new ProjectError("Pick an option or write an answer.");
@@ -3774,6 +3821,14 @@ export class ProjectsService {
     // The thread that reported the blocker, which the Inbox card links to.
     const workerThreadId = assignment.threadId;
     if (to === "worker" && !workerThreadId) throw new ProjectError(`${worker.ref} has no thread to send to. Send your answer to the coordinator instead.`);
+    // W492: an answer sent to the worker resumes its work, like more work does: it runs in the
+    // write queue, after anything already there (a retire, more work), checked again against the
+    // ledger as it then is, and a retirement waiting for the thread to go quiet no longer applies.
+    // A retried FYI to the lead sends the worker nothing.
+    if (to === "worker" && (!same || redeliver)) {
+      if (!queued) return this.serialize(() => this.answerBlocker(projectId, ref, seen, note, to, choice, recordedBy, true));
+      this.store.clearRetireRequest(project.id, worker.num);
+    }
     const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
     // v9: "coordinator" here means the worker's lead (§5.1).
     const coordinatorThreadId = await this.workerLead(project, assignment.workerNum);
@@ -5964,6 +6019,64 @@ export class ProjectsService {
     return true;
   }
 
+  /**
+   * W496: a nested thread unarchived while the plugin was down or reloading heard no event, so it
+   * stays shown archived and unread. On the first sweep, then every NESTED_REVIVE_MS, BB's paged
+   * list of unarchived threads revives each one listed there. One archived again meanwhile is
+   * ended again by its next dashboard read. A failed read is retried next sweep.
+   */
+  async reviveUnarchivedNested(signal?: AbortSignal) {
+    if (this.now() - this.nestedRevivedAt < NESTED_REVIVE_MS) return;
+    const ended = new Map(this.store.archivedNestedThreads().map(({ threadId }) => [threadId, this.store.nestedVersion(threadId)]));
+    for (let offset = 0; ended.size; offset += LIST_PAGE) {
+      const page = await this.sdk.threads.list({ archived: false, includeHidden: true, limit: LIST_PAGE, offset, signal });
+      if (signal?.aborted) return;
+      for (const thread of page) {
+        const version = ended.get(thread.id);
+        if (version !== undefined && thread.archivedAt === null && thread.deletedAt === null) this.reviveNested(thread, version);
+      }
+      if (page.length < LIST_PAGE) break;
+    }
+    this.nestedRevivedAt = this.now();
+  }
+
+  /**
+   * W497: a nested thread deleted while the plugin heard no event is missing from the unarchived
+   * list too, so it would show archived forever. Each sweep reads NESTED_VERIFY_BATCH of the
+   * threads seen archived before this run, once each (events cover the rest): a deleted or gone
+   * one is ended as deleted, an unarchived one revived. A failed read is retried after the others,
+   * a cancelled one first.
+   */
+  async verifyEndedNested(signal?: AbortSignal) {
+    const queue = (this.nestedUnverified ??= this.store.archivedNestedThreads());
+    for (let read = 0; read < NESTED_VERIFY_BATCH && queue.length && !signal?.aborted; read++) {
+      const { threadId, ended } = queue[0];
+      const version = this.store.nestedVersion(threadId);
+      let thread: ThreadDto;
+      try {
+        thread = await this.sdk.threads.get({ threadId, signal });
+      } catch (error) {
+        // A cancelled read is no answer: the thread stays first for the next sweep.
+        if (signal?.aborted) throw error;
+        queue.shift();
+        if ((error as { status?: number }).status === 404) {
+          this.store.endNestedThread(threadId, { ...ended, status: "deleted" });
+          continue;
+        }
+        queue.push({ threadId, ended });
+        throw error;
+      }
+      queue.shift();
+      if (thread.deletedAt !== null) this.store.endNestedThread(threadId, liveOf(thread));
+      else if (thread.archivedAt === null) this.reviveNested(thread, version);
+    }
+  }
+
+  /** W497: revive a nested thread listed unarchived, unless a fact landed since `version` was taken. */
+  private reviveNested(thread: NativeThread, version: number) {
+    if (this.store.reviveNestedThread(thread.id, version)) this.revivedNested(thread);
+  }
+
   /** An unarchived thread can receive its queued continuation again: read its ops next sweep. */
   threadUnarchived(threadId: string) {
     this.unarchives.set(threadId, (this.unarchives.get(threadId) ?? 0) + 1);
@@ -6255,12 +6368,16 @@ export class ProjectsService {
   // Worker lifecycle -------------------------------------------------------------
 
   /**
-   * Persist and archive. Refuses while the worker runs, has open or
-   * unconfirmed work, and never archives a thread with live native
-   * descendants (archive cascades). Retiring is always this explicit call;
-   * nothing infers it from idle threads or old assignments.
+   * Persist and archive. Refuses while the worker has open or unconfirmed
+   * work, and never archives a thread with live native descendants (archive
+   * cascades). Retiring is always this explicit call; nothing infers it from
+   * idle threads or old assignments. W492: a worker whose work is done but
+   * whose thread is still busy (its turn ending after its report, a child
+   * finishing) is retired once it is quiet (finishRetirements): the call
+   * answers state "retiring" and a note. `waited`: that later attempt, which
+   * leaves the request as it is.
    */
-  async retireWorker(projectId: string, ref: string, reason: string) {
+  async retireWorker(projectId: string, ref: string, reason: string, { waited = false } = {}): Promise<WorkerRecord | (Omit<WorkerRecord, "state"> & { state: "retiring"; note: string })> {
     const project = this.requireProject(projectId);
     const worker = this.requireWorker(project, ref);
     if (worker.state === "retired") return worker;
@@ -6283,8 +6400,18 @@ export class ProjectsService {
       throw new ProjectError(
         `${worker.ref} still has ${open.ref} open (${open.state}). Wait for its report or stop it first.`,
       );
-    if (worker.threadId) await this.retireThread(worker.threadId);
+    if (worker.threadId)
+      try {
+        await this.retireThread(worker.threadId);
+      } catch (error) {
+        if (!(error instanceof ThreadBusy) || waited) throw error;
+        this.store.requestRetire(project.id, worker.num, reason, this.now());
+        this.store.log(project.id, "worker", `${worker.ref} retires once its thread is quiet: ${reason}`);
+        return { ...worker, state: "retiring" as const,
+          note: `${worker.ref} retires by itself once that ends (${error.message}). More work for it before then cancels this.` };
+      }
     return this.store.tx(() => {
+      this.store.clearRetireRequest(project.id, worker.num);
       this.store.closeGeneration(
         project.id,
         worker.num,
@@ -6301,6 +6428,34 @@ export class ProjectsService {
       );
       return updated;
     });
+  }
+
+  /**
+   * W492: the retirements leads asked for while a worker's thread was busy, tried again: on its
+   * thread's idle event (`threadId`) and on each sweep, for children that went quiet without one.
+   * Work given to the worker after the request cancels it (Store.createAssignment); one still
+   * waiting after RETIRE_WAIT_MS is dropped, logged.
+   */
+  async finishRetirements(threadId?: string) {
+    for (const { projectId, num, at } of this.store.retireRequests(threadId))
+      // In the write queue, like a lead's own retire or more work: nothing can give this worker
+      // work between the checks below and the archive. Read again there: a lead may have acted.
+      await this.serialize(async () => {
+        const request = this.store.retireRequests().find((r) => r.projectId === projectId && r.num === num && r.at === at);
+        if (!request) return;
+        const worker = this.store.worker(projectId, num);
+        const drop = (line: string | null) => {
+          this.store.clearRetireRequest(projectId, num);
+          if (line) this.store.log(projectId, "worker", line);
+        };
+        if (!worker || worker.state === "retired" || this.store.project(projectId)?.archivedAt !== null) return drop(null);
+        if (this.now() - request.at > RETIRE_WAIT_MS)
+          return drop(`${worker.ref} was not retired: its thread was still busy ${Math.round(RETIRE_WAIT_MS / 3_600_000)} h after the request.`);
+        // Still busy: the next idle event or sweep tries again. Anything else is said, and tried again too.
+        await this.retireWorker(projectId, worker.ref, request.reason, { waited: true }).catch((error) => {
+          if (!(error instanceof ThreadBusy)) this.bb.log.warn(`Retiring ${worker.ref} (${projectId}) as its lead asked failed; trying again later: ${errorMessage(error)}`);
+        });
+      });
   }
 
   /** Archive and release one thread, after proving nothing under it is still working. */
@@ -6336,13 +6491,13 @@ export class ProjectsService {
       );
     if (thread.archivedAt !== null || thread.deletedAt !== null) return;
     if (BUSY_STATUSES.has(thread.status) || thread.status === "pending")
-      throw new ProjectError("its thread is still running");
+      throw new ThreadBusy("its thread is still running");
     if (thread.activeBackgroundAgentCount > 0)
-      throw new ProjectError(
+      throw new ThreadBusy(
         "its thread still has native background agents running",
       );
     if (thread.queuedMessageCount > 0)
-      throw new ProjectError(
+      throw new ThreadBusy(
         "its thread has queued messages that would start more work",
       );
     // The GET DTO has no background command or workflow counters; only the thread's
@@ -6350,18 +6505,20 @@ export class ProjectsService {
     const row = (await this.projectListRows(thread.projectId, new Set([threadId]))).get(threadId);
     const quiet = ProjectsService.rowQuiescence(row);
     if (quiet === "running")
-      throw new ProjectError(
+      throw new ThreadBusy(
         "its thread still has native background commands, workflows, agents or queued work running",
       );
     if (quiet === "unknown")
       throw new ProjectError(
         "its thread could not be proven quiet: BB's list row for it was missing or unreadable",
       );
-    const blockers = await this.liveDescendants(threadId);
-    if (blockers.length)
-      throw new ProjectError(
-        `archiving cascades to its native descendants, and ${blockers.slice(0, 3).join("; ")}${blockers.length > 3 ? `; and ${blockers.length - 3} more` : ""}`,
-      );
+    const walk = await this.descendants(threadId, DESCENDANT_BUDGET);
+    const blockers = await this.liveDescendants(threadId, DESCENDANT_BUDGET, walk);
+    if (blockers.length) {
+      const why = `archiving cascades to its native descendants, and ${blockers.slice(0, 3).join("; ")}${blockers.length > 3 ? `; and ${blockers.length - 3} more` : ""}`;
+      // Only children that are running are waited out; unreadable ones or too many to check refuse.
+      throw walk.complete && walk.threads.every((child) => child.running !== "unreadable") ? new ThreadBusy(why) : new ProjectError(why);
+    }
     await this.sdk.threads.archive({ threadId });
     await this.sdk.threads.stop({ threadId }).catch(() => undefined);
   }
@@ -6370,8 +6527,8 @@ export class ProjectsService {
    * What archiving would cut off: every live descendant still running work (running()), each
    * named. Refuses conservatively past the walk's budget.
    */
-  async liveDescendants(rootId: string, budget = DESCENDANT_BUDGET): Promise<string[]> {
-    const walk = await this.descendants(rootId, budget);
+  async liveDescendants(rootId: string, budget = DESCENDANT_BUDGET, known?: Awaited<ReturnType<ProjectsService["descendants"]>>): Promise<string[]> {
+    const walk = known ?? await this.descendants(rootId, budget);
     if (!walk.complete) return [`it has more than ${budget} descendant threads, too many to verify safely`];
     return walk.threads.flatMap((child) => {
       const name = child.title ?? child.titleFallback ?? child.id;
@@ -7069,7 +7226,8 @@ export class ProjectsService {
       outcome: input.outcome === "done" ? "succeeded" : input.outcome,
       summary: line,
       evidence: [],
-      ...(input.outcome === "blocked" ? { blocker: {
+      // W492: only a question (or options to pick from) reaches the user's Inbox; without one the lead acts next.
+      ...(input.outcome === "blocked" && (input.question || input.options?.length) ? { blocker: {
         question: (input.question ?? input.summary).slice(0, 1000), context: input.summary.slice(0, 2000),
         ...(input.options?.length ? { options: input.options } : {}), ...(input.recommendation?.trim() ? { recommendation: input.recommendation.trim() } : {}),
       } } : {}),

@@ -82,6 +82,19 @@ What changed from v8 (the previous build, `3d46353`):
   them. Its `childPage` RPC never waits on BB: it answers from a cache a background read fills
   (loading until the first read lands), and the open trees refresh with the dashboard,
   re-reading every page they opened.
+- **Native status on the dashboard** (W496): each member thread's status comes from a cache
+  that lifecycle events keep current and that re-reads a fact older than 30 s in the
+  background. A thread the cache has never read is waited for at most 200 ms: past that its
+  rows say `loading`, and the Initiative is announced once the read lands. A failed first read
+  says `unreadable` and is tried again after 30 s, with one warn line until a read succeeds.
+  Agent and CLI reads still wait for every thread. A nested claim seen archived or deleted
+  keeps its last native fact (`project_nested_threads.ended`) and is no longer read: on the
+  live ledger, Infra's 689 watched threads fall to 136. An unarchive event revives it, and so
+  does a pass over BB's paged list of unarchived threads on the first sweep and then hourly,
+  for unarchives missed while the plugin was down. A deletion missed that way leaves the thread
+  off that list too, so each sweep also reads 20 of the claims ended before this run, once each,
+  and ends a deleted one as deleted. An answer older than an event that landed while it was in
+  flight never revives a thread.
 - **No Initiatives overview (D536)**: the sidebar lists the Initiatives and creates them
   (`command` `create`, keyed). The nav entry stays because a BB nav panel has no route
   without one, and the dashboard (`/plugins/initiatives/initiatives/<id>`) and composer live

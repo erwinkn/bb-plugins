@@ -1,7 +1,7 @@
 import { BUSY_STATUSES } from "./bb";
 import { observedTotals } from "./policy";
-import type { Store, UsageTurn } from "./store";
-import type { LiveThread } from "./overview";
+import type { Store, UsageRecord, UsageTurn, WorkerRecord } from "./store";
+import type { LiveFacts } from "./overview";
 
 export function summarizeTurns(turns: UsageTurn[], sampled: boolean) {
   const ended = turns.filter(turn => turn.completedAt !== null);
@@ -19,14 +19,28 @@ export function summarizeTurns(turns: UsageTurn[], sampled: boolean) {
   };
 }
 
-export function buildUsage(store: Store, projectId: string, live: Map<string, LiveThread>) {
+/** What buildUsage reads of the ledger; the overview passes what it has already read. */
+interface UsageInputs {
+  workers: WorkerRecord[];
+  generations: ReturnType<Store["projectGenerations"]>;
+  usage: UsageRecord[];
+}
+
+export function buildUsage(
+  store: Store,
+  projectId: string,
+  live: LiveFacts,
+  { workers, generations, usage }: UsageInputs = {
+    workers: store.workers(projectId), generations: store.projectGenerations(projectId), usage: store.projectUsage(projectId),
+  },
+) {
   const project = store.project(projectId)!;
-  const workers = store.workers(projectId);
-  const records = new Map(store.projectUsage(projectId).map(row => [row.threadId, row]));
+  const workerByNum = new Map(workers.map(worker => [worker.num, worker]));
+  const records = new Map(usage.map(row => [row.threadId, row]));
   const logicalWorkers = [
     ...workers,
     ...[...new Set([...records.values()].filter(row => row.workerNum > 0).map(row => row.workerNum))]
-      .filter(num => !workers.some(worker => worker.num === num))
+      .filter(num => !workerByNum.has(num))
       .map(num => ({ num, ref: `W${num}`, label: "Retained worker", state: "unknown", forkedFrom: null })),
   ];
   const members = new Map<string, {
@@ -37,8 +51,8 @@ export function buildUsage(store: Store, projectId: string, live: Map<string, Li
     if (!members.has(row.threadId)) members.set(row.threadId, row);
   };
   for (const workerNum of [0, ...workers.map(worker => worker.num)]) {
-    const worker = workers.find(row => row.num === workerNum);
-    for (const generation of store.generations(projectId, workerNum)) {
+    const worker = workerByNum.get(workerNum);
+    for (const generation of generations.get(workerNum) ?? []) {
       add({
         threadId: generation.threadId, workerNum, generation: generation.generation,
         label: worker?.label ?? "Coordinator",
@@ -67,9 +81,12 @@ export function buildUsage(store: Store, projectId: string, live: Map<string, Li
     label: record.workerNum === 0 ? "Coordinator" : record.workerNum < 0 ? "Member conversation" : `W${record.workerNum}`,
     retained: true, forkedFrom: null,
   });
+  // One read each for every member's turns and cursor, not two per thread.
+  const cursors = store.turnCursors([...members.keys()]);
+  const turnsOf = store.usageTurnsOf([...members.keys()]);
   const threads = [...members.values()].map(member => {
     const record = records.get(member.threadId);
-    const cursor = store.turnCursor(member.threadId);
+    const cursor = cursors.get(member.threadId) ?? null;
     const native = live.get(member.threadId);
     const profile = record?.profileObservation ?? null;
     const observedTimes = [record?.lastObservedAt, record?.lastReportAt, cursor?.lastObservedAt]
@@ -93,9 +110,9 @@ export function buildUsage(store: Store, projectId: string, live: Map<string, Li
         at: record?.contextObservedAt ?? null,
         changedAt: record?.contextChangedAt ?? null,
       },
-      runtime: native ? native.archived ? "archived" : native.status : "unknown",
+      runtime: native ? native.archived ? "archived" : native.status : (live.unread?.get(member.threadId) ?? "unknown"),
       staleWhileActive: !!native && !native.archived && BUSY_STATUSES.has(native.status),
-      turns: summarizeTurns(store.usageTurns(member.threadId), cursor !== null),
+      turns: summarizeTurns(turnsOf.get(member.threadId) ?? [], cursor !== null),
       turnObservations: cursor,
     };
   });
@@ -120,7 +137,15 @@ export function buildUsage(store: Store, projectId: string, live: Map<string, Li
     // Changed profiles stay in a mixed-history bucket, never the latest model.
     const key = thread.historicalAttribution === "mixed" ? "mixed" :
       JSON.stringify([thread.profile?.last.providerId ?? null, thread.profile?.last.model ?? null]);
-    profileGroups.set(key, [...(profileGroups.get(key) ?? []), thread]);
+    const group = profileGroups.get(key);
+    if (group) group.push(thread);
+    else profileGroups.set(key, [thread]);
+  }
+  const threadsOf = new Map<number, typeof threads>();
+  for (const thread of threads) {
+    const own = threadsOf.get(thread.workerNum);
+    if (own) own.push(thread);
+    else threadsOf.set(thread.workerNum, [thread]);
   }
   return {
     ...aggregate(threads),
@@ -135,8 +160,8 @@ export function buildUsage(store: Store, projectId: string, live: Map<string, Li
     workers: logicalWorkers.map(worker => ({
       ref: worker.ref, label: worker.label, state: worker.state,
       forkedFrom: worker.forkedFrom ? `W${worker.forkedFrom}` : null,
-      ...aggregate(threads.filter(row => row.workerNum === worker.num)),
-      generations: threads.filter(row => row.workerNum === worker.num),
+      ...aggregate(threadsOf.get(worker.num) ?? []),
+      generations: threadsOf.get(worker.num) ?? [],
     })),
     workerTotal: aggregate(threads.filter(row => row.ownership === "worker")),
     conversations: { ...aggregate(threads.filter(row => row.ownership === "user")),

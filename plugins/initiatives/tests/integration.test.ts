@@ -293,7 +293,7 @@ describe("explicit retirement", () => {
     expect(f.store.worker(project.id, worker.num)!.state).toBe("retired");
   });
 
-  it("refuses while the thread is busy, queued, or has live descendants", async () => {
+  it("waits while the thread is busy, queued, or has live descendants, then retires (W492)", async () => {
     const { f, project, worker, d } = await retiredReady();
     f.threads.set(d.threadId!, {
       ...f.threads.get(d.threadId!)!,
@@ -301,15 +301,18 @@ describe("explicit retirement", () => {
     });
     await expect(
       f.service.retireWorker(project.id, worker.ref, "done"),
-    ).rejects.toThrow(/still running/);
+    ).resolves.toMatchObject({ state: "retiring", note: expect.stringMatching(/still running/) });
+    expect(f.store.retireRequests()).toEqual([expect.objectContaining({ num: worker.num, reason: "done" })]);
     f.idle(d.threadId!);
     f.threads.set(d.threadId!, {
       ...f.threads.get(d.threadId!)!,
       queuedMessageCount: 1,
     });
+    await f.service.finishRetirements(d.threadId!);
+    expect(f.archive).not.toHaveBeenCalled();
     await expect(
-      f.service.retireWorker(project.id, worker.ref, "done"),
-    ).rejects.toThrow(/queued messages/);
+      f.service.retireWorker(project.id, worker.ref, "again"),
+    ).resolves.toMatchObject({ state: "retiring", note: expect.stringMatching(/queued messages/) });
     f.threads.set(d.threadId!, {
       ...f.threads.get(d.threadId!)!,
       queuedMessageCount: 0,
@@ -328,17 +331,18 @@ describe("explicit retirement", () => {
       queuedWork: "none",
       hasPendingInteraction: false,
     } as ThreadDto);
-    await expect(
-      f.service.retireWorker(project.id, worker.ref, "done"),
-    ).rejects.toThrow(/descendants/);
-    // Once the child archives, retire succeeds.
+    await f.service.finishRetirements();
+    expect(f.archive).not.toHaveBeenCalled();
+    // Once the child archives, the waiting retirement goes through, under the lead's latest reason.
     f.threads.set("child-1", {
       ...f.threads.get("child-1")!,
       status: "idle",
       archivedAt: Date.now(),
     });
-    await f.service.retireWorker(project.id, worker.ref, "done");
+    await f.service.finishRetirements();
     expect(f.store.worker(project.id, worker.num)!.state).toBe("retired");
+    expect(f.store.retireRequests()).toEqual([]);
+    expect(f.store.activity(project.id, -1).map((a) => a.summary)).toContain("W1 retired: again");
   });
 
   it("refuses while an assignment is still open", async () => {

@@ -26,10 +26,15 @@ export type ReadOptions = z.infer<typeof readOptionsSchema>;
 // category and stage select a slice of view prs (T155).
 export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", "context", "memory", "prs", "rules", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional(),
   category: z.string().min(1).max(80).optional(), stage: z.enum(PR_STAGE_IDS).optional(), unassigned: z.boolean().optional() }).strict();
+/**
+ * W492: initiative_read as sessions are offered it. "memory" still reads (older sessions), but is
+ * not offered: workers have no chat memory, and a lead's is Chat memory's memory_read.
+ */
+export const agentReadAdvertised = agentReadSchema.extend({ view: z.enum(["overview", "records", "context", "prs", "rules", ...READ_VIEWS]).optional() }).strict();
 export const MAX_READ_BYTES = 65536;
 const refViews: Record<string, ReadView> = { T: "tasks", W: "workers", A: "assignments", D: "decisions", K: "decisions", U: "updates" };
 export const fieldsByView: Partial<Record<ReadView, readonly string[]>> = {
-  tasks: ["brief"], workers: ["handoff", "report"], assignments: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "checkpoint", "reviewTargets", "reportNotice"],
+  tasks: ["brief"], workers: ["brief", "handoff", "report"], assignments: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "checkpoint", "reviewTargets", "reportNotice"],
   reports: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "reportNotice"],
   decisions: ["answer", "resolution", "body"], updates: ["body"], inbox: ["payload"], activity: ["payload"],
 };
@@ -108,7 +113,13 @@ export function validateSelection(view: ReadView, options: ReadOptions) {
   }
   validateFields([view], options);
 }
-const applicable = (view: ReadView, fields: readonly string[]) => fields.filter(f => fieldsByView[view]?.includes(f));
+/**
+ * W492: the names agents reach for, read as the field they mean: an assignment's brief is its
+ * briefText, and a worker's brief (or briefText) is its latest assignment's.
+ */
+const fieldAliases: Partial<Record<ReadView, Record<string, string>>> = { assignments: { brief: "briefText" }, reports: { brief: "briefText" }, workers: { briefText: "brief" } };
+const fieldOf = (view: ReadView, field: string) => fieldAliases[view]?.[field] ?? field;
+const applicable = (view: ReadView, fields: readonly string[]) => fields.filter(f => fieldsByView[view]?.includes(fieldOf(view, f)));
 /**
  * T143: refs mix kinds, so a field that only some of them have is no error: each record gets the
  * requested fields that apply to it and the result names the rest (fieldsNotApplied). A selection
@@ -133,7 +144,7 @@ function projectRow(view: ReadView, row: Record<string, any>, options: ReadOptio
   const fields = applicable(view, options.fields);
   if (!fields.length) return { ...summary(view, row), view };
   const full = fullRow(view, row);
-  return { ref: rowRef(view, row), view, ...Object.fromEntries(fields.map(f => [f, f.split(".").reduce<any>((value, key) => value?.[key], full) ?? null])) };
+  return { ref: rowRef(view, row), view, ...Object.fromEntries(fields.map(f => [f, fieldOf(view, f).split(".").reduce<any>((value, key) => value?.[key], full) ?? null])) };
 }
 
 /** Page complete records, never slice serialized JSON. Oversized individual details need explicit field selection. */
@@ -166,7 +177,8 @@ export function readRows(rows: { view: ReadView; row: Record<string, any> }[], o
 // The standard handoff is rendered from the canonical report on request, never stored twice.
 const selectedWorker = (store: Store, projectId: string, options: ReadOptions) => (view: ReadView, row: Record<string, any>) =>
   view === "workers" && !options.fields ? { ...row, ...workerWork(store, projectId, row.num, row.generation), latestReport: latestReportOf(store, projectId, row.num, options.detailed) }
-  : view === "workers" && options.fields?.includes("report") ? { ...row, report: latestReportOf(store, projectId, row.num, true) }
+  : view === "workers" ? { ...row, ...(options.fields!.includes("report") ? { report: latestReportOf(store, projectId, row.num, true) } : {}),
+    ...(options.fields!.some(f => fieldOf(view, f) === "brief") ? { brief: store.latestAssignment(projectId, row.num)?.briefText ?? null } : {}) }
   : (view === "assignments" || view === "reports") && options.fields?.includes("standardHandoff") ? { ...row, standardHandoff: row.report ? renderStandardHandoff(store, row as AssignmentRecord, false) : null }
   : row;
 

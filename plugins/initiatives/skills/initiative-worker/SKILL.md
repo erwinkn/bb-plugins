@@ -28,11 +28,12 @@ current instructions, the reviewer command and the rules), which replaces anythi
   full report: what you did, what you verified (commands and results), what is left, and
   anything uncommitted or still running.
 - `initiative_pr {prs:[{url, stage?, notes?:[{kind?:"note"|"question"|"comment", text}], initiative?}]}`
-  keeps your own PRs' stage (set `ready-for-erwin` after a clean review) and notes, on PRs
-  your assignment names or your branch opened. Your report's summary is added to the PRs it
+  keeps your own PRs' stage (set `ready-for-erwin` after a clean review) and notes: PRs your
+  assignment names, you opened, or no one else holds yet. Your report's summary is added to the PRs it
   names by itself. A PR your thread (or its child) opened belongs to your Adventure;
   `initiative:"<name>"` moves one elsewhere, `initiative:null` unassigns it.
-- If only the user can answer something, report blocked with `question`, `options`
+- Report blocked when you can't go on: your lead decides what happens next. If only the user
+  can answer something, add `question`, `options`
   (`[{label, consequences}]`) and `recommendation` (start it with the option's label). The
   user picks an option, or writes their own, on the Adventure's Inbox; the answer comes back
   to you or to your lead.

@@ -260,11 +260,8 @@ export const reportSchema = z
     /** D417: recorded from the final message of a worker that never filed it; never sent. */
     captured: z.literal(true).optional(),
   })
-  .strict()
-  .refine((report) => report.outcome !== "blocked" || report.blocker, {
-    message: "A blocked report needs a blocker question and context.",
-    path: ["blocker"],
-  });
+  // W492: a blocked report without a blocker waits on its lead; only a blocker reaches the user's Inbox.
+  .strict();
 export type Report = z.infer<typeof reportSchema>;
 
 export const HUMAN_ATTENTION = [

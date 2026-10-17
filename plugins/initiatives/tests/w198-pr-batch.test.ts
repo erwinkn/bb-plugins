@@ -46,13 +46,16 @@ describe("W198 PR stages", () => {
 
   it("v9: a worker sets the stage of its own PRs only, through the tool or the CLI", async () => {
     const { f, project } = await projectFixture();
+    const [other] = await call(f, "initiative_spawn", { label: "Other", purpose: "other", text: "Do it." });
     const [w] = await call(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
-    await expect(call(f, "initiative_pr", { prs: [{ url: PR, stage: "working" }] }, w.threadId)).rejects.toThrow(/keeps only PRs its assignments name/);
+    // Another worker's PR, as its lead recorded it.
+    await call(f, "initiative_pr", { prs: [{ url: PR, worker: other.worker }] });
+    await expect(call(f, "initiative_pr", { prs: [{ url: PR, stage: "working" }] }, w.threadId)).rejects.toThrow(/W2 keeps only its own PRs/);
     const cli = await f.harness.runCli(["pr", JSON.stringify({ prs: [{ url: PR, stage: "working" }] })], { threadId: w.threadId });
     expect(cli.exitCode).toBe(1);
-    expect(cli.stderr).toMatch(/keeps only PRs its assignments name/);
+    expect(cli.stderr).toMatch(/W2 keeps only its own PRs.*\(W1 holds it\)/);
     // A PR its lead recorded as its own: stage and notes are the worker's to keep.
-    await call(f, "initiative_pr", { prs: [{ url: PR, worker: "W1" }] });
+    await call(f, "initiative_pr", { prs: [{ url: PR, worker: w.worker }] });
     await call(f, "initiative_pr", { prs: [{ url: PR, stage: "ready-for-erwin", notes: [{ text: "Clean review in r2." }] }] }, w.threadId);
     expect(f.store.prRecords(project.id).get(PR)).toMatchObject({ stage: "ready-for-erwin" });
     await expect(call(f, "initiative_pr", { prs: [{ url: PR, category: "Search" }] }, w.threadId)).rejects.toThrow(/category is a lead's to set/);

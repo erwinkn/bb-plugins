@@ -120,21 +120,23 @@ describe("D442 notes per PR", () => {
     expect([summary.count, summary.recent.map((n) => n.n), summary.open]).toEqual([3, [1, 2, 3], []]);
   });
 
-  it("lets a worker note the PRs its assignments name, and nothing else", async () => {
+  it("lets a worker note its own PRs, and none another worker holds", async () => {
     const { f, project } = await projectFixture();
+    const other = await spawn(f, project.id, `Fix ${url(8)}.`);
     const { threadId } = await spawn(f, project.id, `Fix ${url(7)}.`);
     expect(await call(f, "initiative_pr", { prs: [{ url: url(7), notes: [{ kind: "question", text: "Squash before merge?" }] }] }, threadId))
       .toEqual({ prs: [{ url: url(7), noted: [1] }] });
-    await expect(call(f, "initiative_pr", { prs: [{ url: url(8), notes: [{ text: "x" }] }] }, threadId)).rejects.toThrow(/W1 keeps only PRs its assignments name/);
+    await expect(call(f, "initiative_pr", { prs: [{ url: url(8), notes: [{ text: "x" }] }] }, threadId))
+      .rejects.toThrow(new RegExp(`W2 keeps only its own PRs.*${url(8)} \\(${other.worker.ref}'s ${other.assignment.ref} names it\\)`));
     // v9: a worker keeps its own PRs' stage too; other fields stay a lead's.
     await call(f, "initiative_pr", { prs: [{ url: url(7), stage: "in-review" }] }, threadId);
     await expect(call(f, "initiative_pr", { prs: [{ url: url(7), category: "Search" }] }, threadId)).rejects.toThrow(/Workers set their PRs' stage, add notes and move them to an Adventure \(\{prs:\[\{url,stage,notes,initiative\}\]\}\); category is a lead's to set/);
     await expect(call(f, "initiative_pr", { rename: [{ from: "a", to: "b" }] }, threadId)).rejects.toThrow(/rename/);
     // A PR the coordinator put on the worker counts too.
-    await call(f, "initiative_pr", { prs: [{ url: url(8), worker: "W1" }] });
-    await call(f, "initiative_pr", { prs: [{ url: url(8), notes: [{ text: "Rebased" }] }] }, threadId);
+    await call(f, "initiative_pr", { prs: [{ url: url(9), worker: "W2" }] });
+    await call(f, "initiative_pr", { prs: [{ url: url(9), notes: [{ text: "Rebased" }] }] }, threadId);
     const [note] = f.service.prNotes.list(project.id, url(7));
-    expect(note).toMatchObject({ author: "W1", kind: "question", link: threadId, answered: null });
+    expect(note).toMatchObject({ author: "W2", kind: "question", link: threadId, answered: null });
     expect(f.service.prNotes.summaries(project.id).get(url(7))!.open).toHaveLength(1);
   });
 
@@ -181,5 +183,36 @@ describe("D442 notes per PR", () => {
     const loading = prSummary({ ...base, repos: [{ repo: "erwinkn/bb", fetchedAt: null, error: null, fetching: true, detailsFetchedAt: null, detailsError: null }] });
     expect(loading.loading).toMatch(/first read of erwinkn\/bb from GitHub is running/);
     expect(loading.repos).toEqual([{ repo: "erwinkn/bb", fetchedAt: null, fetching: true }]);
+  });
+});
+
+describe("W492 a worker's first initiative_pr call succeeds", () => {
+  it("takes a PR no one holds yet (a branch that doesn't name the thread, a PR the cache hasn't seen) and keeps it", async () => {
+    const { f, project } = await projectFixture();
+    const { threadId } = await spawn(f, project.id, "Fix the inbox order.");
+    expect(await call(f, "initiative_pr", { prs: [{ url: url(31), stage: "in-review" }] }, threadId)).toEqual({ prs: [{ url: url(31), stage: "in-review" }] });
+    expect(f.store.prRecords(project.id).get(url(31))).toMatchObject({ worker: "W1", stage: "in-review" });
+    // A notes-only call claims it too, and the claim holds against a later worker.
+    expect(await call(f, "initiative_pr", { prs: [{ url: url(32), notes: [{ text: "Opened" }] }] }, threadId)).toEqual({ prs: [{ url: url(32), noted: [1] }] });
+    expect(f.store.prRecords(project.id).get(url(32))?.worker).toBe("W1");
+    const later = await spawn(f, project.id, "Something else.");
+    await expect(call(f, "initiative_pr", { prs: [{ url: url(32), stage: "working" }] }, later.threadId)).rejects.toThrow(/W2 keeps only its own PRs.*\(W1 holds it\)/);
+  });
+
+  it("leaves a lead's fields out with a note, and records the rest", async () => {
+    const { f, project } = await projectFixture();
+    const { threadId } = await spawn(f, project.id, `Fix ${url(7)}.`);
+    const result = await call(f, "initiative_pr", { prs: [{ url: url(7), stage: "ready-for-erwin", note: "Clean r1", worker: "W1", waitingOn: "Erwin", category: "UI" }] }, threadId);
+    expect(result).toEqual({ prs: [{ url: url(7), stage: "ready-for-erwin", worker: "W1", assignment: null }],
+      note: "Left out category, waitingOn: they are a lead's to set; tell your lead if they need changing. Everything else was recorded." });
+    expect(f.store.prRecords(project.id).get(url(7))).toMatchObject({ stage: "ready-for-erwin", note: "Clean r1", worker: "W1", waitingOn: null, category: null });
+    // Its own ref as worker is no lead field: nothing to note.
+    expect(await call(f, "initiative_pr", { prs: [{ url: url(7), stage: "in-review", worker: "w1" }] }, threadId)).toEqual({ prs: [{ url: url(7), stage: "in-review", worker: "W1", assignment: null }] });
+    // An entry with nothing a worker sets records nothing; one naming the worker itself claims the PR.
+    expect(await call(f, "initiative_pr", { prs: [{ url: url(7), stage: "working" }, { url: url(33), category: "UI" }] }, threadId))
+      .toEqual({ prs: [{ url: url(7), stage: "working" }], note: expect.stringMatching(/^Left out category/) });
+    expect(f.store.prRecords(project.id).has(url(33))).toBe(false);
+    await call(f, "initiative_pr", { prs: [{ url: url(34), worker: "W1" }] }, threadId);
+    expect(f.store.prRecords(project.id).get(url(34))?.worker).toBe("W1");
   });
 });

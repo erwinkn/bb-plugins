@@ -110,9 +110,10 @@ describe("T147 other mistakes say how to fix them", () => {
 
   it("initiative_read fields a kind lacks name the ones it has and the nearest; selectors without view or refs are named", async () => {
     const { f } = await projectFixture();
-    const fields = await refused(f, "initiative_read", { view: "assignments", fields: ["brief"] });
-    expect(fields).toContain("brief applies to none of the records read (did you mean brief → briefText?)");
-    expect(fields).toContain("assignments: briefText, report, report.handoff,");
+    // W492: brief reads as briefText now; a field the kind lacks still names the nearest.
+    const nearest = await refused(f, "initiative_read", { view: "assignments", fields: ["handoff"] });
+    expect(nearest).toContain("handoff applies to none of the records read (did you mean handoff → report.handoff?)");
+    expect(nearest).toContain("assignments: briefText, report, report.handoff,");
     expect(await refused(f, "initiative_read", { view: "inbox", fields: ["report.handoff"] })).toContain("inbox: payload");
     const selectors = await refused(f, "initiative_read", { limit: 5, detailed: true });
     expect(selectors).toContain("Selectors (limit, detailed) need a view or refs, and this call has neither.");
@@ -219,14 +220,14 @@ describe("T147 v2: review findings", () => {
     const { f } = await projectFixture();
     const result = JSON.parse(await f.harness.callAgentTool("initiative_batch", { actions: [
       { tool: "task", action: "create" },
-      { tool: "read", view: "assignments", fields: ["brief"] },
+      { tool: "read", view: "assignments", fields: ["handoff"] },
       { tool: "message", text: "no recipient" },
       { tool: "read", refs: ["X9"] },
       { tool: "worker", action: "retire", worker: "W99" },
     ] }, { threadId: "coordinator" }) as string);
     const errors: string[] = result.results.map((r: { error: string }) => r.error);
     expect(errors[0]).toBe("actions[0]: title is required.");
-    expect(errors[1]).toMatch(/^actions\[1\]: brief applies to none of the records read/);
+    expect(errors[1]).toMatch(/^actions\[1\]: handoff applies to none of the records read/);
     expect(errors[2]).toMatch(/^actions\[2\]: Name the recipient/);
     expect(errors[3]).toMatch(/^actions\[3\]: Unknown durable ref X9/);
     expect(errors[4]).not.toMatch(/^actions\[/);

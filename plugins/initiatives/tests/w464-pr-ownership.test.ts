@@ -430,7 +430,9 @@ describe("W464 moving PRs with initiative_pr and the prOwner RPC", () => {
     await call(f, "initiative_spawn", { label: "PR work", purpose: "pr", text: `Fix ${url(7)}.` });
     const worker = f.store.worker(project.id, f.store.assignments(project.id).at(-1)!.workerNum)!;
     expect(await call(f, "initiative_pr", { prs: [{ url: url(7), initiative: "Equisafe UI" }] }, worker.threadId!)).toEqual({ prs: [{ url: url(7), initiative: "Equisafe UI" }] });
-    await expect(call(f, "initiative_pr", { prs: [{ url: url(8), initiative: "Equisafe UI" }] }, worker.threadId!)).rejects.toThrow(/keeps only PRs its assignments name/);
+    // W492: a PR another worker holds stays its own.
+    f.store.savePrRecord(project.id, { ...blankPrRecord(url(8), 1), worker: "W99" });
+    await expect(call(f, "initiative_pr", { prs: [{ url: url(8), initiative: "Equisafe UI" }] }, worker.threadId!)).rejects.toThrow(/keeps only its own PRs.*W99 holds it/);
     expect(owner(f, 8)).toBeUndefined();
   });
 });

@@ -39,7 +39,11 @@ export function currentIdentity(store: Store, m: Membership) {
       ...workerWork(store, m.project.id, m.worker.num, m.worker.generation) } : { role: "coordinator", threadId: m.project.coordinatorThreadId }) };
 }
 
-function currentMember(store: Store, threadId: string) {
+/**
+ * `target`: the member is the one a message would wake. W492: a sender is already running, so
+ * its own unsettled Stop or start is no reason to keep what it says from its lead.
+ */
+function currentMember(store: Store, threadId: string, target = true) {
   const m = store.membership(threadId);
   // A discussion is the user's own thread that may message the coordinator (D480).
   if (!m || m.former || m.kind === "adhoc" && !m.discussion) throw new ProjectError("Messages require current managed Initiative membership; former and user-owned threads cannot use this wrapper.");
@@ -49,7 +53,7 @@ function currentMember(store: Store, threadId: string) {
     if (w.threadId !== threadId || w.userStopped || w.state === "retired") throw new ProjectError(`${w.ref} is stopped, retired or no longer current.`);
     // A Stop or an unconfirmed start that has not settled must not be woken by a message.
     const latest = store.latestAssignment(m.project.id, w.num);
-    if (latest && ((latest.cancelRequested && latest.state !== "cancelled") || ["pending", "uncertain"].includes(latest.opState)))
+    if (target && latest && ((latest.cancelRequested && latest.state !== "cancelled") || ["pending", "uncertain"].includes(latest.opState)))
       throw new ProjectError(`${w.ref}'s ${latest.ref} is being stopped or is not confirmed yet; message it once that settles.`);
     const a = store.openAssignment(m.project.id, w.num);
     return { m, assignment: a && a.generation === w.generation ? a.ref : null };
@@ -58,11 +62,23 @@ function currentMember(store: Store, threadId: string) {
 }
 /** Whether this wrapper's own membership checks would admit the caller now; no native read. */
 export function messageCallerAdmitted(store: Store, threadId: string): boolean {
-  try { currentMember(store, threadId); return true; } catch { return false; }
+  try { currentMember(store, threadId, false); return true; } catch { return false; }
 }
-function nativeAvailable(thread: ThreadDto, m: Membership, pendingQueue = false) {
-  if (thread.archivedAt !== null || thread.deletedAt !== null || !(pendingQueue ? ["idle", "active", "starting", "pending"] : ["idle", "active", "starting"]).includes(thread.status) || !m.project.memberProjectIds.includes(thread.projectId))
-    throw new ProjectError(`Native caller/target is unavailable (status ${thread.status}), archived, deleted or outside this Initiative. Pending recipients support queue mode only; messaging cannot resume stopped/finished work.`);
+/**
+ * Whether a thread can take part in a message. W492: the sender is running (it is sending), so
+ * only its archive and project count. A lead tab whose last turn failed (error) still takes
+ * messages: the next one starts its turn, which is how it hears from its workers again. A worker
+ * that stopped is not resumed by a message.
+ */
+function nativeAvailable(thread: ThreadDto, m: Membership, who: string, { sender = false, pendingQueue = false } = {}) {
+  if (thread.archivedAt !== null || thread.deletedAt !== null || !m.project.memberProjectIds.includes(thread.projectId))
+    throw new ProjectError(`${who}'s thread is archived, deleted or outside this Initiative.`);
+  if (sender) return;
+  const live = ["idle", "active", "starting", ...(pendingQueue ? ["pending"] : []), ...(isLead(m) ? ["error"] : [])];
+  if (live.includes(thread.status)) return;
+  if (thread.status === "pending")
+    throw new ProjectError(`${who} has not started yet: send with mode:"queue", and it reads the message once it starts.`);
+  throw new ProjectError(`${who}'s thread is not running (status ${thread.status}), and a message never resumes stopped or finished work.${m.worker ? ` Give it more work with work:true, or spawn a fresh worker with handoffs:["${m.worker.ref}"].` : ""}`);
 }
 
 /**
@@ -72,18 +88,21 @@ function nativeAvailable(thread: ThreadDto, m: Membership, pendingQueue = false)
  */
 export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: string, input: InitiativeMessage, projectId?: string,
   workerLead?: (m: Membership) => Promise<string | null>) {
-  const sender = currentMember(store, caller);
+  const sender = currentMember(store, caller, false);
+  // W492: a worker naming itself means its lead (its own W# is how it signs).
+  const self = !!sender.m.worker && input.target.toUpperCase() === sender.m.worker.ref.toUpperCase();
+  if (self) input = { ...input, target: "lead" };
   const toLead = !!sender.m.worker && (input.target === "lead" || input.target === "coordinator");
   const leadId = toLead && workerLead ? await workerLead(sender.m) : null;
   const resolve = () => {
-    const from = currentMember(store, caller);
+    const from = currentMember(store, caller, false);
     if (projectId && from.m.project.id !== projectId) throw new ProjectError("Cannot message another Initiative.");
     const byRef = input.target !== "coordinator" && input.target !== "lead";
     const id = !byRef
       ? (toLead ? leadId ?? from.m.project.coordinatorThreadId : from.m.project.coordinatorThreadId)
       : store.worker(from.m.project.id, Number(input.target.slice(1)))?.threadId;
     if (!id) throw new ProjectError("Target has no current native thread. Read workers and ask a lead.");
-    if (id === caller) throw new ProjectError("Don't send yourself a message.");
+    if (id === caller) throw new ProjectError(`This tab is ${from.m.worker?.ref ?? "the coordinator"}: name another recipient (a W#, or "lead").`);
     const to = currentMember(store, id);
     if (to.m.project.id !== from.m.project.id || byRef && to.m.worker?.ref !== input.target)
       throw new ProjectError("Target is not a current member of this Initiative.");
@@ -98,14 +117,16 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
     throw new ProjectError("Caller, target or assignment changed while checking native state; read current membership before a new message.");
   if (senderThread.id !== caller || target.id !== fresh.id) throw new ProjectError("Native lookup did not confirm caller/target identity; no message sent.");
   const mode = messageMode(input.mode, isLead(fresh.from.m), !!fresh.to.m.worker, target.status);
-  nativeAvailable(senderThread, fresh.from.m); nativeAvailable(target, fresh.to.m, mode === "queue");
+  nativeAvailable(senderThread, fresh.from.m, "The sender", { sender: true });
+  nativeAvailable(target, fresh.to.m, fresh.to.m.worker?.ref ?? (input.target === "lead" ? "Your lead" : "The coordinator"), { pendingQueue: mode === "queue" });
   const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})`
     : fresh.from.m.discussion ? `lead tab "${senderThread.title ?? caller}"` : "coordinator";
   try {
     const receipt = await sdk.threads.send({ threadId: fresh.id, senderThreadId: caller,
       mode: mode === "steer" ? "steer-if-active" : "queue-if-active",
       input: textInput(`Initiative · ${fresh.from.m.project.name} · From ${identity}\n\n${input.text}`) });
-    return { target: input.target, threadId: fresh.id, generation: fresh.generation, receipt };
+    return { target: input.target, threadId: fresh.id, generation: fresh.generation, receipt,
+      ...(self ? { note: `${fresh.from.m.worker!.ref} is you, so this went to your lead.` } : {}) };
   } catch (error) {
     throw new ProjectError(`Native message ${isDefiniteRejection(error) ? "refused" : "delivery uncertain"} to ${input.target} at ${fresh.id}${fresh.generation === null ? "" : ` generation ${fresh.generation}`}: ${errorMessage(error)}. Inspect native receipts before another send; no automatic retry.`);
   }

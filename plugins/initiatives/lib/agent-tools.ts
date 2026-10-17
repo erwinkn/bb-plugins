@@ -4,6 +4,7 @@ import type { Command } from "./commands";
 import { ruleSources, ruleText } from "./rules";
 import { ToolInputError } from "./tool-errors";
 import { MODE_HELP } from "./messaging";
+import { headTail } from "./handover-packet";
 
 /**
  * T136: the agent tool surface. Each tool is one flat object (Claude's bridge blanks union
@@ -42,6 +43,13 @@ export const messageToolSchema = z.object({
 }).strict();
 /** What agents see: messageToolSchema without the older target. */
 export const messageToolAdvertised = messageToolSchema.omit({ target: true });
+/**
+ * W492: initiative_message as a worker's session advertises it (agents.configure): giving work
+ * is a lead's, so tasks, work and resumeCold are not offered. Execution parses messageToolSchema.
+ */
+export const workerMessageToolSchema = messageToolSchema.pick({ text: true, mode: true }).extend({
+  to: z.string().max(32).describe('"lead": the tab that gave you your work ("coordinator" reaches it too). W# reaches a peer worker.'),
+}).strict();
 /** What initiative_spawn advertises: no review fields (workers run their own reviews). */
 export const spawnToolAdvertised = spawnToolSchema.omit({ role: true, reviews: true });
 
@@ -108,13 +116,54 @@ export const updateToolSchema = z.object({
 }).strict();
 
 export const reportToolSchema = z.object({
-  outcome: z.enum(["done", "blocked", "failed"]),
+  outcome: z.enum(["done", "blocked", "failed"]).describe("done: finished (partial work too: say what is left). blocked: you can't go on without an answer. failed: it can't be done."),
   summary: text(4000).describe("What the coordinator reads first, standing on its own: outcome, PR URL and head, merge order, what you need. Its first 300 characters are the dashboard line; a long report reaches the coordinator as its first 1000."),
-  question: text(1000).optional().describe("blocked: what you need answered."),
+  question: text(1000).optional().describe("blocked, when only the user can answer: the question, shown in their Inbox. Without one, your lead decides what happens next."),
   options: answerOptionsSchema.optional().describe("blocked: the choices, shown to the user as options."),
   recommendation: z.string().max(1000).optional().describe("blocked: your pick, starting with its label, and why."),
-  report: text(FINAL_MESSAGE_MAX).describe("Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded; the coordinator gets it whole when short, otherwise reads it on demand."),
+  report: text(FINAL_MESSAGE_MAX).describe(`Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded; the coordinator gets it whole when short, otherwise reads it on demand. Past ${FINAL_MESSAGE_MAX} characters only its start and end are kept.`),
 }).strict();
+
+/** W492: outcomes agents write for the three initiative_report takes. */
+const OUTCOME_ALIASES: Record<string, "done" | "failed"> = {
+  succeeded: "done", success: "done", successful: "done", completed: "done", complete: "done", finished: "done", ok: "done",
+  failure: "failed", error: "failed", errored: "failed",
+};
+/** The summary a report without one gets: the report's start. */
+const SUMMARY_FROM_REPORT = 1000;
+
+/**
+ * W492: what initiative_report would otherwise refuse but can read without guessing: an outcome
+ * named another way, a missing summary or report (the other stands in), a report past
+ * FINAL_MESSAGE_MAX (its start and end are kept, like a captured final message). Each is said in
+ * `notes`; the result is still parsed by reportToolSchema.
+ */
+export function normalizeReport(raw: unknown): { raw: unknown; notes: string[] } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { raw, notes: [] };
+  const r: Record<string, unknown> = { ...raw };
+  const notes: string[] = [];
+  const meant = typeof r.outcome === "string" ? OUTCOME_ALIASES[r.outcome.trim().toLowerCase()] : undefined;
+  if (meant) {
+    notes.push(`outcome "${r.outcome}" was recorded as "${meant}".`);
+    r.outcome = meant;
+  }
+  const given = (key: string) => (typeof r[key] === "string" && (r[key] as string).trim() ? (r[key] as string).trim() : null);
+  const summary = given("summary"), report = given("report");
+  if (!summary && report) {
+    r.summary = report.length > SUMMARY_FROM_REPORT ? `${report.slice(0, SUMMARY_FROM_REPORT - 1).trimEnd()}…` : report;
+    notes.push(`No summary: the report's first ${SUMMARY_FROM_REPORT} characters stand in.`);
+  }
+  if (!report && summary) {
+    r.report = summary;
+    notes.push("No report: the summary is recorded as the report.");
+  }
+  if (report && report.length > FINAL_MESSAGE_MAX) {
+    // The omission marker takes the room left under the cap.
+    r.report = headTail(report, FINAL_MESSAGE_MAX - 100);
+    notes.push(`The report is ${report.length} characters: its start and end are kept, ${FINAL_MESSAGE_MAX - 100} in all.`);
+  }
+  return { raw: r, notes };
+}
 
 /**
  * T143: a tool's parameters as agents see them. Each advertised tool costs its tokens in every

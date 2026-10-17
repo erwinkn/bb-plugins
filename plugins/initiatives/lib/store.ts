@@ -36,6 +36,7 @@ import {
 } from "./schema";
 
 import { isLegacyReport, storedReportSchema } from "./legacy";
+import type { LiveThread } from "./overview";
 import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
 import { PR_STAGE_IDS, type PrRecord, type PrStage, type PrStageChange } from "./pr-stages";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
@@ -524,7 +525,38 @@ export const MIGRATIONS = [
   // are strict, so it still reads every row (it shows the answer's detail without the pick).
   `ALTER TABLE assignments ADD COLUMN blocker_options TEXT`,
   `ALTER TABLE knowledge ADD COLUMN blocker_choice TEXT`,
+  // W492: a lead's retire of a worker whose thread was still busy, as JSON {reason, at}; the
+  // worker retires once the thread is quiet (Service.finishRetirements). The previous build
+  // ignores it: the worker then stays until retired again.
+  `ALTER TABLE workers ADD COLUMN retire_request TEXT`,
+  // W492: a blocked report without a question waits on its lead, not the user. Its JSON keeps a
+  // blocker made of its summary, the shape the previous build requires of a blocked report (it
+  // shows it in the Inbox as before); this column, the report_seq of that filing, tells the
+  // current build to read it without one. A later filing by the previous build bumps report_seq
+  // and leaves this behind, so it no longer applies.
+  `ALTER TABLE assignments ADD COLUMN blocked_on_lead INTEGER`,
+  // W492: the facts the dashboard reads of every assignment (Store.assignmentsForOverview). Most
+  // of them sit after the brief and report in the row, and reaching them there walks each row's
+  // overflow pages: ~60 ms an Initiative with 2,400 assignments and 28 MB of briefs and reports.
+  `CREATE INDEX assignments_overview ON assignments(project_id, num, worker_num, task_nums, role, thread_id, generation,
+    profile, actual_profile, state, op_state, brief_delivered, review_of, label, pending_identity, reply_to, stop_reason,
+    checkpoint, reported_at, report_seq, created_at)`,
+  // W496: the last native fact (a LiveThread as JSON) of a nested thread seen archived or
+  // deleted. The dashboard stops reading the thread and shows this instead; an unarchive clears
+  // it. The previous build ignores it and reads every nested thread again.
+  `ALTER TABLE project_nested_threads ADD COLUMN ended TEXT`,
 ];
+
+/** W496: a stored ended fact; one that does not parse reads as none, so the thread is read again. */
+const endedFact = (value: unknown): LiveThread | null => {
+  if (typeof value !== "string") return null;
+  try {
+    const fact = JSON.parse(value) as LiveThread;
+    return fact && typeof fact.status === "string" && typeof fact.archived === "boolean" ? fact : null;
+  } catch {
+    return null;
+  }
+};
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
 export const OPEN_REVIEW_QUERY = `SELECT * FROM assignments WHERE project_id = ? AND role = 'review'
@@ -625,6 +657,8 @@ const noticeSchema = z.object({ state: z.enum(["pending", "sent", "queued", "fai
 export interface CheckpointRecord { recordedBy: string; recordedAt: number; sourceThreadId: string }
 const reviewTargetsSchema = z.array(z.object({ task: z.string(), assignment: z.string(), revision: z.string(), worker: z.string(), profile: profileSchema }).strict());
 const checkpointRecordSchema = z.object({ recordedBy: z.string(), recordedAt: z.number(), sourceThreadId: z.string() }).strict();
+/** W492: workers.retire_request. */
+const retireRequestSchema = z.object({ reason: z.string(), at: z.number() }).strict();
 /**
  * Who released a listed-background hold, why, against which report version, and the
  * native evidence seen. Not evidence that the listed jobs finished.
@@ -728,6 +762,15 @@ export interface AssignmentRecord {
   createdAt: number;
   updatedAt: number;
 }
+
+/** W492: what the dashboard reads of an assignment (Store.assignmentsForOverview). */
+export type OverviewAssignment = Pick<AssignmentRecord,
+  | "num" | "ref" | "workerNum" | "taskNums" | "role" | "threadId" | "generation" | "profile" | "actualProfile"
+  | "state" | "opState" | "briefDelivered" | "reviewOf" | "label" | "pendingIdentity" | "replyTo" | "stopReason"
+  | "checkpoint" | "report" | "reportSeq" | "reportedAt" | "createdAt">;
+
+/** W492: what the Workers tab shows of a worker's latest report. */
+export interface ReportFacts { outcome: Report["outcome"]; summary: string; question: string | null }
 
 /** T136: a generated (or user-edited) handover waiting to become a new coordinator's first message. */
 export interface HandoverDraft {
@@ -1118,6 +1161,11 @@ const blockerDismissalBodySchema = z.object({
 }).strict();
 const decisionBodySchema = z.union([z.object({ description: z.string(), cleanupHistory: cleanupHistorySchema }).strict(), blockerAnswerBodySchema, blockerDismissalBodySchema, legacyDecisionBodySchema]);
 const objectSchema = z.record(z.string(), z.unknown());
+// W492: built once; a schema built per decoded row cost more than the decoding itself.
+const stringsSchema = z.array(z.string());
+const notificationSchema = z.object({
+  state: z.enum(["pending", "sent", "queued", "uncertain", "failed"]), op: z.string(), coordinatorThreadId: z.string().nullable(), queuedId: z.string().optional(), detail: z.string().optional(),
+}).strict();
 
 const json = (value: unknown) =>
   value === null || value === undefined ? null : JSON.stringify(value);
@@ -1130,12 +1178,21 @@ const json = (value: unknown) =>
 const blockerOptionsSchema = z.object({ options: answerOptionsSchema.optional(), recommendation: z.string().optional() }).strict();
 function splitReport(report: Report | null) {
   const blocker = report?.blocker;
-  if (!report || !blocker) return { report, options: null };
+  // W492: blocked on the lead (no blocker), stored as the previous build reads a blocked report.
+  if (report?.outcome === "blocked" && !blocker)
+    return { report: { ...report, blocker: { question: report.summary.slice(0, 1000), context: report.summary.slice(0, 2000) } }, options: null, onLead: true };
+  if (!report || !blocker) return { report, options: null, onLead: false };
   const { options, recommendation, ...rest } = blocker;
   // Kept exactly as given, so a stored report reads back equal to the one filed.
-  return { report: { ...report, blocker: rest }, options: options === undefined && recommendation === undefined ? null : { options, recommendation } };
+  return { report: { ...report, blocker: rest }, options: options === undefined && recommendation === undefined ? null : { options, recommendation }, onLead: false };
 }
-function joinReport(report: Report | null, stored: z.output<typeof blockerOptionsSchema> | null): Report | null {
+/** W492: whether a row's stored report is the filing blocked_on_lead marks. */
+const onLead = (row: Row) => row.blocked_on_lead !== null && row.blocked_on_lead !== undefined && Number(row.blocked_on_lead) === Number(row.report_seq);
+function joinReport(report: Report | null, stored: z.output<typeof blockerOptionsSchema> | null, onLead = false): Report | null {
+  if (onLead && report?.blocker) {
+    const { blocker: _, ...rest } = report;
+    return rest;
+  }
   if (!report?.blocker || !stored) return report;
   const { options, recommendation } = stored;
   return { ...report, blocker: { ...report.blocker, ...(options !== undefined ? { options } : {}), ...(recommendation !== undefined ? { recommendation } : {}) } };
@@ -1209,7 +1266,7 @@ function toRule(row: Row): RuleRecord {
     ref: ruleRef(num),
     text: String(row.text),
     position: Number(row.position),
-    sources: decode("rules", row, "sources", z.array(z.string())),
+    sources: decode("rules", row, "sources", stringsSchema),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     removedAt: row.removed_at == null ? null : Number(row.removed_at),
@@ -1321,11 +1378,11 @@ function toAssignment(row: Row): AssignmentRecord {
     ),
     label: (row.label as string | null) ?? null,
     replyTo: (row.reply_to as string | null) ?? null,
-    writeScope: decodeNullable("assignments", row, "write_scope", z.array(z.string())),
+    writeScope: decodeNullable("assignments", row, "write_scope", stringsSchema),
     scopeRelease: decodeNullable("assignments", row, "scope_release", scopeReleaseSchema),
     handoffSources: decodeNullable("assignments", row, "handoff_sources", handoffSourcesSchema),
     reportSeq: Number(row.report_seq ?? 0),
-    report: joinReport(decodeNullable("assignments", row, "report", storedReportSchema), decodeNullable("assignments", row, "blocker_options", blockerOptionsSchema)),
+    report: joinReport(decodeNullable("assignments", row, "report", storedReportSchema), decodeNullable("assignments", row, "blocker_options", blockerOptionsSchema), onLead(row)),
     reportedAt: (row.reported_at as number | null) ?? null,
     stopReason: (row.stop_reason as string | null) ?? null,
     createdAt: Number(row.created_at),
@@ -1360,9 +1417,7 @@ function toDecision(row: Row): DecisionRecord {
     madeBy: row.decision_owner as DecisionRecord["madeBy"],
     review: row.decision_review as DecisionRecord["review"],
     reviewMessage: row.decision_review_message as string | null,
-    notification: decodeNullable("knowledge", row, "decision_notification", z.object({
-      state: z.enum(["pending", "sent", "queued", "uncertain", "failed"]), op: z.string(), coordinatorThreadId: z.string().nullable(), queuedId: z.string().optional(), detail: z.string().optional(),
-    }).strict()),
+    notification: decodeNullable("knowledge", row, "decision_notification", notificationSchema),
     description: decisionDescription(body, row.human_attention as HumanAttention),
     supersedes: (row.supersedes as number | null) ?? null,
     createdAt: Number(row.created_at),
@@ -1492,9 +1547,36 @@ export interface ProjectThreadRecord {
   confirmedAt: number | null;
 }
 
+const toTurnCursor = (row: Row) => ({
+  lastSeq: Number(row.last_seq), firstObservedAt: Number(row.first_observed_at),
+  lastObservedAt: Number(row.last_observed_at),
+});
+
+const toUsageTurn = (row: Row): UsageTurn => ({
+  turnId: (row.turn_id as string | null) ?? null,
+  startedAt: (row.started_at as number | null) ?? null,
+  completedAt: (row.completed_at as number | null) ?? null,
+  status: (row.status as string | null) ?? null,
+});
+
+const toGeneration = (row: Row) => ({
+  generation: Number(row.generation),
+  threadId: String(row.thread_id),
+  providerThreadId: (row.provider_thread_id as string | null) ?? null,
+  startedAt: Number(row.started_at),
+  endedAt: (row.ended_at as number | null) ?? null,
+  endReason: (row.end_reason as string | null) ?? null,
+  holdReason: (row.hold_reason as string | null) ?? null,
+});
+
 const toNoticeCycle = (row: Row): ReportNoticeCycle => ({ projectId: String(row.project_id), num: Number(row.assignment_num), cycle: String(row.cycle), hash: String(row.hash), leadThreadId: String(row.lead_thread_id), queuedId: row.queued_id === null ? null : String(row.queued_id), attempts: Number(row.attempts), startedAt: Number(row.started_at), sentAt: Number(row.sent_at) });
 
 export class Store {
+  /** W492: reportFacts by Initiative and assignment, with the filing they were decoded from. */
+  private readonly filings = new Map<string, { stamp: string; facts: ReportFacts | null }>();
+  /** W497: writes to each nested thread's ended fact this run, so a slow read can tell one landed meanwhile. */
+  private readonly nestedVersions = new Map<string, number>();
+
   constructor(
     readonly db: Database.Database,
     private readonly clock: () => number = Date.now,
@@ -1715,7 +1797,7 @@ export class Store {
 
   nestedProjectThreads(
     projectId: string,
-  ): { threadId: string; label: string; bbProjectId: string | null }[] {
+  ): { threadId: string; label: string; bbProjectId: string | null; ended: LiveThread | null }[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM project_nested_threads WHERE project_id = ? ORDER BY created_at`,
@@ -1725,7 +1807,51 @@ export class Store {
       threadId: String(row.thread_id),
       label: String(row.label),
       bbProjectId: (row.bb_project_id as string | null) ?? null,
+      ended: endedFact(row.ended),
     }));
+  }
+
+  /**
+   * W496: a nested thread seen archived or deleted keeps `fact`, its last native state, and is
+   * no longer read for the dashboard. A newer fact replaces it (an archived thread later
+   * deleted), except over a deletion; a thread that is no nested claim is left alone.
+   */
+  endNestedThread(threadId: string, fact: LiveThread): boolean {
+    const json = JSON.stringify(fact);
+    return this.nestedWritten(threadId, this.db
+      .prepare(`UPDATE project_nested_threads SET ended = ? WHERE thread_id = ? AND (ended IS NULL OR (ended != ? AND NOT (json_valid(ended) AND json_extract(ended, '$.status') = 'deleted')))`)
+      .run(json, threadId, json).changes > 0);
+  }
+
+  /**
+   * W496: an unarchived nested thread is read again. W497: with `version` (nestedVersion before
+   * a slow read), only if no other fact landed since, so an older answer never undoes a newer event.
+   */
+  reviveNestedThread(threadId: string, version?: number): boolean {
+    if (version !== undefined && version !== this.nestedVersion(threadId)) return false;
+    return this.nestedWritten(threadId, this.db
+      .prepare(`UPDATE project_nested_threads SET ended = NULL WHERE thread_id = ? AND ended IS NOT NULL`)
+      .run(threadId).changes > 0);
+  }
+
+  /** W497: how many times this run changed a nested thread's ended fact. */
+  nestedVersion(threadId: string): number {
+    return this.nestedVersions.get(threadId) ?? 0;
+  }
+
+  private nestedWritten(threadId: string, changed: boolean) {
+    if (changed) this.nestedVersions.set(threadId, this.nestedVersion(threadId) + 1);
+    return changed;
+  }
+
+  /** W496: the nested threads last seen archived (deleted ones never come back), across Initiatives, with that fact. */
+  archivedNestedThreads(): { threadId: string; ended: LiveThread }[] {
+    return (this.db
+      .prepare(`SELECT thread_id, ended FROM project_nested_threads WHERE ended IS NOT NULL`)
+      .all() as Row[]).flatMap((row) => {
+        const ended = endedFact(row.ended);
+        return ended && ended.status !== "deleted" ? [{ threadId: String(row.thread_id), ended }] : [];
+      });
   }
 
   nestedThreadByThreadId(threadId: string): {
@@ -2239,15 +2365,21 @@ export class Store {
           `SELECT * FROM generations WHERE project_id = ? AND worker_num = ? ORDER BY generation`,
         )
         .all(projectId, workerNum) as Row[]
-    ).map((row) => ({
-      generation: Number(row.generation),
-      threadId: String(row.thread_id),
-      providerThreadId: (row.provider_thread_id as string | null) ?? null,
-      startedAt: Number(row.started_at),
-      endedAt: (row.ended_at as number | null) ?? null,
-      endReason: (row.end_reason as string | null) ?? null,
-      holdReason: (row.hold_reason as string | null) ?? null,
-    }));
+    ).map(toGeneration);
+  }
+
+  /** W492: every worker's generations (the coordinator's under 0) in one query, each list as `generations` orders it. */
+  projectGenerations(projectId: string): Map<number, ReturnType<typeof toGeneration>[]> {
+    const byWorker = new Map<number, ReturnType<typeof toGeneration>[]>();
+    for (const row of this.db
+      .prepare(`SELECT * FROM generations WHERE project_id = ? ORDER BY worker_num, generation`)
+      .all(projectId) as Row[]) {
+      const num = Number(row.worker_num);
+      const list = byWorker.get(num);
+      if (list) list.push(toGeneration(row));
+      else byWorker.set(num, [toGeneration(row)]);
+    }
+    return byWorker;
   }
 
   /** Record (or clear, with null) why a former coordinator generation stays live; true when it changed. */
@@ -2611,6 +2743,28 @@ export class Store {
   }
 
   /** Role is deliberately not patchable: it is immutable for a worker's life. */
+  /** W492: ask for a busy worker's retirement; a lead's later ask replaces an earlier one, and dates it. */
+  requestRetire(projectId: string, num: number, reason: string, at: number) {
+    this.db.prepare("UPDATE workers SET retire_request = ? WHERE project_id = ? AND num = ?")
+      .run(JSON.stringify({ reason, at }), projectId, num);
+  }
+
+  clearRetireRequest(projectId: string, num: number) {
+    this.db.prepare("UPDATE workers SET retire_request = NULL WHERE project_id = ? AND num = ?").run(projectId, num);
+  }
+
+  /** Every waiting retirement, oldest first; `threadId` narrows it to that worker thread's. */
+  retireRequests(threadId?: string): { projectId: string; num: number; reason: string; at: number }[] {
+    const rows = this.db.prepare(`SELECT project_id, num, retire_request FROM workers WHERE retire_request IS NOT NULL${threadId ? " AND thread_id = ?" : ""}`)
+      .all(...(threadId ? [threadId] : [])) as { project_id: string; num: number; retire_request: string }[];
+    return rows.flatMap((row) => {
+      let value: unknown = null;
+      try { value = JSON.parse(row.retire_request); } catch { /* unreadable: never acted on */ }
+      const parsed = retireRequestSchema.safeParse(value);
+      return parsed.success ? [{ projectId: row.project_id, num: row.num, ...parsed.data }] : [];
+    }).sort((a, b) => a.at - b.at);
+  }
+
   updateWorker(
     projectId: string,
     num: number,
@@ -2741,6 +2895,9 @@ export class Store {
         now,
         now,
       );
+    // W492: new work for a worker cancels a retirement waiting for its thread to go quiet.
+    if (this.db.prepare("UPDATE workers SET retire_request = NULL WHERE project_id = ? AND num = ? AND retire_request IS NOT NULL").run(input.projectId, input.workerNum).changes)
+      this.log(input.projectId, "worker", `${workerRef(input.workerNum)} was not retired: it got more work after the request.`);
     this.touchProject(input.projectId);
     return this.assignment(input.projectId, num)!;
   }
@@ -2789,27 +2946,88 @@ export class Store {
   }
 
   /**
-   * The dashboard's first paint, without decoding what it never shows: a
-   * report only while awaiting acceptance, a checkpoint only on open or
-   * reported work, and never review targets, notices, staged identities,
-   * write scopes, releases or handoff sources. Those fields are null here;
-   * use `assignments` for anything else.
+   * The assignment facts the dashboard reads, all from the assignments_overview index, without
+   * reports (`reports` reads the ones a view shows). The first paint (`history` false) reads no
+   * staged identities, and neither tier a checkpoint on settled work.
    */
-  assignmentsForSummary(projectId: string): AssignmentRecord[] {
+  assignmentsForOverview(projectId: string, history: boolean): OverviewAssignment[] {
     return (
       this.db
-        .prepare(`SELECT * FROM assignments WHERE project_id = ? ORDER BY num`)
+        .prepare(
+          `SELECT project_id, num, worker_num, task_nums, role, thread_id, generation, profile, actual_profile, state, op_state,
+             brief_delivered, review_of, label, pending_identity, reply_to, stop_reason, checkpoint, reported_at, report_seq, created_at
+           FROM assignments WHERE project_id = ? ORDER BY num`,
+        )
         .all(projectId) as Row[]
     ).map((row) => {
+      const num = Number(row.num);
       const settled = ["accepted", "rejected", "cancelled", "failed"].includes(String(row.state));
-      return toAssignment({
-        ...row,
-        report: row.state === "reported" ? row.report : null,
-        checkpoint: settled ? null : row.checkpoint,
-        review_targets: null, report_notice: null, pending_identity: null,
-        write_scope: null, scope_release: null, handoff_sources: null,
-      });
+      return {
+        num,
+        ref: assignmentRef(num),
+        workerNum: Number(row.worker_num),
+        taskNums: decode("assignments", row, "task_nums", numsSchema),
+        role: row.role as Role,
+        threadId: (row.thread_id as string | null) ?? null,
+        generation: Number(row.generation),
+        profile: decode("assignments", row, "profile", profileSchema),
+        actualProfile: decodeNullable("assignments", row, "actual_profile", profileSchema),
+        state: row.state as AssignmentState,
+        opState: row.op_state as AssignmentRecord["opState"],
+        briefDelivered: Boolean(row.brief_delivered),
+        reviewOf: decodeNullable("assignments", row, "review_of", numsSchema),
+        label: (row.label as string | null) ?? null,
+        pendingIdentity: history ? decodeNullable("assignments", row, "pending_identity", pendingIdentitySchema) : null,
+        replyTo: (row.reply_to as string | null) ?? null,
+        stopReason: (row.stop_reason as string | null) ?? null,
+        checkpoint: settled ? null : decodeNullable("assignments", row, "checkpoint", checkpointRecordSchema),
+        report: null,
+        reportSeq: Number(row.report_seq ?? 0),
+        reportedAt: (row.reported_at as number | null) ?? null,
+        createdAt: Number(row.created_at),
+      };
     });
+  }
+
+  /** The stored reports of these assignments, by number; one without a report is absent. */
+  reports(projectId: string, nums: number[]): Map<number, Report> {
+    return new Map(
+      (this.db
+        .prepare(`SELECT project_id, num, report, blocker_options, blocked_on_lead, report_seq FROM assignments
+          WHERE project_id = ? AND report IS NOT NULL AND num IN (SELECT value FROM json_each(?))`)
+        .all(projectId, JSON.stringify(nums)) as Row[]).map((row) => [Number(row.num), joinReport(
+          decode("assignments", row, "report", storedReportSchema),
+          decodeNullable("assignments", row, "blocker_options", blockerOptionsSchema),
+          onLead(row),
+        )!]),
+    );
+  }
+
+  /**
+   * What the Workers tab shows of these assignments' reports, by number; one without a report is
+   * absent. Each filing is decoded once: a stored report changes only by a new filing, which bumps
+   * report_seq (updateAssignment), so seq and filing time name its content.
+   */
+  reportFacts(projectId: string, filed: Pick<OverviewAssignment, "num" | "reportSeq" | "reportedAt">[]): Map<number, ReportFacts> {
+    const key = (a: (typeof filed)[number]) => `${projectId}:${a.num}`;
+    const stamp = (a: (typeof filed)[number]) => `${a.reportSeq}:${a.reportedAt}`;
+    const out = new Map<number, ReportFacts>();
+    const missing = filed.filter((a) => {
+      const known = this.filings.get(key(a));
+      if (known?.stamp !== stamp(a)) return true;
+      if (known.facts) out.set(a.num, known.facts);
+      return false;
+    });
+    if (!missing.length) return out;
+    const reports = this.reports(projectId, missing.map((a) => a.num));
+    for (const a of missing) {
+      const report = reports.get(a.num);
+      const facts = report ? { outcome: report.outcome, summary: report.summary, question: report.blocker?.question ?? null } : null;
+      if (facts) out.set(a.num, facts);
+      // A read inside a transaction may see a filing it then rolls back: answer it, keep nothing.
+      if (!this.db.inTransaction) this.filings.set(key(a), { stamp: stamp(a), facts });
+    }
+    return out;
   }
 
   /** Each worker's latest assignment that carries a report, by worker number. */
@@ -2993,7 +3211,7 @@ export class Store {
           num,
         );
       if ("report" in patch)
-        this.db.prepare("UPDATE assignments SET blocker_options = ? WHERE project_id = ? AND num = ?").run(json(report.options), projectId, num);
+        this.db.prepare("UPDATE assignments SET blocker_options = ?, blocked_on_lead = CASE WHEN ? THEN report_seq END WHERE project_id = ? AND num = ?").run(json(report.options), Number(report.onLead), projectId, num);
       this.touchProject(projectId);
       return this.assignment(projectId, num)!;
     });
@@ -3321,10 +3539,13 @@ export class Store {
   turnCursor(threadId: string) {
     const row = this.db.prepare("SELECT * FROM usage_turn_cursors WHERE thread_id = ?")
       .get(threadId) as Row | undefined;
-    return row ? {
-      lastSeq: Number(row.last_seq), firstObservedAt: Number(row.first_observed_at),
-      lastObservedAt: Number(row.last_observed_at),
-    } : null;
+    return row ? toTurnCursor(row) : null;
+  }
+
+  /** W492: `turnCursor` for many threads in one query; a thread with no cursor is absent. */
+  turnCursors(threadIds: string[]): Map<string, ReturnType<typeof toTurnCursor>> {
+    return new Map((this.db.prepare("SELECT * FROM usage_turn_cursors WHERE thread_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(threadIds)) as Row[]).map((row) => [String(row.thread_id), toTurnCursor(row)]));
   }
 
   /** Commit the bounded page and cursor together; repeated turn ids pair once. */
@@ -3446,9 +3667,14 @@ export class Store {
    * W224: the assignments whose brief or report names a GitHub PR, oldest first; the report as
    * stored JSON, the brief without its shared appendix (ownBriefText).
    */
+  /** W492: who holds a PR in each Adventure's records (its recorded worker), by Adventure. */
+  prHolders(url: string): { projectId: string; worker: string }[] {
+    return this.db.prepare("SELECT project_id AS projectId, worker FROM pr_records WHERE url = ? AND worker IS NOT NULL").all(url) as { projectId: string; worker: string }[];
+  }
+
   prMentions(projectId: string): { num: number; workerNum: number; role: string; brief: string; report: string | null }[] {
     const rows = this.db.prepare(`SELECT num, worker_num, role, brief_text, report FROM assignments
-      WHERE project_id = ? AND (brief_text LIKE '%github.com/%/pull/%' OR report LIKE '%github.com/%/pull/%') ORDER BY num`)
+      WHERE project_id = ? AND (brief_text LIKE '%github.com/%/pull/%' OR report LIKE '%github.com/%/pull/%' OR brief_text LIKE '%/%#%' OR report LIKE '%/%#%') ORDER BY num`)
       .all(projectId) as Row[];
     return rows.map((row) => ({ num: row.num as number, workerNum: row.worker_num as number, role: row.role as string,
       brief: ownBriefText((row.brief_text as string | null) ?? ""), report: (row.report as string | null) ?? null }));
@@ -3496,12 +3722,20 @@ export class Store {
 
   usageTurns(threadId: string): UsageTurn[] {
     return (this.db.prepare("SELECT * FROM usage_turns WHERE thread_id = ?")
-      .all(threadId) as Row[]).map(row => ({
-        turnId: (row.turn_id as string | null) ?? null,
-        startedAt: (row.started_at as number | null) ?? null,
-        completedAt: (row.completed_at as number | null) ?? null,
-        status: (row.status as string | null) ?? null,
-      }));
+      .all(threadId) as Row[]).map(toUsageTurn);
+  }
+
+  /** W492: `usageTurns` for many threads in one query, by thread; a thread with none is absent. */
+  usageTurnsOf(threadIds: string[]): Map<string, UsageTurn[]> {
+    const byThread = new Map<string, UsageTurn[]>();
+    for (const row of this.db.prepare("SELECT * FROM usage_turns WHERE thread_id IN (SELECT value FROM json_each(?)) ORDER BY thread_id, turn_key")
+      .all(JSON.stringify(threadIds)) as Row[]) {
+      const id = String(row.thread_id);
+      const list = byThread.get(id);
+      if (list) list.push(toUsageTurn(row));
+      else byThread.set(id, [toUsageTurn(row)]);
+    }
+    return byThread;
   }
 
 }

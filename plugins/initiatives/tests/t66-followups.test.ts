@@ -14,7 +14,7 @@ describe("A115 notification and native pending boundaries", () => {
     const r = await f.service.message("coordinator", input);
     expect(r).toMatchObject({ threadId: w.threadId, generation: 1, receipt: { delivery: "queued", queuedMessage: { id: "pending-peer" } } });
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: w.threadId, senderThreadId: "coordinator", mode: "queue-if-active" });
-    await expect(f.service.message("coordinator", { ...input, mode: "steer" })).rejects.toThrow(/status pending.*queue mode/);
+    await expect(f.service.message("coordinator", { ...input, mode: "steer" })).rejects.toThrow(/has not started yet: send with mode:"queue"/);
     f.store.updateWorker(project.id, 1, { userStopped: true });
     await expect(f.service.message("coordinator", input)).rejects.toThrow(/stopped/);
     expect(f.send).toHaveBeenCalledTimes(1);

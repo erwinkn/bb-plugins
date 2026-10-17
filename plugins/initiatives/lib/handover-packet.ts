@@ -230,13 +230,15 @@ export function handoverPacket(store: Store, projectId: string, unsafeSnapshot: 
 
   // G. What waits on the user. Agent decisions are optional Inbox checks and block nothing.
   const questions = decisions.filter(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.madeBy === null);
-  const blockers = openBlockers(assignments.map(a => ({ ...a, outcome: a.report?.outcome ?? null })), num => ["done", "cancelled"].includes(store.task(projectId, num)?.status ?? ""), num => store.worker(projectId, num)?.state === "retired");
+  const blocked = openBlockers(assignments.map(a => ({ ...a, outcome: a.report?.outcome ?? null })), num => ["done", "cancelled"].includes(store.task(projectId, num)?.status ?? ""), num => store.worker(projectId, num)?.state === "retired");
+  // W492: a blocked report without a question waits on the coordinator, not the user.
+  const blockers = blocked.filter(a => a.report?.blocker), onLead = blocked.filter(a => !a.report?.blocker);
   const checks = decisions.filter(d => d.madeBy === "agent" && d.review === "pending" && d.status === "active");
   const waiting = `## Waiting on the user\n${[
     ...questions.map(d => `- Open question ${d.ref} (asked ${iso(d.createdAt)}): ${clip(safe(("question" in d.body && d.body.question) || d.title), 400)}${d.blocks.length ? ` — holds ${d.blocks.map(taskRef).join(", ")}` : ""}`),
     ...blockers.map(a => `- ${workerRef(a.workerNum)} reported blocked (${a.ref}, ${iso(a.reportedAt)}): ${clip(safe(a.report?.blocker?.question ?? a.report?.summary ?? ""), 400)}`),
     checks.length ? `- ${checks.length} agent decision${checks.length > 1 ? "s" : ""} wait for the user's Okay or Not okay in the Inbox. They are optional checks and block no work.` : null,
-  ].filter(Boolean).join("\n") || "Nothing."}`;
+  ].filter(Boolean).join("\n") || "Nothing."}${onLead.length ? `\n\n## Blocked on the coordinator\n${onLead.map(a => `- ${workerRef(a.workerNum)} reported blocked (${a.ref}, ${iso(a.reportedAt)}) with no question for the user; the coordinator decides: ${clip(safe(a.report?.summary ?? ""), 400)}`).join("\n")}` : ""}`;
 
   // L. What the coordinator did outside the ledger, which its messages may not mention.
   const actions = snapshot.conversation.ok ? snapshot.conversation.value.actions ?? [] : [];

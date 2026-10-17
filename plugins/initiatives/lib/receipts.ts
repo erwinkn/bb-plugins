@@ -107,10 +107,12 @@ export function toolReceipt(value: unknown): unknown {
       ...(v.state ?? v.status ? { state: v.state ?? v.status } : {}),
       ...(a && v.opState && v.opState !== "done" ? { opState: v.opState } : {}),
       ...(v.settlement ? { settlement: v.settlement } : {}),
+      // W492: what the call did other than asked (a retirement that waits for the turn to end).
+      ...(typeof v.note === "string" ? { note: v.note } : {}),
     };
   }
-  // A plain message: who got it and whether it was sent now or queued.
-  if ("target" in v && "receipt" in v) return { to: v.target, delivery: v.receipt?.delivery ?? null };
+  // A plain message: who got it and whether it was sent now or queued; W492: and how it was read.
+  if ("target" in v && "receipt" in v) return { to: v.target, delivery: v.receipt?.delivery ?? null, ...(typeof v.note === "string" ? { note: v.note } : {}) };
   // initiative_pr: no echo of the notes; the categories stay so the coordinator reuses them.
   if (Array.isArray(v.prs)) return { ...v, prs: v.prs.map(({ note: _, ...pr }: Record<string, unknown>) => pr) };
   return Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null && x !== undefined).map(([k, x]) => [k, toolReceipt(x)]));

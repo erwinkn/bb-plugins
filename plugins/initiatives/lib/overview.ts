@@ -19,6 +19,7 @@ import type {
   AssignmentRecord,
   DecisionRecord,
   Delivery,
+  OverviewAssignment,
   Provenance,
   Store,
   TaskRecord,
@@ -38,6 +39,14 @@ export interface LiveThread {
   projectId?: string | null;
   parentThreadId?: string | null;
 }
+
+/**
+ * W496: a thread's status while the dashboard's first read of it is still pending ("loading", the
+ * overview stopped waiting for it) or failed ("unreadable"). Shown in its rows; never a fact.
+ */
+export type UnreadStatus = "loading" | "unreadable";
+/** Native facts for one overview; `unread` names the threads it has none for yet, and why. */
+export type LiveFacts = Map<string, LiveThread> & { unread?: ReadonlyMap<string, UnreadStatus> };
 
 /**
  * The Initiative's coordinator home: the primary member project's default
@@ -406,7 +415,7 @@ const OPEN_STATES: AssignmentRecord["state"][] = [
 export function buildOverview(
   store: Store,
   projectId: string,
-  live: Map<string, LiveThread>,
+  live: LiveFacts,
   now: number,
   home?: CoordinatorHome | null,
   detail: boolean | OverviewDetail = true,
@@ -418,7 +427,7 @@ export function buildOverview(
   if (!project) throw new Error(`Unknown Initiative ${projectId}`);
   const tasks = store.tasks(projectId);
   const workers = store.workers(projectId);
-  const assignments = history ? store.assignments(projectId) : store.assignmentsForSummary(projectId);
+  const assignments = store.assignmentsForOverview(projectId, history);
   const lastReported = store.lastReportedAssignments(projectId);
   const decisions = store.decisions(projectId);
   const taskByNum = new Map(tasks.map((task) => [task.num, task]));
@@ -427,14 +436,46 @@ export function buildOverview(
     title: taskByNum.get(num)?.title ?? "(deleted task)",
   });
   const workerByNum = new Map(workers.map((worker) => [worker.num, worker]));
-  const threadOf = (assignment: AssignmentRecord) =>
+  // W492: each worker's assignments, oldest first, so per-worker facts do not rescan the history.
+  const assignmentsOf = new Map<number, OverviewAssignment[]>();
+  for (const a of assignments) {
+    const mine = assignmentsOf.get(a.workerNum);
+    if (mine) mine.push(a);
+    else assignmentsOf.set(a.workerNum, [a]);
+  }
+  // Each task's work assignees, in the order they were first given it.
+  const taskWorkers = new Map<number, Set<string>>();
+  for (const a of assignments) {
+    if (a.role !== "work") continue;
+    for (const num of a.taskNums) {
+      const refs = taskWorkers.get(num);
+      if (refs) refs.add(workerRef(a.workerNum));
+      else taskWorkers.set(num, new Set([workerRef(a.workerNum)]));
+    }
+  }
+  const generations = detailed ? store.projectGenerations(projectId) : null;
+  const threadOf = (assignment: OverviewAssignment) =>
     assignment.threadId ? live.get(assignment.threadId) : undefined;
-  const isBusy = (assignment: AssignmentRecord) => {
+  const isBusy = (assignment: OverviewAssignment) => {
     const thread = threadOf(assignment);
     return Boolean(
       thread && !thread.archived && BUSY_STATUSES.has(thread.status),
     );
   };
+  // W492: read only the reports a view shows in full: reported work of a worker still on the
+  // Initiative or on a busy thread. A retired worker's reported work is in no view, and in a long
+  // Initiative that is most of them.
+  const reports = store.reports(projectId, assignments
+    .filter((a) => a.state === "reported" && (workerByNum.get(a.workerNum)?.state !== "retired" || isBusy(a)))
+    .map((a) => a.num));
+  for (const a of assignments) a.report = reports.get(a.num) ?? null;
+  // The Workers tab's latest report: with history each worker's latest filing, decoded once per
+  // filing (a retired worker's too); the first paint lists live workers, whose latest awaiting
+  // acceptance is read above.
+  const assignmentByNum = new Map(assignments.map((a) => [a.num, a]));
+  const latestReports = history
+    ? store.reportFacts(projectId, [...lastReported.values()].flatMap((num) => assignmentByNum.get(num) ?? []))
+    : new Map(assignments.flatMap((a) => (a.report ? [[a.num, { outcome: a.report.outcome, summary: a.report.summary, question: a.report.blocker?.question ?? null }] as const] : [])));
 
   // Current work is an open assignment, or a reported one whose thread is
   // still natively busy. A report already delivered on an idle thread is not
@@ -521,7 +562,7 @@ export function buildOverview(
 
   const closedTask = (num: number) =>
     ["done", "cancelled"].includes(
-      tasks.find((task) => task.num === num)?.status ?? "done",
+      taskByNum.get(num)?.status ?? "done",
     );
   // T136: nothing is accepted. A report stays here while it is its live worker's latest and
   // its tasks are still open; closing the tasks or retiring the worker moves it to history.
@@ -702,9 +743,8 @@ export function buildOverview(
     // Use the last delivered assignment in this native context, including
     // its resolved profile when reported. An undelivered/failed override is
     // not evidence that the worker's execution changed.
-    const delivered = assignments.filter(
-      (a) => a.threadId === worker.threadId &&
-        a.workerNum === worker.num && a.generation === worker.generation &&
+    const delivered = (assignmentsOf.get(worker.num) ?? []).filter(
+      (a) => a.threadId === worker.threadId && a.generation === worker.generation &&
         (a.actualProfile !== null || a.briefDelivered),
     ).at(-1);
     const profile = delivered?.actualProfile ?? delivered?.profile;
@@ -720,7 +760,7 @@ export function buildOverview(
       bbProjectId: worker.bbProjectId,
       threadId: worker.threadId,
       generation: worker.generation,
-      generations: detailed ? store.generations(projectId, worker.num).length : 1,
+      generations: detailed ? (generations?.get(worker.num)?.length ?? 0) : 1,
       state: worker.state,
       profile:
         profile
@@ -737,7 +777,7 @@ export function buildOverview(
           ? thread.archived
             ? "archived"
             : thread.status
-          : "unknown",
+          : (live.unread?.get(worker.threadId) ?? "unknown"),
       context: {
         used: usage?.contextUsed ?? null,
         window: usage?.contextWindow ?? null,
@@ -748,31 +788,43 @@ export function buildOverview(
   };
   // v9: the facts the Workers tab shows, all from recorded data.
   const prRecords = store.prRecords(projectId);
+  // W492: each worker's PRs in record order: the ones it is named on or one of its assignments is.
+  const workerOfAssignment = new Map(assignments.map((a) => [a.ref, workerRef(a.workerNum)]));
+  const prsOf = new Map<string, WorkerItem["prs"]>();
+  for (const r of prRecords.values())
+    for (const ref of new Set([r.worker, r.assignment ? workerOfAssignment.get(r.assignment) : null])) {
+      if (!ref) continue;
+      const prs = prsOf.get(ref);
+      if (prs) prs.push({ url: r.url, stage: r.stage });
+      else prsOf.set(ref, [{ url: r.url, stage: r.stage }]);
+    }
   const leadTabs: Record<string, string> = {};
   if (project.coordinatorThreadId) leadTabs[project.coordinatorThreadId] = "Coordinator";
   for (const t of store.projectThreads(projectId)) if (t.discussion && t.threadId && store.membership(t.threadId)?.discussion) leadTabs[t.threadId] = t.label;
   const workerFacts = (worker: WorkerRecord) => {
-    const mine = assignments.filter((a) => a.workerNum === worker.num);
+    const mine = assignmentsOf.get(worker.num) ?? [];
     const open = mine.find((a) => OPEN_STATES.includes(a.state));
     const latest = open ?? mine.at(-1);
-    const reported = mine.filter((a) => a.report).at(-1);
+    // The latest filing: with history any, else one still awaiting acceptance.
+    const reported = history ? assignmentByNum.get(lastReported.get(worker.num) ?? -1) : mine.filter((a) => a.report).at(-1);
+    const facts = reported && latestReports.get(reported.num);
     const usage = worker.threadId ? usageByThread.get(worker.threadId) : undefined;
     const total = usage ? (usage.sessionTotals?.total ?? 0) + (usage.closedTotals.total ?? 0) : null;
     return {
       lead: latest?.replyTo && latest.replyTo !== project.coordinatorThreadId ? leadTabs[latest.replyTo] ?? null : null,
       open: open ? { ref: open.ref, state: open.state, tasks: open.taskNums.map(taskRef) } : null,
-      latestReport: reported?.report
-        ? { ref: reported.ref, outcome: reported.report.outcome === "succeeded" ? "done" : reported.report.outcome, summary: reported.report.summary,
-            question: reported.report.blocker?.question ?? null, reportedAt: reported.reportedAt, preSwitch: preSwitchLine(reported) }
+      latestReport: reported && facts
+        ? { ref: reported.ref, outcome: facts.outcome === "succeeded" ? "done" : facts.outcome, summary: facts.summary,
+            question: facts.question, reportedAt: reported.reportedAt, preSwitch: preSwitchLine(reported) }
         : null,
       stopReason: latest?.stopReason ?? null,
       tokens: total,
       since: (open ?? latest)?.createdAt ?? worker.createdAt,
-      prs: [...prRecords.values()].filter((r) => r.worker === worker.ref || mine.some((a) => a.ref === r.assignment)).map((r) => ({ url: r.url, stage: r.stage })),
+      prs: prsOf.get(worker.ref) ?? [],
     };
   };
 
-  const usage = detailed ? buildUsage(store, projectId, live) : unloadedUsage();
+  const usage = detailed ? buildUsage(store, projectId, live, { workers, generations: generations!, usage: usageRecords }) : unloadedUsage();
   const nestedByThread = new Map(
     store
       .nestedProjectThreads(projectId)
@@ -793,7 +845,7 @@ export function buildOverview(
       coordinatorStatus: project.coordinatorThreadId
         ? live.get(project.coordinatorThreadId)?.archived
           ? "archived"
-          : (live.get(project.coordinatorThreadId)?.status ?? "unknown")
+          : (live.get(project.coordinatorThreadId)?.status ?? live.unread?.get(project.coordinatorThreadId) ?? "unknown")
         : "missing",
       coordinatorStart: (() => {
         const row = store.db
@@ -916,7 +968,7 @@ export function buildOverview(
       statusReason: task.statusReason,
       setByHand: task.statusSetAt !== null,
       summary: task.summary,
-      workers: [...new Set(assignments.filter((a) => a.role === "work" && a.taskNums.includes(task.num)).map((a) => workerRef(a.workerNum)))],
+      workers: [...(taskWorkers.get(task.num) ?? [])],
       updatedAt: task.updatedAt,
     })),
     rules: store.rules(projectId).map((r) => ({ ref: r.ref, text: r.text, sources: r.sources })),
@@ -967,7 +1019,7 @@ export function buildOverview(
             : native.archived
               ? "archived"
               : native.status
-          : null,
+          : (live.unread?.get(thread.threadId) ?? null),
       };
     }),
     activity: store.activity(projectId, 25).map((entry) => ({
@@ -996,12 +1048,18 @@ export function threadsToWatch(store: Store, projectId: string): string[] {
       .filter((g) => g.threadId !== project.coordinatorThreadId)
       .slice(-5))
       ids.add(generation.threadId);
-  for (const worker of store.workers(projectId))
-    if (worker.threadId && worker.state !== "retired") ids.add(worker.threadId);
+  for (const worker of store.liveWorkers(projectId))
+    if (worker.threadId) ids.add(worker.threadId);
   for (const t of store.projectThreads(projectId))
     if (t.threadId) ids.add(t.threadId);
-  for (const t of store.nestedProjectThreads(projectId)) ids.add(t.threadId);
+  // W496: a nested thread seen archived or deleted is shown from its last fact, not read again.
+  for (const t of store.nestedProjectThreads(projectId)) if (!t.ended) ids.add(t.threadId);
   return [...ids];
+}
+
+/** W496: the nested threads seen archived or deleted, with their last native fact. */
+export function endedNestedThreads(store: Store, projectId: string): Map<string, LiveThread> {
+  return new Map(store.nestedProjectThreads(projectId).flatMap((t) => (t.ended ? [[t.threadId, t.ended] as const] : [])));
 }
 
 /** Unanswered open blockers, from the few columns `openBlockers` reads. */
@@ -1013,7 +1071,7 @@ function summaryBlockers(store: Store, projectId: string, tasks: { num: number; 
   const latest = new Map<number, number>();
   for (const row of rows) if (row.state !== "failed") latest.set(row.worker_num, row.num);
   const candidates = rows.filter((row) => row.state === "reported" && latest.get(row.worker_num) === row.num && !retired.has(row.worker_num)).map((row) => row.num);
-  const reports = new Map((store.db.prepare("SELECT num, CASE WHEN json_valid(report) THEN json_extract(report, '$.outcome') END AS outcome, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.question') END AS question, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.context') END AS context FROM assignments WHERE project_id=? AND num IN (SELECT value FROM json_each(?))").all(projectId, JSON.stringify(candidates)) as { num: number; outcome: string | null; question: string | null; context: string | null }[]).map((r) => [r.num, r]));
+  const reports = new Map((store.db.prepare("SELECT num, CASE WHEN json_valid(report) THEN json_extract(report, '$.outcome') END AS outcome, CASE WHEN json_valid(report) AND blocked_on_lead IS NOT report_seq THEN json_extract(report, '$.blocker.question') END AS question, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.context') END AS context FROM assignments WHERE project_id=? AND num IN (SELECT value FROM json_each(?))").all(projectId, JSON.stringify(candidates)) as { num: number; outcome: string | null; question: string | null; context: string | null }[]).map((r) => [r.num, r]));
   if (![...reports.values()].some((r) => r.outcome === "blocked")) return 0;
   const settled = store.db.prepare("SELECT json_extract(body, '$.blocker.assignment') AS assignment, json_extract(body, '$.blocker.question') AS question, json_extract(body, '$.blocker.context') AS context, json_extract(body, '$.dismissal') IS NOT NULL AS dismissal FROM knowledge WHERE project_id=? AND kind='decision' AND status NOT IN ('superseded','removed') AND json_valid(body) AND json_extract(body, '$.blocker') IS NOT NULL AND (json_extract(body, '$.dismissal') IS NULL OR status='active')").all(projectId) as { assignment: number; question: string; context: string; dismissal: number }[];
   const keys = (dismissal: boolean) => new Set(settled.filter((row) => !!row.dismissal === dismissal).map((row) => blockerKey(row.assignment, row)));
