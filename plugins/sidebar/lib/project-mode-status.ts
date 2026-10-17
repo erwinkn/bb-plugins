@@ -1,6 +1,6 @@
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import type { ProjectTree } from "./project-tree-schema";
-import { statusOf } from "./status";
+import { activityAt, statusOf } from "./status";
 
 type Project = ProjectTree["projects"][number];
 
@@ -98,13 +98,13 @@ export function orderedProjects(
   return out;
 }
 
-/** When the Initiative's threads last changed (newest `updatedAt`), or null without any. */
+/** When the Initiative's threads last saw activity (newest `activityAt`), or null without any. */
 export function lastActivity(
   threads: readonly PluginSidebarThread[],
 ): number | null {
   let latest: number | null = null;
   for (const thread of threads)
-    if (latest === null || thread.updatedAt > latest) latest = thread.updatedAt;
+    if (latest === null || activityAt(thread) > latest) latest = activityAt(thread);
   return latest;
 }
 

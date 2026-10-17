@@ -2,7 +2,7 @@ import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import type { ProjectTree } from "./project-tree-schema";
 import type { AdventureWorker, WorkerGroup } from "./adventure-workers";
 import type { WorkerListing } from "./client-state";
-import { statusOf, type Status } from "./status";
+import { activityAt, statusOf, type Status } from "./status";
 import type { ThreadNode } from "./thread-tree";
 
 type Project = ProjectTree["projects"][number];
@@ -71,7 +71,7 @@ export function adventureRows(
     const list = (children.get(id) ?? []).filter((child) => !seen.has(child.id));
     for (const child of list) seen.add(child.id);
     return list
-      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+      .sort((a, b) => activityAt(b) - activityAt(a) || a.id.localeCompare(b.id))
       .map((child) => ({ thread: child, status: statusFor(child), children: subtree(child.id) }));
   };
   // Over every live descendant, listed under this worker or not (another
@@ -128,7 +128,7 @@ export function adventureRows(
   workers.sort((a, b) =>
     sortBy === "worker"
       ? workerNumber(b.ref) - workerNumber(a.ref)
-      : b.node.thread.updatedAt - a.node.thread.updatedAt ||
+      : activityAt(b.node.thread) - activityAt(a.node.thread) ||
         workerNumber(b.ref) - workerNumber(a.ref),
   );
   // Member threads (discussions, threads attached by hand) whose parent is
@@ -144,7 +144,7 @@ export function adventureRows(
     .filter((thread): thread is PluginSidebarThread => !!thread && !seen.has(thread.id) && parentGone(thread));
   for (const thread of members) seen.add(thread.id);
   const others = members
-    .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+    .sort((a, b) => activityAt(b) - activityAt(a) || a.id.localeCompare(b.id))
     .map((thread) => ({ thread, status: statusFor(thread), children: subtree(thread.id) }));
   return { workers, others };
 }

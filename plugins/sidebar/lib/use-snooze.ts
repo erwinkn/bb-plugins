@@ -60,3 +60,34 @@ export function useSnoozeChange(onError: (error: unknown) => void) {
     onError,
   }).mutate;
 }
+
+/** Ids one `markRead` call takes at most (the contract's cap). */
+const MARK_READ_BATCH = 1000;
+
+/**
+ * Marks threads read, as opening each would: BB's read state, and the woke
+ * flag of a snooze that ended. Rows update as BB pushes each thread; the
+ * snooze document applies from the answer. Threads BB refused are reported.
+ */
+export function useMarkRead(onError: (error: unknown) => void) {
+  const rpc = useRpc<typeof snoozeContract>();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (threadIds: readonly string[]) => {
+      const failed: string[] = [];
+      for (let start = 0; start < threadIds.length; start += MARK_READ_BATCH) {
+        const answer = await rpc.call("markRead", {
+          threadIds: threadIds.slice(start, start + MARK_READ_BATCH),
+        });
+        const parsed = snoozeDocSchema.safeParse(answer.doc);
+        if (parsed.success) applyDoc(client, queryKeys.snoozes, parsed.data);
+        failed.push(...answer.failed);
+      }
+      if (failed.length)
+        throw new Error(
+          `Could not mark ${failed.length} of ${threadIds.length} threads as read.`,
+        );
+    },
+    onError,
+  });
+}

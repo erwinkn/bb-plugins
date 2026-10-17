@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compareThreads, STATUSES, statusOf, threadTitle } from "../lib/status";
+import { activityAt, compareThreads, STATUSES, statusOf, threadTitle } from "../lib/status";
 import { parseState } from "../lib/client-state";
 import { thread } from "./fixtures";
 import { relativeAge } from "../lib/time";
@@ -92,20 +92,31 @@ describe("status policy", () => {
       "b",
     ]);
   });
-  it("sorts by the requested timestamp, not by attention events", () => {
-    const a = thread({
-      id: "a",
+  it("sorts roots by their last activity, which reading leaves alone", () => {
+    // Opening `read` marked it read: BB bumped its updatedAt, not its activity.
+    const read = thread({
+      id: "read",
       createdAt: 200,
-      updatedAt: 200,
-      latestAttentionAt: 900,
+      updatedAt: 900,
+      latestAttentionAt: 200,
+      lastReadAt: 900,
     });
-    const b = thread({ id: "b", createdAt: 100, updatedAt: 300 });
+    const recent = thread({ id: "recent", createdAt: 100, updatedAt: 300 });
     expect(
-      [a, b].sort((x, y) => compareThreads(x, y, "created")).map((t) => t.id),
-    ).toEqual(["a", "b"]);
+      [read, recent].sort((x, y) => compareThreads(x, y, "created")).map((t) => t.id),
+    ).toEqual(["read", "recent"]);
     expect(
-      [a, b].sort((x, y) => compareThreads(x, y, "updated")).map((t) => t.id),
-    ).toEqual(["b", "a"]);
+      [read, recent].sort((x, y) => compareThreads(x, y, "updated")).map((t) => t.id),
+    ).toEqual(["recent", "read"]);
+    expect(activityAt(read)).toBe(200);
+  });
+  it("dates a child by updatedAt, since BB stamps attention on roots only", () => {
+    const child = thread({
+      parentThreadId: "parent",
+      updatedAt: 700,
+      latestAttentionAt: 100,
+    });
+    expect(activityAt(child)).toBe(700);
   });
   it("keeps pins first while ascending order shows the oldest thread first", () => {
     const rows = [

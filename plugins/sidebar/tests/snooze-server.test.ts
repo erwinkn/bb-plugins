@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -171,6 +171,106 @@ describe("snooze wake schedule", () => {
       await expect(behavior.callRpc("acknowledge", { threadId: "woke" })).resolves.toMatchObject({
         revision: 2,
         entries: [{ threadId: "sleeping" }],
+      });
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+
+  it("marks threads read a few at a time and clears the woke ones BB marked", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const marked: string[] = [];
+    const h = createFakePluginHost({
+      sdk: {
+        threads: {
+          markRead: async ({ threadId }: { threadId: string }) => {
+            inFlight++;
+            peak = Math.max(peak, inFlight);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            inFlight--;
+            if (threadId === "refused") throw new Error("Thread not found");
+            marked.push(threadId);
+            return {};
+          },
+          updatePluginMetadata: async () => ({}),
+        },
+      },
+    });
+    const now = Date.now();
+    const woke = (threadId: string) => ({
+      threadId,
+      until: now - 1,
+      createdAt: now - HOUR,
+      wokeAt: now,
+      wasPinned: false,
+    });
+    await h.bb.storage.kv.set("snoozes", {
+      revision: 1,
+      entries: [
+        woke("woke"),
+        woke("refused"),
+        { threadId: "sleeping", until: now + HOUR, createdAt: now, wokeAt: null, wasPinned: false },
+      ],
+    });
+    plugin(h.bb);
+    try {
+      const threadIds = ["woke", "refused", "sleeping", ...Array.from({ length: 9 }, (_, i) => `t${i}`)];
+      const answer = await h.harness.behavior.callRpc("markRead", { threadIds });
+      expect(answer).toMatchObject({
+        doc: { revision: 2, entries: [{ threadId: "refused" }, { threadId: "sleeping" }] },
+        failed: ["refused"],
+      });
+      expect(marked.sort()).toEqual(threadIds.filter((id) => id !== "refused").sort());
+      expect(peak).toBe(4);
+      await expect(h.harness.behavior.callRpc("markRead", { threadIds: [] })).rejects.toThrow();
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+});
+
+describe("marking read", () => {
+  it("keeps a snooze set and woken again while the reads ran", async () => {
+    let release!: () => void;
+    const h = createFakePluginHost({
+      sdk: {
+        threads: {
+          get: async ({ threadId }: { threadId: string }) =>
+            makeThreadResponse({ id: threadId, pinnedAt: null }),
+          markRead: async ({ threadId }: { threadId: string }) => {
+            if (threadId === "slow") await new Promise<void>((resolve) => (release = resolve));
+            return {};
+          },
+          markUnread: async () => ({}),
+          updatePluginMetadata: async () => ({}),
+        },
+      },
+    });
+    const now = Date.now();
+    await h.bb.storage.kv.set("snoozes", {
+      revision: 1,
+      entries: [
+        { threadId: "a", until: now - HOUR, createdAt: now - 2 * HOUR, wokeAt: now - HOUR, wasPinned: false },
+      ],
+    });
+    plugin(h.bb);
+    try {
+      const { behavior } = h.harness;
+      const batch = behavior.callRpc("markRead", { threadIds: ["a", "slow"] });
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      // A was read; it is snoozed again and agent activity wakes it.
+      await behavior.callRpc("snooze", { threadId: "a", until: now + HOUR });
+      await h.harness.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "a" }) });
+      await vi.waitFor(async () =>
+        expect(await behavior.callRpc("getSnoozes", null)).toMatchObject({
+          entries: [{ threadId: "a", wokeAt: expect.any(Number) }],
+        }),
+      );
+      release();
+      await expect(batch).resolves.toMatchObject({
+        doc: { entries: [{ threadId: "a", until: now + HOUR }] },
+        failed: [],
       });
     } finally {
       await h.harness.lifecycle.dispose();

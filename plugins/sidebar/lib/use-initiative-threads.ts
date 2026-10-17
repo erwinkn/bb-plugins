@@ -5,7 +5,11 @@ import type { projectModeContract } from "./project-mode-contract";
 import { queryKeys, threadIdsQuery } from "./queries";
 import { refresh } from "./query";
 
-const EMPTY: ReadonlySet<string> = new Set();
+/**
+ * The set a failed first read falls back to: the list shows every thread,
+ * but membership is still unknown, so nothing acts on that answer.
+ */
+export const UNCONFIRMED: ReadonlySet<string> = new Set();
 
 /**
  * The ids of the threads Initiatives owns, kept fresh in the background.
@@ -32,5 +36,5 @@ export function useInitiativeThreadIds(
   // session (a later read in flight does not bring it back), without caching.
   const failed = query.failureCount > 0 || query.errorUpdateCount > 0;
   const ids = query.data;
-  return useMemo(() => (ids ? new Set(ids) : failed ? EMPTY : null), [ids, failed]);
+  return useMemo(() => (ids ? new Set(ids) : failed ? UNCONFIRMED : null), [ids, failed]);
 }

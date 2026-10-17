@@ -43,7 +43,8 @@ export function thread(
     createdAt: 100,
     updatedAt: 100,
     lastReadAt: 100,
-    latestAttentionAt: 100,
+    // A turn finishing stamps both; a fixture's `updatedAt` is its activity.
+    latestAttentionAt: overrides.updatedAt ?? 100,
     ...overrides,
   };
 }

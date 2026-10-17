@@ -19,6 +19,7 @@ import {
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import {
+  sortTime,
   STATUS_LABEL,
   threadTitle,
   type Status,
@@ -273,7 +274,7 @@ export function ThreadRow({
     if (!navigate.openUrl(url))
       window.open(url, "_blank", "noopener,noreferrer");
   };
-  const timestamp = sortBy === "created" ? thread.createdAt : thread.updatedAt;
+  const timestamp = sortTime(thread, sortBy);
   const age = (
     <time
       dateTime={new Date(timestamp).toISOString()}

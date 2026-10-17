@@ -22,6 +22,8 @@ import type { projectContract } from "./lib/project-contract";
 import type { nestingContract } from "./lib/nesting-contract";
 import { projectLabel } from "./lib/project-schema";
 import {
+  activityAt,
+  listSummary,
   STATUSES,
   STATUS_LABEL,
   statusOf,
@@ -33,7 +35,12 @@ import {
   useClientState,
 } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
-import { useSnooze, useSnoozeChange, useSnoozePresets } from "./lib/use-snooze";
+import {
+  useMarkRead,
+  useSnooze,
+  useSnoozeChange,
+  useSnoozePresets,
+} from "./lib/use-snooze";
 import { withQueries } from "./lib/queries";
 import { isSleeping, isWoke, type SnoozeEntry } from "./lib/snooze-schema";
 import { SnoozeSettings } from "./components/snooze-settings";
@@ -64,7 +71,10 @@ import { ArchiveIcon } from "./components/archive-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
 import { useFinePointer } from "./lib/use-fine-pointer";
 import { hiddenInitiativeThreads } from "./lib/initiative-threads";
-import { useInitiativeThreadIds } from "./lib/use-initiative-threads";
+import {
+  UNCONFIRMED,
+  useInitiativeThreadIds,
+} from "./lib/use-initiative-threads";
 import {
   buildThreadTree,
   familyMemberIds,
@@ -474,7 +484,7 @@ function ThreadsList(props: PluginThreadListProps) {
             candidate.id !== source.parentThreadId &&
             !isThreadWithinSubtree(dndLookup, threadId, candidate.id),
         )
-        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .sort((a, b) => activityAt(b) - activityAt(a))
         .map((candidate) => ({
           id: candidate.id,
           title: threadTitle(candidate),
@@ -503,14 +513,14 @@ function ThreadsList(props: PluginThreadListProps) {
   // matters while entries exist, so an empty document does not rebuild the
   // trees below on every tick.
   const snoozeTick = snoozes.doc.entries.length ? now : 0;
-  const { sleeping, wokeIds } = useMemo(() => {
+  const { sleeping, wokeAt } = useMemo(() => {
     const sleeping = new Map<string, SnoozeEntry>();
-    const wokeIds = new Set<string>();
+    const wokeAt = new Map<string, number>();
     for (const entry of snoozes.doc.entries) {
       if (isSleeping(entry, snoozeTick)) sleeping.set(entry.threadId, entry);
-      else if (isWoke(entry)) wokeIds.add(entry.threadId);
+      else if (isWoke(entry)) wokeAt.set(entry.threadId, entry.wokeAt!);
     }
-    return { sleeping, wokeIds };
+    return { sleeping, wokeAt };
   }, [snoozes.doc, snoozeTick]);
   const snoozedIds = useMemo(
     () => familyMemberIds(threads, new Set(sleeping.keys())),
@@ -521,16 +531,28 @@ function ThreadsList(props: PluginThreadListProps) {
       !thread.isArchived && !initiativeHidden.has(thread.id),
     [initiativeHidden],
   );
+  // A woke snooze counts as activity at its wake time, so the thread
+  // resurfaces in a list sorted by activity.
   const withStatus = useCallback(
-    (thread: (typeof threads)[number]) => ({
-      thread,
-      status: statusOf(
-        thread,
-        knownDrafts.has(`thread:${thread.id}`),
-        wokeIds.has(thread.id),
-      ),
-    }),
-    [knownDrafts, wokeIds],
+    (thread: (typeof threads)[number]) => {
+      const woke = wokeAt.get(thread.id);
+      return {
+        thread:
+          woke === undefined
+            ? thread
+            : {
+                ...thread,
+                latestAttentionAt: Math.max(thread.latestAttentionAt, woke),
+                updatedAt: Math.max(thread.updatedAt, woke),
+              },
+        status: statusOf(
+          thread,
+          knownDrafts.has(`thread:${thread.id}`),
+          woke !== undefined,
+        ),
+      };
+    },
+    [knownDrafts, wokeAt],
   );
   // Archived and Initiative threads leave before pins and families; titles
   // stay unfiltered for parent labels.
@@ -702,7 +724,7 @@ function ThreadsList(props: PluginThreadListProps) {
         }
         snooze={{
           until: sleeping.get(thread.id)?.until ?? null,
-          woke: wokeIds.has(thread.id),
+          woke: wokeAt.has(thread.id),
           presets: snoozePresets.doc.presets,
         }}
         onNavigate={props.onNavigate}
@@ -773,16 +795,41 @@ function ThreadsList(props: PluginThreadListProps) {
       renderDraft={draftRow}
     />
   );
-  const otherStatuses = new Set([
-    ...families.map((family) => family.status),
-    ...pinned.map(familyStatus),
-  ]);
-  const otherStatus =
-    (["attention", "unread", "working"] as const).find((s) =>
-      otherStatuses.has(s),
-    ) ?? null;
+  // Every listed row, pins and children included: what the Other threads
+  // entry summarizes and Mark all as read clears.
+  const summary = useMemo(
+    () =>
+      listSummary(
+        available.filter(
+          ({ thread, status }) =>
+            pinnedIds.has(thread.id) || !state.hidden.includes(status),
+        ),
+        wokeAt,
+      ),
+    [available, pinnedIds, state.hidden, wokeAt],
+  );
+  const markRead = useMarkRead(report);
+  // Until Adventure membership is confirmed, `available` may still hold
+  // Adventure threads (the list shows Loading, or everything after a failed
+  // first read).
+  const listReady =
+    status === "ready" &&
+    initiativeIds !== null &&
+    initiativeIds !== UNCONFIRMED;
   const otherActions = (
     <>
+      {listReady && summary.unread.length > 0 && (
+        <button
+          type="button"
+          aria-label="Mark all as read"
+          title={`Mark all as read (${summary.unread.length})`}
+          disabled={markRead.isPending}
+          onClick={() => markRead.mutate(summary.unread)}
+          className={`${sectionActionClass} disabled:opacity-50`}
+        >
+          <HostIcon name="Check" className="size-3.5" />
+        </button>
+      )}
       <ListingMenu />
       <button
         type="button"
@@ -1103,7 +1150,8 @@ function ThreadsList(props: PluginThreadListProps) {
             activeProjectId={props.activeProjectId || null}
             onNavigate={props.onNavigate}
             otherThreads={{
-              status: otherStatus,
+              status: summary.status,
+              summary: summary.text,
               actions: otherActions,
               list: otherList,
             }}

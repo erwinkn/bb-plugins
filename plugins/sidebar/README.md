@@ -171,7 +171,12 @@ none in a hidden tab.
 **Other threads.** The picker's last entry, in the Adventures' style with a
 list glyph, lists every thread outside them, with pins, snoozes, drafts and
 archive. Its status shows the most urgent of its threads (needs attention,
-unread, working). Its grouping and order are this client's own (they default
+unread, working), and hovering it says why, e.g. "10 back from snooze · 63
+unread". When any listed thread is unread or back from snooze, the section
+header shows a Mark all as read check: it does what opening each would (BB
+marks it read, four calls at a time since BB has no bulk call, and its snooze
+stops asking for attention). Reading clears an unread error, not a pending
+question. Its grouping and order are this client's own (they default
 to no grouping, most recent first) and never follow the picked Adventure. Its
 section's options button holds Grouping (None, Status, Project) and Ordering
 (date updated or created, newest or oldest first) submenus that name the
@@ -315,7 +320,7 @@ the limit.
 
 | Group           | Rule                                                                        |
 | --------------- | --------------------------------------------------------------------------- |
-| Needs Attention | Pending question or approval, or an unread run error.                       |
+| Needs Attention | Pending question or approval, an unread run error, or a snooze that ended.  |
 | Unread          | No current work; BB reports an unread reply.                                |
 | Working         | A live runtime, background agent, command, workflow, plan, or goal.         |
 | Draft           | No attention, work, or unread reply; an unsent draft is known.              |
@@ -336,7 +341,12 @@ The list options' **Ordering** offers **Date updated**
 (the default) and **Date created**, and **Newest first** (the
 default) or **Oldest first**. The choice applies in
 every grouping and stays when you reload.
-The sort uses BB's `updatedAt` or `createdAt`, not attention events. Pinned
+"Date updated" is a thread's last activity, the time it shows: for a root
+thread, BB's `latestAttentionAt` (a turn finishing, a run failing), which BB's
+own list sorts by; a child, which BB never stamps that way, uses `updatedAt`.
+`updatedAt` alone would move a thread whenever it is read, pinned or renamed,
+so opening an unread thread made it jump to the top. A snooze that ended
+counts as activity at its wake time until the thread is opened. Pinned
 threads lead their group in both orders.
 Children appear below their parent, with an inset arrow inside each child row
 instead of a connecting line outside the rows. Each parent initially shows three

@@ -6,7 +6,7 @@ import {
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import type { archiveContract } from "../lib/archive-contract";
-import { STATUS_LABEL, threadTitle, type Status } from "../lib/status";
+import { activityAt, STATUS_LABEL, threadTitle, type Status } from "../lib/status";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { PullRequestIcon, pullRequestSummary } from "./pull-request";
 import { StatusIcon } from "./status-icon";
@@ -70,7 +70,7 @@ export function ThreadInfo({
   const environment = thread.environment?.name;
   const dates = (["Created", "Updated"] as const).map((label) => {
     const date = new Date(
-      label === "Created" ? thread.createdAt : thread.updatedAt,
+      label === "Created" ? thread.createdAt : activityAt(thread),
     );
     return {
       label,

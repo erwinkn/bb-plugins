@@ -27,6 +27,16 @@ export const snoozeContract = defineRpcContract({
     input: z.object({ threadId }),
     output: snoozeDocSchema,
   },
+  /**
+   * Marks threads read in BB and clears the woke flag of those that woke, as
+   * opening each would. `failed` lists the threads BB refused.
+   */
+  markRead: {
+    input: z.object({
+      threadIds: z.array(threadId).check(z.minLength(1), z.maxLength(1000)),
+    }),
+    output: z.object({ doc: snoozeDocSchema, failed: z.array(threadId) }),
+  },
   // The preset list lives in the plugin's settings section; the popover,
   // the row menu, and the CLI all read the same document.
   getSnoozePresets: { input: z.null(), output: snoozePresetsDocSchema },

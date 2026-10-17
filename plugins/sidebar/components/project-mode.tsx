@@ -75,6 +75,8 @@ type TreeProject = ProjectTree["projects"][number];
 export interface OtherThreads {
   /** The most urgent status among its threads, or null. */
   status: Status | null;
+  /** Why, e.g. "10 back from snooze · 3 unread"; empty when nothing to say. */
+  summary: string;
   /** The list options and New thread, for the section header. */
   actions: ReactNode;
   list: ReactNode;
@@ -547,6 +549,7 @@ export function AdventuresSection(props: {
         <OtherThreadsEntry
           selected={selection === OTHER_THREADS}
           status={other.status}
+          summary={other.summary}
         />
         <CreateInitiativeDialog
           draft={dialogDraft}
@@ -586,14 +589,17 @@ export function AdventuresSection(props: {
 function OtherThreadsEntry({
   selected,
   status,
+  summary,
 }: {
   selected: boolean;
   status: Status | null;
+  summary: string;
 }) {
   return (
     <button
       type="button"
       data-other-threads=""
+      title={summary || undefined}
       aria-current={selected ? "true" : undefined}
       onClick={() => select(OTHER_THREADS)}
       className={`flex min-h-7 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] leading-5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-9 ${selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
@@ -606,7 +612,11 @@ function OtherThreadsEntry({
       </span>
       <span className="min-w-0 flex-1 truncate">Other threads</span>
       {status && (
-        <span role="img" aria-label={STATUS_LABEL[status]} className="flex shrink-0 items-center">
+        <span
+          role="img"
+          aria-label={summary ? `${STATUS_LABEL[status]}: ${summary}` : STATUS_LABEL[status]}
+          className="flex shrink-0 items-center"
+        >
           <StatusIcon status={status} size="small" />
         </span>
       )}

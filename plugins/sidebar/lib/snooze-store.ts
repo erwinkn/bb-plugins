@@ -24,6 +24,8 @@ export const SNOOZE_PRESETS_KEY = "snooze-presets";
 /** One durable cron row; every tick wakes whatever is past due. */
 export const SNOOZE_SCHEDULE = "snooze-wake";
 export const SNOOZE_CRON = "* * * * *";
+/** BB read calls `markRead` keeps in flight at once. */
+export const MARK_READ_CONCURRENCY = 4;
 /** Metadata keys mirrored into the thread for agents and other plugins. */
 const METADATA_KEYS = ["snoozed", "snoozedUntil"];
 
@@ -208,6 +210,44 @@ export function createSnoozeStore(bb: BbPluginApi) {
         );
         return next.length === entries.length ? entries : next;
       }),
+    // What opening each thread does, for many: BB marks it read (one call per
+    // thread, a few at a time; BB has no bulk call) and a woke entry clears.
+    // Only the wake seen before the reads clears: a snooze set or ended while
+    // they ran stays. A thread BB refused stays woke and is reported.
+    markRead: async (
+      threadIds: readonly string[],
+    ): Promise<{ doc: SnoozeDoc; failed: string[] }> => {
+      const seen = new Map(
+        (await read()).entries
+          .filter(isWoke)
+          .map((entry) => [entry.threadId, entry.wokeAt]),
+      );
+      const pending = [...new Set(threadIds)];
+      const failed = new Set<string>();
+      const next = async () => {
+        for (let id = pending.shift(); id !== undefined; id = pending.shift()) {
+          const threadId = id;
+          await bb.sdk.threads.markRead({ threadId }).catch((cause) => {
+            warn(`Could not mark thread ${threadId} as read`, cause);
+            failed.add(threadId);
+          });
+        }
+      };
+      await Promise.all(Array.from({ length: MARK_READ_CONCURRENCY }, next));
+      const done = new Set(threadIds.filter((id) => !failed.has(id)));
+      const doc = await write((entries) => {
+        const kept = entries.filter(
+          (entry) =>
+            !(
+              done.has(entry.threadId) &&
+              isWoke(entry) &&
+              seen.get(entry.threadId) === entry.wokeAt
+            ),
+        );
+        return kept.length === entries.length ? entries : kept;
+      });
+      return { doc, failed: [...failed] };
+    },
     // The schedule tick: every entry past due wakes, including any that came
     // due while BB was down.
     wake: (now = Date.now()): Promise<SnoozeDoc> =>
@@ -264,6 +304,7 @@ export function registerSnoozes(bb: BbPluginApi): SnoozeStore {
     snooze: ({ threadId, until }) => store.snooze(threadId, until),
     unsnooze: ({ threadId }) => store.unsnooze(threadId),
     acknowledge: ({ threadId }) => store.acknowledge(threadId),
+    markRead: ({ threadIds }) => store.markRead(threadIds),
     getSnoozePresets: () => store.readPresets(),
     saveSnoozePresets: ({ presets }) => store.savePresets(presets),
   });
