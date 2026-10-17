@@ -3867,7 +3867,7 @@ export class ProjectsService {
       // W488: the coordinator recorded the chat answer and relays it itself; there is nobody to tell.
       if (recordedBy) return this.store.decisionItem(project.id, item.num)!;
       await notify("Your answer is saved.",
-        `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\n${answerLines(choice, text)}\n\nContinue ${worker.ref} with this answer (initiative_message work:true, with 4 more review rounds if it needs them). The Inbox item clears when ${worker.ref} reports again.`);
+        `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\n${answerLines(choice, text)}\n\nContinue ${worker.ref} with this answer (initiative_message work:true). The Inbox item clears when ${worker.ref} reports again.`);
       return this.store.decisionItem(project.id, item.num)!;
     }
     if (!same || redeliver) {

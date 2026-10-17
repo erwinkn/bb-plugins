@@ -45,7 +45,7 @@ describe("R1/R9/R10 Workers tab child threads", () => {
     o.workerWaiting = { W1: { on: null, checked: false } };
     const slot = mount(o, { childPage: () => ({ status: "ready", value: { rows: [], next: null } }) });
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
-    expect(slot.getByText("Idle without a report · child threads not checked yet")).toBeTruthy();
+    expect(slot.getByText("Idle, no report · child threads not checked yet")).toBeTruthy();
   });
 
   it("a failed read says so with Retry, and More reads the next page until the last", async () => {

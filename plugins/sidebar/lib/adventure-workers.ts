@@ -5,8 +5,9 @@ import { z } from "zod";
  * lib/worker-group.ts): Needs you holds a blocker open in the user's Inbox,
  * neither answered nor dismissed; Working a running thread; Waiting a quiet
  * thread with a live descendant (a review running, queued or asking for
- * input), or a blocked worker with nothing left for the user to answer, which
- * waits on its coordinator; Done a finished report; Stopped work that ended
+ * input), a blocked worker with nothing left for the user to answer, which
+ * waits on its coordinator, or open work on an idle thread with no report
+ * ("Idle, no report"); Done a finished report; Stopped work that ended
  * without finishing and nothing picked up; Idle the quiet rest.
  */
 export const WORKER_GROUPS = ["needs", "working", "waiting", "done", "stopped", "idle"] as const;

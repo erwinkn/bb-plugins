@@ -938,10 +938,11 @@ const UNCHECKED = " · child threads not checked yet";
 /**
  * Needs you holds only what waits on the user: a worker's open blocker they have neither answered
  * nor dismissed, the rule the Inbox and its Needs you count follow (needsYouCount). Waiting holds
- * a worker waiting on a live child, or blocked with nothing left for the user to answer: an
- * answered or dismissed blocker, or one the coordinator took back, waits on the coordinator.
- * Stopped holds work that ended without finishing and that nothing has picked up: a failed
- * thread, stopped or cancelled work, open work whose thread went quiet without reporting, a failed
+ * a worker waiting on a live child, blocked with nothing left for the user to answer (an
+ * answered or dismissed blocker, or one the coordinator took back, waits on the coordinator), or
+ * idle with open work and no report: its turn ended, say on a question to its lead sent as a
+ * plain message. Stopped holds work that ended without finishing and that nothing has picked up:
+ * a failed thread, stopped or cancelled work, open work whose thread is archived or gone, a failed
  * report. Idle holds the quiet rest, nothing open, no report and no stop. Both are usually
  * superseded workers nobody retired, safe to retire in bulk.
  */
@@ -968,8 +969,10 @@ function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: num
       return { ...base, group, status: `Waiting on “${live!.title}” (${childStatus(live!.running)} ${compactAge(live!.since)})` };
     case "failed":
       return { ...base, group, tone: "error", status: `Thread failed${w.stopReason ? `: ${w.stopReason}` : ""}` };
+    case "idleNoReport":
+      return { ...base, group, tone: "warn", status: `Idle, no report${unchecked}` };
     case "open":
-      return { ...base, group, tone: "warn", status: `${stopped ?? "Idle without a report"}${thread}${unchecked}` };
+      return { ...base, group, tone: "warn", status: `${stopped ?? "No report"}${thread}${unchecked}` };
     case "stopReason":
       return { ...base, group, status: `${stopped}${thread}${unchecked}` };
     case "done":

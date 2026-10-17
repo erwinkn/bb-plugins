@@ -80,11 +80,13 @@ describe("v9 §6.1 the instruction budget", () => {
 });
 
 describe("v9 §3 the worker owns its review loop", () => {
-  it("guidance: fresh reviewer each round from the other family, at most 6 converging rounds, then blocked; leads grant 4 more only on a rule or the user's word", () => {
+  it("guidance: fresh reviewer each round from the other family, no round cap while findings converge (R5), blocked on whack-a-mole or scope creep; leads send it back only on a rule or the user's word", () => {
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("a fresh reviewer each round, from the other model family, started with the reviewer command in your brief");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("At most 6 review rounds, converging: fewer, milder findings each round. Done when the last verdict is clean. Blocked (each open finding, your view, the options) after round 6, or after round 4 if it still found a P1");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child runs, end your turn; its result wakes you. Ending a turn reports nothing.");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("if a standing rule or the user's explicit instruction settles it, answer the worker, with 4 more review rounds if it needs them");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while findings converge (fewer, milder each round); no round cap. Done when the last verdict is clean. Blocked (each open finding, your view, the options) on whack-a-mole (P1s, or P2s reappearing in the same area round after round) or scope creep.");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child or background job runs, end your turn; its result wakes you. Ending a turn reports nothing. End one without a report only to wait like that.");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("if a standing rule or the user's explicit instruction settles it, answer the worker and let it keep reviewing");
+    // W498 (R5): no 4- or 6-round limit is left in either default.
+    for (const text of [DEFAULT_WORKER_INSTRUCTIONS, DEFAULT_COORDINATOR_INSTRUCTIONS]) expect(text).not.toMatch(/\b[46] (more )?(review )?rounds|after round \d|At most \d/);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Otherwise ask the user with initiative_question.");
   });
 

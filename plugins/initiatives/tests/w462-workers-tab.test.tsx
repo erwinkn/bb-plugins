@@ -49,7 +49,7 @@ function fleet() {
   const o = base();
   o.workers.current = [
     worker("W1", { label: "PDF perf", latestReport: report("blocked", "CPU capped.", "Pages or a queue?") }),
-    worker("W2", { label: "Stalled fix", open: { ref: "A2", state: "running", tasks: [] } }),
+    worker("W2", { label: "Stalled fix", runtime: "error", open: { ref: "A2", state: "running", tasks: [] } }),
     worker("W3", { label: "#3058 fresh review", role: "review", profile: "codex / gpt-6.1-sol / xhigh / fast", prs: [{ url: "https://github.com/e/m/pull/3058", stage: "in-review" }] }),
     worker("W4", { label: "Old fixer", stopReason: "Superseded by W9" }),
     worker("W5", { label: "Live work", runtime: "active", open: { ref: "A5", state: "running", tasks: [] } }),
@@ -91,7 +91,7 @@ describe("W462 grouping and rows", () => {
     expect(needs.getByText("Blocked: Pages or a queue?")).toBeTruthy();
     expect(needs.queryByRole("button", { name: "Retire all" })).toBeNull();
     const stopped = within(slot.getByRole("region", { name: "Stopped" }));
-    expect(stopped.getByText("Idle without a report")).toBeTruthy();
+    expect(stopped.getByText("Thread failed")).toBeTruthy();
     expect(stopped.getByText("Stopped: Superseded by W9")).toBeTruthy();
     expect(stopped.getByRole("button", { name: "Retire all" })).toBeTruthy();
     const idle = within(slot.getByRole("region", { name: "Idle · nothing open" }));

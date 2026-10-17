@@ -15,13 +15,13 @@ report back to it. This skill only sums up the tools.
   lookups, scans, simple edits) or `explorer` (read lots and report; no building or running;
   `analyst` and `investigator` still work as aliases); Settings map each kind to a
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
-  own review loop (a fresh reviewer from the other model family per round, at most 6 converging rounds)
-  and reports once. A trivial change (one line, a handful of small tweaks, an urgent
+  own review loop (a fresh reviewer from the other model family per round, for as long as the
+  findings converge) and reports once. A trivial change (one line, a handful of small tweaks, an urgent
   hotfix) skips review: say "No review: trivial" in its brief. `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
   more work, and the worker reports on it again; the message carries the current worker
-  loop and rules. A blocked worker gets 4 more review rounds only when a standing rule or the
+  loop and rules. Send a blocked worker back to review only when a standing rule or the
   user's explicit instruction settles the open finding; otherwise ask the user
   (`initiative_question`). More work for an idle worker whose large cache has gone cold is
   refused with the rewrite cost; resend it with `resumeCold:true`, or spawn a fresh worker

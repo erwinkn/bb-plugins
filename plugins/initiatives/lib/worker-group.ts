@@ -11,7 +11,7 @@ export const FAILED_THREAD = new Set(["error", "failed"]);
 export type WorkerGroup = "needs" | "working" | "waiting" | "done" | "stopped" | "idle";
 
 /** Why a worker is in its group: the finer cases the Workers tab words differently. */
-export type WorkerKind = "asksUser" | "input" | "running" | "waiting" | "failed" | "open" | "stopReason" | "done" | "onCoordinator" | "reported" | "none";
+export type WorkerKind = "asksUser" | "input" | "running" | "waiting" | "failed" | "idleNoReport" | "open" | "stopReason" | "done" | "onCoordinator" | "reported" | "none";
 
 export const KIND_GROUP: Record<WorkerKind, WorkerGroup> = {
   asksUser: "needs",
@@ -20,6 +20,7 @@ export const KIND_GROUP: Record<WorkerKind, WorkerGroup> = {
   waiting: "waiting",
   onCoordinator: "waiting",
   failed: "stopped",
+  idleNoReport: "waiting",
   open: "stopped",
   stopReason: "stopped",
   done: "done",
@@ -49,7 +50,9 @@ export function workerKind(f: WorkerFacts): WorkerKind {
   if (BUSY_THREAD.has(f.runtime)) return "running";
   if (f.waiting) return "waiting";
   if (FAILED_THREAD.has(f.runtime)) return "failed";
-  if (f.open) return "open";
+  // Open work on a thread that went idle without reporting: it may have asked its lead by plain
+  // message and stopped. It waits on someone; it is not working, and it does not need the user.
+  if (f.open) return f.runtime === "idle" && !f.stopReason ? "idleNoReport" : "open";
   if (f.stopReason) return "stopReason";
   if (f.outcome === "done") return "done";
   // Blocked, with nothing left for the user to answer: the coordinator acts next.

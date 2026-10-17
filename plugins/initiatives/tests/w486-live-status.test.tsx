@@ -44,12 +44,12 @@ const quiet = { isArchived: false, hasPendingInteraction: false, indicator: "non
 const facts = (over: Partial<WorkerFacts> = {}): WorkerFacts => ({ asksUser: false, runtime: "idle", waiting: false, open: false, stopReason: false, outcome: null, ...over });
 
 describe("worker group derivation", () => {
-  it("orders asks the user, running, waiting, failed, open, stopped, done, on the coordinator, reported, none", () => {
+  it("orders asks the user, running, waiting, failed, idle with no report, open, stopped, done, on the coordinator, reported, none", () => {
     const kinds = [
       { asksUser: true, runtime: "active" }, { runtime: "active", open: true }, { waiting: true, open: true, outcome: "done" },
-      { runtime: "error", outcome: "done" }, { open: true }, { stopReason: true, outcome: "done" }, { outcome: "done" }, { outcome: "blocked" }, { outcome: "failed" }, {},
+      { runtime: "error", outcome: "done" }, { open: true }, { runtime: "archived", open: true }, { stopReason: true, outcome: "done" }, { outcome: "done" }, { outcome: "blocked" }, { outcome: "failed" }, {},
     ].map((over) => workerKind(facts(over)));
-    expect(kinds).toEqual(["asksUser", "running", "waiting", "failed", "open", "stopReason", "done", "onCoordinator", "reported", "none"]);
+    expect(kinds).toEqual(["asksUser", "running", "waiting", "failed", "idleNoReport", "open", "stopReason", "done", "onCoordinator", "reported", "none"]);
     expect(workerGroup(facts({ runtime: "failed" }))).toBe("stopped");
   });
 });
@@ -193,7 +193,7 @@ describe("the Threads sidebar and the Workers tab agree", () => {
     ["waiting for input", { indicator: "waiting-for-input" }], ["in plan mode", { activity: planMode }],
   ];
   const servers: [string, Partial<WorkerFacts>][] = [
-    ["stale active, open work", { runtime: "active", open: true }], ["stale active, queued child", { runtime: "active", waiting: true }],
+    ["stale active, open work", { runtime: "active", open: true }], ["idle, open work", { open: true }], ["stale active, queued child", { runtime: "active", waiting: true }],
     ["idle, done report", { outcome: "done" }], ["idle, nothing", {}], ["errored", { runtime: "error" }], ["asking the user", { asksUser: true, runtime: "active" }],
     ["blocked, on the coordinator", { outcome: "blocked" }],
   ];

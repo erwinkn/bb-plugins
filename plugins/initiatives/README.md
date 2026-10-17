@@ -26,11 +26,13 @@ An example, in the Equisafe Initiative:
    --lifecycle-owner-thread`, in its checkout), copies the rules that matter into the
    reviewer's brief, and ends its turn: BB's child turn-end notice wakes it. Ending a turn
    records nothing; only `initiative_report` finishes work.
-3. At most 4 rounds (D522, worker guidance; the plugin counts nothing). Clean: it sets the
-   PR to `ready-for-erwin` and reports done once. Still rejected after round 4: it reports
-   blocked with the open findings and options. The lead grants 4 more rounds
-   (`initiative_message work:true`) only when a standing rule or Erwin's explicit
-   instruction settles the finding; otherwise it asks Erwin (`initiative_question`).
+3. No fixed round cap (rule R5, Erwin 2026-10-17, in the worker guidance; the plugin counts
+   nothing): it keeps reviewing while the findings converge. Clean: it sets the PR to
+   `ready-for-erwin` and reports done once. Whack-a-mole (P1s, or P2s that keep reappearing
+   in the same area round after round) or scope creep: it reports blocked with the open
+   findings and options. The lead sends it back to review (`initiative_message work:true`)
+   only when a standing rule or Erwin's explicit instruction settles the finding; otherwise
+   it asks Erwin (`initiative_question`).
 4. The report goes to the worker's **lead**: the tab that gave it the work, or the
    coordinator tab once that tab is archived. A done report queues behind a busy lead and
    runs as its own turn when drained; a blocked one steers into the running turn.

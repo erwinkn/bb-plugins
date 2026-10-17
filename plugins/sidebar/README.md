@@ -123,7 +123,10 @@ running, queued for a slot or asking for input), whatever its last report
 said: a worker that reported done and then took more work never shows as done
 while its review runs. It also holds a blocked worker with nothing left for you
 to answer (you answered or dismissed its blocker, or the coordinator took it
-back): it waits on the coordinator. BB's live
+back): it waits on the coordinator. And it holds a worker whose thread went
+idle on open work without a report ("Idle, no report" in the Workers tab),
+say after asking its lead by plain message: someone has to look, but it is
+not your Inbox question, so it never shows under Needs you. BB's live
 status wins over the last read at once: a worker waiting for input shows
 under Needs you, a running one under Working, and a quiet one over a running
 or input-waiting descendant under Waiting. A descendant queued for a slot

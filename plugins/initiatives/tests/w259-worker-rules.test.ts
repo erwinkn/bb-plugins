@@ -27,7 +27,7 @@ async function turn(f: Fx, threadId: string, text: string) {
 describe("W259 coordinator guidance", () => {
   it("sizes work per worker, picks models by difficulty and sends fixes to a fresh worker", () => {
     // v9 reverses W259's fresh fix workers: a worker owns its PR to a clean review, and more work
-    // (a rule- or user-settled finding, 4 more rounds) goes back to the same worker.
+    // (a rule- or user-settled finding, back to review) goes back to the same worker.
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("very-fast (mechanical: lookups, scans, simple edits) or explorer (read lots and report; no building or running).");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("More work goes back to the same worker (initiative_message work:true).");
