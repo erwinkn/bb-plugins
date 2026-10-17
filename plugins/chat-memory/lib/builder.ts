@@ -255,6 +255,13 @@ export class TreeBuilder {
     for (const i of this.unbuilt) if (i < count) n++;
     return n;
   }
+  /** Which of messages 0..count-1 have no line yet; null until the load's recovery has found them. */
+  unsummarizedLines(count: number) {
+    if (!this.recovered) return null;
+    const lines = [...this.unbuilt].filter((i) => i < count);
+    for (let i = this.views.fed; i < count; i++) lines.push(i);
+    return lines;
+  }
 
   /** The first of messages 0..count-1 whose summary failed, if any: a turn that needs it cannot wait it out. */
   failedBefore(count: number) {

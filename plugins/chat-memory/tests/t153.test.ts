@@ -332,11 +332,15 @@ describe("T153 OptChat turns", () => {
     f.memory.dispose();
   });
 
-  it("fails the turn visibly when more than 32 KB has no summary by the deadline, naming why", async () => {
+  it("fails the turn visibly when what has no summary by the deadline is too much to show clipped, naming why (W503)", async () => {
     const f = await initiative();
     f.memory.useSummarizer(stuckLuna);
-    for (let n = 0; n < 3; n++) f.turn("coord", `part ${n}`, "z".repeat(14_000));
+    // 60 replies of 3 KB: the 50 before the newest 32 KB would be 100 KB clipped, past CLIPPED_BYTES.
+    for (let n = 0; n < 60; n++) f.turn("coord", `part ${n}`, "z".repeat(3_000));
+    f.memory.waits.summaries = 300;
+    const started = Date.now();
     await expect(f.ask("coord", f.say("coord", "go"), "go")).rejects.toThrow(/OptChat memory unavailable for this turn: \d+ earlier messages have no summary yet: the summarizer is still writing them\. The message was not sent/);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_400);
     f.memory.dispose();
   });
 
@@ -371,7 +375,7 @@ describe("T153 OptChat turns", () => {
     const f = await initiative();
     f.turn("coord", "previous");
     f.memory["deps"].list = () => new Promise(() => {});
-    f.memory.waits = { turn: 60_000 };
+    f.memory.waits.turn = 60_000;
     const stop = new AbortController();
     const turn = f.memory.turnContext("coord", { protocol: 4, input: "go", requestId: f.say("coord", "go"), sessionId: null }, stop.signal);
     setTimeout(() => stop.abort(), 50);

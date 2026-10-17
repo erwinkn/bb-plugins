@@ -112,8 +112,18 @@ turn:
 2. views the scope the thread writes to then: the whole log, since it holds
    completed turns only and this one has not started;
 3. shows the newest messages that have no summary yet whole
-   (`id+1|kind: text`), up to 32 KB, and waits for the summaries of every
-   message before those (D487);
+   (`id+1|kind: text`), up to 32 KB (D487), and waits up to 3 s for the
+   summaries of every message before those (W503). One still without its
+   summary then is shown clipped: its first and last 1 KB, marked at the start
+   and where the middle was cut, so it never reads as a summary or as the whole:
+
+   > 1404+1|echo: [clipped, no summary yet: the middle 28,066 of 30,066 bytes
+   > is left out; memory_zoom {id:1404, n:1} gives it whole] <first 1 KB>[…
+   > 28,066 bytes clipped …]<last 1 KB>
+
+   It is never frozen into the system prompt, and later turns show its
+   summary. At most 64 KB is shown clipped: past that (the summarizer far
+   behind, rate-limited or down) the turn waits on until it fits;
 4. answers a fresh session: the system prompt ends with the OptChat prompt and
    the view's older lines (kept turn after turn, so the prompt and the fork's
    session seed stay cached; a message shown whole is never among them), and
@@ -121,9 +131,13 @@ turn:
    "New message:".
 
 Steps 1 and 3 share one deadline, 90 s (the fork waits 120 s), and stop as soon
-as BB stops the turn. **Any failure throws**: the provider fails the turn
-visibly and keeps its message, never runs it in the old session. For example,
-with the summarizer rate-limited and more than 32 KB without a summary:
+as BB stops the turn. A turn that waited for summaries logs one line, for
+example `initiatives:prj_1: turn of thr_a waited 3,004 ms for the summaries of 7
+messages; 2 shown clipped` (or `the turn failed: …`). **Any failure throws**:
+the provider fails the turn visibly and keeps its message, never runs it in the
+old session. A line whose summary failed its tries fails the turn at once (see
+the tree, below). For example, with the summarizer rate-limited and more than
+64 KB to clip by the deadline:
 
 > OptChat memory unavailable for this turn: 3 earlier messages have no summary
 > yet: the summarizer is rate-limited (429 …). The message was not sent; send it

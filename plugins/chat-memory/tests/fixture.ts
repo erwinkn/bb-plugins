@@ -75,7 +75,7 @@ export function fixture() {
   const exposed = plugin(bb);
   const { memory, store } = exposed;
   memory.useSummarizer(fakeLuna);
-  memory.waits = { turn: 1_500 };
+  memory.waits = { turn: 1_500, summaries: 1_000 };
   // Nothing outlives its test, and its database goes with it.
   onTestFinished(() => {
     memory.dispose();

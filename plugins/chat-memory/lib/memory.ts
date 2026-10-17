@@ -10,7 +10,7 @@ import type { Settings } from "./settings";
 import { MemoryStore, type MemoryMode, type Scope } from "./store";
 import type { Summarizer } from "./summarizer";
 import { NodeCache, children, end, label, nodeAt, renderLine, start, viewBytes } from "./tree";
-import { WHOLE_BYTES, turnView } from "./turn";
+import { CLIPPED_BYTES, WHOLE_BYTES, clippedSize, turnView } from "./turn";
 import type { NodeRef } from "./tree";
 import { senderParts } from "./sender-parts";
 
@@ -55,6 +55,13 @@ export type TurnAnswer =
  * view needs) before it fails. The fork's hook gives an answer 120 s.
  */
 export const TURN_WAIT_MS = 90_000;
+/**
+ * W503: how long an OptChat turn waits for the summaries of the messages before its newest
+ * WHOLE_BYTES. The ones still without theirs then are shown clipped (turn.ts, clipLine), and get
+ * their summaries for a later turn. A queued report that starts the next turn 100 ms after the last
+ * one ended waited 5 to 90 s for them before (A698).
+ */
+export const SUMMARY_WAIT_MS = 3_000;
 /** Failed reads of the thread's last turn a turn tries before it fails. */
 export const TURN_READ_ATTEMPTS = 3;
 const RETRY_PAUSE_MS = 250;
@@ -168,8 +175,8 @@ export class ChatMemory {
   /** By thread: the view lines its last OptChat turn froze into its system prompt. */
   private frozen = new Map<string, NodeRef[]>();
   private facts = new Map<string, Promise<ThreadFacts | null>>();
-  /** The wait bound (ms); tests shorten it. */
-  waits = { turn: TURN_WAIT_MS };
+  /** The wait bounds (ms); tests change them. */
+  waits = { turn: TURN_WAIT_MS, summaries: SUMMARY_WAIT_MS };
 
   constructor(
     private readonly deps: {
@@ -599,29 +606,53 @@ export class ChatMemory {
    * An OptChat turn first copies the thread's own completed turns (the previous one, and any whose
    * idle a reload missed), then views the scope the thread writes to then: everything logged is
    * history, since the log holds completed turns only and this one has not started. The newest
-   * messages without a summary are shown whole up to WHOLE_BYTES; it waits for the summaries of
-   * every message before those (D487). A turn that cannot get its view throws (D458): the provider
-   * fails it visibly and keeps its input. It waits at most TURN_WAIT_MS, tries a failed read at
-   * most TURN_READ_ATTEMPTS times, and stops waiting once the turn is stopped (signal).
+   * messages without a summary are shown whole up to WHOLE_BYTES (D487); it waits up to
+   * SUMMARY_WAIT_MS for the summaries of every message before those, then shows the ones still
+   * missing clipped (W503, waitSummarized). A turn that cannot get its view throws (D458): the
+   * provider fails it visibly and keeps its input. It waits at most TURN_WAIT_MS, tries a failed
+   * read at most TURN_READ_ATTEMPTS times, and stops waiting once the turn is stopped (signal).
+   * Every turn that waited for summaries logs one line: how long, for how many, how many clipped.
    */
   async turnContext(threadId: string, ask: TurnAsk, signal?: AbortSignal): Promise<TurnAnswer> {
     const deadline = this.store.now() + this.waits.turn;
     const fail = (why: string) => new MemoryError(`${UNAVAILABLE}: ${why}. The message was not sent; send it again.`);
     if (this.store.scopeOf(threadId)?.mode !== "optchat") return {};
+    const wait: Wait = { scopeId: "", messages: null, since: null };
     try {
       await this.attempts(() => this.caughtUp(threadId, fail), deadline, fail, signal, "its last turn could not be read");
       // A move meanwhile (D491): the view is that of the scope it writes to now.
       const scope = this.store.scopeOf(threadId);
       if (scope?.mode !== "optchat") return {};
       const cut = this.store.count(scope.id);
-      await this.waitSummarized(scope.id, this.store.tailStart(scope.id, cut, WHOLE_BYTES), deadline, fail, signal);
+      const whole = this.store.tailStart(scope.id, cut, WHOLE_BYTES);
+      await this.waitSummarized(scope.id, whole, deadline, fail, signal, wait);
+      // A line that failed since the wait ended is never shown clipped either (D458): from here on, nothing yields.
+      const builder = this.builders.get(scope.id);
+      const failure = builder && this.failedLine(builder, whole, fail);
+      if (failure) throw failure;
       const { nodes, views } = this.tree(scope.id);
-      const view = turnView({ chat: views.chat, fed: views.fed, nodes, cut, frozen: this.frozen.get(threadId) ?? null, message: (i) => this.store.message(scope.id, i) });
+      const view = turnView({ chat: views.chat, fed: views.fed, nodes, cut, whole, frozen: this.frozen.get(threadId) ?? null, message: (i) => this.store.message(scope.id, i) });
       this.frozen.set(threadId, view.frozen);
+      this.logWait(threadId, wait, `${view.clipped} shown clipped`);
       return { session: "fresh", sessionId: randomUUID(), systemPrompt: turnSystem(view.frozenLines), input: turnMessage(this.store.now(), ask.input, view.tailLines) };
     } catch (error) {
-      throw error instanceof MemoryError ? error : fail(errorMessage(error));
+      const failure = error instanceof MemoryError ? error : fail(errorMessage(error));
+      this.logWait(threadId, wait, `the turn failed: ${failure.message}`);
+      throw failure;
     }
+  }
+
+  /** W503: one line for a turn that waited for summaries, e.g. "initiatives:prj_1: turn of thr_a waited 3,004 ms for the summaries of 7 messages; 2 shown clipped". */
+  private logWait(threadId: string, wait: Wait, outcome: string) {
+    if (wait.since === null) return;
+    const ms = (this.store.now() - wait.since).toLocaleString("en-US");
+    this.deps.log(`${wait.scopeId}: turn of ${threadId} waited ${ms} ms for the summaries of ${wait.messages ?? "?"} message${wait.messages === 1 ? "" : "s"}; ${outcome}`);
+  }
+
+  /** D458: the first of messages 0..count-1 whose summary failed its bounded tries, as the turn's failure. */
+  private failedLine(builder: TreeBuilder, count: number, fail: (why: string) => Error) {
+    const f = builder.failedBefore(count);
+    return f && fail(`message ${f.i} could not be summarized (${f.error}); it is tried again within 30 minutes`);
   }
 
   /** One copy of the thread that started after this call, settled. */
@@ -650,43 +681,76 @@ export class ChatMemory {
   }
 
   /**
-   * Wait until messages 0..count-1 have their line, before the deadline, unless the turn stops;
-   * their calls go first meanwhile (W315).
+   * Wait for the lines of messages 0..count-1, their calls going first meanwhile (W315), at most
+   * waits.summaries (W503). The turn then goes on and shows the messages still without theirs
+   * clipped, as long as that fits in CLIPPED_BYTES; past it (the summarizer far behind, rate-limited
+   * or down) it waits on until it fits, and fails at the deadline as it did before. A line that
+   * failed its bounded tries fails the turn at once (D458), as does a stop. `wait` records the wait.
    */
-  private async waitSummarized(scopeId: string, count: number, deadline: number, fail: (why: string) => Error, signal?: AbortSignal) {
+  private async waitSummarized(scopeId: string, count: number, deadline: number, fail: (why: string) => Error, signal: AbortSignal | undefined, wait: Wait) {
     if (this.disposed) throw fail("Chat memory is stopping");
     if (signal?.aborted) throw fail("the turn stopped");
     this.build(scopeId);
     const builder = this.builder(scopeId);
     if (builder.summarized(count)) return;
-    // D458: a summary that failed its bounded tries is no summary; the turn fails now, never on a cut message.
-    const failed = () => {
-      const f = builder.failedBefore(count);
-      return f && fail(`message ${f.i} could not be summarized (${f.error}); it is tried again within 30 minutes`);
-    };
+    // D458: a summary that failed its bounded tries is no summary; the turn fails now, never shows it clipped.
+    const failed = () => this.failedLine(builder, count, fail);
     const failure = failed();
     if (failure) throw failure;
+    // How many lines it waits for, once the builder knows: a builder just loaded finds them in its recovery.
+    const counted = () => void (wait.messages ??= builder.unsummarizedLines(count)?.length ?? null);
+    const since = this.store.now();
+    Object.assign(wait, { scopeId, since });
+    counted();
+    const uncount = builder.onBuilt(counted);
+    // Whether what the turn would show clipped now fits; never before the builder knows which lines it lacks.
+    const fits = () => {
+      const lines = builder.unsummarizedLines(count);
+      if (!lines) return false;
+      let total = 0;
+      for (const i of lines) if ((total += clippedSize(this.store.message(scopeId, i)?.size ?? 0)) > CLIPPED_BYTES) return false;
+      return true;
+    };
     const release = builder.need(count, deadline);
-    let unsubscribe = () => {};
-    const done = new Promise<boolean | Error>((resolve) => {
-      unsubscribe = builder.onBuilt(() => {
-        if (builder.closed) resolve(false);
-        else if (builder.summarized(count)) resolve(true);
-        else {
-          const failure = failed();
-          if (failure) resolve(failure);
-        }
-      });
-    });
-    const settled = await within(done, deadline - this.store.now(), signal).finally(() => (unsubscribe(), release()));
-    if (settled === "stopped") throw fail("the turn stopped");
-    if (settled?.value === true) return;
-    if (settled?.value instanceof Error) throw settled.value;
-    if (settled?.value === false) throw fail("Chat memory is stopping");
+    try {
+      const capped = Math.min(deadline, since + this.waits.summaries);
+      if (await this.until(builder, () => builder.summarized(count), failed, capped, fail, signal)) return;
+      if (await this.until(builder, fits, failed, deadline, fail, signal)) return;
+    } finally {
+      release();
+      uncount();
+    }
     const status = builder.status;
     const why = status.state === "backoff" ? `the summarizer is rate-limited (${status.detail})` : status.state === "unavailable" ? `the summarizer is unavailable (${status.detail})` : "the summarizer is still writing them";
     throw fail(`${builder.unsummarized(count)} earlier messages have no summary yet: ${why}`);
   }
+
+  /** Whether `ready` holds, looked at now and after each node built, by `until`; a failed line, a stop or a close throws. */
+  private async until(builder: TreeBuilder, ready: () => boolean, failed: () => Error | null, until: number, fail: (why: string) => Error, signal?: AbortSignal) {
+    let unsubscribe = () => {};
+    const done = new Promise<boolean | Error>((resolve) => {
+      const look = () => {
+        const failure = failed();
+        if (builder.closed) resolve(false);
+        else if (failure) resolve(failure);
+        else if (ready()) resolve(true);
+      };
+      unsubscribe = builder.onBuilt(look);
+      look();
+    });
+    const settled = await within(done, until - this.store.now(), signal).finally(() => unsubscribe());
+    if (settled === "stopped") throw fail("the turn stopped");
+    if (settled?.value instanceof Error) throw settled.value;
+    if (settled?.value === false) throw fail("Chat memory is stopping");
+    return settled?.value === true || ready();
+  }
+}
+
+/** What a turn waited for its summaries: the scope, how many messages lacked theirs (null: not known yet), since when (null: it did not wait). */
+interface Wait {
+  scopeId: string;
+  messages: number | null;
+  since: number | null;
 }
 
 /** The promise's value once it settles; null once `ms` have passed; "stopped" once the signal aborts. */

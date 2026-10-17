@@ -90,7 +90,8 @@ reply what you learned that will matter later.`;
 /**
  * D431 phase 2: an OptChat turn is a fresh session whose system prompt ends with TURN_PROMPT and
  * the view's older lines; its first message holds the view's newest lines, the time and the new
- * message (turnMessage). Newest messages not summarized yet are shown whole, up to 32 KB (D487).
+ * message (turnMessage). Newest messages not summarized yet are shown whole, up to 32 KB (D487);
+ * older ones still without a summary after a short wait, clipped (W503).
  */
 export const TURN_PROMPT = `# Memory (OptChat)
 
@@ -100,6 +101,8 @@ one-line summaries:
 
   id+n|text   the n messages from id on, summarized (newlines as spaces)
   id+1|kind: text   one of the newest messages, not summarized yet, whole
+  id+1|kind: [clipped, …] head[… clipped …]tail   an older one not summarized yet: its middle is
+                    left out, so zoom it before you rely on it
 
 ${KINDS}
 

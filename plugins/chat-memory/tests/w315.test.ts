@@ -388,7 +388,8 @@ describe("W324 a stopped turn lets go of its call's extension", () => {
     f.turn("a", "hello");
     await f.idle("a");
     (f.memory as unknown as { deps: { settings: () => object } }).deps.settings = () => ({ regularCompactTokens: 0, hybridCompactTokens: 0, summarizerEffort: "high", summarizerConcurrency: 1 });
-    f.memory.waits.turn = 90_000;
+    // A turn that waits on to its 90 s deadline, as one with too much to show clipped does (W503).
+    f.memory.waits = { turn: 90_000, summaries: 90_000 };
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     (f.store as unknown as { now: () => number }).now = () => Date.now();
     const t0 = Date.now();
