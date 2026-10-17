@@ -114,7 +114,7 @@ acted on. Never repeat an earlier reply or redo earlier work unless the new mess
 
 ${ZOOM_GUIDE}`;
 
-/** D447: a member thread's instructions in every mode, so a switch needs no new session. */
+/** D447: a member thread's instructions in either mode. */
 export const MEMORY_GUIDANCE = `Memory: every message of this chat is logged and summarized into a tree, including what a compaction drops. After a compaction, or when you need older detail, call memory_read: one-line summaries "id+n|text", oldest first. Open a line with memory_zoom {id,n} (n:1 gives the message whole; each line it gives starts with its time) before acting on it.`;
 
 /** The view's older lines, at the end of a turn's system prompt: a cached prefix until they change. */

@@ -37,13 +37,13 @@ describe("T149 the coordinator and its discussions share the Initiative's memory
     expect(f.log(P)).toEqual(["user: Keep the 5m TTL", "agent: re: Keep the 5m TTL", "user: Noted the TTL", "agent: re: Noted the TTL"]);
   });
 
-  it("one mode for all of them, switched from any of their Memory panels, from each one's next turn", async () => {
+  it("one mode for all of them, OptChat from the scope's creation, and no panel can change it (R3)", async () => {
     const f = await initiative();
-    await f.configure("disc", { mode: "optchat" });
     expect(f.store.scope(P)!.mode).toBe("optchat");
     for (const id of ["coord", "disc"]) expect(await tools(f, id)).toContain(TURN_CONTEXT_TOOL);
-    await f.configure("coord", { mode: "hybrid" });
-    for (const id of ["coord", "disc"]) expect(await tools(f, id)).toEqual(["memory_read", "memory_zoom"]);
+    await expect(f.configure("disc", { mode: "regular" })).rejects.toThrow(/rpc input validation failed/);
+    expect(f.store.scope(P)!.mode).toBe("optchat");
+    for (const id of ["coord", "disc"]) expect(await tools(f, id)).toContain(TURN_CONTEXT_TOOL);
     expect(await tools(f, "worker")).toEqual([]);
   });
 

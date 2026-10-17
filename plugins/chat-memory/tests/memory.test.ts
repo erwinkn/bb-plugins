@@ -8,15 +8,17 @@ const toolNames = async (f: ReturnType<typeof fixture>, threadId: string, option
   (await f.configureAgent(threadId, options)).tools.map((t) => t.name).sort();
 
 describe("T145 scopes", () => {
-  it("gives a scope's threads their memory tools in every mode, and the hidden turn hook only in OptChat (D490)", async () => {
+  it("gives a scope's threads their memory tools, and the hidden turn hook only in a coordinator's OptChat memory (D490, R3)", async () => {
     const f = fixture();
     await f.attach("initiatives", "prj_1", f.thread("coord"), f.thread("talk", { providerId: "codex" }));
-    expect(await toolNames(f, "coord")).toEqual(["memory_read", "memory_zoom"]);
-    expect(await toolNames(f, "talk", { providerId: "codex" })).toEqual(["memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "coord")).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "talk", { providerId: "codex" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
     const config = await f.configureAgent("coord");
     expect(config.instructions).toMatch(/^Memory: every message of this chat is logged/);
-    await f.configure("talk", { mode: "hybrid" });
-    expect(await toolNames(f, "coord")).toEqual(["memory_read", "memory_zoom"]);
+    // Any other memory is Regular: tools, no hook.
+    f.thread("plain");
+    await f.configure("plain", {});
+    expect(await toolNames(f, "plain")).toEqual(["memory_read", "memory_zoom"]);
     // A worker carries no memoryScope; a thread nobody attached has nothing.
     f.thread("worker", { originPluginId: "initiatives", metadata: { role: "worker" } });
     expect(await toolNames(f, "worker", { parentThreadId: "coord", origin: "initiatives" })).toEqual([]);
@@ -24,15 +26,19 @@ describe("T145 scopes", () => {
     expect(f.store.thread("worker")).toBeNull();
   });
 
-  it("lets only plugins attach a thread, and only the user switch a memory (D452)", async () => {
+  it("lets only plugins attach a thread, and nobody switch a mode: it follows the role (D452, R3)", async () => {
     const f = fixture();
     f.thread("coord");
     await expect(f.harness.behavior.callRpc("attach", { threadId: "coord", key: "prj_1" })).rejects.toThrow(/attached to a memory by the plugin that owns it/);
     expect(await f.attach("initiatives", "prj_1", "coord")).toBe("initiatives:prj_1");
-    await expect(
-      f.harness.behavior.callRpc("configure", { threadId: "coord", mode: "hybrid" }, { experimental_caller: { kind: "plugin", pluginId: "initiatives" } }),
-    ).rejects.toThrow(/Only the user switches/);
-    expect(((await f.configure("coord", { mode: "hybrid" })) as MemoryStatus).mode).toBe("hybrid");
+    await expect(f.harness.behavior.callRpc("configure", { threadId: "coord", compactTokens: 1 }, { experimental_caller: { kind: "plugin", pluginId: "initiatives" } })).rejects.toThrow(/Only the user/);
+    // The RPC has no mode: every request for one is refused, for any caller, and nothing changes.
+    for (const mode of ["regular", "hybrid", "optchat"]) {
+      await expect(f.configure("coord", { mode })).rejects.toThrow(/rpc input validation failed/);
+      await expect(f.harness.behavior.callRpc("configure", { threadId: "coord", mode }, { experimental_caller: { kind: "plugin", pluginId: "initiatives" } })).rejects.toThrow();
+    }
+    expect(f.store.scope("initiatives:prj_1")!.mode).toBe("optchat");
+    expect(((await f.configure("coord", {})) as MemoryStatus).mode).toBe("optchat");
     // No tool or command writes it.
     expect(f.harness.inspection.registrations.agentTools.map((t: { name: string }) => t.name).sort()).toEqual(["memory_read", "memory_zoom", TURN_CONTEXT_TOOL].sort());
     for (const argv of [["configure", "coord"], ["mode", "optchat"], ["set", "regular"], ["import-initiatives"]]) expect((await f.harness.behavior.runCli(argv, { threadId: "coord" })).exitCode).toBe(2);
@@ -104,20 +110,18 @@ describe("T145 scopes", () => {
 });
 
 describe("T145 turns (one path per mode, D458)", () => {
-  async function scoped(mode: "regular" | "hybrid" | "optchat" = "optchat") {
+  /** A coordinator's memory (OptChat), or a personal one (Regular). */
+  async function scoped(mode: "regular" | "optchat" = "optchat") {
     const f = fixture();
-    await f.attach("initiatives", "prj_1", f.thread("a", { title: "Coordinator" }), f.thread("b", { title: "Discussion" }));
+    await f.attach(mode === "optchat" ? "initiatives" : "chat-memory", "prj_1", f.thread("a", { title: "Coordinator" }), f.thread("b", { title: "Discussion" }));
     for (let n = 0; n < 3; n++) f.turn("a", `question ${n}`, `answer ${n}`);
     await f.idle("a");
-    if (mode !== "regular") await f.configure("a", { mode });
     return f;
   }
 
-  it("lets the session go on in regular and hybrid (a mode switched since the turn's tools were resolved)", async () => {
-    for (const mode of ["regular", "hybrid"] as const) {
-      const f = await scoped(mode);
-      expect(await f.ask("a", f.say("a", "next"), "next")).toEqual({});
-    }
+  it("lets the session go on in a Regular memory", async () => {
+    const f = await scoped("regular");
+    expect(await f.ask("a", f.say("a", "next"), "next")).toEqual({});
     // A thread outside every scope: nothing to do.
     expect(await fixture().ask("x", "creq_1", "hi")).toEqual({});
   });
@@ -183,20 +187,19 @@ describe("T145 turns (one path per mode, D458)", () => {
 });
 
 describe("T145 switching (D452, D458, D460)", () => {
-  it("refuses OptChat for a Codex thread; shows one that joins later, and refuses its turns", async () => {
+  it("shows a Codex thread in a coordinator's memory as a problem and refuses its turns, with no way to switch (D460, R3)", async () => {
     const f = fixture();
     await f.attach("initiatives", "prj_1", f.thread("a"), f.thread("c", { providerId: "codex", title: "Codex talk" }));
-    await expect(f.configure("a", { mode: "optchat" })).rejects.toThrow(/OptChat runs on Claude Code only for now \(T146\): "Codex talk" runs on codex/);
-    // Without the Codex thread, the Initiative's memory goes OptChat.
-    f.memory.attach("c", null);
-    expect(((await f.configure("a", { mode: "optchat" })) as MemoryStatus).mode).toBe("optchat");
-    await f.attach("initiatives", "prj_1", "c");
-    expect((await f.memory.status("initiatives:prj_1")).problems).toEqual([expect.stringMatching(/OptChat cannot run in "Codex talk" \(codex\): its turns are refused/)]);
+    expect((await f.memory.status("initiatives:prj_1")).problems).toEqual([expect.stringMatching(/OptChat cannot run in "Codex talk" \(codex\): its turns are refused until it is replaced with a Claude Code thread/)]);
     // The hook in a Codex thread's tools makes BB refuse each of its turns; the gate says why first.
     expect(await toolNames(f, "c", { providerId: "codex" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
     expect(await f.dispatch("c")).toMatchObject({ action: "reject", message: expect.stringMatching(/OptChat runs on Claude Code only for now \(T146\): "Codex talk" runs on codex, so this message was not sent/) });
     expect(await f.dispatch("c", { attempt: "join-turn" })).toEqual({ action: "proceed" });
     expect(await f.dispatch("a")).toEqual({ action: "proceed" });
+    // A Regular memory takes a Codex thread.
+    await f.attach("chat-memory", "t", f.thread("x", { providerId: "codex" }));
+    expect(await f.dispatch("x", { providerId: "codex" })).toEqual({ action: "proceed" });
+    expect((await f.memory.status("chat-memory:t")).problems).toEqual([]);
   });
 
   it("turns memory on for any thread as its own scope, off again, and on again from where it left", async () => {
@@ -224,13 +227,11 @@ describe("T145 switching (D452, D458, D460)", () => {
 });
 
 describe("T145 compaction", () => {
-  it("compacts past the limit of the scope's mode, once per snapshot; never in OptChat", async () => {
+  it("compacts a Regular memory past its limit, once per snapshot; never in OptChat", async () => {
     const f = fixture();
-    await f.attach("initiatives", "prj_1", f.thread("a"));
-    const scope = () => f.store.scope("initiatives:prj_1")!;
+    await f.attach("chat-memory", "t", f.thread("a"));
+    const scope = () => f.store.scope("chat-memory:t")!;
     expect(f.memory.compactLimit(scope())).toBe(300_000);
-    await f.configure("a", { mode: "hybrid" });
-    expect(f.memory.compactLimit(scope())).toBe(150_000);
     await f.configure("a", { compactTokens: 90_000 });
     expect(f.memory.compactLimit(scope())).toBe(90_000);
     f.usage("a", 80_000);

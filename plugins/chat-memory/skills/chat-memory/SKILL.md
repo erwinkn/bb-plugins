@@ -30,10 +30,9 @@ Without a thread id, the CLI reads the calling thread's memory.
 
 ## Modes
 
-The user alone switches a memory's mode and compaction limit, from the thread's Memory pill or
-panel (D452). Agents never do, and no tool or command writes it.
+A memory's mode follows its role and nobody switches it (R3): an Adventure coordinator's memory is
+OptChat, every other is Regular. Agents never write it, and no tool or command does.
 
 - Regular: one long session, compacted past 300k tokens.
-- Hybrid: compacted past 150k; what a compaction drops stays one zoom away.
 - OptChat: each turn is a fresh session over the memory view (Claude Code only). When the view
   cannot be built in time, the turn fails with its message kept; it never runs in the old session.

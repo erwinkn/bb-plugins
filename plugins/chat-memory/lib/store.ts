@@ -5,7 +5,7 @@ import type { Usage } from "./summarizer";
 import { emptyViews, type NodeRef, type Views } from "./tree";
 
 /**
- * Append-only (bb.storage.migrate). A scope is one memory: one log, one tree, one mode. Its id is
+ * Append-only (bb.storage.migrate). A scope is one memory: one log, one tree, one mode (its role's). Its id is
  * "<owner plugin>:<key>": "initiatives:prj_…" for an Initiative's coordinator and discussion
  * threads, "chat-memory:<thread id>" for a thread the user turned memory on for.
  */
@@ -36,14 +36,22 @@ export const MIGRATIONS = [
      FROM members m ORDER BY CASE m.state WHEN 'current' THEN 0 ELSE 1 END, m.joined_at DESC`,
 ];
 
-export const MEMORY_MODES = ["regular", "hybrid", "optchat"] as const;
+export const MEMORY_MODES = ["regular", "optchat"] as const;
 export type MemoryMode = (typeof MEMORY_MODES)[number];
+
+/**
+ * R3: the plugin whose scopes are Adventure (Initiative) coordinators' memory (workers carry no
+ * memoryScope, so every scope it owns is a coordinator's).
+ */
+export const COORDINATOR_OWNER = "initiatives";
+/** A scope's mode is its role's, never a choice: a coordinator's memory is OptChat, every other is Regular. */
+export const modeOf = (owner: string): MemoryMode => (owner === COORDINATOR_OWNER ? "optchat" : "regular");
 
 export interface Scope {
   id: string;
   owner: string;
   mode: MemoryMode;
-  /** The scope's own compaction limit; null follows the setting for its mode. */
+  /** The scope's own compaction limit; null follows the setting. */
   compactTokens: number | null;
 }
 /** A thread chat memory has met: the memory it writes to now, and how far its BB events are logged. */
@@ -87,7 +95,7 @@ const message = (row: Row): MemoryMessage => ({
 const scope = (row: Row): Scope => ({
   id: String(row.id),
   owner: String(row.owner),
-  mode: (MEMORY_MODES as readonly string[]).includes(String(row.mode)) ? (row.mode as MemoryMode) : "regular",
+  mode: modeOf(String(row.owner)),
   compactTokens: row.compact_tokens == null ? null : Number(row.compact_tokens),
 });
 const thread = (row: Row): MemoryThread => ({
@@ -125,12 +133,20 @@ export class MemoryStore {
     const row = this.sql(`SELECT * FROM scopes WHERE id = ?`).get(id) as Row | undefined;
     return row ? scope(row) : null;
   }
+  /**
+   * R3: the mode column is no longer read; it only mirrors the role, for code that still reads it
+   * (a rollback). Run at every start, so scopes an older version created in the meantime follow too.
+   */
+  alignModes() {
+    this.sql(`UPDATE scopes SET mode = CASE WHEN owner = ? THEN 'optchat' ELSE 'regular' END WHERE mode != CASE WHEN owner = ? THEN 'optchat' ELSE 'regular' END`).run(COORDINATOR_OWNER, COORDINATOR_OWNER);
+  }
+  /** A new scope's column is written with the role's mode too. */
   ensureScope(id: string, owner: string) {
     const now = this.now();
-    this.sql(`INSERT OR IGNORE INTO scopes (id, owner, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(id, owner, now, now);
+    this.sql(`INSERT OR IGNORE INTO scopes (id, owner, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(id, owner, modeOf(owner), now, now);
   }
-  saveSettings(id: string, settings: Pick<Scope, "mode" | "compactTokens">) {
-    this.sql(`UPDATE scopes SET mode = ?, compact_tokens = ?, updated_at = ? WHERE id = ?`).run(settings.mode, settings.compactTokens, this.now(), id);
+  saveCompactTokens(id: string, compactTokens: number | null) {
+    this.sql(`UPDATE scopes SET compact_tokens = ?, updated_at = ? WHERE id = ?`).run(compactTokens, this.now(), id);
   }
   thread(threadId: string): MemoryThread | null {
     const row = this.sql(`SELECT * FROM threads WHERE thread_id = ?`).get(threadId) as Row | undefined;
@@ -180,9 +196,9 @@ export class MemoryStore {
   compactReadRecovered(threadId: string) {
     return this.sql(`UPDATE threads SET compacted_seq = NULL, compact_tries = 0, compact_error = NULL WHERE thread_id = ? AND compacted_seq = ?`).run(threadId, READ_FAILED).changes > 0;
   }
-  /** Attached threads whose last compaction failed, fewer than `tries` times: the sweep tries them again (compaction decides when). */
+  /** Threads of a Regular scope whose last compaction failed, fewer than `tries` times: the sweep tries them again (compaction decides when). OptChat never compacts. */
   compactFailures(tries: number): string[] {
-    return this.sql(`SELECT thread_id FROM threads WHERE scope IS NOT NULL AND compact_error IS NOT NULL AND compact_tries < ?`).pluck().all(tries) as string[];
+    return this.sql(`SELECT t.thread_id FROM threads t JOIN scopes s ON s.id = t.scope WHERE s.owner != ? AND t.compact_error IS NOT NULL AND t.compact_tries < ?`).pluck().all(COORDINATOR_OWNER, tries) as string[];
   }
 
   // The log --------------------------------------------------------------------------

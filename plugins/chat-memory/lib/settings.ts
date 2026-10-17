@@ -1,26 +1,15 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-/**
- * D431: Regular compacts near 300k tokens; Hybrid at half that, since what a compaction drops stays
- * one zoom away in the tree (W216 priced Equisafe's day at $29 compacting at 150k, $39 at 300k).
- */
+/** D431: Regular compacts near 300k tokens (OptChat, the coordinators' mode, never compacts). */
 export const REGULAR_COMPACT_TOKENS = 300_000;
-export const HYBRID_COMPACT_TOKENS = 150_000;
 
 export const settingsDescriptors = {
   regularCompactTokens: {
     type: "number" as const,
     label: "Regular compaction limit (tokens)",
-    description: "When a turn of a thread with memory in Regular mode ends with its context larger than this, the thread is compacted in place (BB's /compact) while idle, never mid-turn. Every request re-reads the whole context, so this caps what each one costs. A scope's own limit wins. 0 turns it off.",
+    description: "When a turn of a thread with Regular memory ends with its context larger than this, the thread is compacted in place (BB's /compact) while idle, never mid-turn. Every request re-reads the whole context, so this caps what each one costs. A scope's own limit wins. 0 turns it off.",
     default: REGULAR_COMPACT_TOKENS,
-    experimental_schema: z.number().int().min(0),
-  },
-  hybridCompactTokens: {
-    type: "number" as const,
-    label: "Hybrid compaction limit (tokens)",
-    description: "The compaction limit in Hybrid mode: lower than the regular one, since what a compaction drops stays one zoom away in the memory tree. A scope's own limit wins. 0 turns it off.",
-    default: HYBRID_COMPACT_TOKENS,
     experimental_schema: z.number().int().min(0),
   },
   summarizerEffort: {
@@ -40,13 +29,11 @@ export const settingsDescriptors = {
 };
 export interface Settings {
   regularCompactTokens: number;
-  hybridCompactTokens: number;
   summarizerEffort: "high" | "xhigh";
   summarizerConcurrency: number;
 }
 export const DEFAULT_SETTINGS: Settings = {
   regularCompactTokens: REGULAR_COMPACT_TOKENS,
-  hybridCompactTokens: HYBRID_COMPACT_TOKENS,
   summarizerEffort: "high",
   summarizerConcurrency: 8,
 };
@@ -56,7 +43,6 @@ export function defineSettings(bb: BbPluginApi) {
   const handle = bb.settings.define(settingsDescriptors);
   const decode = (raw: Awaited<ReturnType<typeof handle.get>>): Settings => ({
     regularCompactTokens: raw.regularCompactTokens,
-    hybridCompactTokens: raw.hybridCompactTokens,
     summarizerEffort: raw.summarizerEffort === "xhigh" ? "xhigh" : "high",
     summarizerConcurrency: raw.summarizerConcurrency,
   });

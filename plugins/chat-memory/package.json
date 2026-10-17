@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Chat memory",
-    "description": "One chat that never ends: every message of a thread (or a group of threads) is logged, summarized into a tree by GPT-6 Luna, and read back as a memory view. Regular, Hybrid and OptChat modes.",
+    "description": "One chat that never ends: every message of a thread (or a group of threads) is logged, summarized into a tree by GPT-6 Luna, and read back as a memory view. Regular memory for threads, OptChat for Adventure coordinators.",
     "branding": {
       "icon": "Brain"
     },

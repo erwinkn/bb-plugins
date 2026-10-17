@@ -1,7 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { MemoryStatus } from "./memory";
-import { MEMORY_MODES } from "./store";
 
 const id = z.string().min(1).max(200);
 
@@ -35,15 +34,14 @@ export const chatMemoryContract = defineRpcContract({
     output: z.custom<MemoryStatus | null>(),
   },
   /**
-   * D452: the user's switch, from this plugin's app only (plugins are refused; tools and the CLI
+   * D452: the user's change, from this plugin's app only (plugins are refused; tools and the CLI
    * never write). A thread that writes to no scope gets its own; enabled:false detaches it from its
-   * own. Refused with a reason when the mode could not run (D460).
+   * own. No mode: it follows the scope's role (R3), and a request for one is refused as unknown.
    */
   configure: {
     input: z
       .object({
         threadId: id,
-        mode: z.enum(MEMORY_MODES).optional(),
         compactTokens: z.number().int().min(0).max(2_000_000).nullable().optional(),
         enabled: z.boolean().optional(),
       })

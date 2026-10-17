@@ -8,20 +8,20 @@ const compaction = (f: Fixture, sdk: { list: () => Promise<unknown[]>; compact: 
 const usage = (usedTokens: number) => [{ seq: 7, type: "thread/contextWindowUsage/updated", data: { contextWindowUsage: { usedTokens } } }];
 const due = (f: Fixture) => f.store.handle.prepare(`UPDATE threads SET compact_tried_at = 0`).run();
 
-async function hybrid() {
+/** A Regular memory: only a Regular one compacts (a coordinator's is OptChat). */
+async function regular() {
   const f = fixture();
-  await f.attach("initiatives", "p", f.thread("coord", { title: "Coordinator" }));
-  await f.configure("coord", { mode: "hybrid" });
+  await f.attach("chat-memory", "p", f.thread("coord", { title: "Coordinator" }));
   return f;
 }
 
 describe("A469 8: a failed compaction is shown and retried", () => {
   it("records it as failed, shows it, tries the same snapshot again at most three times, and clears it once one succeeds", async () => {
-    const f = await hybrid();
+    const f = await regular();
     let fails = true;
     let tries = 0;
     const c = compaction(f, {
-      list: async () => usage(200_000),
+      list: async () => usage(400_000),
       compact: async () => {
         tries++;
         if (fails) throw new Error("503 BB unavailable");
@@ -30,7 +30,7 @@ describe("A469 8: a failed compaction is shown and retried", () => {
     });
     const signal = new AbortController().signal;
     expect(await c.afterIdle("coord", signal)).toBe(false);
-    const status = await f.memory.status("initiatives:p");
+    const status = await f.memory.status("chat-memory:p");
     expect(status.threads[0]).toMatchObject({ compactedAt: null, compactError: "503 BB unavailable" });
     expect(status.problems).toContainEqual(expect.stringMatching(/Compacting "Coordinator" failed: 503 BB unavailable/));
     // Not again at once; again once the retry wait is over; never more than three times a snapshot.
@@ -48,14 +48,14 @@ describe("A469 8: a failed compaction is shown and retried", () => {
     f.store.handle.prepare(`UPDATE threads SET compacted_seq = 0`).run();
     fails = false;
     expect(await c.afterIdle("coord", signal)).toBe(true);
-    expect((await f.memory.status("initiatives:p")).problems).toEqual([]);
+    expect((await f.memory.status("chat-memory:p")).problems).toEqual([]);
     expect(f.store.thread("coord")!.compactedAt).not.toBeNull();
   });
 });
 
 describe("A471 6: a failed read of the context size is a visible, retried compaction failure", () => {
   it("keeps the read's error on the thread, shows it, retries it within the bound, and clears it once a read works", async () => {
-    const f = await hybrid();
+    const f = await regular();
     let reads = 0;
     let failing = true;
     const c = compaction(f, {
@@ -69,7 +69,7 @@ describe("A471 6: a failed read of the context size is a visible, retried compac
     const signal = new AbortController().signal;
     expect(await c.afterIdle("coord", signal)).toBe(false);
     expect(f.store.thread("coord")!.compactError).toBe("reading its context size failed: 503 events unavailable");
-    expect((await f.memory.status("initiatives:p")).problems).toContainEqual(expect.stringMatching(/Compacting "Coordinator" failed: reading its context size failed/));
+    expect((await f.memory.status("chat-memory:p")).problems).toContainEqual(expect.stringMatching(/Compacting "Coordinator" failed: reading its context size failed/));
     expect(f.store.compactFailures(3)).toEqual(["coord"]);
     // Not read again at once; again once the retry wait is over; the sweep stops after three.
     expect(await c.afterIdle("coord", signal)).toBe(false);
@@ -85,16 +85,19 @@ describe("A471 6: a failed read of the context size is a visible, retried compac
     failing = false;
     expect(await c.afterIdle("coord", signal)).toBe(false);
     expect(f.store.thread("coord")).toMatchObject({ compactError: null, compactTries: 0 });
-    expect((await f.memory.status("initiatives:p")).problems).toEqual([]);
+    expect((await f.memory.status("chat-memory:p")).problems).toEqual([]);
   });
 
-  it("compacts a paused Initiative's coordinator like any other (D487: no hold)", async () => {
+  it("compacts a Regular memory past its limit (D487: no hold), and never a coordinator's OptChat one (R3)", async () => {
     const f = fixture();
+    await f.attach("chat-memory", "p", f.thread("plain"));
     await f.attach("initiatives", "p", f.thread("coord"));
-    await f.configure("coord", { compactTokens: 100_000 });
-    f.usage("coord", 150_000);
-    await f.idle("coord");
+    for (const id of ["plain", "coord"]) {
+      await f.configure(id, { compactTokens: 100_000 });
+      f.usage(id, 150_000);
+      await f.idle(id);
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(f.compacts).toEqual(["coord"]);
+    expect(f.compacts).toEqual(["plain"]);
   });
 });

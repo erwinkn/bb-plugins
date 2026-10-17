@@ -121,7 +121,7 @@ export interface MemoryStatus {
     until: number | null;
   };
   cost: { calls: number; tries: number; inputTokens: number; cachedTokens: number; outputTokens: number; usd: number; callSeconds: number };
-  /** D458: why the mode cannot run as set for one of its threads, shown wherever the mode is. */
+  /** D458: why the mode cannot run for one of its threads, shown wherever the mode is. */
   problems: string[];
 }
 
@@ -144,12 +144,12 @@ interface Run {
 /**
  * D457: every scope's memory. A thread writes to at most one scope at a time (its row in the
  * threads table, D491); its completed turns are copied into that scope's log, and GPT-6 Luna
- * builds the summary tree over it in the background in every mode (D447), so a switch between
- * modes is instant. The mode is one setting per scope, read at each turn:
- * - regular: the thread's session goes on, compacted past the regular limit (300k);
- * - hybrid: the same, compacted past the hybrid limit (150k); memory_read and memory_zoom bring
- *   back what compactions dropped;
- * - optchat: each turn is a fresh session over the memory view (turnContext); never compacted.
+ * builds the summary tree over it in the background (D447). A scope's mode follows its role
+ * (R3), nobody switches it:
+ * - regular, every personal memory: the thread's session goes on, compacted past the regular limit
+ *   (300k); memory_read and memory_zoom bring back what compactions dropped;
+ * - optchat, every Adventure coordinator's: each turn is a fresh session over the memory view
+ *   (turnContext); never compacted.
  *
  * Copies run one per thread, builds one per scope, detached and owned here, aborted by dispose
  * (the service signal disposes too). Every scope's summarizer calls share one limit, let in
@@ -250,7 +250,7 @@ export class ChatMemory {
 
   /**
    * D447: the memory tools a session gets, when BB builds it and again whenever BB resolves a turn:
-   * every thread that writes to a scope, in every mode. D490: the turn hook only in OptChat, where a
+   * every thread that writes to a scope. D490: the turn hook only in OptChat, where a
    * Claude Code thread asks for its view before each turn and BB refuses every turn of a thread on
    * another provider (FORK.md): OptChat runs on Claude Code only (D460, T146). A thread chat memory
    * meets for the first time with its owner's MEMORY_SCOPE_KEY is attached to that scope here, in
@@ -277,7 +277,7 @@ export class ChatMemory {
   async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn" }): Promise<DispatchDecision> {
     if (d.attempt === "join-turn" || d.providerId === "claude-code" || this.store.scopeOf(d.threadId)?.mode !== "optchat") return { action: "proceed" };
     const name = await this.threadName(d.threadId);
-    return { action: "reject", message: `OptChat runs on Claude Code only for now (T146): ${name} runs on ${d.providerId}, so this message was not sent. Switch its memory mode in the Memory pill to send it.` };
+    return { action: "reject", message: `OptChat runs on Claude Code only for now (T146): ${name} runs on ${d.providerId}, so this message was not sent. Adventure coordinators run on Claude Code (rule R3): replace it with a Claude Code coordinator to go on.` };
   }
 
   /** "Title" or the thread's id. */
@@ -286,20 +286,18 @@ export class ChatMemory {
     return facts?.title ? `"${facts.title}"` : threadId;
   }
 
-  /** The compaction limit of a scope's threads (0: off): its own, else the setting for its mode; OptChat sessions never grow. */
+  /** The compaction limit of a scope's threads (0: off): its own, else the setting; OptChat sessions never grow. */
   compactLimit(scope: Pick<Scope, "mode" | "compactTokens">) {
     if (scope.mode === "optchat") return 0;
-    if (scope.compactTokens !== null) return scope.compactTokens;
-    const settings = this.deps.settings();
-    return scope.mode === "regular" ? settings.regularCompactTokens : settings.hybridCompactTokens;
+    return scope.compactTokens ?? this.deps.settings().regularCompactTokens;
   }
 
   /**
    * D452: the user's change, from the app only (the RPC refuses plugins; tools and the CLI never
    * write). A thread that writes to no scope gets its own; enabled:false detaches a thread from its
-   * own. D460: OptChat is refused unless every thread of the scope runs on Claude Code.
+   * own. There is no mode to set (R3): the role decides it. compactTokens is a Regular scope's own limit.
    */
-  async configure(threadId: string, patch: { mode?: MemoryMode; compactTokens?: number | null; enabled?: boolean }) {
+  async configure(threadId: string, patch: { compactTokens?: number | null; enabled?: boolean }) {
     let scope = this.store.scopeOf(threadId);
     if (patch.enabled === false) {
       if (!scope) return null;
@@ -311,27 +309,12 @@ export class ChatMemory {
       if (!(await this.threadFacts(threadId))) throw new MemoryError(`Unknown thread ${threadId}.`);
       scope = this.store.scope(this.attach(threadId, `${PLUGIN_ID}:${threadId}`)!)!;
     }
-    const next = { mode: patch.mode ?? scope.mode, compactTokens: patch.compactTokens === undefined ? scope.compactTokens : patch.compactTokens };
-    if (next.mode === "optchat" && scope.mode !== "optchat") {
-      const refusal = await this.optchatRefusal(scope.id);
-      if (refusal) throw new MemoryError(refusal);
-    }
-    if (next.mode !== scope.mode || next.compactTokens !== scope.compactTokens) {
-      this.store.saveSettings(scope.id, next);
-      this.deps.log(`${scope.id}: memory set to ${next.mode}${next.compactTokens === null ? "" : `, compaction past ${next.compactTokens} tokens`}, from the next turn`);
+    if (patch.compactTokens !== undefined && patch.compactTokens !== scope.compactTokens) {
+      this.store.saveCompactTokens(scope.id, patch.compactTokens);
+      this.deps.log(`${scope.id}: ${patch.compactTokens === null ? "compaction back to the default" : `compaction past ${patch.compactTokens} tokens`}, from the next turn`);
       this.deps.changed?.(scope.id);
     }
     return this.status(scope.id);
-  }
-
-  /** Why OptChat cannot run in every thread of the scope (a provider other than Claude Code), or null. */
-  private async optchatRefusal(scopeId: string) {
-    for (const t of this.store.threadsOf(scopeId)) {
-      const facts = await this.threadFacts(t.threadId);
-      if (facts?.providerId !== "claude-code")
-        return `OptChat runs on Claude Code only for now (T146): ${facts?.title ? `"${facts.title}"` : t.threadId} runs on ${facts?.providerId ?? "an unknown provider"}.`;
-    }
-    return null;
   }
 
   /** The log or tree grew: tell the UI, at most every PROGRESS_PUBLISH_MS per scope. */
@@ -533,10 +516,11 @@ export class ChatMemory {
     const name = (t: (typeof threads)[number]) => (t.title ? `"${t.title}"` : t.threadId);
     if (scope.mode === "optchat") {
       for (const t of threads) {
-        if (t.providerId !== "claude-code") problems.push(`OptChat cannot run in ${name(t)} (${t.providerId ?? "unknown provider"}): its turns are refused until you switch the mode or replace it with a Claude Code thread.`);
+        if (t.providerId !== "claude-code") problems.push(`OptChat cannot run in ${name(t)} (${t.providerId ?? "unknown provider"}): its turns are refused until it is replaced with a Claude Code thread.`);
       }
     }
-    for (const t of threads) if (t.compactError !== null) problems.push(`Compacting ${name(t)} failed: ${t.compactError}. It is tried again after its next turns.`);
+    // An OptChat scope never compacts: an error recorded while it was Regular is history.
+    if (scope.mode !== "optchat") for (const t of threads) if (t.compactError !== null) problems.push(`Compacting ${name(t)} failed: ${t.compactError}. It is tried again after its next turns.`);
     const failed = builder?.failedLines() ?? [];
     if (failed.length)
       problems.push(`${failed.length} memory line${failed.length === 1 ? "" : "s"} could not be summarized (${failed[0]!.line}: ${failed[0]!.error}); tried again within 30 minutes. Until then, OptChat turns that need them fail.`);
@@ -608,7 +592,7 @@ export class ChatMemory {
 
   /**
    * How a thread's next turn runs, asked before each new turn (TURN_CONTEXT_TOOL). One path per
-   * mode (D459): regular and hybrid answer no session, so the thread's own goes on; optchat answers
+   * mode (D459): regular answers no session, so the thread's own goes on; optchat answers
    * a fresh session whose system prompt ends with the view's older lines and whose first message
    * holds its newest lines, the time and the message.
    *
@@ -622,7 +606,7 @@ export class ChatMemory {
    */
   async turnContext(threadId: string, ask: TurnAsk, signal?: AbortSignal): Promise<TurnAnswer> {
     const deadline = this.store.now() + this.waits.turn;
-    const fail = (why: string) => new MemoryError(`${UNAVAILABLE}: ${why}. The message was not sent; send it again, or switch this thread's memory mode.`);
+    const fail = (why: string) => new MemoryError(`${UNAVAILABLE}: ${why}. The message was not sent; send it again.`);
     if (this.store.scopeOf(threadId)?.mode !== "optchat") return {};
     try {
       await this.attempts(() => this.caughtUp(threadId, fail), deadline, fail, signal, "its last turn could not be read");

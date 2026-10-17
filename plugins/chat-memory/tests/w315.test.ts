@@ -56,7 +56,6 @@ describe("W315 urgent calls go first", () => {
     await f.attach("initiatives", "prj_1", f.thread("a", { title: "Coordinator" }));
     f.turn("a", "hello");
     await f.idle("a");
-    await f.configure("a", { mode: "optchat" });
     // Two other scopes' backlogs, 40 messages of 1 KB each: every permit taken, and calls waiting for one.
     for (const bg of ["bg1", "bg2"]) {
       const scope = `test:${bg}`;
@@ -354,10 +353,9 @@ describe("W315 a stopped call never starts", () => {
 describe("W315 a stopped turn stops waiting", () => {
   it("ends its wait for summaries when BB stops the turn, and lets go of its priority", async () => {
     const f = fixture();
-    await f.attach("test", "a", f.thread("a"));
+    await f.attach("initiatives", "a", f.thread("a"));
     f.turn("a", "hello");
     await f.idle("a");
-    await f.configure("a", { mode: "optchat" });
     f.memory.useSummarizer(stuckLuna);
     // More than 32 KB without a summary: the turn waits for one.
     f.reply("a", "x".repeat(34_000));
@@ -371,7 +369,7 @@ describe("W315 a stopped turn stops waiting", () => {
       (error: Error) => error.message,
     );
     await ticks(30);
-    const builder = (f.memory as unknown as { builders: Map<string, TreeBuilder> }).builders.get("test:a")!;
+    const builder = (f.memory as unknown as { builders: Map<string, TreeBuilder> }).builders.get("initiatives:a")!;
     expect(builder["needs"].size).toBe(1);
     stop.abort();
     const result = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 500))]);
@@ -386,10 +384,9 @@ describe("W324 a stopped turn lets go of its call's extension", () => {
   // One permit; Luna never answers, a turn waits 90 s for its line, and the call it waits for is past its 30 s bound.
   const extended = async (alsoNeeded: boolean) => {
     const f = fixture();
-    await f.attach("test", "a", f.thread("a"));
+    await f.attach("initiatives", "a", f.thread("a"));
     f.turn("a", "hello");
     await f.idle("a");
-    await f.configure("a", { mode: "optchat" });
     (f.memory as unknown as { deps: { settings: () => object } }).deps.settings = () => ({ regularCompactTokens: 0, hybridCompactTokens: 0, summarizerEffort: "high", summarizerConcurrency: 1 });
     f.memory.waits.turn = 90_000;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
@@ -409,7 +406,7 @@ describe("W324 a stopped turn lets go of its call's extension", () => {
       (error: Error) => error.message,
     );
     await ticks();
-    const builder = (f.memory as unknown as { builders: Map<string, TreeBuilder> }).builders.get("test:a")!;
+    const builder = (f.memory as unknown as { builders: Map<string, TreeBuilder> }).builders.get("initiatives:a")!;
     // Another turn waiting for the same lines, until the same deadline.
     if (alsoNeeded) builder.need(Infinity, t0 + 90_000);
     await vi.advanceTimersByTimeAsync(31_000);

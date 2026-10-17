@@ -12,7 +12,7 @@ the tree, the modes, the memory tools and Claude Code's per-turn hook.
 
 ## Scopes and threads (T153)
 
-A **scope** is one memory: one log, one tree, one mode, one compaction limit. Its
+A **scope** is one memory: one log, one tree, one mode (its role's), one compaction limit. Its
 id is `<owner plugin>:<key>`. Every thread chat memory meets has one row: the
 scope it writes to now (or none) and its **cursor**, the last BB event of it
 that is logged. Nothing else is kept per thread or per turn (D487).
@@ -37,33 +37,43 @@ completed turns go to the new scope and nothing is logged twice. A former
 coordinator stays attached: a later turn of it is logged in the Initiative's
 memory (D487).
 
-## Modes (D431, D447)
+## Modes (D431, D447, R3)
 
-The tree builds in every mode, so a switch is instant and applies from each
-thread's next turn. One path per mode (D459):
+**The mode follows the role; nobody chooses it** (Erwin, 2026-10-17, R3). An
+Adventure (Initiative) coordinator's memory, every scope the `initiatives`
+plugin owns, is OptChat. Every other memory is Regular. The scope's mode is read
+from its owner each time, never from the stored `mode` column, which only mirrors
+it for code that still reads it (a rollback). At every start the plugin sets the
+column of every scope to its role's mode, so the scopes that existed before R3
+(Verification, Solera, erwinkn.com: Regular; one Hybrid scope) and any an older
+version created after a rollback follow too. A compaction error recorded while a
+coordinator's scope was Regular is no longer shown, and the sweep skips it. There is no
+mode setting, RPC or UI, and Hybrid is gone: the `configure` RPC takes no `mode`
+(a request for one fails validation) and `hybridCompactTokens` is no setting.
+
+The tree builds either way. One path per mode (D459):
 
 | Mode    | A turn                                     | Compaction (idle, past)         |
 | ------- | ------------------------------------------ | ------------------------------- |
 | Regular | the thread's session goes on               | `regularCompactTokens`, 300k    |
-| Hybrid  | the thread's session goes on               | `hybridCompactTokens`, 150k     |
 | OptChat | a fresh session over the memory view        | never: a session never grows    |
 
-A scope's own `compactTokens` wins over the setting for its mode; 0 is off.
+A Regular scope's own `compactTokens` wins over the setting; 0 is off.
 Compaction runs after an attached thread goes idle with BB's `threads.compact`,
-once per context snapshot and at most every 30 minutes per thread (a paused
-Initiative's coordinator too: it is idle, so at most one runs, D487). A failed compaction is never counted as done:
-the thread's status keeps its error (a problem on the pill until one succeeds),
+once per context snapshot and at most every 30 minutes per thread. A failed compaction is never counted as done:
+the thread's status keeps its error (a problem in the Memory panel until one succeeds),
 and the sweep tries the same snapshot again 2 minutes later, 3 times at most; a
 later turn's snapshot starts over. Reading the context size is part of it: a
 failed read is kept and shown the same way ("reading its context size failed:
 …"), read again 2 minutes later by the sweep (3 times) and after each later
 turn, and cleared by a read that works.
 
-**Who switches (D452, D461).** Only the user, from the thread header's
-**Memory · <mode>** pill or the thread's Memory panel. The `configure` RPC refuses
+**Who writes (D452).** The thread's Memory panel (turn a personal memory on or
+off, set a Regular scope's compaction limit) calls `configure`, which refuses
 plugin callers; no agent tool or CLI command writes. BB gives a client RPC no
 finer identity, so a local caller who knows the method can still reach it
-(accepted).
+(accepted). The thread header has no memory entry any more; the panel shows a
+memory's mode, problems, threads, log, tree and cost read-only.
 
 **OptChat runs on every turn, or the turn fails (D458, D460, A471).** What
 enforces the mode is the turn itself, not a gate in front of some of them. BB
@@ -77,13 +87,11 @@ context from a hidden tool", protocol 4), and:
 - every other provider refuses a turn whose tools include it, with the reason
   in the thread, and never shows it to its model.
 
-So this plugin selects the hook for every thread of a scope in OptChat, and in
-no other mode (D490): a switch applies at the next turn either way. A Claude
-Code thread's turns then ask for their view; a thread on another provider has
-each of its turns refused until the mode changes (Codex support is T146).
-
-The switch to OptChat is refused, with the reason, when a thread of the scope
-runs on anything but Claude Code.
+So this plugin selects the hook for every thread of a coordinator's scope, and no
+other (D490). A Claude Code thread's turns then ask for their view; a coordinator
+on another provider has each of its turns refused, visibly (a problem in the panel,
+the turn gate's reason), with no fallback, until it is replaced with a Claude Code
+thread (Codex support is T146).
 
 **The turn gate.** Chat memory also answers BB's `message.dispatch` hook, which
 runs before a message reaches a provider, to refuse early, with the reason, what
@@ -119,10 +127,7 @@ with the summarizer rate-limited and more than 32 KB without a summary:
 
 > OptChat memory unavailable for this turn: 3 earlier messages have no summary
 > yet: the summarizer is rate-limited (429 …). The message was not sent; send it
-> again, or switch this thread's memory mode.
-
-Leaving OptChat needs nothing: the thread's session is the last fresh one, whose
-system prompt holds the view, and it goes on.
+> again.
 
 Two tabs of one memory (a coordinator and a discussion) never wait on each
 other: each turn copies only its own thread, and a turn still running in the
@@ -192,7 +197,7 @@ that no turn waits for any more gives up at once. A line whose call fails 3 time
 stays unsummarized and failed, never cut to fit (D458), unless every reply was empty
 (a retry gets the same): that line is built at once from its input cut to fit with
 ` [cut]` (its message, or its two lines joined; counted under "fallbacks"). A failed line holds no build slot,
-the pill shows it as a problem, an OptChat turn that needs it fails at once
+the panel shows it as a problem, an OptChat turn that needs it fails at once
 ("message 1234 could not be summarized (…)"), and it is tried again 30 minutes
 later. Lines built before the cap (some over 512 bytes, fallbacks ending in `…`)
 and lines Initiatives cut before T145 stay as they are: nodes are never rebuilt
@@ -207,7 +212,7 @@ Usage stats attribute the spend.
 
 ## Tools and CLI
 
-A thread attached to a scope gets, in every mode, `memory_read` and
+A thread attached to a scope gets `memory_read` and
 `memory_zoom {id, n}` (loaded upfront, T143) and one line of guidance; in
 OptChat, the hidden hook. Each zoomed line starts with the
 UTC time of its first message: `2026-10-08 17:49Z 64+16|…`. Sessions built while
@@ -223,8 +228,7 @@ bb chat-memory zoom <id> <n> [thread-id]
 
 ## Settings
 
-`regularCompactTokens` (300,000), `hybridCompactTokens` (150,000),
-`summarizerEffort` (high), `summarizerConcurrency` (8).
+`regularCompactTokens` (300,000), `summarizerEffort` (high), `summarizerConcurrency` (8).
 
 ## The move from Initiatives (T145) and to one row per thread (T153)
 

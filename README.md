@@ -19,8 +19,8 @@ installed as `projects` until a one-time move; see [Initiatives](plugins/initiat
 
 `chat-memory` gives any thread (or a group of threads, such as an Initiative's
 coordinator) one chat that never ends: every message logged, a GPT-6 Luna summary
-tree, `memory_read` and `memory_zoom`, and Regular, Hybrid or OptChat mode,
-switched from the thread's Memory pill. See [Chat memory](plugins/chat-memory/README.md).
+tree, `memory_read` and `memory_zoom`, and a mode fixed by role (OptChat for Adventure
+coordinators, Regular otherwise; nobody switches it). See [Chat memory](plugins/chat-memory/README.md).
 
 `sidebar` replaces BB's thread list with one view: the Initiatives, one
 colored row per Initiative that opens its coordinator, with a + to start one,

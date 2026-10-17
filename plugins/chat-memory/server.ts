@@ -26,6 +26,7 @@ export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new MemoryStore(db);
+  store.alignModes();
   const settings = defineSettings(bb);
   const memory = new ChatMemory({
     store,
@@ -69,17 +70,17 @@ export default function plugin(bb: BbPluginApi) {
       const scope = store.scopeOf(threadId);
       return scope ? memory.status(scope.id) : null;
     },
-    // D452: only the user switches a memory, from this plugin's app. Plugins are refused here;
+    // D452: only the user changes a memory (on or off, a Regular scope's compaction limit), from this plugin's app. Plugins are refused here;
     // agents have no tool or CLI that writes. BB gives a client RPC no finer identity, so a local
     // caller who knows this method can still reach it (accepted, as in Initiatives' setMemory).
     configure: async ({ threadId, ...patch }, { experimental_caller: caller }) => {
-      if (caller.kind !== "client") throw new MemoryError("Only the user switches a thread's memory, from its Memory panel.");
+      if (caller.kind !== "client") throw new MemoryError("Only the user changes a thread's memory, from its Memory panel.");
       return memory.configure(threadId, patch);
     },
   });
 
   // D447: a thread with memory gets its tools and one line of guidance in every mode, since BB fixes
-  // a session's tools when it is built and a mode switch applies at the next turn (sessionTools).
+  // a session's tools when it is built (sessionTools).
   bb.agents.configure((ctx) => {
     const tools = memory.sessionTools({
       threadId: ctx.thread.id,
@@ -197,7 +198,7 @@ export default function plugin(bb: BbPluginApi) {
     async run(argv, ctx) {
       const args = argv.filter((a) => a !== "--json");
       const [action, ...rest] = args;
-      const usage = `Usage: bb ${PLUGIN_ID} status [thread-id] | read [thread-id] | zoom <id> <n> [thread-id]. Switching a memory is the user's, from the thread's Memory panel.`;
+      const usage = `Usage: bb ${PLUGIN_ID} status [thread-id] | read [thread-id] | zoom <id> <n> [thread-id]. Only the user changes a memory, from the thread's Memory panel.`;
       try {
         const scopeOf = (threadId: string | undefined) => memory.scopeOf(threadId ?? ctx.threadId);
         let result: unknown;

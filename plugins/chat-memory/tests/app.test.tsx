@@ -3,14 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { MemoryStatus } from "../lib/memory";
-await loadPluginApp(() => import("../app"));
-const { MemoryPill, MemoryPanel } = await import("../app");
+const registrations = await loadPluginApp(() => import("../app"));
+const { MemoryPanel } = await import("../app");
 afterEach(() => cleanup());
 
 const status = (patch: Partial<MemoryStatus> = {}): MemoryStatus => ({
   scope: { id: "initiatives:prj_1", owner: "initiatives" },
-  mode: "regular",
-  compactTokens: 300_000,
+  mode: "optchat",
+  compactTokens: 0,
   compactTokensOverride: null,
   threads: [{ threadId: "coord", title: "bb-plugins · coordinator", providerId: "claude-code", compactedAt: null, compactError: null }],
   log: { messages: 6120, bytes: 3_051_433 },
@@ -21,37 +21,27 @@ const status = (patch: Partial<MemoryStatus> = {}): MemoryStatus => ({
 });
 const props = { threadId: "coord", projectId: "p", isCompactViewport: false };
 
-describe("T145 the memory pill", () => {
-  it("shows only on a thread with memory, with its mode, and flags a problem", async () => {
-    const none = renderSlot({ component: MemoryPill }, { ...props, threadId: "plain" }, { rpc: { status: async () => null } });
-    await waitFor(() => expect(none.container.textContent).toBe(""));
-    const s = renderSlot({ component: MemoryPill }, props, { rpc: { status: async () => status({ mode: "optchat", problems: ["OptChat cannot run in \"Talk\" (codex)"] }) } });
-    expect(await s.findByRole("button", { name: "Memory: OptChat, needs attention. Change it" })).toBeTruthy();
-    expect(s.getByRole("status").textContent).toContain("OptChat cannot run");
+describe("R3 the memory has no switch", () => {
+  it("registers the Memory panel only: no thread header entry", async () => {
+    expect(registrations.threadHeaderActions).toEqual([]);
+    expect(registrations.threadPanelActions.map((a) => a.id)).toEqual(["memory"]);
+    expect("MemoryPill" in (await import("../app"))).toBe(false);
   });
 
-  it("switches from the radio group; a refusal says why and keeps the saved mode, focus included (D458, D460)", async () => {
-    let saved: MemoryStatus = status();
-    const configure = vi.fn(async (input: unknown) => {
-      const { mode } = input as { mode?: MemoryStatus["mode"] };
-      if (mode === "optchat") throw new Error("OptChat runs on Claude Code only for now (T146): \"Talk\" runs on codex.");
-      saved = status({ mode: mode ?? saved.mode });
-      return saved;
-    });
-    const s = renderSlot({ component: MemoryPill }, props, { rpc: { status: async () => saved, configure } });
-    const group = await within(s.container).findByRole("radiogroup", { name: "Memory mode" });
-    const radio = (name: string) => within(group).getByRole("radio", { name });
-    expect(radio("Regular").getAttribute("aria-checked")).toBe("true");
-    expect(radio("Regular").tabIndex).toBe(0);
-    expect(radio("Hybrid").tabIndex).toBe(-1);
-    radio("Regular").focus();
-    fireEvent.keyDown(group, { key: "ArrowRight" });
-    await waitFor(() => expect(radio("Hybrid").getAttribute("aria-checked")).toBe("true"));
-    expect(configure).toHaveBeenLastCalledWith({ threadId: "coord", mode: "hybrid" });
-    fireEvent.keyDown(group, { key: "ArrowRight" });
-    expect(await within(s.container).findByRole("alert")).toHaveProperty("textContent", "OptChat runs on Claude Code only for now (T146): \"Talk\" runs on codex.");
-    await waitFor(() => expect(radio("Hybrid").getAttribute("aria-checked")).toBe("true"));
-    expect(document.activeElement).toBe(radio("Hybrid"));
+  it("shows a coordinator's mode as a fact, with a problem flagged and no radio group or limit editor", async () => {
+    const s = renderSlot({ component: MemoryPanel }, { threadId: "coord", params: null }, { rpc: { status: async () => status({ mode: "optchat", compactTokens: 0, problems: ["OptChat cannot run in \"Talk\" (codex)"] }) } });
+    expect((await s.findByRole("status")).textContent).toContain("OptChat cannot run");
+    expect(s.getByText("OptChat")).toBeTruthy();
+    expect(s.container.textContent).toContain("Every Adventure coordinator uses it");
+    expect(s.queryByRole("radiogroup")).toBeNull();
+    expect(s.queryByRole("radio")).toBeNull();
+    expect(s.queryByText("Compaction limit (tokens)")).toBeNull();
+  });
+
+  it("a Regular memory keeps its compaction limit, and still no mode switch", async () => {
+    const s = renderSlot({ component: MemoryPanel }, { threadId: "coord", params: null }, { rpc: { status: async () => status({ scope: { id: "chat-memory:coord", owner: "chat-memory" }, mode: "regular" }) } });
+    expect(await s.findByText("Compaction limit (tokens)")).toBeTruthy();
+    expect(s.queryByRole("radiogroup")).toBeNull();
   });
 });
 

@@ -16,11 +16,10 @@ const fresh = (answer: unknown) => answer as { session: "fresh"; sessionId: stri
 const tools = async (f: Fixture, threadId: string, options?: Parameters<Fixture["configureAgent"]>[1]) => (await f.configureAgent(threadId, options)).tools.map((t) => t.name).sort();
 const P = "initiatives:prj_1";
 
-/** A coordinator of Initiative prj_1, in `mode`. */
-async function initiative(mode: "regular" | "optchat" = "regular") {
+/** A coordinator of Adventure prj_1: its memory is OptChat (R3). */
+async function initiative() {
   const f = fixture();
   await f.attach("initiatives", "prj_1", f.thread("coord", { title: "Coordinator" }));
-  if (mode !== "regular") await f.configure("coord", { mode });
   return f;
 }
 
@@ -67,7 +66,7 @@ describe("T153 copy: idempotent whatever the triggers", () => {
   it("drops the request of a turn that failed for want of its memory (D502), and logs the message sent again once", async () => {
     const f = await initiative();
     f.say("coord", "deploy it");
-    f.providerError("coord", `Claude Code could not get the turn's memory context: Tool "claude_code_turn_context" failed: ${UNAVAILABLE}: message 7 could not be summarized (empty reply); it is tried again within 30 minutes. The message was not sent; send it again, or switch this thread's memory mode.`);
+    f.providerError("coord", `Claude Code could not get the turn's memory context: Tool "claude_code_turn_context" failed: ${UNAVAILABLE}: message 7 could not be summarized (empty reply); it is tried again within 30 minutes. The message was not sent; send it again.`);
     f.done("coord", "failed");
     await f.failed("coord");
     expect(f.log(P)).toEqual([]);
@@ -84,7 +83,7 @@ describe("T153 copy: idempotent whatever the triggers", () => {
   });
 
   it("keeps the question of a turn the provider failed silently, so BB's \"Please continue.\" has it in memory (D502)", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     const question = "Which database should we use for the billing service?";
     const original = f.say("coord", question);
     f.providerError("coord", "API Error: 429 rate_limit_error: This request would exceed your account's rate limit.");
@@ -148,7 +147,7 @@ describe("T153 attach, detach, move (D491)", () => {
     await f.idle("t");
     expect(f.log("chat-memory:t")).toEqual(["user: before", "agent: re: before"]);
     expect(f.log(P)).toEqual(["user: after", "agent: re: after"]);
-    expect(await tools(f, "t")).toEqual(["memory_read", "memory_zoom"]);
+    expect(await tools(f, "t")).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
     expect((await f.memory.status(P)).threads.map((t) => t.threadId)).toEqual(["t"]);
   });
 
@@ -203,8 +202,9 @@ describe("T153 attach, detach, move (D491)", () => {
   it("attaches a thread its owner spawned with memoryScope at its first configure; a detach or move then stands", async () => {
     const f = fixture();
     f.thread("new", { originPluginId: "initiatives", metadata: { role: "coordinator", memoryScope: "prj_1" } });
-    expect(await tools(f, "new", { origin: "initiatives" })).toEqual(["memory_read", "memory_zoom"]);
+    expect(await tools(f, "new", { origin: "initiatives" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
     expect(f.store.thread("new")).toMatchObject({ scope: P, cursor: 0 });
+    expect(f.store.scope(P)!.mode).toBe("optchat");
     // Moved by its owner to another Initiative, or detached: a later configure with the same spawn metadata changes nothing.
     await f.attach("initiatives", "prj_2", "new");
     await tools(f, "new", { origin: "initiatives" });
@@ -299,7 +299,7 @@ describe("T153 restarts", () => {
   });
 
   it("an OptChat turn after a reload copies its own previous turn first, from the cursor the database kept", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     f.turn("coord", "before the reload");
     await f.idle("coord");
     // The reload drops the idle of the turn that ends meanwhile.
@@ -319,7 +319,7 @@ describe("T153 restarts", () => {
 
 describe("T153 OptChat turns", () => {
   it("shows messages with no summary yet whole, up to 32 KB, without waiting (D487 1)", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     f.memory.useSummarizer(stuckLuna);
     f.turn("coord", "short", "y".repeat(10_000));
     const started = Date.now();
@@ -333,7 +333,7 @@ describe("T153 OptChat turns", () => {
   });
 
   it("fails the turn visibly when more than 32 KB has no summary by the deadline, naming why", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     f.memory.useSummarizer(stuckLuna);
     for (let n = 0; n < 3; n++) f.turn("coord", `part ${n}`, "z".repeat(14_000));
     await expect(f.ask("coord", f.say("coord", "go"), "go")).rejects.toThrow(/OptChat memory unavailable for this turn: \d+ earlier messages have no summary yet: the summarizer is still writing them\. The message was not sent/);
@@ -341,7 +341,7 @@ describe("T153 OptChat turns", () => {
   });
 
   it("fails the turn after the bounded tries of a summary that keeps failing; a message that fits is shown whole, never cut (A469 4)", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     f.memory.useSummarizer(async () => ({ ok: false, reason: "failed", error: "400 rejected" }));
     f.turn("coord", `${"background ".repeat(200)} NEVER DEPLOY TO PRODUCTION`, "ok");
     expect(fresh(await f.ask("coord", f.say("coord", "proceed"), "proceed")).input).toContain("NEVER DEPLOY TO PRODUCTION");
@@ -354,7 +354,7 @@ describe("T153 OptChat turns", () => {
   });
 
   it("fails the turn visibly when its own last turn cannot be read, after a bounded number of tries", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     f.turn("coord", "previous");
     let reads = 0;
     const list = f.memory["deps"].list;
@@ -368,7 +368,7 @@ describe("T153 OptChat turns", () => {
   });
 
   it("stops a hung read of its own last turn as soon as BB stops the turn, not at the deadline (D488)", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     f.turn("coord", "previous");
     f.memory["deps"].list = () => new Promise(() => {});
     f.memory.waits = { turn: 60_000 };
@@ -382,11 +382,10 @@ describe("T153 OptChat turns", () => {
   });
 
   it("follows a move made while its hook copies: view and last turn are the new memory's", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     await f.attach("initiatives", "prj_2", f.thread("other"));
     f.turn("other", "the other memory");
     await f.idle("other");
-    await f.configure("other", { mode: "optchat" });
     f.turn("coord", "moving");
     const list = f.memory["deps"].list;
     f.memory["deps"].list = async (args) => {
@@ -400,7 +399,7 @@ describe("T153 OptChat turns", () => {
   });
 
   it("two tabs at once: each hook copies its own previous turn, every turn lands whole and once", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     await f.attach("initiatives", "prj_1", f.thread("talk"));
     f.turn("coord", "coordinator turn");
     f.turn("talk", "discussion turn");
@@ -416,7 +415,7 @@ describe("T153 OptChat turns", () => {
   });
 
   it("gives a new coordinator's first turn the whole memory, before anything of it is logged", async () => {
-    const f = await initiative("optchat");
+    const f = await initiative();
     f.turn("coord", "the plan");
     await f.idle("coord");
     f.memory.useSummarizer(fakeLuna);
