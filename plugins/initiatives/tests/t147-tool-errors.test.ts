@@ -15,13 +15,13 @@ const refused = async (f: Fixture, tool: string, input: unknown, threadId = "coo
 const coordinator = { author: "coordinator" as const, threadId: "coordinator", assignment: null };
 
 describe("T147 unknown keys name the fix", () => {
-  it("spawn: brief and worktree point at text and environment, the valid keys and an example follow", async () => {
+  it("spawn: brief and hostId point at text and host, the valid keys and an example follow", async () => {
     const { f } = await projectFixture();
-    const message = await refused(f, "initiative_spawn", { label: "Search", purpose: "ranking", brief: "Do it.", worktree: true });
+    const message = await refused(f, "initiative_spawn", { label: "Search", purpose: "ranking", brief: "Do it.", hostId: "host_a" });
     expect(message).toContain("`brief` is not a key of initiative_spawn; did you mean `text`?");
-    expect(message).toContain('`worktree` is not a key of initiative_spawn; did you mean `environment:{type:"worktree"}`?');
+    expect(message).toContain("`hostId` is not a key of initiative_spawn; did you mean `host` (a host name or id)?");
     expect(message).toContain("`text` is required.");
-    expect(message).toContain("Valid keys: label, purpose, text, role, tasks, reviews, handoffs, kind, profile, project, environment, permissionMode.");
+    expect(message).toContain("Valid keys: label, purpose, text, role, tasks, reviews, handoffs, kind, profile, project, host, worktree, environment, permissionMode.");
     expect(message).not.toContain("Example");
   });
 

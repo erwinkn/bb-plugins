@@ -1103,7 +1103,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_spawn",
     parameters: jsonSchema(spawnToolAdvertised),
-    description: 'Give one PR (or a few small related ones) to a new worker, which implements, reviews with its own reviewers and reports once: {label:"Search index",purpose:"search ranking",text:"<the brief>",tasks:["T40"]}. Its reports come back to this tab. The result lists warnings, such as another writer in the same checkout.',
+    description: 'Give one PR (or a few small related ones) to a new worker, which implements, reviews with its own reviewers and reports once: {label:"Search index",purpose:"search ranking",text:"<the brief>",tasks:["T40"]}. Its reports come back to this tab. It runs in the project\'s checkout on its default host; host:"<name or id>" picks another host, worktree:true a new worktree there (environment is a deprecated alias of both). The result lists warnings, such as another writer in the same checkout.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
       return receipt(await perform(p.id, spawnCommand(parseToolInput(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));

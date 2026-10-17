@@ -155,7 +155,11 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
         id,
         createdAt: Date.now(),
         projectId: args.projectId,
-        environmentId: args.environment?.environmentId ?? "env_a",
+        // A host checkout lands in its registered environment (W499); anything else in env_a.
+        environmentId: args.environment?.environmentId ??
+          (args.environment?.workspace?.type === "unmanaged"
+            ? [...envs.values()].find((e) => e.hostId === args.environment.hostId && e.path === args.environment.workspace.path && !e.isWorktree)?.id
+            : undefined) ?? "env_a",
         providerId: args.providerId,
         parentThreadId: args.parentThreadId ?? null,
         status: "active",
@@ -241,6 +245,14 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
       return envs.get(environmentId);
     },
   );
+  // W499: BB's hosts and proj_a's registered checkouts; tests edit both in place.
+  const hosts: Record<string, any>[] = [
+    { id: "host_a", name: "hetzner", status: "connected", lifecycle: { phase: "active" } },
+  ];
+  // env_a at /code/repo is this project's default checkout — its coordinator home.
+  const sources: { hostId: string; isDefault: boolean; path: string }[] = [
+    { hostId: "host_a", isDefault: true, path: "/code/repo" },
+  ];
   // The Threads sidebar's change bump (initiativesChanged) and any other plugin RPC.
   const pluginRpc = vi.fn(async (_args: { pluginId: string; method: string; input?: unknown }): Promise<unknown> => ({ ok: true }));
   const send = vi.fn<(...args: any[]) => Promise<any>>(
@@ -287,15 +299,10 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     sdk: {
       plugins: { callRpc: pluginRpc },
       projects: {
-        get: async () => ({
-          id: "proj_a",
-          name: "Repository",
-          // env_a at /code/repo is this project's default checkout — its
-          // coordinator home.
-          sources: [{ hostId: "host_a", isDefault: true, path: "/code/repo" }],
-        }),
+        get: async () => ({ id: "proj_a", name: "Repository", sources: sources.map((source) => ({ ...source })) }),
         list: async () => [{ id: "proj_a", name: "Repository" }],
       },
+      hosts: { list: async () => hosts },
       environments: {
         get: async ({ environmentId }: { environmentId: string }) =>
           envFor(environmentId),
@@ -531,6 +538,8 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     sendQueued,
     envs,
     envUpdate,
+    hosts,
+    sources,
     spawn,
     fork,
     send,

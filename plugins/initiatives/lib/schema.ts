@@ -368,6 +368,13 @@ export const environmentSchema = z.discriminatedUnion("type", [
 ]);
 export type EnvironmentChoice = z.infer<typeof environmentSchema>;
 
+/** W499: what a worker's assignment records of a host placement: the host id and its checkout or a new worktree. */
+export const placementRecordSchema = z.union([
+  z.object({ hostId: z.string().min(1), path: z.string().min(1) }).strict(),
+  z.object({ hostId: z.string().min(1), worktree: z.literal(true) }).strict(),
+]);
+export type PlacementRecord = z.infer<typeof placementRecordSchema>;
+
 export const TASK_STATUSES = [
   "planned",
   "in_progress",

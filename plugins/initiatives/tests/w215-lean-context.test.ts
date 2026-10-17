@@ -64,7 +64,7 @@ describe("W215 write receipts", () => {
     await tool(f, "initiative_spawn", { label: "One", purpose: "one", text: "Do it." });
     await tool(f, "initiative_spawn", { label: "Two", purpose: "two", text: "Do it." });
     const [third] = await tool(f, "initiative_spawn", { label: "Three", purpose: "three", text: "Do it." });
-    expect(third.warnings).toEqual(['W1 (A1, running), W2 (A2, running) are also writing in this checkout. Sequence the work, or give one of them a worktree (environment {"type":"worktree"}).']);
+    expect(third.warnings).toEqual(['W1 (A1, running), W2 (A2, running) are also writing in this checkout. Sequence the work, or give one of them a worktree (worktree:true).']);
   });
 
   it("a writer whose new worktree was provisioned after its spawn is not in this checkout (W218)", async () => {

@@ -19,7 +19,7 @@ const PR_FIELDS_HINT = "`prs:[{url,…}]` (PR fields go inside `prs`, one object
  * as []). Each reads as "did you mean <hint>?". A wrong key is never accepted or renamed.
  */
 const HINTS: Record<string, Record<string, string>> = {
-  initiative_spawn: { brief: "`text`", prompt: "`text`", instructions: "`text`", description: "`purpose` (a few words) or `text` (the brief)", worktree: '`environment:{type:"worktree"}`', name: "`label`", title: "`label`", model: "`profile` (an explicit model) or `kind`" },
+  initiative_spawn: { brief: "`text`", prompt: "`text`", instructions: "`text`", description: "`purpose` (a few words) or `text` (the brief)", hostId: "`host` (a host name or id)", machine: "`host`", environmentId: "`host` and `worktree`", name: "`label`", title: "`label`", model: "`profile` (an explicit model) or `kind`" },
   initiative_message: { worker: "`to`", recipient: "`to`", message: "`text`", body: "`text`", content: "`text`" },
   initiative_task: { summary: "`text`", description: "`text`", body: "`text`", name: "`title`", id: "`task`", ref: "`task`", status: "`action` (close or reopen)" },
   initiative_worker: { ref: "`worker`", id: "`worker`", thread: "`threadId`", name: "`label`" },

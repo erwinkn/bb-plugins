@@ -128,8 +128,22 @@ Details:
   characters with a pointer to the full report.
 - **Overlap** is a warning, never a refusal: a spawn or work message returns
   `warnings` when another worker is writing in the same checkout or has the same
-  task. Give one of them a worktree (`environment:{type:"worktree"}`) or sequence
-  them.
+  task. Give one of them a worktree (`worktree:true`) or sequence them.
+- **Where a worker runs** (W499): `initiative_spawn` takes `host` (a host name or
+  id) and `worktree`. By default a worker runs in the project's checkout on its
+  default host. `host:"mac"` runs it in the project's checkout on that host, and
+  `worktree:true` in a new BB-managed worktree there. An unknown, ambiguous or
+  disconnected host, or a project with no checkout on that host, fails the spawn:
+  nothing falls back to another host. The spawn's A# records the host and
+  checkout (or worktree) it was given. More work and a review of that worker
+  use the environment it landed in, else exactly that recorded host and path; a
+  worktree BB hasn't reported yet is refused for a review, not moved. The older
+  `environment` argument is a deprecated alias until about 2026-10-24; passing it
+  together with `host` or `worktree` is refused. A coordinator always runs on the
+  first repository's default checkout, so `initiative_manage` handover takes only
+  that host and refuses a worktree. A named host is pinned as that checkout's
+  environment, so a queued handover fails visibly, rather than starting on another
+  host, if the default checkout changes while it waits.
 - **Decisions** are for the user (D402): `user-choice` records the user's explicit
   choice from chat, `veto-request` records a choice of the agent's that the user may
   want to veto (the agent proceeds; Not okay sends the user's message back).
@@ -267,7 +281,7 @@ thread with it as the first message. The old thread stays in history, and
 unfinished worker reports reach the replacement. Let the current coordinator
 finish its turn or stop it before switching — or ask the coordinator to hand
 over: it records a durable request with coordinator-handover — optionally naming
-a target environment — finishes its own turn, and the replacement starts at
+its host, which must be the default checkout's — finishes its own turn, and the replacement starts at
 the natural idle boundary. The queued request survives restarts, waits through
 a pause, holds while the predecessor is busy, interrupted, unhealthy or cannot
 be positively confirmed, and is visible — with its hold reason — and

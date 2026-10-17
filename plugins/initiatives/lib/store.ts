@@ -7,6 +7,7 @@ import type {
   Decision,
   EnvironmentChoice,
   Handoff,
+  PlacementRecord,
   HumanAttention,
   Policy,
   Profile,
@@ -28,6 +29,7 @@ import {
   decisionFieldsSchema,
   environmentSchema,
   handoffSchema,
+  placementRecordSchema,
   policySchema,
   storedPolicySchema,
   profileSchema,
@@ -545,6 +547,10 @@ export const MIGRATIONS = [
   // deleted. The dashboard stops reading the thread and shows this instead; an unarchive clears
   // it. The previous build ignores it and reads every nested thread again.
   `ALTER TABLE project_nested_threads ADD COLUMN ended TEXT`,
+  // W499: the host and checkout (or new worktree) a fresh spawn was asked to run in, as JSON
+  // {hostId, path} or {hostId, worktree: true}; NULL for the project default. The previous build
+  // ignores it.
+  `ALTER TABLE assignments ADD COLUMN placement TEXT`,
 ];
 
 /** W496: a stored ended fact; one that does not parse reads as none, so the thread is read again. */
@@ -718,6 +724,8 @@ export interface AssignmentRecord {
   fingerprint: string | null;
   bbProjectId: string;
   environmentId: string | null;
+  /** W499: where a fresh spawn was asked to run; null for the project default and older rows. */
+  placement: PlacementRecord | null;
   state: AssignmentState;
   opId: string;
   opState: "pending" | "done" | "uncertain" | "failed";
@@ -1357,6 +1365,7 @@ function toAssignment(row: Row): AssignmentRecord {
     fingerprint: (row.fingerprint as string | null) ?? null,
     bbProjectId: String(row.bb_project_id),
     environmentId: (row.environment_id as string | null) ?? null,
+    placement: decodeNullable("assignments", row, "placement", placementRecordSchema),
     state: row.state as AssignmentState,
     opId: String(row.op_id),
     opState: row.op_state as AssignmentRecord["opState"],
@@ -2850,8 +2859,10 @@ export class Store {
       | "scopeRelease"
       | "handoffSources"
       | "replyTo"
+      | "placement"
     > & {
       replyTo?: string | null;
+      placement?: PlacementRecord | null;
       writeScope?: string[] | null;
       handoffSources?: HandoffSource[] | null;
       access?: AssignmentAccess;
@@ -2863,8 +2874,8 @@ export class Store {
     const now = this.now();
     this.db
       .prepare(
-        `INSERT INTO assignments (project_id, num, worker_num, task_nums, route, role, work_kind, thread_id, generation, profile, bb_project_id, environment_id, state, op_id, op_state, brief_text, review_of, rationale, review_key, pending_identity, label, access, write_scope, handoff_sources, reply_to, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO assignments (project_id, num, worker_num, task_nums, route, role, work_kind, thread_id, generation, profile, bb_project_id, environment_id, state, op_id, op_state, brief_text, review_of, rationale, review_key, pending_identity, label, access, write_scope, handoff_sources, reply_to, placement, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.projectId,
@@ -2892,6 +2903,7 @@ export class Store {
         json(input.writeScope ?? null),
         json(input.handoffSources?.length ? input.handoffSources : null),
         input.replyTo ?? null,
+        json(input.placement ?? null),
         now,
         now,
       );

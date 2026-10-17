@@ -17,7 +17,10 @@ report back to it. This skill only sums up the tools.
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
   own review loop (a fresh reviewer from the other model family per round, for as long as the
   findings converge) and reports once. A trivial change (one line, a handful of small tweaks, an urgent
-  hotfix) skips review: say "No review: trivial" in its brief. `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
+  hotfix) skips review: say "No review: trivial" in its brief. `handoffs:["W9"]` embeds earlier reports. A worker runs in the project's checkout on its
+  default host; `host:"<name or id>"` picks another host and `worktree:true` a new worktree
+  there. An unknown, ambiguous or disconnected host, or no checkout on that host, fails the
+  spawn with no fallback. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
   more work, and the worker reports on it again; the message carries the current worker

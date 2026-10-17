@@ -18,6 +18,7 @@ import type { ProjectsService } from "./service";
 import { ProjectError } from "./bb";
 import { ToolInputError } from "./tool-errors";
 import { NO_NEW_REVIEWS } from "./agent-tools";
+import { placementFields, placementOf } from "./placement";
 import { messageSchema } from "./messaging";
 import { DECISION_ACTIONS, decisionIssues, normalizeDecisionInput } from "./decision-input";
 import { settlementReceipt } from "./receipts";
@@ -71,7 +72,7 @@ export const delegateSchema = z
     kind: workerKindSchema.optional(),
     profile: profileSchema.optional(),
     bbProjectId: ref.optional(),
-    environment: environmentSchema.optional(),
+    ...placementFields,
     label: text(200).optional(),
     area: text(300).optional(),
     note: text(20000).optional(),
@@ -87,7 +88,11 @@ export const delegateSchema = z
     if (value.delivery && value.route !== "continue") ctx.addIssue({ code: "custom", path: ["delivery"], message: "delivery applies only to a message to an existing worker." });
     if (value.kind && (value.route !== "fresh" || value.role === "review"))
       ctx.addIssue({ code: "custom", path: ["kind"], message: "kind applies to a new work worker; a message keeps the worker's model, and a review follows the reviewed worker's model family." });
-    if (value.route !== "fresh") return;
+    if (value.route !== "fresh") {
+      for (const key of ["host", "worktree"] as const)
+        if (value[key] !== undefined) ctx.addIssue({ code: "custom", path: [key], message: `${key} applies to a new worker; a message reaches the worker where it runs.` });
+      return;
+    }
     if (!value.label?.trim())
       ctx.addIssue({ code: "custom", path: ["label"], message: "A new worker needs a label, shown in its W# title." });
     if (!value.area?.trim())
@@ -231,7 +236,7 @@ export const manageCommands = [
       /** Legacy name for note. */
       checkpoint: text(6000).optional(),
       profile: profileSchema.optional(),
-      environment: environmentSchema.optional(),
+      ...placementFields,
       cancel: z.boolean().optional(),
     })
     .strict(),
@@ -459,10 +464,11 @@ export async function runCommand(
       return service.archiveProject(projectId);
     case "replace-coordinator":
       return service.replaceCoordinator(projectId, c, { author });
-    case "coordinator-handover":
-      return c.cancel
-        ? service.cancelHandover(projectId, author)
-        : service.requestHandover(projectId, c, author);
+    case "coordinator-handover": {
+      if (c.cancel) return service.cancelHandover(projectId, author);
+      const { host: _host, worktree: _worktree, ...request } = c;
+      return service.requestHandover(projectId, { ...request, environment: await service.coordinatorEnvironment(projectId, placementOf(c)) }, author);
+    }
     case "handover-draft":
       return service.startHandoverDraft(projectId, { ...(c.note ? { note: c.note } : {}), ...(c.restart ? { restart: true } : {}) });
     case "handover-draft-discard":

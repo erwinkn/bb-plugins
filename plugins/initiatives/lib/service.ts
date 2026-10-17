@@ -43,6 +43,8 @@ import {
   seriesOf,
 } from "./policy";
 import { reportVersion } from "./write-holds";
+import { mayShareCheckout, placementOf, resolveHost, resolvePlacement, type AskedPlacement, type EnvironmentFacts, type Placement, type Workspace } from "./placement";
+import type { PlacementRecord } from "./schema";
 import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
 import { canonicalPrUrl } from "./pr-stages";
 import { PrNotes } from "./pr-notes";
@@ -162,8 +164,11 @@ function checkoutNotYetReported(
   );
 }
 
-export type Workspace = "shared" | "isolated";
 export type { EnvironmentChoice };
+
+/** W499: where a worker's spawn put it, as recorded; more work for it runs there too. */
+const spawnPlacement = (assignments: AssignmentRecord[], workerNum: number) =>
+  assignments.find(a => a.workerNum === workerNum && a.route === "fresh")?.placement ?? null;
 
 /**
  * One reviewer to start: a default-plan partition, or an explicit choice
@@ -219,6 +224,10 @@ export interface DelegateInput {
   kind?: WorkerKind;
   profile?: Profile;
   bbProjectId?: string;
+  /** W499: the host (name or id) and the project's checkout there, or a new worktree with worktree:true. */
+  host?: string;
+  worktree?: boolean;
+  /** Deprecated alias of host and worktree, until about 2026-10-24; refused together with them. */
   environment?: EnvironmentChoice;
   label?: string;
   area?: string;
@@ -1035,16 +1044,15 @@ export class ProjectsService {
     const bbProjectId = input.bbProjectId ?? project.memberProjectIds[0];
     if (!bbProjectId || !project.memberProjectIds.includes(bbProjectId))
       throw new ProjectError("The thread's BB project must be an Initiative member.");
-    const env = this.environmentFor(input.environment, { type: "project-default" },
-      input.environment?.type === "worktree" ? await projectHostId(this.sdk, bbProjectId) : undefined);
+    const env = await resolvePlacement(this.sdk, bbProjectId, placementOf(input) ?? { type: "project-default" });
     if (input.profile) {
       const check = await checkCatalog(this.sdk, input.profile, env.environmentId
-        ? { environmentId: env.environmentId } : { hostId: await projectHostId(this.sdk, bbProjectId) });
+        ? { environmentId: env.environmentId } : { hostId: env.hostId });
       if (!check.ok) throw new ProjectError(check.reason!);
     }
     return this.spawnUserThread(projectId, input.title, {
       projectId: bbProjectId,
-      environment: env.request as Parameters<Sdk["threads"]["spawn"]>[0]["environment"],
+      environment: env.request,
       ...(input.profile ?? {}), input: textInput(input.prompt),
     });
   }
@@ -2581,16 +2589,19 @@ export class ProjectsService {
    * primary member's default source checkout (an incumbent is only reused when it is that one).
    */
   private handoverDestination(projectId: string, environment?: EnvironmentChoice | null): Destination {
-    return async () => {
-      if (environment?.type === "reuse") return environment.environmentId;
-      const primary = this.requireProject(projectId).memberProjectIds[0]!;
-      const source = await this.coordinatorDefaultSource(primary);
-      if (!source?.path) throw new Error(`${primary} has no default source checkout`);
-      const envs = (await this.sdk.environments.list({ projectId: primary, path: source.path, ...(source.hostId ? { hostId: source.hostId } : {}) })) as { id: string; path?: string | null; hostId?: string | null; isWorktree?: boolean | null }[];
-      const env = envs.find(e => !e.isWorktree && e.path === source.path && (!source.hostId || e.hostId === source.hostId));
-      if (!env) throw new Error(`the default checkout ${source.path}${source.hostId ? ` on ${source.hostId}` : ""} has no BB environment yet`);
-      return env.id;
-    };
+    return async () => environment?.type === "reuse"
+      ? environment.environmentId
+      : this.defaultCheckoutEnvironment(this.requireProject(projectId).memberProjectIds[0]!);
+  }
+
+  /** The BB environment of a member project's default source checkout (read now unless given). */
+  private async defaultCheckoutEnvironment(primary: string, known?: Awaited<ReturnType<ProjectsService["coordinatorDefaultSource"]>>): Promise<string> {
+    const source = known === undefined ? await this.coordinatorDefaultSource(primary) : known;
+    if (!source?.path) throw new Error(`${primary} has no default source checkout`);
+    const envs = (await this.sdk.environments.list({ projectId: primary, path: source.path, ...(source.hostId ? { hostId: source.hostId } : {}) })) as { id: string; path?: string | null; hostId?: string | null; isWorktree?: boolean | null }[];
+    const env = envs.find(e => !e.isWorktree && e.path === source.path && (!source.hostId || e.hostId === source.hostId));
+    if (!env) throw new Error(`the default checkout ${source.path}${source.hostId ? ` on ${source.hostId}` : ""} has no BB environment yet`);
+    return env.id;
   }
 
   /**
@@ -4383,6 +4394,47 @@ export class ProjectsService {
     return matched;
   }
 
+  /**
+   * W499: where a worker runs, for more work or a review of it: the environment it landed in (a
+   * new worktree often reports its environment only after the spawn; the live thread knows it),
+   * else exactly the host and checkout its spawn recorded. A review of a worktree whose
+   * environment is unknown is refused, never moved to another checkout. Workers from before W499
+   * recorded nothing and keep the project default.
+   */
+  private async workerHome(worker: WorkerRecord, reviewed: AssignmentRecord | null): Promise<Placement> {
+    const threadId = reviewed?.threadId ?? worker.threadId;
+    const environmentId = reviewed?.environmentId ?? worker.environmentId ??
+      (threadId ? await this.sdk.threads.get({ threadId }).then(t => t.environmentId ?? null, () => null) : null);
+    if (environmentId) return { type: "reuse", environmentId };
+    const record = spawnPlacement(this.store.assignments(worker.projectId), worker.num);
+    if (!record) return { type: "project-default" };
+    if (reviewed && "worktree" in record)
+      throw new ProjectError(`${worker.ref}'s worktree on host ${record.hostId} reports no environment yet, so its checkout can't be reused. Try again once BB reports it.`);
+    return { type: "recorded", record };
+  }
+
+  /**
+   * W499: a coordinator's placement as the environment its start takes. A coordinator runs on the
+   * primary member's default checkout, so a worktree or another host is refused. A named host is
+   * pinned as that checkout's environment: a request waiting while the default checkout moves
+   * fails the start's home check rather than starting on the new host.
+   */
+  async coordinatorEnvironment(projectId: string, placement: AskedPlacement | undefined): Promise<EnvironmentChoice | undefined> {
+    if (placement?.type !== "host") return placement;
+    if (placement.worktree)
+      throw new ProjectError("A coordinator runs on the member project's checkout, not a worker worktree.");
+    if (placement.host === null) return { type: "project-default" };
+    const primary = this.requireProject(projectId).memberProjectIds[0]!;
+    const [host, source] = await Promise.all([resolveHost(this.sdk, placement.host), this.coordinatorDefaultSource(primary)]);
+    if (source?.hostId !== host.id)
+      throw new ProjectError(`A coordinator runs on ${primary}'s default checkout${source?.hostId ? `, on host ${source.hostId}` : ""}; host ${host.name} (${host.id}) is not it.`);
+    try {
+      return { type: "reuse", environmentId: await this.defaultCheckoutEnvironment(primary, source) };
+    } catch (error) {
+      throw new ProjectError(`The coordinator's checkout on host ${host.name} can't be pinned: ${errorMessage(error)}.`);
+    }
+  }
+
   /** The report a review embeds: the named W#/A#, or (legacy reviewOf) the latest report on those tasks. */
   private reviewSource(project: ProjectRecord, input: DelegateInput): AssignmentRecord {
     const ref = input.reviews ?? input.reviewTargets?.[0]?.assignment ?? null;
@@ -4399,24 +4451,23 @@ export class ProjectsService {
    * Other live writers in the same checkout, as warnings. Only a proven separate checkout
    * (a different known environment, or a managed worktree) is left out.
    */
-  private async overlapWarnings(project: ProjectRecord, bbProjectId: string, env: { workspace: Workspace; environmentId: string | null }, self: WorkerRecord | null): Promise<string[]> {
+  private async overlapWarnings(project: ProjectRecord, bbProjectId: string, env: { workspace: Workspace; environmentId: string | null; record: PlacementRecord | null }, self: WorkerRecord | null): Promise<string[]> {
     if (env.workspace === "isolated") return [];
-    const live = this.store.assignments(project.id).filter(a =>
+    const all = this.store.assignments(project.id);
+    const live = all.filter(a =>
       a.role === "work" && a.access === "write" && a.bbProjectId === bbProjectId && a.workerNum !== self?.num &&
       (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
-    const worktree = new Map<string, boolean | null>();
+    const facts = new Map<string, EnvironmentFacts | null>();
     const writers: { worker: string; work: string }[] = [];
     for (const a of live) {
       // A new worktree is provisioned after the spawn returns, so its environment is often
       // unrecorded; the live thread knows it (W218).
       const theirs = a.environmentId ?? this.store.worker(project.id, a.workerNum)?.environmentId ??
         (a.threadId ? await this.sdk.threads.get({ threadId: a.threadId }).then(t => t.environmentId ?? null, () => null) : null);
-      if (theirs && env.environmentId && theirs !== env.environmentId) continue;
-      if (theirs && !env.environmentId) {
-        if (!worktree.has(theirs))
-          worktree.set(theirs, await this.sdk.environments.get({ environmentId: theirs }).then(e => (e as { isWorktree?: boolean }).isWorktree ?? null, () => null));
-        if (worktree.get(theirs) === true) continue;
-      }
+      if (theirs && !env.environmentId && !facts.has(theirs))
+        facts.set(theirs, await this.sdk.environments.get({ environmentId: theirs }).then(e => e as EnvironmentFacts, () => null));
+      const writer = { environmentId: theirs, environment: theirs ? facts.get(theirs) ?? null : null, spawned: spawnPlacement(all, a.workerNum) };
+      if (!mayShareCheckout(env, writer)) continue;
       writers.push({ worker: workerRef(a.workerNum), work: `${a.ref}, ${a.state}` });
     }
     // W215: one warning naming every other writer, e.g. "W3 (A7, running), W5 (A9, queued) are also writing…".
@@ -4424,7 +4475,7 @@ export class ProjectsService {
     const who = writers.length === 1
       ? `${writers[0]!.worker} is also writing in this checkout (${writers[0]!.work})`
       : `${writers.map(w => `${w.worker} (${w.work})`).join(", ")} are also writing in this checkout`;
-    return [`${who}. Sequence the work, or give one of them a worktree (environment {"type":"worktree"}).`];
+    return [`${who}. Sequence the work, or give one of them a worktree (worktree:true).`];
   }
 
   /**
@@ -4608,43 +4659,6 @@ export class ProjectsService {
     if (problem) throw new ProjectError(problem);
   }
 
-  private environmentFor(
-    choice: EnvironmentChoice | undefined,
-    fallback: EnvironmentChoice,
-    /** The member project's default-source host; a worktree without it reaches BB homeless. */
-    hostId?: string | null,
-  ): {
-    request: Record<string, unknown>;
-    workspace: Workspace;
-    environmentId: string | null;
-  } {
-    const env = choice ?? fallback;
-    if (env.type === "worktree")
-      return {
-        request: {
-          type: "host",
-          ...(hostId ? { hostId } : {}),
-          workspace: {
-            type: "managed-worktree",
-            baseBranch: { kind: "default" },
-          },
-        },
-        workspace: "isolated",
-        environmentId: null,
-      };
-    if (env.type === "reuse")
-      return {
-        request: { type: "reuse", environmentId: env.environmentId },
-        workspace: "shared",
-        environmentId: env.environmentId,
-      };
-    return {
-      request: { type: "project-default" },
-      workspace: "shared",
-      environmentId: null,
-    };
-  }
-
   private async dispatch(
     project: ProjectRecord,
     input: DelegateInput & { role: Role },
@@ -4718,22 +4732,15 @@ export class ProjectsService {
           .map(unsettledReason)
           .join(" ")}`,
       );
-    // A reviewer reads the reviewed worker's checkout unless told otherwise.
-    const reviewedEnv = reviewedWorker && reviewedWorker.state !== "retired" ? (reviewed!.environmentId ?? reviewedWorker.environmentId) : null;
-    const envChoice: EnvironmentChoice =
-      input.environment ??
-      (existing?.environmentId && input.route === "continue" && existing.state !== "retired"
-        ? { type: "reuse", environmentId: existing.environmentId }
-        : reviewedEnv && reviewedWorker?.bbProjectId === bbProjectId
-          ? { type: "reuse", environmentId: reviewedEnv }
+    // More work and a reviewer reach the worker where it runs unless told otherwise.
+    const placement: Placement =
+      placementOf(input) ??
+      (existing && input.route === "continue" && existing.state !== "retired"
+        ? await this.workerHome(existing, null)
+        : reviewedWorker && reviewedWorker.state !== "retired" && reviewedWorker.bbProjectId === bbProjectId
+          ? await this.workerHome(reviewedWorker, reviewed)
           : { type: "project-default" });
-    const env = this.environmentFor(
-      envChoice,
-      { type: "project-default" },
-      envChoice.type === "worktree"
-        ? await projectHostId(this.sdk, bbProjectId)
-        : undefined,
-    );
+    const env = await resolvePlacement(this.sdk, bbProjectId, placement);
 
     // Live facts, read just before dispatch.
     let thread: ThreadDto | null = null;
@@ -4765,7 +4772,7 @@ export class ProjectsService {
     }
     const routing = env.environmentId
       ? { environmentId: env.environmentId }
-      : { hostId: await projectHostId(this.sdk, bbProjectId) };
+      : { hostId: env.hostId };
     const catalog = await checkCatalog(this.sdk, profile, routing);
     if (!catalog.ok) throw new ProjectError(catalog.reason!);
     project = this.requireProject(project.id);
@@ -4861,6 +4868,8 @@ export class ProjectsService {
         profile,
         bbProjectId,
         environmentId: env.environmentId,
+        // W499: on a fresh spawn, the host and checkout (or worktree) it was asked to run in.
+        placement: input.route === "fresh" ? env.record : null,
         state: "dispatching",
         opId,
         opState: "pending",
@@ -5015,7 +5024,7 @@ export class ProjectsService {
                 try {
                   return await this.spawnFinalReportsOnly(project.id, {
                     projectId: bbProjectId,
-                    environment: env.request as never,
+                    environment: env.request,
                     providerId: profile.providerId,
                     model: profile.model,
                     reasoningLevel: profile.reasoningLevel,
@@ -5253,7 +5262,7 @@ export class ProjectsService {
       this.store.updateWorker(projectId, worker.num, {
         threadId: thread.id,
         generation: assignment.generation,
-        environmentId: thread.environmentId,
+        environmentId: thread.environmentId ?? assignment.environmentId,
         providerId: assignment.profile.providerId,
         model: assignment.profile.model,
         reasoningLevel: assignment.profile.reasoningLevel,
@@ -5276,7 +5285,7 @@ export class ProjectsService {
       );
       this.store.updateAssignment(projectId, num, {
         threadId: thread.id,
-        environmentId: thread.environmentId,
+        environmentId: thread.environmentId ?? assignment.environmentId,
         state: ["reported", "accepted", "stopped", "cancelled"].includes(
           assignment.state,
         )

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { answerOptionsSchema, environmentSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
+import { answerOptionsSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
+import { placementFields } from "./placement";
 import type { Command } from "./commands";
 import { ruleSources, ruleText } from "./rules";
 import { ToolInputError } from "./tool-errors";
@@ -27,7 +28,7 @@ export const spawnToolSchema = z.object({
   kind: workerKindSchema.optional().describe("Work only: worker (default; a known change), experimenter (prototype, report options), fast (small, well-specified), very-fast (mechanical: lookups, scans, simple edits) or explorer (read and report; no building). Settings map each to a model."),
   profile: profileSchema.optional().describe("An explicit model; wins over kind."),
   project: ref.optional().describe("Member BB project id, when not the primary one."),
-  environment: environmentSchema.optional().describe("{type:\"worktree\"} for an isolated checkout; default is the project checkout (a review defaults to the reviewed worker's)."),
+  ...placementFields,
   permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(),
 }).strict();
 
@@ -102,7 +103,8 @@ export const manageToolSchema = z.object({
   note: text(6000).optional().describe("handover: optional note for the handover writer."),
   cancel: z.boolean().optional().describe("handover: withdraw a pending request."),
   profile: profileSchema.optional().describe("handover: the new coordinator's profile."),
-  environment: environmentSchema.optional(),
+  host: placementFields.host.describe("handover: must be the host of the first repository's default checkout, where a coordinator runs."),
+  environment: placementFields.environment,
   name: text(200).optional().describe("edit"),
   objective: text(4000).optional().describe("edit"),
   memberProjectIds: z.array(ref).max(30).optional().describe("edit"),
@@ -206,6 +208,8 @@ const spawnCommandOf = (i: z.infer<typeof spawnToolSchema>): Command => ({
   ...(i.kind ? { kind: i.kind } : {}),
   ...(i.profile ? { profile: i.profile } : {}),
   ...(i.project ? { bbProjectId: i.project } : {}),
+  ...(i.host !== undefined ? { host: i.host } : {}),
+  ...(i.worktree !== undefined ? { worktree: i.worktree } : {}),
   ...(i.environment ? { environment: i.environment } : {}),
   ...(i.permissionMode ? { permissionMode: i.permissionMode } : {}),
 });
@@ -275,7 +279,7 @@ export function manageCommand(i: z.infer<typeof manageToolSchema>): Command {
     case "archive":
       return { action: "archive" };
     case "handover":
-      return { action: "coordinator-handover", ...(i.reason ? { reason: i.reason } : {}), ...(i.note ? { note: i.note } : {}), ...(i.cancel ? { cancel: true } : {}), ...(i.profile ? { profile: i.profile } : {}), ...(i.environment ? { environment: i.environment } : {}) };
+      return { action: "coordinator-handover", ...(i.reason ? { reason: i.reason } : {}), ...(i.note ? { note: i.note } : {}), ...(i.cancel ? { cancel: true } : {}), ...(i.profile ? { profile: i.profile } : {}), ...(i.host !== undefined ? { host: i.host } : {}), ...(i.environment ? { environment: i.environment } : {}) };
     case "edit":
       return { action: "edit", ...(i.name ? { name: i.name } : {}), ...(i.objective ? { objective: i.objective } : {}), ...(i.memberProjectIds ? { memberProjectIds: i.memberProjectIds } : {}) };
   }
