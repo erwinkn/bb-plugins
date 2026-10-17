@@ -188,6 +188,19 @@ describe("branch pull request eligibility reconcile", () => {
   });
 });
 
+describe("branch pull request eligibility signal", () => {
+  it("reads the shown set again when the server announces a change", async () => {
+    let eligible: Record<string, boolean> = { a: true };
+    const branchPullRequestEligibility = vi.fn(async () => ({ eligible }));
+    const slot = mount(EligibilityProbe, { ids: ["a"] }, { branchPullRequestEligibility });
+    await waitFor(() => expect(slot.container.textContent).toBe("a"));
+    eligible = {};
+    await slot.behavior.emitRealtime("branch-pull-requests-changed", {});
+    await waitFor(() => expect(branchPullRequestEligibility).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(slot.container.textContent).toBe(""));
+  });
+});
+
 describe("branch pull request eligibility input", () => {
   it("never calls with no ids", async () => {
     const branchPullRequestEligibility = vi.fn(async () => ({ eligible: {} }));

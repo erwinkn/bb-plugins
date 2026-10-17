@@ -22,7 +22,7 @@ export const ARCHIVED_LINKS_MS = 6 * 60 * 60_000;
 
 // Rejects at once on abort, even if the host ignores the signal, so a stuck
 // call cannot hold the walk.
-const abortable = <T>(read: Promise<T>, signal: AbortSignal) =>
+export const abortable = <T>(read: Promise<T>, signal: AbortSignal) =>
   new Promise<T>((resolve, reject) => {
     const stop = () => reject(signal.reason);
     if (signal.aborted) return stop();

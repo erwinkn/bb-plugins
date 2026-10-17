@@ -20,3 +20,6 @@ export function isBranchPullRequestEnvironment(environment: {
     environment.branchName !== environment.defaultBranch
   );
 }
+
+/** Published when the server's branch-PR eligibility of a listed thread changes. */
+export const BRANCH_PULL_REQUESTS_CHANGED = "branch-pull-requests-changed";

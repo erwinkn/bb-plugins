@@ -19,6 +19,7 @@ import type { projectModeContract } from "./project-mode-contract";
 import type { snoozeContract } from "./snooze-contract";
 import type { archiveContract, ArchivedThread } from "./archive-contract";
 import type { branchPullRequestContract } from "./branch-pull-request-contract";
+import { BRANCH_PULL_REQUESTS_CHANGED } from "./branch-pull-request";
 import { treeSchema } from "./project-tree-schema";
 import { projectOrderDocSchema } from "./project-order-schema";
 import { adventureWorkerSchema, type AdventureWorker } from "./adventure-workers";
@@ -63,6 +64,7 @@ export const queryKeys = {
   snoozes: ["snoozes"] as const,
   snoozePresets: ["snooze-presets"] as const,
   archives: ["archives"] as const,
+  allBranchPullRequests: ["branch-pull-requests"] as const,
   branchPullRequests: (idsKey: string) => ["branch-pull-requests", idsKey] as const,
 };
 
@@ -273,7 +275,9 @@ const ELIGIBILITY_BATCH = 1000;
 /**
  * Whether each listed thread's environment branch PR is its own, in one bulk
  * call per id set. Each new set is read, even one seen before (a thread's
- * checkout may have changed since), as is every set on reconnection; the last
+ * checkout may have changed since), as is every set on reconnection or on the
+ * server's BRANCH_PULL_REQUESTS_CHANGED, and the shown set on the safety poll
+ * (the server answers from memory, so a poll costs it no read); the last
  * answer shows until the new one lands.
  */
 export const branchPullRequestsQuery = (
@@ -306,6 +310,7 @@ export const branchPullRequestsQuery = (
     },
     staleTime: 0,
     refetchOnWindowFocus: false,
+    refetchInterval: SAFETY_POLL_MS,
     gcTime: 60_000,
     placeholderData: keepPreviousData,
   });
@@ -329,6 +334,9 @@ function QuerySync() {
     refresh(client, typeof projectId === "string" ? queryKeys.workers(projectId) : ["adventure-workers"]);
   });
   useRealtime(INITIATIVE_THREADS_CHANGED, () => refresh(client, queryKeys.threadIds));
+  useRealtime(BRANCH_PULL_REQUESTS_CHANGED, () =>
+    refresh(client, queryKeys.allBranchPullRequests),
+  );
   useRealtime("archives-changed", () => refresh(client, queryKeys.archives));
   useRealtime(SNOOZE_CHANNEL, (payload) => {
     const parsed = snoozeDocSchema.safeParse(payload);

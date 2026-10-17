@@ -9,7 +9,9 @@ import { thread } from "./fixtures";
 // busy Adventure's change signals, and in a hidden tab. Printed for the
 // record; the bounds keep later changes from quietly fetching more. Before
 // TanStack Query (15 s polls, every signal re-reading the tree, the facts and
-// the thread ids): idle 8.2, busy 32.1, hidden 0.2.
+// the thread ids): idle 8.2, busy 32.1, hidden 0.2. The branch-PR safety poll
+// (once the server answered it from memory) added 2 a minute: idle 3 → 5,
+// busy 14 → 16, hidden 0.
 
 const app = await loadPluginApp(() => import("../app"));
 const MINUTES = 10;
@@ -111,8 +113,15 @@ describe("request rate of an open sidebar", () => {
   it("idle, visible", async () => {
     const rate = await measure(() => advance(60_000));
     console.log("idle", JSON.stringify(rate));
-    // The safety poll: one tree, one thread-id and one facts read a minute.
-    expect(rate.byMethod).toEqual({ projectMode: 1, initiativeThreads: 1, adventureWorkers: 1 });
+    // The safety poll: one tree, one thread-id and one facts read a minute,
+    // and one branch-PR read for each shown id set (the thread list and the
+    // picked Adventure's workers), which the server answers from memory.
+    expect(rate.byMethod).toEqual({
+      projectMode: 1,
+      initiativeThreads: 1,
+      adventureWorkers: 1,
+      branchPullRequestEligibility: 2,
+    });
   });
 
   it("a busy Adventure announcing a change every 5 s", async () => {
@@ -123,9 +132,14 @@ describe("request rate of an open sidebar", () => {
       }
     });
     console.log("busy", JSON.stringify(rate));
-    // One conditional tree read per signal; the thread ids and facts have
-    // their own signals and keep to the safety poll.
-    expect(rate.byMethod).toEqual({ projectMode: 12, initiativeThreads: 1, adventureWorkers: 1 });
+    // One conditional tree read per signal; the thread ids, facts and branch
+    // PRs have their own signals and keep to the safety poll.
+    expect(rate.byMethod).toEqual({
+      projectMode: 12,
+      initiativeThreads: 1,
+      adventureWorkers: 1,
+      branchPullRequestEligibility: 2,
+    });
   });
 
   it("hidden tab", async () => {
