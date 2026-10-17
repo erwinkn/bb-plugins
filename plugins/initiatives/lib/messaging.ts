@@ -5,7 +5,7 @@ import { ProjectError, errorMessage, isDefiniteRejection, textInput, type Sdk, t
 /** The default depends on the pair (messageMode): a lead steers a worker, everyone else queues. */
 export const MODE_HELP = "Default: steer from a lead to a worker, so a correction or new fact arrives mid-turn in the order sent; queue otherwise. queue holds the message until the recipient's turn ends: use it only for what must wait.";
 export const messageSchema = z.object({
-  /** v9: "lead" is a worker's lead (§5.1); a worker's "coordinator" means the same. */
+  /** v9: "lead" is a worker's lead, the coordinator; "coordinator" means the same. */
   target: z.union([z.literal("coordinator"), z.literal("lead"), z.string().max(32).regex(/^W[1-9]\d*$/, "Use a current W#, lead or coordinator.")]),
   text: z.string().trim().min(1).max(20000),
   mode: z.enum(["steer", "queue"]).optional().describe(MODE_HELP),
@@ -20,7 +20,7 @@ export function messageMode(explicit: "steer" | "queue" | undefined, fromLead: b
   if (explicit) return explicit;
   return fromLead && toWorker && targetStatus !== "pending" ? "steer" : "queue";
 }
-const isLead = (m: Membership) => m.kind === "coordinator" || !!m.discussion;
+const isLead = (m: Membership) => m.kind === "coordinator";
 const activeStates = ["dispatching", "queued", "running", "idle_no_report", "stopped"];
 
 /** Cheap bounded assignment/task references, with no report or usage projection. */
@@ -45,8 +45,7 @@ export function currentIdentity(store: Store, m: Membership) {
  */
 function currentMember(store: Store, threadId: string, target = true) {
   const m = store.membership(threadId);
-  // A discussion is the user's own thread that may message the coordinator (D480).
-  if (!m || m.former || m.kind === "adhoc" && !m.discussion) throw new ProjectError("Messages require current managed Initiative membership; former and user-owned threads cannot use this wrapper.");
+  if (!m || m.former || m.kind === "adhoc") throw new ProjectError("Messages require current managed Initiative membership; former and user-owned threads cannot use this wrapper.");
   if (m.worker) {
     // T136: a worker stays reachable after it reports, until it is retired or stopped.
     const w = m.worker;
@@ -66,7 +65,7 @@ export function messageCallerAdmitted(store: Store, threadId: string): boolean {
 }
 /**
  * Whether a thread can take part in a message. W492: the sender is running (it is sending), so
- * only its archive and project count. A lead tab whose last turn failed (error) still takes
+ * only its archive and project count. A coordinator whose last turn failed (error) still takes
  * messages: the next one starts its turn, which is how it hears from its workers again. A worker
  * that stopped is not resumed by a message.
  */
@@ -82,24 +81,20 @@ function nativeAvailable(thread: ThreadDto, m: Membership, who: string, { sender
 }
 
 /**
- * One native send, with caller provenance and no plugin inbox, retry or wake on reads. v9: a
- * worker's "lead" (or "coordinator") goes to its lead, resolved by `workerLead` (§5.1); a lead's
- * "coordinator" is the coordinator tab; any lead may message any worker.
+ * One native send, with caller provenance and no plugin inbox, retry or wake on reads. A worker's
+ * "lead" means the coordinator, the "coordinator" target's alias; the coordinator may message any worker.
  */
-export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: string, input: InitiativeMessage, projectId?: string,
-  workerLead?: (m: Membership) => Promise<string | null>) {
+export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: string, input: InitiativeMessage, projectId?: string) {
   const sender = currentMember(store, caller, false);
   // W492: a worker naming itself means its lead (its own W# is how it signs).
   const self = !!sender.m.worker && input.target.toUpperCase() === sender.m.worker.ref.toUpperCase();
   if (self) input = { ...input, target: "lead" };
-  const toLead = !!sender.m.worker && (input.target === "lead" || input.target === "coordinator");
-  const leadId = toLead && workerLead ? await workerLead(sender.m) : null;
   const resolve = () => {
     const from = currentMember(store, caller, false);
     if (projectId && from.m.project.id !== projectId) throw new ProjectError("Cannot message another Initiative.");
     const byRef = input.target !== "coordinator" && input.target !== "lead";
     const id = !byRef
-      ? (toLead ? leadId ?? from.m.project.coordinatorThreadId : from.m.project.coordinatorThreadId)
+      ? from.m.project.coordinatorThreadId
       : store.worker(from.m.project.id, Number(input.target.slice(1)))?.threadId;
     if (!id) throw new ProjectError("Target has no current native thread. Read workers and ask a lead.");
     if (id === caller) throw new ProjectError(`This tab is ${from.m.worker?.ref ?? "the coordinator"}: name another recipient (a W#, or "lead").`);
@@ -119,8 +114,7 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
   const mode = messageMode(input.mode, isLead(fresh.from.m), !!fresh.to.m.worker, target.status);
   nativeAvailable(senderThread, fresh.from.m, "The sender", { sender: true });
   nativeAvailable(target, fresh.to.m, fresh.to.m.worker?.ref ?? (input.target === "lead" ? "Your lead" : "The coordinator"), { pendingQueue: mode === "queue" });
-  const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})`
-    : fresh.from.m.discussion ? `lead tab "${senderThread.title ?? caller}"` : "coordinator";
+  const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})` : "coordinator";
   try {
     const receipt = await sdk.threads.send({ threadId: fresh.id, senderThreadId: caller,
       mode: mode === "steer" ? "steer-if-active" : "queue-if-active",

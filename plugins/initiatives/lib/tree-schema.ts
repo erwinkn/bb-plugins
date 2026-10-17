@@ -10,8 +10,6 @@ export const treeNodeSchema = z.object({
   parentWorker: z.string().nullable(),
   state: z.string(),
   bbProjectId: z.string(),
-  /** D532: set on discussion tabs (lead tabs), absent on user-attached threads. */
-  discussion: z.literal(true).optional(),
 });
 /**
  * Optional Initiative appearance, chosen by the user from a small palette:

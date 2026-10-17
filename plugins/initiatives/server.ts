@@ -6,7 +6,6 @@ import { z } from "zod";
 import {
   projectsContract,
   type ChildPage,
-  type InitiativeTabs,
   type ProjectSummary,
   type ProjectTree,
 } from "./lib/contract";
@@ -489,8 +488,6 @@ export default function plugin(bb: BbPluginApi) {
                 threadId: t.threadId,
                 label: t.label,
                 role: "adhoc" as const,
-                // D532: a discussion is a lead tab, not a user-attached thread.
-                ...(t.discussion && t.threadId ? { discussion: true as const } : {}),
                 worker: null,
                 parentWorker: null,
                 // An associated thread carries no execution evidence of its own;
@@ -546,25 +543,13 @@ export default function plugin(bb: BbPluginApi) {
           name: m.project.name,
           role:
             m.kind === "adhoc"
-              ? m.discussion ? ("discussion" as const) : ("adhoc" as const)
+              ? ("adhoc" as const)
               : m.workerNum === 0
                 ? ("coordinator" as const)
                 : m.worker!.role,
           former: m.former,
         }
       : null;
-  };
-  /**
-   * D446 (T149): the tabs of a current coordinator's or a discussion's header, from the ledger
-   * alone: the coordinator, then every discussion still one (not adopted as coordinator).
-   */
-  const tabsOf = (threadId: string): InitiativeTabs => {
-    const m = store.membership(threadId);
-    const coordinatorThreadId = m?.project.coordinatorThreadId;
-    if (!m || m.former || !coordinatorThreadId || !(m.kind === "coordinator" || m.discussion)) return null;
-    const discussionThreadIds = store.projectThreads(m.project.id).flatMap((t) =>
-      t.discussion && t.threadId && store.membership(t.threadId)?.discussion ? [t.threadId] : []);
-    return { coordinatorThreadId, discussionThreadIds };
   };
   const assignedPrs = new AssignedPrs(store);
   /**
@@ -704,11 +689,8 @@ export default function plugin(bb: BbPluginApi) {
       return {
         membership,
         summary: membership ? await overview(membership.projectId, "summary", { fresh: false }) : null,
-        tabs: tabsOf(threadId),
       };
     },
-    // Its native reads run before it joins the writes; only the cap count and the spawn wait their turn.
-    discussionCreate: ({ projectId }) => announcing(() => service.createDiscussion(projectId, serialized), () => projectId),
     read: async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options),
     command: ({ projectId, command, key }) => {
       const write = () => {
@@ -798,10 +780,10 @@ export default function plugin(bb: BbPluginApi) {
     const m = store.membership(threadId);
     const current =
       m && !m.former && m.project.archivedAt === null &&
-      (m.kind === "coordinator" || m.discussion ||
+      (m.kind === "coordinator" ||
         (m.kind === "worker" && m.worker?.state !== "retired" && m.worker?.threadId === threadId));
     if (!current)
-      throw new ProjectError("Only a lead tab or a current worker records the user's chat answer.");
+      throw new ProjectError("Only the coordinator or a current worker records the user's chat answer.");
     if (projectId && projectId !== m.project.id)
       throw new ProjectError("Record answers only for questions in your own Initiative.");
     return {
@@ -841,7 +823,6 @@ export default function plugin(bb: BbPluginApi) {
     { name: "initiative_message", parameters: advertisedSchema(workerMessageToolSchema) },
     { name: "initiative_pr", parameters: advertisedSchema(workerPrToolSchema) },
   ];
-  /** v9: every lead tab (the coordinator and each discussion) gets the same tools. */
   const leadTools = [
     "initiative_read",
     "initiative_spawn",
@@ -901,7 +882,8 @@ export default function plugin(bb: BbPluginApi) {
         ], guidance().coordinatorInstructions),
       };
     }
-    // A user thread (a discussion too) can configure before the create RPC's own confirm lands.
+    // A user thread can configure before the create RPC's own confirm lands ("discussion": one an
+    // older build started before Discussions were removed, R6; it is now an ordinary user thread).
     if (
       isOwnOrigin(bb.pluginId, ctx.origin.pluginId) &&
       (meta.role === "adhoc" || meta.role === "discussion") &&
@@ -913,17 +895,6 @@ export default function plugin(bb: BbPluginApi) {
         store.confirmProjectThread(meta.op, ctx.thread.id);
     }
     const m = store.membership(ctx.thread.id);
-    // v9: a discussion is a lead tab like the coordinator's: the same tools and guidance, the
-    // Initiative's shared memory (Chat memory gives its tools); workers it gives work report here.
-    if (m?.discussion && m.project.archivedAt === null)
-      return {
-        tools: leadTools,
-        skills: ["initiative-coordinator"],
-        instructions: assembleInstructions([
-          `This tab is a lead of the "${clip80(m.project.name)}" Initiative, like its coordinator tab: the same tools, and its shared memory (memory_read, memory_zoom). Workers you give work report back to this tab; to:"coordinator" reaches the coordinator tab.`,
-          leadRulesPointer(store.rulesStamp(m.project.id)),
-        ], guidance().coordinatorInstructions),
-      };
     if (m?.kind === "adhoc")
       // The user's own thread: project read access on its first turn, and an
       // explicit update only when they ask. Never a managed role or workflow.
@@ -953,7 +924,7 @@ export default function plugin(bb: BbPluginApi) {
         tools: leadTools,
         skills: ["initiative-coordinator"],
         instructions: assembleInstructions([
-          `You are the coordinator tab of the "${clip80(m.project.name)}" Initiative (${m.project.id}), thread ${ctx.thread.id}. It receives whatever has no live lead tab of its own.`,
+          `You are the coordinator of the "${clip80(m.project.name)}" Initiative (${m.project.id}), thread ${ctx.thread.id}.`,
           leadRulesPointer(store.rulesStamp(m.project.id)),
         ], guidance().coordinatorInstructions),
       };
@@ -1062,11 +1033,11 @@ export default function plugin(bb: BbPluginApi) {
    * constructed before T136 can still send its older payloads: those run as the commands
    * they always were, and removed actions answer with what replaces them.
    */
-  /** v9: the Initiative a lead tab (its coordinator or a discussion) acts on. */
+  /** The Initiative a coordinator acts on. */
   const coordinatorProject = async (threadId: string | undefined) => {
     if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
     await ensureMember(threadId);
-    return store.membership(threadId)?.discussion ? service.leadOf(threadId) : service.coordinatorOf(threadId);
+    return service.coordinatorOf(threadId);
   };
   /** An older session's payload for a reused tool name: run it as the command it always was. */
   const legacyCommand = async (raw: unknown, threadId: string, actions: readonly string[]) => {
@@ -1239,7 +1210,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_rule",
     parameters: jsonSchema(ruleToolSchema),
-    description: 'The standing rules every lead and worker follows (initiative_read {view:"rules"}). Add one when the user states a lasting choice: {action:"add",text:"One or two sentences."}; edit or remove one only when the user asks: {action:"edit",rule:"R5",text} · {action:"remove",rule:"R5"}. Each change is announced to the other lead tabs and to workers with open work; the result names them.',
+    description: 'The standing rules every lead and worker follows (initiative_read {view:"rules"}). Add one when the user states a lasting choice: {action:"add",text:"One or two sentences."}; edit or remove one only when the user asks: {action:"edit",rule:"R5",text} · {action:"remove",rule:"R5"}. Each change is announced to the workers with open work; the result names them.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
       return receipt(await perform(p.id, ruleCommand(parseToolInput(ruleToolSchema, raw, "initiative_rule")), "coordinator", threadId!));
@@ -1304,7 +1275,7 @@ export default function plugin(bb: BbPluginApi) {
         return receipt(await setPrStages(project.id, raw, "initiative_pr", workerCaller(project.id, worker, threadId)));
       }
       const p = await coordinatorProject(threadId);
-      return receipt(await setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, author: m?.discussion ? "lead" : "coordinator", threadId }));
+      return receipt(await setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, threadId }));
     },
   });
   registerTool({
@@ -1318,14 +1289,14 @@ export default function plugin(bb: BbPluginApi) {
       const m = store.membership(threadId);
       if (!m || m.former || (m.workerNum !== 0 && m.workerNum !== -1))
         throw new ProjectError(
-          "Publish updates from a lead tab or the user's own initiative thread.",
+          "Publish updates from the coordinator or the user's own initiative thread.",
         );
       const input = parseToolInput(updateToolSchema, raw, "initiative_update");
       return receipt(
         await perform(
           m.project.id,
           parseToolInput(updateSchema, { action: "update", ...input }, "initiative_update"),
-          m.workerNum === 0 || m.discussion ? "coordinator" : "user",
+          m.workerNum === 0 ? "coordinator" : "user",
           threadId,
         ),
       );
@@ -1547,17 +1518,17 @@ export default function plugin(bb: BbPluginApi) {
             result = service.recordDecision(projectId, command, recordedBy);
           } else {
             if (ctx.threadId && command.action !== "create") {
-              if (!member || member.former || !(member.workerNum === 0 || member.discussion))
-                throw new ProjectError("Only a lead tab (the coordinator or a discussion) manages work from an agent CLI.");
+              if (!member || member.former || member.workerNum !== 0)
+                throw new ProjectError("Only the coordinator manages work from an agent CLI.");
               if (id !== member.project.id)
-                throw new ProjectError("A lead cannot manage another initiative through its agent CLI.");
+                throw new ProjectError("A coordinator cannot manage another initiative through its agent CLI.");
             }
             result = await perform(id, command, ctx.threadId ? "coordinator" : "user", ctx.threadId ?? null);
           }
         } else if (action === "pr" && value && args.length <= 3) {
           if (ctx.threadId) {
-            if (!member || member.former || !(member.workerNum >= 0 || member.discussion))
-              throw new ProjectError("Only a lead tab or a worker sets PR stages from an agent CLI.");
+            if (!member || member.former || member.workerNum < 0)
+              throw new ProjectError("Only the coordinator or a worker sets PR stages from an agent CLI.");
             if (id !== member.project.id)
               throw new ProjectError("A thread cannot set another initiative's PR stages.");
           }
@@ -1583,8 +1554,8 @@ export default function plugin(bb: BbPluginApi) {
           // v9: `rules import <id> <file>` makes the live list exactly the file's, after writing the
           // current one to rules-before-<time>.md next to it (importing that is the exact undo).
           const [, , projectId, file] = args as [string, string, string, string | undefined];
-          if (ctx.threadId && !(member && !member.former && (member.workerNum === 0 || member.discussion) && member.project.id === projectId))
-            throw new ProjectError("Import or export rules from a terminal or a lead tab of that Initiative.");
+          if (ctx.threadId && !(member && !member.former && member.workerNum === 0 && member.project.id === projectId))
+            throw new ProjectError("Import or export rules from a terminal or the coordinator of that Initiative.");
           if (value === "export") {
             const text = service.exportRules(projectId);
             if (file) writeFileSync(resolvePath(file), text);
@@ -1675,7 +1646,7 @@ export default function plugin(bb: BbPluginApi) {
   bb.background.service("initiatives-sweep", {
     async start(signal) {
       runtime.start(signal);
-      // v9 (§12): a load that follows the previous build's activity tells the lead tabs once.
+      // v9 (§12): a load that follows the previous build's activity tells the coordinators once.
       await announcing(() => service.runCutover()).catch((error) => bb.log.warn(`Cutover check failed: ${errorMessage(error)}`));
       while (!signal.aborted) {
         const before = ledgerVersion();

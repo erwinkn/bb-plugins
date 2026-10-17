@@ -1191,58 +1191,6 @@ export function ProjectHeader({
   );
 }
 
-/**
- * BB's thread tab groups (Erwin's fork, FORK.md: experimental_threadGroupTabs; SDK 0.6.15 there),
- * typed here as the fork's SDK declares them since this plugin builds against the npm SDK 0.4.87.
- * A BB without the slot keeps the plain title.
- */
-export interface ThreadGroup {
-  tabs: readonly { threadId: string; label?: string; pinned?: boolean }[];
-  create?: { label: string; onCreate(): string | void | Promise<string | void> };
-}
-type ThreadGroupTabsSlot = (registration: {
-  id: string;
-  title: string;
-  useThreadGroup(props: { threadId: string; projectId: string }): ThreadGroup | null;
-}) => void;
-
-/**
- * D446 (T149): the header of an Initiative's coordinator and of each of its discussions shows them
- * as tabs: the coordinator pinned first, then the discussions oldest first by their thread titles, then
- * "+" for a new discussion. It reads the same panel request as the header's Initiative button. D483:
- * archiving and restoring only change what the tabs show: BB's sidebar list says which discussions
- * are archived or deleted, and those are hidden except in their own header.
- */
-export function useInitiativeTabs({ threadId }: { threadId: string }): ThreadGroup | null {
-  const api = useRpc<typeof projectsContract>();
-  const panel = usePanel(threadId);
-  const sidebar = useSidebarThreads();
-  const tabs = panel.data?.tabs ?? null;
-  const projectId = panel.data?.membership?.projectId ?? null;
-  return useMemo(() => {
-    if (!tabs || !projectId) return null;
-    const listed = new Map(sidebar.threads.map((t) => [t.id, t]));
-    // Until BB's list is ready only this thread's own tab is sure; if it failed, show them all.
-    const shown = (id: string) =>
-      id === threadId || (sidebar.status === "error" || (sidebar.status === "ready" && listed.has(id) && !listed.get(id)!.isArchived));
-    return {
-      tabs: [
-        // Tab labels are thread titles (v9 §9): BB shows the coordinator's own title.
-        { threadId: tabs.coordinatorThreadId, pinned: true },
-        ...tabs.discussionThreadIds.filter(shown).map((id) => ({ threadId: id })),
-      ],
-      create: {
-        label: "New discussion",
-        onCreate: async () => {
-          const created = await api.call("discussionCreate", { projectId });
-          if (!created.threadId) throw new Error(created.note ?? "BB did not confirm the discussion.");
-          return created.threadId;
-        },
-      },
-    };
-  }, [api, tabs, projectId, threadId, sidebar]);
-}
-
 export default definePluginApp((app) => {
   app.slots.settingsSection({ id: "initiatives-guidance", title: "Guidance and execution defaults", component: ProjectsSettings });
   app.slots.navPanel({
@@ -1266,10 +1214,5 @@ export default definePluginApp((app) => {
     id: "initiative-status",
     title: "Initiative",
     component: ProjectHeader,
-  });
-  (app.slots as { experimental_threadGroupTabs?: ThreadGroupTabsSlot }).experimental_threadGroupTabs?.({
-    id: "initiative-threads",
-    title: "Initiative threads",
-    useThreadGroup: useInitiativeTabs,
   });
 });

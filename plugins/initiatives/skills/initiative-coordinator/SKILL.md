@@ -1,12 +1,11 @@
 ---
 name: initiative-coordinator
-description: Lead a durable BB initiative (coordinator or discussion tab) using its native tools and editable guidance.
+description: Coordinate a durable BB initiative using its native tools and editable guidance.
 ---
 
 Your standing instructions come from the Initiatives plugin's Settings page (defaults in
-lib/guidance.ts) and arrive when your session starts. Every tab of an Initiative, the
-coordinator's and each discussion, is a lead with these tools; the workers a tab gives work
-report back to it. This skill only sums up the tools.
+lib/guidance.ts) and arrive when your session starts. The coordinator is the Initiative's
+lead: workers report back to it. This skill only sums up the tools.
 
 - `initiative_spawn` starts a worker: label, purpose and a complete brief (the task, the
   context it needs, explicit user instructions that matter, how to verify). Tasks are
@@ -42,10 +41,9 @@ report back to it. This skill only sums up the tools.
   worker is stuck (a worker waiting on its own reviewer isn't): read its thread. Retire the
   worker (`initiative_worker` retire) once its PR is merged or dropped; Stop stops it and its
   running children.
-- `initiative_rule` keeps the standing rules every lead and worker follows
+- `initiative_rule` keeps the standing rules you and every worker follow
   (`initiative_read {view:"rules"}`): add one when the user states a lasting choice; edit or
-  remove one only when the user asks. Each change is announced to the other lead tabs and to
-  workers with open work. A choice about one PR goes in its notes; mark choices the user may
+  remove one only when the user asks. Each change is announced to the workers with open work. A choice about one PR goes in its notes; mark choices the user may
   reverse with "Reversible: …" in your update.
 - `initiative_question {question, context, options?, recommendation?}` asks the user a real
   open choice; the answer comes back to the tab that asked. When the user answers a
@@ -95,12 +93,11 @@ report back to it. This skill only sums up the tools.
 - Write tools answer with a short receipt (ref, new state, warnings, the new W# and
   thread), e.g. `{"tool":"task","ok":true,"ref":"T4","state":"done"}`. `initiative_read`
   with refs has the full records.
-- Every message of the Initiative is logged and summarized into a tree, in every memory
-  mode (the Chat memory plugin). `memory_read` lists its one-line summaries, `id+n|text`;
+- Every message of the Initiative is logged and summarized into a tree (the Chat memory
+  plugin; coordinators always use OptChat). `memory_read` lists its one-line summaries, `id+n|text`;
   `memory_zoom {id:64,n:32}` opens a line into its two halves (`n:1`: one message whole),
   each line starting with its time. Use them after a compaction, or whenever you need what
-  your context no longer holds. The user's discussion threads share this memory: what was
-  said there is in it, and a discussion's message arrives as `From lead tab "<title>"`.
+  your context no longer holds.
 - `initiative_manage` handover replaces you with a fresh coordinator once your turn ends.
   GPT-6 Luna High writes its first message from recent activity.
 

@@ -61,7 +61,7 @@ function membershipContext(store: Store, threadId: string) {
     coordinator: { threadId: p.coordinatorThreadId, generation: p.coordinatorGeneration },
   };
   if (m.kind === "adhoc")
-    return { ...base, kind: "adhoc", role: m.discussion ? "discussion" : "adhoc", worker: null, generation: null, currentGeneration: null, state: "active",
+    return { ...base, kind: "adhoc", role: "adhoc", worker: null, generation: null, currentGeneration: null, state: "active",
       former: false, retired: false, stopped: false, parent: null, assignment: null, next: null };
   const own = store.generations(p.id, m.workerNum).find(g => g.threadId === threadId)?.generation ?? null;
   if (m.kind === "coordinator")

@@ -145,18 +145,13 @@ describe("F5 the verification budget holds per page", () => {
   });
 });
 
-describe("F6 a lead tab BB could not check is named, not silently skipped", () => {
-  it("a 503 on a discussion's read makes it notReached; a 404 leaves it out", async () => {
-    const { f, project } = await projectFixture();
-    const { threadId: down } = (await f.harness.callRpc("discussionCreate", { projectId: project.id })) as { threadId: string };
-    const { threadId: gone } = (await f.harness.callRpc("discussionCreate", { projectId: project.id })) as { threadId: string };
-    f.intercept((path, args, call) =>
-      path === "threads.get" && args?.threadId === down ? Promise.reject(Object.assign(new Error("BB unavailable"), { status: 503 }))
-        : path === "threads.get" && args?.threadId === gone ? Promise.reject(Object.assign(new Error("Thread not found"), { status: 404 }))
-          : call());
+describe("F6 a rule announcement it could not send is named, not silently skipped", () => {
+  it("a refused send to a worker makes it notReached", async () => {
+    const { f } = await projectFixture();
+    await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     f.send.mockClear();
+    f.send.mockRejectedValueOnce(Object.assign(new Error("BB unavailable"), { status: 503 }));
     const result = await tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev." });
-    expect(result.notReached).toEqual([expect.stringMatching(/could not say whether it is open: BB unavailable/)]);
-    expect(f.send.mock.calls.map(([a]) => a.threadId)).not.toContain(down);
+    expect(result).toMatchObject({ reached: [], notReached: ["W1 (BB unavailable)"] });
   });
 });

@@ -473,13 +473,14 @@ export const MIGRATIONS = [
     note TEXT,
     PRIMARY KEY (project_id, url, n)
   )`,
-  // T149 (D446): a discussion is a user project thread that shares the Initiative's memory.
+  // T149 (D446): a discussion was a user project thread that shared the Initiative's memory.
+  // Discussions are gone (R6); the column stays so the previous build still reads its rows.
   `ALTER TABLE project_threads ADD COLUMN discussion INTEGER NOT NULL DEFAULT 0`,
   // T149 (D448): no per-PR "Discuss" thread; nothing ever wrote this column.
   `ALTER TABLE pr_records DROP COLUMN discussion_thread_id`,
   // v9 (worker-owned reviews). Additive only: the previous build ignores every column and table
   // below, and its own inserts leave reply_to NULL, which is what marks work it gave out.
-  // reply_to: the lead tab that gave the work out (the coordinator tab for anything else).
+  // reply_to: the coordinator thread that gave the work out.
   `ALTER TABLE assignments ADD COLUMN reply_to TEXT`,
   // status_set_at: when someone set the task's status by hand; NULL means it is computed.
   `ALTER TABLE tasks ADD COLUMN status_set_at INTEGER`,
@@ -744,8 +745,8 @@ export interface AssignmentRecord {
   /** The label this assignment's brief named, fixed at creation; null on rows from before T143. */
   label: string | null;
   /**
-   * v9: the lead tab that gave this work out (the coordinator tab for anything else). The
-   * previous build never writes it, so NULL marks work given out under the old protocol.
+   * v9: the coordinator thread that gave this work out. The previous build never writes it,
+   * so NULL marks work given out under the old protocol.
    */
   replyTo: string | null;
   /**
@@ -1260,7 +1261,6 @@ function toProjectThread(row: Row): ProjectThreadRecord {
     label: String(row.label),
     bbProjectId: (row.bb_project_id as string | null) ?? null,
     state: row.state as ProjectThreadRecord["state"],
-    discussion: Number(row.discussion ?? 0) === 1,
     createdAt: Number(row.created_at),
     confirmedAt: (row.confirmed_at as number | null) ?? null,
   };
@@ -1536,8 +1536,6 @@ export interface Membership {
    */
   workerNum: number;
   kind: "coordinator" | "worker" | "adhoc";
-  /** T149 (D446): a user thread (adhoc) started as a discussion of the Initiative. */
-  discussion?: boolean;
   worker: WorkerRecord | null;
   /** True for a superseded coordinator or a superseded worker generation. */
   former: boolean;
@@ -1550,8 +1548,6 @@ export interface ProjectThreadRecord {
   label: string;
   bbProjectId: string | null;
   state: "pending" | "active" | "uncertain" | "failed";
-  /** T149 (D446): started as a discussion, which shares the Initiative's memory. */
-  discussion: boolean;
   createdAt: number;
   confirmedAt: number | null;
 }
@@ -1713,18 +1709,16 @@ export class Store {
     opId: string;
     label: string;
     bbProjectId: string | null;
-    discussion?: boolean;
   }) {
     this.db
       .prepare(
-        `INSERT INTO project_threads (project_id, op_id, label, bb_project_id, state, discussion, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+        `INSERT INTO project_threads (project_id, op_id, label, bb_project_id, state, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`,
       )
       .run(
         record.projectId,
         record.opId,
         record.label,
         record.bbProjectId,
-        Number(record.discussion ?? false),
         this.now(),
       );
   }
@@ -2322,7 +2316,6 @@ export class Store {
           project,
           workerNum: -1,
           kind: "adhoc" as const,
-          discussion: adhoc.discussion === 1,
           worker: null,
           former: false,
         };

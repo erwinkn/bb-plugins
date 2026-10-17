@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { fixture, projectFixture } from "./fake-native";
+import { fixture, legacyDiscussion, projectFixture } from "./fake-native";
 import { MIGRATIONS, Store } from "../lib/store";
 import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
@@ -14,19 +14,15 @@ import { renderCoordinatorSeed } from "../lib/brief";
 import { formatRulesFile, parseRulesFile } from "../lib/rules";
 import { assembleInstructions, INSTRUCTIONS_MAX } from "../lib/instructions";
 
-// v9 (Initiatives redesign, design.md): worker-owned review loops, leads in every tab, computed
-// task status with a hand-set override, standing rules, pre-switch work and the cutover, D529.
+// v9 (Initiatives redesign, design.md): worker-owned review loops, the coordinator as every
+// worker's lead (discussions, briefly leads too, are gone: R6), computed task status with a
+// hand-set override, standing rules, pre-switch work and the cutover, D529.
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool = async (f: Fx, name: string, input: unknown, threadId = "coordinator") =>
   JSON.parse((await f.harness.callAgentTool(name, input, { threadId })) as string);
 const texts = (f: Fx, threadId?: string) =>
   f.send.mock.calls.map(([args]) => args).filter((a) => !threadId || a.threadId === threadId).map((a) => a.input[0].text as string);
-const discussion = async (f: Fx, projectId: string, title = "Chat 2") => {
-  const { threadId } = (await f.harness.callRpc("discussionCreate", { projectId })) as { threadId: string };
-  f.threads.set(threadId, { ...f.threads.get(threadId)!, title, status: "idle" });
-  return threadId;
-};
 const configure = (f: Fx, threadId: string) =>
   f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(threadId)! }));
 const rule = (n: number) => `Rule ${n}: ${"keep every query tenant-scoped and every migration reversible ".repeat(7)}`.slice(0, 400);
@@ -55,8 +51,7 @@ describe("v9 §6.1 the instruction budget", () => {
     const { f, project } = await projectFixture({ coordinatorInstructions: guidance, workerInstructions: guidance });
     f.store.updateProject(project.id, { name: "N".repeat(200) });
     const [w] = await tool(f, "initiative_spawn", { label: "L".repeat(200), purpose: "P".repeat(300), text: "Do it." });
-    const chat = await discussion(f, project.id);
-    for (const threadId of ["coordinator", chat, w.threadId]) {
+    for (const threadId of ["coordinator", w.threadId]) {
       const { instructions } = await configure(f, threadId);
       expect(instructions!.length, threadId).toBeLessThanOrEqual(INSTRUCTIONS_MAX);
       expect(instructions!.endsWith(guidance), threadId).toBe(true);
@@ -161,22 +156,26 @@ describe("v9 §3 the worker owns its review loop", () => {
   });
 });
 
-describe("v9 §5 reports and messages go to the worker's lead", () => {
-  it("a done report queues to the lead that gave the work; a blocked one steers; the worker's to:\"coordinator\" means its lead", async () => {
+describe("v9 §5 reports and messages go to the worker's lead, the coordinator", () => {
+  it("a done report queues; a blocked one steers; to:\"lead\" and to:\"coordinator\" both reach it, even for work a discussion gave out", async () => {
     const { f, project } = await projectFixture();
-    const chat = await discussion(f, project.id, "Wallet audit");
-    const [w] = await tool(f, "initiative_spawn", { label: "Audit", purpose: "wallet", text: "Audit it." }, chat);
+    const chat = legacyDiscussion(f, project.id, "Wallet audit");
+    const [w] = await tool(f, "initiative_spawn", { label: "Audit", purpose: "wallet", text: "Audit it." });
+    // Work the previous build let the discussion give out.
+    f.store.db.prepare("UPDATE assignments SET reply_to = ? WHERE project_id = ?").run(chat, project.id);
     f.send.mockClear();
-    await tool(f, "initiative_message", { to: "coordinator", text: "Which chain first?" }, w.threadId);
-    expect(f.send.mock.calls[0]![0]).toMatchObject({ threadId: chat });
+    await tool(f, "initiative_message", { to: "lead", text: "Which chain first?" }, w.threadId);
+    await tool(f, "initiative_message", { to: "coordinator", text: "And which RPC?" }, w.threadId);
+    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator", "coordinator"]);
     const blocked = await tool(f, "initiative_report", { outcome: "blocked", summary: "Need a choice.", question: "Pages or a queue consumer?", report: "Both options…" }, w.threadId);
-    expect(blocked.note).toBe(`Report recorded and sent to "${f.store.projectThreadByThreadId(chat)!.label}".`);
-    expect(f.send.mock.calls[1]![0]).toMatchObject({ threadId: chat, mode: "steer-if-active" });
-    // The lead answers with more work; the next done report queues.
-    await tool(f, "initiative_message", { to: "W1", text: "Pages.", work: true }, chat);
-    expect(f.store.assignment(project.id, 2)).toMatchObject({ replyTo: chat });
+    expect(blocked.note).toBe("Report recorded and sent to the coordinator.");
+    expect(f.send.mock.calls[2]![0]).toMatchObject({ threadId: "coordinator", mode: "steer-if-active" });
+    // The coordinator answers with more work; the next done report queues.
+    await tool(f, "initiative_message", { to: "W1", text: "Pages.", work: true });
+    expect(f.store.assignment(project.id, 2)).toMatchObject({ replyTo: "coordinator" });
     await tool(f, "initiative_report", { outcome: "done", summary: "Done after 2 rounds, last verdict clean.", report: "…" }, w.threadId);
-    expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ threadId: chat, mode: "queue-if-active", senderThreadId: w.threadId });
+    expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ threadId: "coordinator", mode: "queue-if-active", senderThreadId: w.threadId });
+    expect(f.send.mock.calls.map(([a]) => a.threadId)).not.toContain(chat);
   });
 
   it("a refused send names the lead and the retry", async () => {
@@ -233,21 +232,22 @@ describe("v9 §8.1 adoption: always one assignment, obeys Pause at its commit, t
 });
 
 describe("v9 §6 standing rules (D523)", () => {
-  it("a lead adds, edits and removes; each change reaches the other lead tabs and workers with open work, not idle ones", async () => {
+  it("the coordinator adds, edits and removes; each change reaches workers with open work, not idle ones, nor a former discussion", async () => {
     const { f, project } = await projectFixture();
-    const chat = await discussion(f, project.id);
+    const chat = legacyDiscussion(f, project.id);
     const [busy] = await tool(f, "initiative_spawn", { label: "Busy", purpose: "busy", text: "Work." });
     const [done] = await tool(f, "initiative_spawn", { label: "Done", purpose: "done", text: "Work." });
     await tool(f, "initiative_report", { outcome: "done", summary: "Done.", report: "Done." }, done.threadId);
     f.send.mockClear();
     const added = await tool(f, "initiative_rule", { action: "add", text: "A backfill over 1 M rows runs as a separate, resumable job." });
-    expect(added).toMatchObject({ rule: "R1", reached: [f.store.projectThreadByThreadId(chat)!.label, "W1"] });
-    expect(f.send.mock.calls.map(([a]) => [a.threadId, a.mode])).toEqual([[chat, "queue-if-active"], [busy.threadId, "queue-if-active"]]);
+    expect(added).toMatchObject({ rule: "R1", reached: ["W1"] });
+    expect(f.send.mock.calls.map(([a]) => [a.threadId, a.mode])).toEqual([[busy.threadId, "queue-if-active"]]);
     expect(texts(f)[0]).toContain('Rule R1 added: "A backfill over 1 M rows runs as a separate, resumable job."');
-    // From a discussion: the coordinator tab hears of it, the discussion itself doesn't.
+    // From the user: the coordinator hears of it too. The former discussion never does, and can't change rules.
     f.send.mockClear();
-    await tool(f, "initiative_rule", { action: "edit", rule: "R1", text: "A backfill over 1 M rows runs as its own job." }, chat);
+    await f.perform(project.id, { action: "rule-edit", rule: "R1", text: "A backfill over 1 M rows runs as its own job." }, "user", null);
     expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator", busy.threadId]);
+    await expect(tool(f, "initiative_rule", { action: "add", text: "x" }, chat)).rejects.toThrow();
     await tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev." });
     await tool(f, "initiative_rule", { action: "remove", rule: "R1" });
     const read = await tool(f, "initiative_read", { view: "rules" });
@@ -385,12 +385,12 @@ describe("v9 §7 task status: computed, with a hand-set override (D522)", () => 
 });
 
 describe("v9 §12 pre-switch work and the cutover", () => {
-  it("the first load tells every live lead tab once, steering; an ordinary reload tells no one", async () => {
+  it("the first load tells the coordinator once, steering; an ordinary reload tells no one", async () => {
     const { f, project } = await projectFixture();
-    const chat = await discussion(f, project.id);
+    legacyDiscussion(f, project.id);
     f.send.mockClear();
     expect(await f.service.runCutover()).toEqual([project.id]);
-    expect(f.send.mock.calls.map(([a]) => [a.threadId, a.mode])).toEqual([["coordinator", "steer-if-active"], [chat, "steer-if-active"]]);
+    expect(f.send.mock.calls.map(([a]) => [a.threadId, a.mode])).toEqual([["coordinator", "steer-if-active"]]);
     expect(texts(f)[0]).toContain("Initiatives switched to worker-owned reviews at");
     const at = f.store.flagSetAt(CUTOVER_FLAG)!;
     expect(at).toEqual(expect.any(Number));
@@ -499,16 +499,18 @@ describe("v9 §11 migrations on the live database's schema (3d46353)", () => {
 });
 
 describe("v9 D532: the tree tells the sidebar which threads are the Initiative's", () => {
-  it("marks discussion nodes and lists former thread ids (retired workers, earlier generations)", async () => {
+  it("lists a former discussion as a plain user thread, and former thread ids (retired workers, earlier generations)", async () => {
     const { f, project } = await projectFixture();
-    const chat = await discussion(f, project.id);
+    const chat = legacyDiscussion(f, project.id);
     const [w] = await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     await tool(f, "initiative_report", { outcome: "done", summary: "Done.", report: "Done." }, w.threadId);
     f.idle(w.threadId);
     await tool(f, "initiative_worker", { action: "retire", worker: "W1" });
-    const tree = (await f.harness.callRpc("tree", null)) as { projects: { id: string; nodes: { threadId: string; discussion?: true }[]; formerThreadIds?: string[] }[] };
+    const tree = (await f.harness.callRpc("tree", null)) as { projects: { id: string; nodes: { threadId: string; role: string }[]; formerThreadIds?: string[] }[] };
     const p = tree.projects.find((x) => x.id === project.id)!;
-    expect(p.nodes.find((n) => n.threadId === chat)).toMatchObject({ discussion: true });
+    const node = p.nodes.find((n) => n.threadId === chat)!;
+    expect(node).toMatchObject({ role: "adhoc", state: "member" });
+    expect(node).not.toHaveProperty("discussion");
     expect(p.formerThreadIds).toContain(w.threadId);
     expect(p.formerThreadIds).not.toContain("coordinator");
   });

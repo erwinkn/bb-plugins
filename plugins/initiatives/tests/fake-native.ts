@@ -573,3 +573,18 @@ export async function projectFixture(settings?: Record<string, string | number |
   const { project } = await f.create();
   return { f, project };
 }
+
+/**
+ * A discussion as the previous build left it (T149, removed by R6): a user thread of the
+ * Initiative under the coordinator, its ledger row flagged `discussion = 1` and its BB thread
+ * carrying the old spawn metadata (role "discussion", the memory's key).
+ */
+export function legacyDiscussion(f: ReturnType<typeof fixture>, projectId: string, title = "Discussion 1", { archived = false } = {}) {
+  const op = `legacy-${title.toLowerCase().replace(/\W+/g, "-")}`;
+  const id = `thread-${op}`;
+  f.threads.set(id, { ...f.threads.get("coordinator")!, id, title, parentThreadId: "coordinator", status: "idle", archivedAt: archived ? 1 : null });
+  f.metadata.set(id, { role: "discussion", projectId, op, v: 1, memoryScope: projectId });
+  f.store.db.prepare(`INSERT INTO project_threads (project_id, op_id, thread_id, label, bb_project_id, state, discussion, created_at, confirmed_at)
+    VALUES (?, ?, ?, ?, 'proj_a', 'active', 1, 1, 1)`).run(projectId, op, id, title);
+  return id;
+}

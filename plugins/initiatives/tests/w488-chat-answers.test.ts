@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectFixture, report } from "./fake-native";
+import { legacyDiscussion, projectFixture, report } from "./fake-native";
 import { needsYouCount } from "../lib/blockers";
 
 // W488: the user answers a worker's blocker in the coordinator's chat instead of in the Inbox.
@@ -103,56 +103,54 @@ describe("W488 the coordinator records the user's chat answer on a blocker card"
     expect((await state(f, project.id, ref)).dashboard).toBe(0);
   });
 
-  it("a blocker re-filed while the record is made is refused, even with the same question", async () => {
-    const { f, project, threadId } = await blockedWorker();
-    const svc = f.service as unknown as { workerLead: (...args: unknown[]) => Promise<string | null> };
-    const lead = svc.workerLead.bind(f.service);
+  /**
+   * A record reads the blocker as the user saw it (seenBlocker: first its settled check, then its
+   * own read), then writes. `between` runs once, right after that own read, so only the write's
+   * checks can refuse a change landing there.
+   */
+  const between = (f: Awaited<ReturnType<typeof blockedWorker>>["f"], change: () => unknown) => {
+    const svc = f.service as unknown as { seenBlocker: (...args: unknown[]) => unknown };
+    const seen = svc.seenBlocker.bind(f.service);
     let calls = 0;
-    svc.workerLead = async (...args) => {
-      if (++calls === 1) await f.service.report(threadId, { ...blocked, blocker: { question, context: "Prod keys are needed after all." } } as never);
-      return lead(...args);
+    svc.seenBlocker = (...args) => {
+      const result = seen(...args);
+      if (++calls === 2) change();
+      return result;
     };
+  };
+
+  it("a blocker re-filed while the record is made is refused, even with the same question", async () => {
+    const { f, project } = await blockedWorker();
+    // The worker's next filing: the same question, another context.
+    between(f, () => f.store.db.prepare(`UPDATE assignments SET report = json_set(report, '$.blocker.context', 'Prod keys are needed after all.'),
+      report_seq = report_seq + 1 WHERE project_id = ? AND num = 1`).run(project.id));
     expect(await refused(f, { answered: "A1", question, text: said })).toMatch(/blocker changed since.*not saved/);
     expect(f.store.decisions(project.id)).toEqual([]);
   });
 
   it("an Inbox answer that lands while the record is being made wins; the record is refused", async () => {
     const { f, project } = await blockedWorker();
-    const svc = f.service as unknown as { workerLead: (...args: unknown[]) => Promise<string | null> };
-    const lead = svc.workerLead.bind(f.service);
-    // answerBlocker's lead lookup, just before its write.
-    let calls = 0;
-    svc.workerLead = async (...args) => {
-      const id = await lead(...args);
-      if (++calls === 1) await f.service.answerBlocker(project.id, "A1", seen, "Use the staging keys.", "coordinator");
-      return id;
-    };
+    // The Inbox answer writes its decision before its first await.
+    let inbox: Promise<unknown> | undefined;
+    between(f, () => { inbox = f.service.answerBlocker(project.id, "A1", seen, "Use the staging keys.", "coordinator"); });
     expect(await refused(f, { answered: "A1", question, text: said })).toMatch(/already answered A1's blocker \(D1\)/);
+    await inbox;
     expect(f.store.decisions(project.id).map((d) => d.body.answer?.note)).toEqual(["Use the staging keys."]);
-    // The record's lookup, and the Inbox answer's.
-    expect(calls).toBe(2);
   });
 
   it("a coordinator replaced while the record is made is refused", async () => {
     const { f, project } = await blockedWorker();
-    const svc = f.service as unknown as { workerLead: (...args: unknown[]) => Promise<string | null> };
-    const lead = svc.workerLead.bind(f.service);
-    let calls = 0;
-    // The replacement commits during the lookup; answerBlocker still holds the old project record.
-    svc.workerLead = async (...args) => {
-      if (++calls === 1) f.store.setCoordinator(project.id, "next", "Switch model");
-      return lead(...args);
-    };
+    // The replacement commits after the blocker is read; answerBlocker still holds the old project record.
+    between(f, () => f.store.setCoordinator(project.id, "next", "Switch model"));
     expect(await refused(f, { answered: "A1", question, text: said })).toMatch(/coordinator was replaced.*not saved/);
-    expect(calls).toBe(1);
     expect(f.store.decisions(project.id)).toEqual([]);
     expect(f.send).not.toHaveBeenCalled();
   });
 
-  it("only the coordinator tab records it: never a discussion, the worker, a former coordinator or a thread outside the Adventure", async () => {
+  it("only the coordinator tab records it: never a former discussion, the worker, a former coordinator or a thread outside the Adventure", async () => {
     const { f, project, ref, threadId } = await blockedWorker();
-    const discussion = ((await f.harness.callRpc("discussionCreate", { projectId: project.id })) as { threadId: string }).threadId;
-    expect(await refused(f, { answered: "A1", question, text: said }, discussion)).toMatch(/Only this Adventure's coordinator tab.*not saved/);
+    const discussion = legacyDiscussion(f, project.id);
+    expect(await refused(f, { answered: "A1", question, text: said }, discussion)).toMatch(/coordinator/i);
     expect(await refused(f, { answered: "A1", question, text: said }, threadId)).toMatch(/coordinator|lead/i);
     expect(await refused(f, { answered: "A1", question, text: said }, "stranger")).not.toBe("");
     await expect(f.service.recordChatBlockerAnswer(project.id, "A1", question, said, { author: "worker", threadId, assignment: 1 })).rejects.toThrow(/Only this Adventure's coordinator tab/);

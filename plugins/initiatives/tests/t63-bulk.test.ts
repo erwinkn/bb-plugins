@@ -36,7 +36,7 @@ describe("T63 human quiet bulk acceptance", () => {
     const { f, project } = await projectFixture(); const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     for (const threadId of ["coordinator", worker.threadId!]) {
       const result = await f.harness.runCli(["command", JSON.stringify({ action: "decision-accept-all" }), project.id], { threadId });
-      expect(result.exitCode).toBe(1); expect(result.stderr).toMatch(/human dashboard|lead tab/);
+      expect(result.exitCode).toBe(1); expect(result.stderr).toMatch(/human dashboard|Only the coordinator/);
     }
   });
   it("a failed transaction rolls back the entire bulk acceptance", async () => {

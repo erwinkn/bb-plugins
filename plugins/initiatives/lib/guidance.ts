@@ -1,7 +1,6 @@
 // Canonical defaults for the editable Initiative instructions (T136). Settings is the
-// editable source; the skills point here. v9: the lead text goes to every lead tab (the
-// coordinator and discussions), the worker text to workers; standing rules travel separately
-// (rules.ts), and every work message repeats the worker text (brief.ts workLoopBlock).
+// editable source; the skills point here. The coordinator text goes to the coordinator, the
+// worker text to workers; standing rules travel separately (rules.ts), and every work message repeats the worker text (brief.ts workLoopBlock).
 
 export const DEFAULT_COORDINATOR_INSTRUCTIONS = `You lead this Initiative for the user: plan, hand each PR to one worker, keep the user informed. Workers implement, review and fix their own PRs.
 

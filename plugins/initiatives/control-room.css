@@ -299,7 +299,7 @@
   .cr-split-view[data-detail="open"] > .cr-w-list { display: block; }
   .cr-w-detail { position: sticky; top: 96px; max-height: calc(100vh - 110px); overflow-y: auto; padding-left: 20px; border-left: 1px solid var(--border); }
   .bb-projects .cr .cr-back { display: none; }
-  .cr-w-close { display: inline-grid !important; margin-left: 2px; }
+  .cr-w-close { display: inline-grid !important; margin-left: auto; }
 }
 .cr-w-rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; margin: 0; padding: 0; list-style: none; }
 /* Rows are the sidebar's two-line thread rows (plugins/sidebar ThreadRow): 14/20 title, 12/16
@@ -365,7 +365,6 @@
 .cr-w-detail-head { padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
 .cr-w-detail-status { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--cr-ink-secondary); }
 .cr-w-detail-why { min-width: 0; }
-.cr-w-from { margin-left: auto; flex: none; color: var(--muted-foreground); }
 .cr .cr-w-detail-head h2 { margin: 6px 0 2px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; color: var(--foreground); text-transform: none; }
 .cr-w-detail-meta { font-size: 11.5px; color: var(--muted-foreground); }
 .cr-report-outcome { font-weight: 600; margin-bottom: 4px !important; }

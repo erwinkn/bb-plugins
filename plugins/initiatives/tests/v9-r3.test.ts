@@ -132,28 +132,6 @@ describe("R6 Cancel task says which work may still run", () => {
   });
 });
 
-describe("R7 an answer to a deleted discussion goes to the coordinator", () => {
-  it("BB's 404 for the asking tab is a deleted tab, not a target", async () => {
-    const { f, project } = await projectFixture();
-    const { threadId: chat } = (await f.harness.callRpc("discussionCreate", { projectId: project.id })) as { threadId: string };
-    const asked = await tool(f, "initiative_question", { question: "Pages or a queue consumer?", context: "Both work." }, chat);
-    f.threads.delete(chat);
-    f.intercept((path, args, call) => path === "threads.get" && args?.threadId === chat
-      ? Promise.reject(Object.assign(new Error("Thread not found"), { status: 404 })) : call());
-    f.send.mockClear();
-    await f.harness.callRpc("command", { projectId: project.id, command: { action: "answer", decision: asked.ref, choice: null, note: "Pages." } });
-    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator"]);
-  });
-
-  it("control: another read failure keeps the tab, so its send says what happened", async () => {
-    const { f, project } = await projectFixture();
-    const { threadId: chat } = (await f.harness.callRpc("discussionCreate", { projectId: project.id })) as { threadId: string };
-    f.intercept((path, args, call) => path === "threads.get" && args?.threadId === chat
-      ? Promise.reject(Object.assign(new Error("BB unavailable"), { status: 503 })) : call());
-    expect(await f.service.liveLead(f.store.project(project.id)!, chat)).toBe(chat);
-  });
-});
-
 describe("R8 the shared appendix is cut where the brief puts it", () => {
   it("guidance that names a PR and then quotes the loop heading leaves no PR in the worker's own text", () => {
     const heading = "How you work in this Initiative (current; replaces anything earlier):";

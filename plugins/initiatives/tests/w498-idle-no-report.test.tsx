@@ -60,7 +60,7 @@ const worker = (ref: string, over: Partial<WorkerItem> = {}): WorkerItem => ({
   ref, label: `${ref} label`, role: "work", kind: null, area: `${ref} purpose`, bbProjectId: "repo", threadId: `thr_${ref}`,
   generation: 1, generations: 1, state: "active", profile: null, forkedFrom: null,
   nativeParent: true, lastHandoff: null, runtime: "idle", context: { used: null, window: null, estimated: null },
-  lead: null, open: null, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
+  open: null, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
 });
 const host = (id: string, over: Partial<PluginSidebarThread> = {}): PluginSidebarThread => ({
   id, projectId: "repo", title: id, titleFallback: null, parentThreadId: null, sectionId: null, originKind: null, originPluginId: null,

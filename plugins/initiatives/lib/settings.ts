@@ -31,9 +31,9 @@ const profilesTextSchema = z.string().max(16000).superRefine((value, ctx) => {
 export const settingsDescriptors = {
   coordinatorInstructions: {
     type: "string" as const,
-    label: "Lead instructions",
+    label: "Coordinator instructions",
     experimental_multiline: true,
-    description: "Every lead tab's standing instructions (the coordinator and discussions), given when its session starts. Saving does not change running sessions or wake agents. Reset restores the default.",
+    description: "The coordinator's standing instructions, given when its session starts. Saving does not change running sessions or wake agents. Reset restores the default.",
     default: DEFAULT_COORDINATOR_INSTRUCTIONS,
     experimental_schema: instructionSchema,
   },

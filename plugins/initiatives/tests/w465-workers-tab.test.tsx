@@ -32,7 +32,7 @@ const worker = (ref: string, over: Partial<WorkerItem> = {}): WorkerItem => ({
   ref, label: `${ref} label`, role: "work", kind: null, area: `${ref} purpose`, bbProjectId: "repo", threadId: `thr_${ref}`,
   generation: 1, generations: 1, state: "active", profile: null, forkedFrom: null,
   nativeParent: true, lastHandoff: null, runtime: "idle", context: { used: null, window: null, estimated: null },
-  lead: null, open: null, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 3 * 86_400_000, ...over,
+  open: null, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 3 * 86_400_000, ...over,
 });
 const report = (outcome: "done" | "blocked" | "failed", summary: string, question: string | null = null) => ({
   ref: "A9", outcome, summary, question, reportedAt: NOW - 3_600_000, preSwitch: null,

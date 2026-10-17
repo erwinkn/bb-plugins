@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { projectFixture, report } from "./fake-native";
+import { legacyDiscussion, projectFixture, report } from "./fake-native";
 import { settledChildPage } from "./helpers";
 
 // v9 round 2 (W434's review, D522): one regression per finding, each failing on the v9 patch.
@@ -90,18 +90,12 @@ describe("F6 no new review assignments through the retained paths", () => {
   });
 });
 
-const discussion = async (f: Fx, projectId: string, title = "Chat 2") => {
-  const { threadId } = (await f.harness.callRpc("discussionCreate", { projectId })) as { threadId: string };
-  f.threads.set(threadId, { ...f.threads.get(threadId)!, title, status: "idle" });
-  return threadId;
-};
-
 describe("F5 an import is a rule change like any other", () => {
-  it("import and its undo reach the live lead tabs and the workers with open work, and say whom", async () => {
+  it("import and its undo reach the coordinator and the workers with open work, and say whom", async () => {
     const { f, project } = await projectFixture();
     const dir = mkdtempSync(join(tmpdir(), "v9-r2-rules-"));
     scratch.push(dir);
-    const chat = await discussion(f, project.id);
+    const chat = legacyDiscussion(f, project.id);
     const [busy] = await tool(f, "initiative_spawn", { label: "Busy", purpose: "busy", text: "Work." });
     await tool(f, "initiative_rule", { action: "add", text: "Old rule." });
     f.send.mockClear();
@@ -109,15 +103,19 @@ describe("F5 an import is a rule change like any other", () => {
     writeFileSync(file, "R1. Every PR targets dev.\n");
     const imported = await f.harness.runCli(["rules", "import", project.id, file]);
     expect(imported.exitCode).toBe(0);
-    const tab = f.store.projectThreadByThreadId(chat)!.label;
-    expect(JSON.parse(imported.stdout!)).toMatchObject({ rules: 1, reached: ["the coordinator", tab, "W1"] });
-    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator", chat, busy.threadId]);
+    expect(JSON.parse(imported.stdout!)).toMatchObject({ rules: 1, reached: ["the coordinator", "W1"] });
+    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator", busy.threadId]);
     expect(f.send.mock.calls[0]![0].input[0].text).toContain("The standing rules were replaced by an import (1 rule).");
-    // The undo is an import too; from a lead tab, that tab isn't told its own change.
+    // A former discussion is an ordinary user thread: it can't import.
+    const undoArgs = JSON.parse(imported.stdout!).undo.split(" ").slice(2);
+    const refused = await f.harness.runCli(undoArgs, { threadId: chat });
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toMatch(/from a terminal or the coordinator of that Initiative/);
+    // The undo is an import too; from the coordinator, it isn't told its own change.
     f.send.mockClear();
-    const undo = await f.harness.runCli(JSON.parse(imported.stdout!).undo.split(" ").slice(2), { threadId: chat });
+    const undo = await f.harness.runCli(undoArgs, { threadId: "coordinator" });
     expect(undo.exitCode).toBe(0);
-    expect(JSON.parse(undo.stdout!)).toMatchObject({ reached: ["the coordinator", "W1"] });
+    expect(JSON.parse(undo.stdout!)).toMatchObject({ reached: ["W1"] });
     expect(f.store.rules(project.id).map((r) => r.text)).toEqual(["Old rule."]);
     // The same list again changes nothing and tells no one.
     f.send.mockClear();
@@ -127,26 +125,17 @@ describe("F5 an import is a rule change like any other", () => {
   });
 });
 
-describe("F7 an answer goes to the asking tab only while BB has it open", () => {
-  it("a question from a since-archived discussion is answered to the coordinator tab", async () => {
+describe("F7 an answer goes to the coordinator", () => {
+  it("even for a question a discussion asked, open or not", async () => {
     const { f, project } = await projectFixture();
-    const chat = await discussion(f, project.id);
-    const asked = await tool(f, "initiative_question", { question: "Pages or a queue consumer?", context: "Both work." }, chat);
-    f.threads.set(chat, { ...f.threads.get(chat)!, archivedAt: Date.now() });
-    await f.harness.emitThreadEvent("thread.archived", { thread: f.threads.get(chat) as never });
+    const chat = legacyDiscussion(f, project.id);
+    const asked = await tool(f, "initiative_question", { question: "Pages or a queue consumer?", context: "Both work." });
+    // The previous build recorded the discussion as the asker.
+    f.store.db.prepare("UPDATE knowledge SET provenance = json_set(provenance, '$.threadId', ?) WHERE project_id = ?").run(chat, project.id);
     f.send.mockClear();
     await f.harness.callRpc("command", { projectId: project.id, command: { action: "answer", decision: asked.ref, choice: null, note: "Pages." } });
     expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator"]);
     expect(f.store.decisionItem(project.id, Number(asked.ref.slice(1)))!.notification).toMatchObject({ coordinatorThreadId: "coordinator", state: "sent" });
-  });
-
-  it("control: while the discussion is open, the answer goes back to it", async () => {
-    const { f, project } = await projectFixture();
-    const chat = await discussion(f, project.id);
-    const asked = await tool(f, "initiative_question", { question: "Pages or a queue consumer?", context: "Both work." }, chat);
-    f.send.mockClear();
-    await f.harness.callRpc("command", { projectId: project.id, command: { action: "answer", decision: asked.ref, choice: null, note: "Pages." } });
-    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual([chat]);
   });
 });
 

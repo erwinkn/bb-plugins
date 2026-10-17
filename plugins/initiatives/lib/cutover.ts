@@ -21,7 +21,7 @@ export function preSwitchLine(a: Pick<AssignmentRecord, "replyTo" | "role" | "wo
 
 const hhmm = (at: number) => new Date(at).toISOString().slice(11, 16);
 
-/** Sent once per cutover to each live lead tab, steering, so it lands before anything queued. */
+/** Sent once per cutover to the coordinator, steering, so it lands before anything queued. */
 export function cutoverInstruction(at: number): string {
   return `Initiatives switched to worker-owned reviews at ${hhmm(at)} UTC. Workers now start their own reviewers and report once: done after a clean review, or blocked. Reports on work given out before the switch, including any already waiting in your queue, come from the old loop: for a code change, "done" there doesn't mean independently reviewed. Unless such a report names a clean independent review of its final head, send it back to the same worker with initiative_message work:true to review and fix it. An analysis needs no review. Don't start reviewers. If your tools lack initiative_spawn or initiative_rule, this session predates the switch: use \`bb initiative command '<json>'\` (examples: \`bb initiative describe\`).`;
 }

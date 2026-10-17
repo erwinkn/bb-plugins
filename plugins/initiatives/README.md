@@ -33,18 +33,18 @@ An example, in the Equisafe Initiative:
    findings and options. The lead sends it back to review (`initiative_message work:true`)
    only when a standing rule or Erwin's explicit instruction settles the finding; otherwise
    it asks Erwin (`initiative_question`).
-4. The report goes to the worker's **lead**: the tab that gave it the work, or the
-   coordinator tab once that tab is archived. A done report queues behind a busy lead and
-   runs as its own turn when drained; a blocked one steers into the running turn.
+4. The report goes to the worker's **lead**, the coordinator. A done report queues behind a
+   busy coordinator and runs as its own turn when drained; a blocked one steers into the
+   running turn.
 5. Every later work message ends with the whole loop (the worker guidance as a new session
    gets it, the reviewer command, the rules), under "How you work in this Initiative
    (current; replaces anything earlier)".
 
 What changed from v8 (the previous build, `3d46353`):
 
-- **Every tab is a lead.** Discussions get the coordinator's tools and guidance; a worker's
-  reports, messages (`to:"lead"`; a worker's `to:"coordinator"` means the same), failure and
-  stuck notices go to `lead(W)`. The discussion gate is gone.
+- **The coordinator is every worker's lead.** A worker's reports, messages (`to:"lead"`;
+  `to:"coordinator"` means the same), failure and stuck notices go to the coordinator. (v9
+  briefly made discussions lead tabs too; Discussions are gone, see below.)
 - **Leads don't start reviewers**: `initiative_spawn`, the retained `initiative_delegate` and
   `bb initiative command` refuse `role:"review"`/`reviews`. Reviewers given out before the
   switch keep working and reporting as before.
@@ -61,8 +61,8 @@ What changed from v8 (the previous build, `3d46353`):
   travels in briefs, work messages and each coordinator's first message; instructions carry
   only a pointer (BB cuts them at 4096). A PR a rule names is nobody's work: PR attribution
   reads a brief without that shared appendix. Every change, an import or its undo included,
-  is announced to the other live lead tabs and the workers with open work; a discussion BB
-  could not confirm is open is named in `notReached`, not skipped. `user-choice`/`veto-request` are refused with where
+  is announced to the coordinator (unless it made the change) and the workers with open work;
+  a send that fails is named in `notReached`. `user-choice`/`veto-request` are refused with where
   such a choice goes now; questions stay (`initiative_question`).
 - **Stuck vs waiting**: a worker with a live descendant isn't flagged. "Live" is one rule
   everywhere (`running()` in `lib/bb.ts`): a busy status, background agents, commands or
@@ -106,8 +106,8 @@ What changed from v8 (the previous build, `3d46353`):
   commit, then sends the adopted thread the loop.
 - **Cold workers (D529)**: more work for a large, cold worker is refused to a lead with
   the rewrite cost unless it passes `resumeCold:true`; the user's own sends never are.
-- **Pre-switch work** (`reply_to IS NULL`) carries a line wherever a lead reads its report,
-  and the first load after old-code activity sends each live lead tab the cutover
+- **Pre-switch work** (`reply_to IS NULL`) carries a line wherever the coordinator reads its
+  report, and the first load after old-code activity sends each live coordinator the cutover
   instruction once (flag `loops-v5`).
 - **Code-owned guidance defaults are never stored**: a saved text equal to a default is
   unset on load, so a rollback reads its own defaults.
@@ -250,8 +250,7 @@ Coordinator tools: `initiative_read`, `initiative_spawn`, `initiative_message`,
 `initiative_task`, `initiative_worker`, `initiative_decision`, `initiative_update`,
 `initiative_manage`. Workers get `initiative_read`, `initiative_report`,
 `initiative_message` and `initiative_decision`. User-owned threads get
-`initiative_read` and `initiative_update`; discussions get `initiative_read`,
-`initiative_message` and `initiative_pr` (below); unmanaged threads get
+`initiative_read` and `initiative_update`; unmanaged threads get
 `initiative_create`. Every tool publishes one flat object schema (Claude's bridge
 blanks union roots) and validates it on the server. The published schema keeps its
 length bounds, so agents see the limits the server enforces, and leaves out
@@ -569,8 +568,7 @@ resume"), pending `changes` requested (one line each, replaced whole), the last
 D437), and the `worker` and `assignment` on it. An assignment names its
 worker unless the entry names one; unknown W# or A# refs are rejected. A
 record with nothing left in it is deleted. There is no per-PR "Discuss" thread
-(D448): discussions span PRs (see Discussions); T149 dropped the
-`discussion_thread_id` column nothing ever wrote.
+(D448); T149 dropped the `discussion_thread_id` column nothing ever wrote.
 
 A category is 1 to 40 characters; "Uncategorized" is reserved for the PRs
 without one. One that differs from an existing category
@@ -589,10 +587,10 @@ opened it. The scan runs only when an assignment changes (`AssignedPrs`).
 answered}`. `notes:[{kind?, text, link?}]` appends (up to 1000 characters
 each; the link defaults to the caller's thread) and the result gives each new
 note's number; `answered:[{n, text?}]` closes a question, once. The author is
-the caller: `coordinator`, the worker's W#, `discussion` (linked to its
-thread), or `user` from a terminal. A worker may add notes, and only notes, to
+the caller: `coordinator`, the worker's W#, or `user` from a terminal (older
+notes may say `discussion` or `lead`). A worker may add notes, and only notes, to
 the PRs its assignments name, the coordinator put on it, or its branch opened.
-A discussion may add notes and close questions on any PR, and nothing else. When a worker reports, its
+When a worker reports, its
 summary is appended as a note to each PR the report names (else those its
 brief named), linked to the assignment. The queue carries each PR's note
 count, last three notes and open questions; the `prNotes` RPC reads a PR's
@@ -1104,91 +1102,31 @@ Replaying the Equisafe coordinator's transcript through this formatting cut its
 Initiative tool results from 455 KB to 193 KB and its report messages from
 339 KB to 32 KB.
 
-## Discussions (T149)
+## Discussions (removed)
 
-An Initiative has its coordinator plus any number of **discussions**: threads
-where the user talks its work through with an agent, across PRs and themes
-(D446). They share the Initiative's memory with the coordinator. Since v9 every
-discussion is a **lead** with the coordinator's tools and guidance: workers it
-gives work report back to it, and the D480 restrictions below no longer apply.
+T149 (D446) gave an Initiative **discussions**: extra threads, shown as tabs
+beside the coordinator, that shared its memory and (from v9) led workers like
+it. R3 and R6 removed them: each memory tree belongs to one thread, and the
+coordinator is every worker's lead. The tab strip, the **+** (`discussionCreate`)
+and the `panel` read's `tabs` are gone; nothing routes reports, messages, rule
+announcements or notices to a discussion any more.
 
-**Tabs.** In the header of the coordinator and of each discussion, the title
-becomes a tab strip (BB's `experimental_threadGroupTabs`, Erwin's fork):
-the coordinator (titled by its thread, v9) pinned first, then the discussions oldest first, each named by
-its thread title (rename it from the thread menu), then **+** for a new one. BB
-owns selection, keyboard, overflow and each tab's status. Other threads, and a
-BB without the slot, keep the plain title. The tabs come with the header's
-`panel` read (`tabs: {coordinatorThreadId, discussionThreadIds}`), so they cost
-no request of their own.
-
-**What exists.** One ledger flag: `project_threads.discussion`. A discussion is
-a user thread of the Initiative (same create receipt, reconciliation, tree and
-move to a new coordinator as **New thread**) that was started as one. Nothing
-else is stored: who is in the memory is Chat memory's one row per thread, and
-whether a discussion is archived is BB's.
-
-- **+** (`discussionCreate`) starts `Discussion <n>` as a child of the
-  coordinator, where it runs: its repository and checkout, provider, model,
-  effort, permission mode and service tier. BB starts a thread only with a
-  first message, so it opens with a hidden one asking for a one-line greeting.
-  It is spawned with `{role: "discussion", memoryScope: <id>}`, so Chat memory
-  attaches it at its first configure, and with final-reports-only parent
-  notices, so its turns never wake the coordinator. When BB has no settings for
-  the coordinator yet, **+** starts nothing and says why. When the coordinator
-  is replaced before the spawn is issued, it starts nothing either: the
-  settings read were the predecessor's ("The coordinator changed while the
-  discussion was starting"); pressed again, it starts under the new one. A
-  handover runs outside the serialized writes, so this is checked after the
-  spawn's last read of BB, with no await between the check and the spawn. A
-  replacement that lands after the spawn is issued finds the discussion under
-  its predecessor, like every discussion started before it, and moves it.
-- **Cap (D483).** An Initiative starts a discussion only with fewer than 62
-  open: those starting or uncertain, plus those BB has neither archived nor
-  deleted. **+** reads that from one paged list of the open threads this plugin
-  started (`threads.list {originPluginId, archived: false}`), so its cost
-  follows the open threads, never the archived history. The list is read
-  before **+** joins the plugin's serialized writes, so a slow read holds no
-  other write; the count and the spawn then run in turn, and a discussion that
-  got its thread after the list was read counts as open. Two **+** at 61 open
-  start one. Nothing else is capped: restoring an archived discussion is BB's
-  own action and never refused.
-- **Archive, restore, delete (D482, D483)** change only the tabs: an archived or
-  deleted discussion is hidden, except in its own header (BB's sidebar list
-  says which). It stays a discussion of the Initiative and stays in its memory,
-  archived or not; a restored one logs its next turn there. A deleted one is
-  forgotten by Chat memory; what it said stays in the memory.
-- **What it can do (D480).** `initiative_read`, `initiative_message` to the
-  coordinator only (it arrives as `From discussion "<title>"`) and
-  `initiative_pr` notes and answered questions, plus Chat memory's tools.
-  Everything else is refused where agent calls come in, before any of them
-  runs: every Initiative tool but `initiative_read`, `initiative_zoom`,
-  `initiative_message` and `initiative_pr` (their `project_*` aliases too),
-  and every `bb initiative` subcommand but `describe`, `list`, `overview`,
-  `read` and `message`: "A discussion only messages the coordinator and keeps
-  PR notes." A tool or subcommand added later is refused unless it joins those
-  lists. That holds after the Initiative is archived too. It never spawns, directs or messages workers, and can't be adopted as one:
-  "Discussions can't become workers: spawn a worker instead." Adopted as
-  coordinator, it is one: it leaves the discussions and stays in the memory.
-- **Mode switch (D447, D452).** The mode belongs to the memory, so a switch from
-  any of their Memory pills applies to the coordinator and every discussion from
-  each one's next turn.
-
-For example: Erwin presses **+** on the coordinator of "Search". BB opens
-"Discussion 3" in the same pane; its first turn reads the memory and greets.
-He settles the Redis TTL there; the discussion notes it on PR #12 and messages
-the coordinator, which delegates the change. He archives "Discussion 3": the
-tab disappears (except in its own header), the memory keeps both threads'
-turns, and the next **+** counts one open discussion fewer. He restores it from
-BB's archive: the tab is back and its next turn is logged in the same memory.
+Nothing was migrated away. `project_threads.discussion` stays (new rows leave
+it 0), so rolling back to the previous build needs no restore. A thread that was
+a discussion is now an ordinary user thread of its Initiative: `initiative_read`
+and `initiative_update`, no lead tools. Assignments, PR notes and decisions that
+name one still read as they were (`reply_to`, a note's `discussion` or `lead`
+author). A discussion spawn still in flight at the upgrade is reconciled as a
+user thread.
 
 ## Memory (T145)
 
 An Initiative's memory belongs to the [Chat memory](../chat-memory/README.md)
 plugin (D457): the log of everything its coordinators said and saw, the GPT-6
-Luna summary tree, the Regular / Hybrid / OptChat mode, compaction, the memory
-tools (`memory_read`, `memory_zoom`) and Claude Code's per-turn OptChat hook.
-One mode applies to the coordinator and its discussions (D447); only the user
-switches it, from the **Memory** pill of any of them (D452).
+Luna summary tree, the memory mode, compaction, the memory tools (`memory_read`,
+`memory_zoom`) and Claude Code's per-turn OptChat hook. The mode follows the
+role and can't be switched (R6): coordinators always use OptChat, every other
+thread Regular.
 
 Chat memory keeps one row per thread: the scope it writes to now
 (`initiatives:<id>` for an Initiative) and how far its turns are logged (T153,
@@ -1196,7 +1134,7 @@ D487, D491). This plugin sends no roster. A coordinator it spawns (a new one, a
 successor) carries `memoryScope: <Initiative id>` in its spawn metadata, and
 Chat memory attaches it at its first configure, before its first turn. A thread
 it adopts is attached with Chat memory's `attach` RPC; if that fails, the
-adoption's answer says so. So does each discussion (see Discussions). Workers carry no `memoryScope` and
+adoption's answer says so. Workers carry no `memoryScope` and
 never write to it. A former coordinator stays attached, so a later turn of it is logged there
 too. Archiving or pausing an Initiative changes nothing in its memory.
 

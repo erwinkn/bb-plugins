@@ -8,17 +8,15 @@ import type { PrLinks } from "./merge-queue";
 import { PR_NOTE_MAX, blankPrRecord, canonicalPrUrl, categoryName, type PrToolInput } from "./pr-stages";
 import { prsReferenced, reportPrs } from "./task-status";
 
-/** Who calls initiative_pr: the coordinator, a worker (notes only), a discussion (notes and answers) or the user's terminal. */
+/** Who calls initiative_pr: the coordinator, a worker (its own PRs) or the user's terminal. */
 export interface PrCaller {
-  /** "coordinator", "user", "discussion", or the worker's ref (W12). */
+  /** "coordinator", "user", or the worker's ref (W12). */
   author: string;
   /**
    * Set for a worker: it keeps its PRs' stage and notes and moves them. `heldBy` names who else
    * holds a PR ("W43: A812 names it"), or null when it is this worker's or nobody's yet.
    */
   worker: { ref: string; heldBy: (url: string) => string | null } | null;
-  /** Historical (D480): a discussion is a lead since v9 and sets everything. */
-  discussion?: boolean;
   /** The caller's thread: a note's link when it gives none. */
   threadId: string | null;
 }
@@ -61,8 +59,8 @@ export function recordPrs(
   /** R2: moves, after `fits` refuses a destination the PR can't show in (it throws). */
   owners?: Pick<PrOwners, "move"> & { fits(target: { id: string; name: string }, url: string): void },
 ) {
-  // v9: a worker keeps its own PRs' stage and notes, and moves them (R2); every other field is a
-  // lead's. Leads (the coordinator and discussions) set everything. W492: a worker's lead-only
+  // v9: a worker keeps its own PRs' stage and notes, and moves them (R2); every other field is the
+  // coordinator's, which sets everything. W492: a worker's lead-only
   // fields are left out with a note rather than failing the whole call.
   const ignored = new Set<string>();
   if (caller.worker) {
@@ -162,7 +160,7 @@ export function recordPrs(
     };
   });
   const note = ignored.size ? `Left out ${[...ignored].join(", ")}: ${ignored.size === 1 ? "it is" : "they are"} a lead's to set; tell your lead if ${ignored.size === 1 ? "it needs" : "they need"} changing. Everything else was recorded.` : null;
-  if (caller.worker || caller.discussion) return { prs, ...(note ? { note } : {}) };
+  if (caller.worker) return { prs, ...(note ? { note } : {}) };
   // A Map: category names are free-form, and "constructor" or "__proto__" must count like any other.
   const counts = new Map<string, number>();
   for (const r of records.values()) if (r.category) counts.set(r.category, (counts.get(r.category) ?? 0) + 1);

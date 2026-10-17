@@ -103,8 +103,6 @@ import { MEMORY_SCOPE_KEY, attachMemory } from "./memory-scopes";
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
 export const RECONCILE_GRACE_MS = 2 * 60_000;
-/** D483: the open discussions an Initiative may have when it starts one; nothing else is capped. */
-export const DISCUSSION_CAP = 62;
 const DESCENDANT_PAGE = 100;
 const DESCENDANT_BUDGET = 500;
 /** One page of a thread's children in the Workers tab. */
@@ -238,7 +236,7 @@ export interface DelegateInput {
   handoffs?: string[];
   /** Explicit approval posture for the new thread; omitted uses the environment's configured default. */
   permissionMode?: "accept-edits" | "auto" | "full";
-  /** v9: the lead tab giving the work out; its reports come back there. null: the coordinator tab. */
+  /** v9: the coordinator thread giving the work out, the sender of its brief. null: pre-switch work. */
   replyTo?: string | null;
   /** D529: send to a large cold worker anyway. */
   resumeCold?: boolean;
@@ -471,7 +469,7 @@ export class ProjectsService {
   }
 
   message(caller: string, input: InitiativeMessage, projectId?: string) {
-    return sendInitiativeMessage(this.store, this.sdk, caller, input, projectId, (m) => this.workerLead(m.project, m.workerNum));
+    return sendInitiativeMessage(this.store, this.sdk, caller, input, projectId);
   }
 
   // Initiatives -------------------------------------------------------------------
@@ -1057,86 +1055,8 @@ export class ProjectsService {
     });
   }
 
-  /**
-   * D446 (T149): start a discussion of the Initiative, the "+" of its thread tabs. It is a user
-   * thread where the coordinator runs (its checkout, provider, model, effort, permission mode and
-   * tier), under it in the tree, that shares the Initiative's memory: it is spawned with the
-   * memory's key, so Chat memory attaches it at its first configure, before its first turn. Its turn
-   * ends never wake the coordinator; it messages it instead. BB starts a thread only with a first
-   * message, so a hidden one asks for a one-line greeting. D483: the cap counts open discussions,
-   * here only: archived and deleted ones don't count, and restoring one is never refused.
-   *
-   * The native reads (the coordinator, its settings, BB's open threads) run before `serialize`,
-   * which never waits on them; only the count, from the ledger and those reads, and the spawn run
-   * inside it, so two creates at 61 open discussions start one. A coordinator replaced before the
-   * spawn is issued refuses the create, since the settings read are its predecessor's: handovers
-   * run outside `serialize`, so spawnUserThread checks at the spawn itself.
-   */
-  async createDiscussion(projectId: string, serialize: <T>(start: () => Promise<T>) => Promise<T>) {
-    const project = this.requireProject(projectId);
-    const coordinatorThreadId = project.coordinatorThreadId;
-    if (!coordinatorThreadId) throw new ProjectError("Start a coordinator before a discussion.");
-    // Discussions that already had a thread before the list below was read: it shows whether each is still open.
-    const settled = new Set(this.store.projectThreads(projectId).flatMap((t) => t.discussion && t.threadId ? [t.threadId] : []));
-    const [coordinator, options, open] = await Promise.all([
-      this.sdk.threads.get({ threadId: coordinatorThreadId }),
-      this.sdk.threads.defaultExecutionOptions({ threadId: coordinatorThreadId }),
-      this.openThreadIds(),
-    ]);
-    const environmentId = coordinator.environmentId;
-    if (!options || !environmentId)
-      throw new ProjectError("BB has not resolved where the coordinator runs yet (its checkout and model), so a discussion cannot start there. Try again after its first turn.");
-    return serialize(async () => {
-      const count = this.openDiscussions(projectId, settled, open);
-      if (count >= DISCUSSION_CAP)
-        throw new ProjectError(`${project.name} has ${count} open discussions, the most it starts. Archive one to start another; restoring an archived one is always allowed.`);
-      // v9 (§9): the coordinator tab is the first chat; new tabs are "Chat 2", "Chat 3"…
-      const n = this.store.projectThreads(projectId).filter((t) => t.discussion).length + 1;
-      return this.spawnUserThread(projectId, `Chat ${n + 1}`, {
-        projectId: coordinator.projectId,
-        environment: { type: "reuse", environmentId },
-        providerId: coordinator.providerId,
-        model: options.model,
-        reasoningLevel: options.reasoningLevel,
-        permissionMode: options.permissionMode,
-        serviceTier: options.serviceTier,
-        input: [{ type: "text", text: `This is a new discussion of the "${project.name}" Initiative. Greet the user in one short line, then wait for their first message.`, mentions: [], visibility: "agent-only" }],
-      }, { discussion: true, coordinatorThreadId });
-    });
-  }
-
-  /**
-   * D483: the discussions the cap counts, from the ledger: those still starting or uncertain,
-   * those `open` lists, and those that got their thread after `open` was read (`settled` lacks
-   * them). One that became the coordinator is no longer a discussion.
-   */
-  private openDiscussions(projectId: string, settled: Set<string>, open: Set<string>) {
-    return this.store.projectThreads(projectId).filter((t) =>
-      t.discussion && t.state !== "failed" &&
-      (!t.threadId || ((open.has(t.threadId) || !settled.has(t.threadId)) && !!this.store.membership(t.threadId, true)?.discussion))).length;
-  }
-
-  /**
-   * Every thread this plugin started that BB has neither archived nor deleted, in one paged list:
-   * its cost follows the open threads, never the archived history. A failed read fails the caller (D458).
-   */
-  private async openThreadIds() {
-    const ids = new Set<string>();
-    for (let offset = 0; ; offset += LIST_PAGE) {
-      const rows = await this.sdk.threads.list({ originPluginId: this.bb.pluginId, archived: false, includeHidden: true, limit: LIST_PAGE, offset });
-      for (const row of rows) ids.add(row.id);
-      if (rows.length < LIST_PAGE) return ids;
-    }
-  }
-
-  /**
-   * `coordinatorThreadId`: the coordinator the request was built from. A replacement that lands
-   * before the spawn is issued refuses it, checked after the last await (handovers run outside the
-   * writes queue); one that lands after finds the thread already under its predecessor, like any
-   * thread started before it.
-   */
   private async spawnUserThread(projectId: string, title: string | undefined,
-    request: Parameters<Sdk["threads"]["spawn"]>[0], { discussion = false, coordinatorThreadId }: { discussion?: boolean; coordinatorThreadId?: string } = {}) {
+    request: Parameters<Sdk["threads"]["spawn"]>[0]) {
     const project = this.requireProject(projectId);
     const bbProjectId = request.projectId;
     if (!project.memberProjectIds.includes(bbProjectId))
@@ -1159,9 +1079,6 @@ export class ProjectsService {
         // either lands or is refused, and the sweep repairs the tree later.
       }
     }
-    // From here to the spawn nothing awaits: what is checked here holds when it is issued.
-    if (coordinatorThreadId && this.requireProject(projectId).coordinatorThreadId !== coordinatorThreadId)
-      throw new ProjectError("The coordinator changed while the discussion was starting. Press + again to start it with the new coordinator.");
     if (!parentId) throw new ProjectError("Open a current coordinator before creating an Initiative thread.");
     const op = newOpId();
     const label = title?.trim() || "Thread";
@@ -1170,26 +1087,22 @@ export class ProjectsService {
       opId: op,
       label,
       bbProjectId,
-      discussion,
     });
     let thread: ThreadDto;
     try {
       this.parentOpBegin(project.id, parentId);
       try {
-        const args = {
+        thread = await this.sdk.threads.spawn({
           ...request,
-          // A discussion's tab shows its title: the Initiative is already in view.
-          title: (discussion ? label : `${project.name} · ${label}`).slice(0, 120),
+          title: `${project.name} · ${label}`.slice(0, 120),
           ...(parentId ? { parentThreadId: parentId } : {}),
           pluginMetadata: {
-            role: discussion ? "discussion" : "adhoc",
+            role: "adhoc",
             projectId: project.id,
             op,
             v: METADATA_VERSION,
-            ...(discussion ? { [MEMORY_SCOPE_KEY]: project.id } : {}),
           },
-        };
-        thread = discussion ? await this.spawnFinalReportsOnly(project.id, args) : await this.sdk.threads.spawn(args);
+        });
       } finally {
         this.parentOpEnd(project.id, parentId);
       }
@@ -1212,7 +1125,7 @@ export class ProjectsService {
     }
     this.store.tx(() => {
       this.store.confirmProjectThread(op, thread.id);
-      this.store.log(project.id, "thread", `You opened ${discussion ? "a discussion" : "a thread"}: ${label}`, {
+      this.store.log(project.id, "thread", `You opened a thread: ${label}`, {
         threadId: thread.id,
       });
     });
@@ -3752,8 +3665,7 @@ export class ProjectsService {
     const item = this.requireDecision(project, ref);
     const body = item.body as DecisionRecord["body"] & Decision;
     const note = input.note.trim();
-    // v9: the answer goes to the lead tab that asked while BB has it open; else the coordinator tab.
-    const coordinatorThreadId = await this.liveLead(project, item.provenance.threadId);
+    const coordinatorThreadId = project.coordinatorThreadId;
     const notify = input.notify !== false && recordedBy?.threadId !== coordinatorThreadId;
     // An identical notified answer is a transport retry, not a new choice.
     // Pending/queued/sent/uncertain receipts never authorize another send.
@@ -3841,12 +3753,11 @@ export class ProjectsService {
       this.store.clearRetireRequest(project.id, worker.num);
     }
     const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
-    // v9: "coordinator" here means the worker's lead (§5.1).
-    const coordinatorThreadId = await this.workerLead(project, assignment.workerNum);
+    const coordinatorThreadId = project.coordinatorThreadId;
     const deliveryOp = newOpId();
     const item = same ?? this.store.tx(() => {
-      // An Inbox answer may have landed, or the coordinator been replaced, while the lead was looked
-      // up: the ledger as it is now decides.
+      // An Inbox answer may have landed, or the coordinator been replaced, while the blocker was
+      // checked: the ledger as it is now decides.
       if (recordedBy) {
         this.refuseSettledBlocker(project, ref, seen);
         if (recordedBy.threadId !== this.requireProject(project.id).coordinatorThreadId)
@@ -3907,9 +3818,8 @@ export class ProjectsService {
    * coordinator records it on the Inbox card, as the user's answer to the
    * coordinator: the card shows it, the worker leaves Needs you, and the card
    * clears once the coordinator continues the worker (initiative_message
-   * work:true). Only the coordinator tab records it (R3: no Discussions), and it
-   * relays it itself, so nothing is sent: not to the worker, and no notice to a
-   * lead. Only an open blocker the user has neither answered nor dismissed takes
+   * work:true). Only the coordinator records it, and it relays it itself, so
+   * nothing is sent: not to the worker, and no notice to the coordinator. Only an open blocker the user has neither answered nor dismissed takes
    * one, and only while it still asks `question`, the one the user answered: a
    * worker that re-filed another question on the same A# gets it refused.
    */
@@ -4055,8 +3965,7 @@ export class ProjectsService {
    */
   withdrawQuestion(projectId: string, ref: string, reason: string, by: Provenance) {
     const project = this.requireProject(projectId);
-    // v9: any lead tab withdraws the questions it asked itself.
-    if (by.author !== "coordinator" || !by.threadId || !this.isLeadTab(project, by.threadId))
+    if (by.author !== "coordinator" || !by.threadId || by.threadId !== project.coordinatorThreadId)
       throw new ProjectError("Only the current coordinator withdraws an open question, and only one it recorded itself. The user can close a question quietly in the panel.");
     const note = reason.trim();
     if (!note) throw new ProjectError(`Withdrawal needs a reason: why the user no longer needs to answer. Example: {"action":"withdraw","ref":"${ref}","reason":"Settled by D15: Erwin chose Base UI in chat."}.`);
@@ -4188,82 +4097,9 @@ export class ProjectsService {
     return route === "fresh" ? briefAppendix(reviewer, rules) : workLoopBlock(guidance, reviewer, rules);
   }
 
-  // Leads (v9) ---------------------------------------------------------------
-
-  /** Whether a thread is one of this Initiative's lead tabs: its coordinator or a discussion. */
-  isLeadTab(project: ProjectRecord, threadId: string | null | undefined): boolean {
-    if (!threadId) return false;
-    if (threadId === project.coordinatorThreadId) return true;
-    const m = this.store.membership(threadId);
-    return !!m && !m.former && m.project.id === project.id && !!m.discussion;
-  }
-
-  /** The lead a thread acts as: its project, if it is a current coordinator or a discussion. */
-  leadOf(threadId: string): ProjectRecord {
-    const m = this.store.membership(threadId);
-    if (!m || m.former || !(m.kind === "coordinator" || m.discussion))
-      throw new ProjectError("Only a lead tab of an Initiative (its coordinator or a discussion) can do this.");
-    return m.project;
-  }
-
-  /**
-   * lead(W) from the ledger: the tab that gave out the worker's open work, else its latest work,
-   * while that tab is still a lead of this Initiative; otherwise the coordinator tab.
-   */
-  leadThreadOf(project: ProjectRecord, workerNum: number): string | null {
-    const a = this.store.openAssignment(project.id, workerNum) ?? this.store.latestAssignment(project.id, workerNum);
-    return a?.replyTo && this.isLeadTab(project, a.replyTo) ? a.replyTo : project.coordinatorThreadId;
-  }
-
-  /** lead(W), checked with BB: an archived or deleted discussion hands its workers to the coordinator tab. */
-  async workerLead(project: ProjectRecord, workerNum: number): Promise<string | null> {
-    return this.liveLead(project, this.leadThreadOf(project, workerNum));
-  }
-
-  /**
-   * A lead tab as BB has it now: the tab while it is one of this Initiative's leads and BB has it
-   * open; otherwise (an archived or deleted discussion, a former tab) the coordinator tab.
-   */
-  async liveLead(project: ProjectRecord, threadId: string | null | undefined): Promise<string | null> {
-    const id = this.isLeadTab(project, threadId) ? threadId! : project.coordinatorThreadId;
-    if (!id || id === project.coordinatorThreadId) return id;
-    try {
-      const thread = await this.sdk.threads.get({ threadId: id });
-      if (thread.archivedAt !== null || thread.deletedAt !== null) return project.coordinatorThreadId;
-    } catch (error) {
-      // BB no longer has it: as deleted. Anything else is unknown; the send to it says what happened.
-      if ((error as { status?: number }).status === 404) return project.coordinatorThreadId;
-    }
-    return id;
-  }
-
   /** How activity lines name who acted. */
-  callerName(projectId: string, author: "user" | "coordinator", threadId: string | null): string {
-    if (author === "user" || !threadId) return "the user";
-    const project = this.requireProject(projectId);
-    if (threadId === project.coordinatorThreadId) return "the coordinator";
-    const tab = this.store.projectThreadByThreadId(threadId);
-    return tab ? `the lead tab "${tab.label}"` : "a lead";
-  }
-
-  /**
-   * The lead tabs of an Initiative that BB still has open: the coordinator, then its discussions.
-   * A discussion BB says is gone (404), archived or deleted is left out; one BB could not answer
-   * for is named in `unread`, never silently dropped and never sent to blind.
-   */
-  private async liveLeadTabs(project: ProjectRecord): Promise<{ tabs: { threadId: string; name: string }[]; unread: string[] }> {
-    const tabs: { threadId: string; name: string }[] = project.coordinatorThreadId ? [{ threadId: project.coordinatorThreadId, name: "the coordinator" }] : [];
-    const unread: string[] = [];
-    for (const t of this.store.projectThreads(project.id)) {
-      if (!t.discussion || !t.threadId || !this.isLeadTab(project, t.threadId)) continue;
-      try {
-        const thread = await this.sdk.threads.get({ threadId: t.threadId });
-        if (thread.archivedAt === null && thread.deletedAt === null) tabs.push({ threadId: t.threadId, name: t.label });
-      } catch (error) {
-        if ((error as { status?: number }).status !== 404) unread.push(`${t.label} (BB could not say whether it is open: ${errorMessage(error)})`);
-      }
-    }
-    return { tabs, unread };
+  callerName(author: "user" | "coordinator", threadId: string | null): string {
+    return author === "user" || !threadId ? "the user" : "the coordinator";
   }
 
   // Standing rules (D523) ------------------------------------------------------
@@ -4345,19 +4181,19 @@ export class ProjectsService {
   }
 
   /**
-   * One short message per rule change, queued, to every other live lead tab and every worker
-   * with open work. Workers without open work aren't woken: their next work message carries the
-   * current list. The result names the threads it reached, and in `notReached` those it could not
-   * send to or could not confirm are open.
+   * One short message per rule change, queued, to the coordinator unless it made the change, and
+   * to every worker with open work. Workers without open work aren't woken: their next work
+   * message carries the current list. The result names the threads it reached, and in
+   * `notReached` those it could not send to.
    */
   private async announceRule(project: ProjectRecord, text: string, callerThreadId: string | null) {
-    const leads = await this.liveLeadTabs(project);
-    const targets = leads.tabs.filter((t) => t.threadId !== callerThreadId);
+    const targets = project.coordinatorThreadId && project.coordinatorThreadId !== callerThreadId
+      ? [{ threadId: project.coordinatorThreadId, name: "the coordinator" }] : [];
     for (const worker of this.store.workers(project.id))
       if (worker.threadId && worker.state !== "retired" && !worker.userStopped && this.store.openAssignment(project.id, worker.num))
         targets.push({ threadId: worker.threadId, name: worker.ref });
     const reached: string[] = [];
-    const missed = [...leads.unread];
+    const missed: string[] = [];
     for (const target of targets)
       try {
         await this.sdk.threads.send({ threadId: target.threadId, mode: "queue-if-active",
@@ -4371,8 +4207,8 @@ export class ProjectsService {
 
   /**
    * v9 (§12), once per load after migrations: when this load follows activity of the previous
-   * build (or is the first v9 load), moves the cutover flag to now and tells each live lead tab
-   * of the matching Initiatives, steering, how to treat reports on work given out before.
+   * build (or is the first v9 load), moves the cutover flag to now and tells the coordinator of
+   * each matching Initiative, steering, how to treat reports on work given out before.
    */
   async runCutover(): Promise<string[]> {
     const matched = cutoverProjects(this.store);
@@ -4383,13 +4219,11 @@ export class ProjectsService {
     for (const id of matched) {
       const project = this.store.project(id);
       if (!project || project.archivedAt !== null) continue;
-      this.store.log(id, "cutover", "Switched to worker-owned reviews; the lead tabs were told how to treat work given out before.");
-      const leads = await this.liveLeadTabs(project).catch((error) => ({ tabs: [], unread: [`its lead tabs (${errorMessage(error)})`] }));
-      for (const missed of leads.unread) this.store.log(id, "cutover", `Could not tell ${missed} about the switch.`);
-      for (const tab of leads.tabs)
-        await this.sdk.threads.send({ threadId: tab.threadId, mode: "steer-if-active",
+      this.store.log(id, "cutover", "Switched to worker-owned reviews; the coordinator was told how to treat work given out before.");
+      if (project.coordinatorThreadId)
+        await this.sdk.threads.send({ threadId: project.coordinatorThreadId, mode: "steer-if-active",
           input: textInput(`Initiative · ${project.name}\n\n${cutoverInstruction(at)}`) })
-          .catch((error) => this.store.log(id, "cutover", `Could not tell ${tab.name} about the switch: ${errorMessage(error)}`));
+          .catch((error) => this.store.log(id, "cutover", `Could not tell the coordinator about the switch: ${errorMessage(error)}`));
     }
     return matched;
   }
@@ -5505,6 +5339,7 @@ export class ProjectsService {
           return remaining === 0;
         }
         const adhoc =
+          // "discussion": one an older build started before Discussions were removed (R6).
           metadata.role === "adhoc" || metadata.role === "discussion"
             ? pendingThreads.find(
                 (t) => t.opId === metadata.op && t.projectId === metadata.projectId,
@@ -6836,9 +6671,6 @@ export class ProjectsService {
     const thread = await this.sdk.threads.get({ threadId: input.threadId });
     await this.assertAdoptionRole(thread, input.role);
     const existing = this.store.membership(thread.id, true);
-    // D480: a discussion shares the Initiative's memory, which no worker feeds.
-    if (existing?.discussion)
-      throw new ProjectError("Discussions can't become workers: spawn a worker instead.");
     // A lightweight adhoc claim on this project upgrades to the explicit
     // membership; every other existing membership still wins.
     if (
@@ -7299,16 +7131,18 @@ export class ProjectsService {
   }
 
   /**
-   * D417: workers report explicitly, so one that stops without reporting would go unseen. Its
-   * lead (§5.1) is told once per worker input when all of these hold: the worker's thread is idle
+   * D417: workers report explicitly, so one that stops without reporting would go unseen. The
+   * coordinator is told once per worker input when all of these hold: the worker's thread is idle
    * or failed with nothing queued or running in the background (unknown counts skip it), no
    * descendant of it is live (v9: it is waiting on a child, not stuck; a walk that fails or runs
    * out of budget claims nothing either way), and it has neither messaged its lead nor filed a
-   * report since its latest input. Everything is checked again right before each send; each
-   * lead tab's inputs are read once.
+   * report since its latest input. Everything is checked again right before each send; the
+   * coordinator's inputs are read once.
    */
   private async flagStuckWorkers(project: ProjectRecord, workers: WorkerRecord[], rows: Map<string, ThreadListRow>, failing: Map<string, number>) {
-    const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string; lead: string }[] = [];
+    const lead = project.coordinatorThreadId;
+    if (!lead) return;
+    const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[] = [];
     for (const worker of workers) {
       const row = rows.get(worker.threadId!);
       if (!row || row.archivedAt !== null || ProjectsService.rowQuiescence(row) !== "ended") continue;
@@ -7316,11 +7150,9 @@ export class ProjectsService {
       if (row.status === "error" && failing.has(worker.threadId!)) continue;
       const input = await latestInput(this.sdk, worker.threadId!).catch(() => null);
       if (!input || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
-      const lead = await this.workerLead(project, worker.num);
-      if (lead) candidates.push({ worker, input, status: row.status, lead });
+      candidates.push({ worker, input, status: row.status });
     }
-    for (const lead of new Set(candidates.map((c) => c.lead)))
-      await this.flagStuckFor(project, lead, candidates.filter((c) => c.lead === lead));
+    if (candidates.length) await this.flagStuckFor(project, lead, candidates);
   }
 
   private async flagStuckFor(project: ProjectRecord, lead: string, candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[]) {
@@ -7342,7 +7174,7 @@ export class ProjectsService {
         const current = this.store.worker(project.id, worker.num);
         const fresh = this.store.project(project.id);
         if (!turn || turn.status === "running" || now?.seq !== input.seq || !current || current.threadId !== threadId ||
-            !this.mayBeStuck(project.id, current, input.at) || !fresh || (this.leadThreadOf(fresh, worker.num) !== lead && lead !== fresh.coordinatorThreadId) ||
+            !this.mayBeStuck(project.id, current, input.at) || !fresh || fresh.coordinatorThreadId !== lead ||
             this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
         const text = turn.final?.text ?? "(none)";
         const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
@@ -7435,8 +7267,7 @@ export class ProjectsService {
       if (!failed || !closedOnThreadFailure(failed) || failed.report || this.store.hasFlag(key) ||
           !project || project.archivedAt !== null || !project.coordinatorThreadId) continue;
       const worker = workerRef(failed.workerNum);
-      // v9: the worker's lead hears of it (§5.1).
-      const lead = await this.workerLead(project, failed.workerNum) ?? project.coordinatorThreadId;
+      const lead = project.coordinatorThreadId;
       try {
         await this.sdk.threads.send({ threadId: lead, mode: "queue-if-active", input: textInput(
           `Initiative · ${project.name} · ${worker}\n\n${worker} ended without a report on ${failed.ref} (thread ${failed.threadId}). ${failed.stopReason}\n\nNo report; retire and respawn ${worker}, or retry its thread.`) });
@@ -7454,28 +7285,26 @@ export class ProjectsService {
   }
 
   /**
-   * D417, v9: a filed report goes as an ordinary message from the worker, to its lead (§5.1). A
-   * done report queues behind a busy lead; a blocked one steers into its turn. Work given out
+   * D417, v9: a filed report goes as an ordinary message from the worker, to the coordinator.
+   * A done report queues behind a busy coordinator; a blocked one steers into its turn. Work given out
    * before the switch carries the pre-switch line. BB can still refuse the turn that message
    * starts and only its event log says so, so the send is recorded and `redeliverReports` checks
    * that log until the notice is taken (W468).
    */
   private async sendReport(threadId: string, assignment: AssignmentRecord): Promise<string> {
-    const { project, worker } = this.workerOf(threadId);
-    const lead = await this.workerLead(project, worker.num);
+    const { project } = this.workerOf(threadId);
+    const lead = project.coordinatorThreadId;
     if (!lead) return "Report recorded; there is no current coordinator to send it to.";
-    const name = lead === project.coordinatorThreadId ? "the coordinator" : `"${this.store.projectThreadByThreadId(lead)?.label ?? lead}"`;
-    // A newer filing may have sent its own notice while the lead was looked up.
     if (reportHash(this.store.assignment(project.id, assignment.num)?.report) !== reportHash(assignment.report)) return `Report recorded; a newer report on ${assignment.ref} replaced it before it was sent.`;
     const release = this.holdNotice(project.id, assignment.num);
     try {
       const cycle = newOpId();
       this.store.startReportNotice(project.id, assignment.num, cycle, reportHash(assignment.report), lead, this.now());
       await this.postReportNotice(project, assignment, lead, cycle);
-      return `Report recorded and sent to ${name}.`;
+      return "Report recorded and sent to the coordinator.";
     } catch (error) {
-      this.store.log(project.id, "report", `${assignment.ref}'s report could not be sent to ${name}: ${errorMessage(error)}`);
-      return `Report recorded, but sending it to ${name} failed (${errorMessage(error)}); tell ${name} with initiative_message to:"lead".`;
+      this.store.log(project.id, "report", `${assignment.ref}'s report could not be sent to the coordinator: ${errorMessage(error)}`);
+      return `Report recorded, but sending it to the coordinator failed (${errorMessage(error)}); tell the coordinator with initiative_message to:"lead".`;
     } finally {
       release();
     }
@@ -7544,14 +7373,13 @@ export class ProjectsService {
       this.store.log(projectId, "report", `${assignment.ref}'s report never reached its lead after ${cycle.attempts} sends (BB ${verdict === "rejected" ? "refused the turn" : verdict === "gone" ? "no longer has its lead thread" : "recorded no turn"}); read ${assignment.ref} directly or ask ${workerRef(assignment.workerNum)}.`, { assignment: num });
       return;
     }
-    // Resend to the lead that was sent to, unless that thread is gone; only a busy one waits for its idle event.
-    let lead = cycle.leadThreadId;
-    const thread = verdict === "gone" ? null : await this.sdk.threads.get({ threadId: lead }).catch((error) => { if (isDefiniteRejection(error)) return null; throw error; });
-    if (thread && BUSY_STATUSES.has(thread.status)) return;
-    if (!thread || thread.archivedAt !== null || thread.deletedAt !== null) {
-      const current = await this.workerLead(project, assignment.workerNum);
-      if (!current) { settle(); this.store.log(projectId, "report", `${assignment.ref}'s report notice was not delivered and its lead is gone; read ${assignment.ref} directly.`, { assignment: num }); return; }
-      lead = current;
+    // Resend to the coordinator as it is now: the thread sent to may since have been replaced, or
+    // be a former discussion (R6). Only a resend to the same thread, while busy, waits for its idle event.
+    const lead = project.coordinatorThreadId;
+    if (!lead) { settle(); this.store.log(projectId, "report", `${assignment.ref}'s report notice was not delivered and there is no current coordinator; read ${assignment.ref} directly.`, { assignment: num }); return; }
+    if (lead === cycle.leadThreadId && verdict !== "gone") {
+      const thread = await this.sdk.threads.get({ threadId: lead }).catch((error) => { if (isDefiniteRejection(error)) return null; throw error; });
+      if (thread && thread.archivedAt === null && thread.deletedAt === null && BUSY_STATUSES.has(thread.status)) return;
     }
     if (!unchanged() || !this.store.noteReportNoticeSend(projectId, num, cycle.cycle, lead, this.now())) return;
     this.store.log(projectId, "report", `${assignment.ref}'s report notice ${verdict === "rejected" ? "was refused by BB" : verdict === "gone" ? "went to a lead that is gone" : "was never recorded"}; sending it again.`, { assignment: num });
@@ -7584,8 +7412,8 @@ export class ProjectsService {
   private parentNoticesWarned = false;
 
   /**
-   * D417: a worker reports with initiative_report, and a discussion messages the coordinator
-   * (T149), so their turn ends never wake the coordinator (parent notices "explicit"). A server
+   * D417: a worker reports with initiative_report, so its turn ends never wake the coordinator
+   * (parent notices "explicit"). A server
    * without our fork drops or refuses the field: the thread then runs with ordinary turn notices.
    */
   private async spawnFinalReportsOnly(projectId: string, args: Parameters<Sdk["threads"]["spawn"]>[0]): Promise<ThreadDto> {
@@ -7604,7 +7432,7 @@ export class ProjectsService {
       await this.sdk.threads.update({ threadId: thread.id, ...explicit });
     } catch (error) {
       if (!this.parentNoticesWarned)
-        this.store.log(projectId, "delegate", `BB did not accept final-reports-only notices (${errorMessage(error)}); workers and discussions get ordinary turn notices.`);
+        this.store.log(projectId, "delegate", `BB did not accept final-reports-only notices (${errorMessage(error)}); workers get ordinary turn notices.`);
       this.parentNoticesWarned = true;
     }
     return thread;

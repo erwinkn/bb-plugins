@@ -27,7 +27,7 @@ const worker = (ref: string, over: Partial<WorkerItem> = {}): WorkerItem => ({
   ref, label: `${ref} label`, role: "work", kind: null, area: `${ref} purpose`, bbProjectId: "repo", threadId: `thr_${ref}`,
   generation: 1, generations: 1, state: "active", profile: null, forkedFrom: null,
   nativeParent: true, lastHandoff: null, runtime: "idle", context: { used: null, window: null, estimated: null },
-  lead: null, open: { ref: "A1", state: "idle_no_report", tasks: [] }, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
+  open: { ref: "A1", state: "idle_no_report", tasks: [] }, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
 });
 const child = (n: number, running: WorkerChild["running"] = null): WorkerChild => ({
   threadId: `c${n}`, title: `Child ${n}`, status: running ? "active" : "idle", archived: false, running, providerId: null, updatedAt: NOW - 60_000, children: 0,

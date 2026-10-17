@@ -1282,7 +1282,6 @@ function WorkerRow({ projectId, v, selected, select, openThread, loadChildren, m
           <span className="cr-w-meta-main cr-fade">
             <span className="cr-ref">{w.ref}</span>
             {number ? <span className="cr-w-pr" title={pr!.stage ? pr!.stage.replaceAll("-", " ") : undefined}><Glyph name="pr" />#{number}</span> : null}
-            {w.lead ? <span>from {w.lead}</span> : null}
             <span id={statusId}>{v.status}</span>
           </span>
           {model ? <span className="cr-w-model" title={w.profile ?? undefined}>{model}</span> : null}
@@ -1639,7 +1638,6 @@ function WorkerDetail({ v, o, run, openThread, readHandoff, loadChildren, close 
           <span className="cr-ref">{w.ref}</span>
           <span className="cr-w-dot" aria-hidden="true" />
           <span className="cr-w-detail-why">{v.status}</span>
-          <span className="cr-w-from">from {w.lead ?? "Coordinator"}</span>
           <button type="button" className="cr-iconbtn cr-w-close" aria-label="Close details" onClick={close}><Glyph name="close" /></button>
         </p>
         <h2>{w.label}</h2>
@@ -2193,7 +2191,7 @@ function TaskRow({ t, run, showWorker }: {
   );
 }
 
-// ---- Rules (D523): the standing rules every lead tab and worker gets.
+// ---- Rules (D523): the standing rules the coordinator and every worker get.
 
 function Rules({ o, run, openArchive }: { o: Overview; run: Run; openArchive: () => void }) {
   const [adding, setAdding] = useState(false);
@@ -2217,8 +2215,8 @@ function Rules({ o, run, openArchive }: { o: Overview; run: Run; openArchive: ()
         <button type="button" className="cr-add-box" onClick={() => setAdding(true)}>+ Add rule</button>
       ) : null}
       <p className="cr-lede">
-        Every lead tab and worker gets these: in briefs, work messages and each coordinator’s first message; a change is
-        announced to live lead tabs and workers with open work.
+        The coordinator and every worker get these: in briefs, work messages and each coordinator’s first message; a change is
+        announced to the coordinator and workers with open work.
       </p>
       <button type="button" className="cr-link cr-archive-link" onClick={openArchive}>
         Archive{o.historyLoaded ? `: ${o.decisions.length} earlier decisions and closed questions` : ": earlier decisions and closed questions"} (read-only) →

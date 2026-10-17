@@ -224,8 +224,6 @@ export interface WorkerItem {
     window: number | null;
     estimated: boolean | null;
   };
-  /** v9: the lead tab its work reports to, when that isn't the coordinator tab ("Chat 2"). */
-  lead: string | null;
   /** v9: its open assignment, if any. */
   open: { ref: string; state: string; tasks: string[] } | null;
   /** v9: its latest report, with the pre-switch line for work given out before the switch. */
@@ -399,8 +397,6 @@ export interface Overview {
    * cache reads as running, or one with a new unread error.
    */
   workerGroups?: Record<string, { group: WorkerGroup; quiet: WorkerGroup; errored: WorkerGroup }>;
-  /** v9: the lead tabs by thread id → label (the coordinator tab included). */
-  leadTabs: Record<string, string>;
 }
 
 /** Assignment states where work is still owed; reported work is separate. */
@@ -798,9 +794,6 @@ export function buildOverview(
       if (prs) prs.push({ url: r.url, stage: r.stage });
       else prsOf.set(ref, [{ url: r.url, stage: r.stage }]);
     }
-  const leadTabs: Record<string, string> = {};
-  if (project.coordinatorThreadId) leadTabs[project.coordinatorThreadId] = "Coordinator";
-  for (const t of store.projectThreads(projectId)) if (t.discussion && t.threadId && store.membership(t.threadId)?.discussion) leadTabs[t.threadId] = t.label;
   const workerFacts = (worker: WorkerRecord) => {
     const mine = assignmentsOf.get(worker.num) ?? [];
     const open = mine.find((a) => OPEN_STATES.includes(a.state));
@@ -811,7 +804,6 @@ export function buildOverview(
     const usage = worker.threadId ? usageByThread.get(worker.threadId) : undefined;
     const total = usage ? (usage.sessionTotals?.total ?? 0) + (usage.closedTotals.total ?? 0) : null;
     return {
-      lead: latest?.replyTo && latest.replyTo !== project.coordinatorThreadId ? leadTabs[latest.replyTo] ?? null : null,
       open: open ? { ref: open.ref, state: open.state, tasks: open.taskNums.map(taskRef) } : null,
       latestReport: reported && facts
         ? { ref: reported.ref, outcome: facts.outcome === "succeeded" ? "done" : facts.outcome, summary: facts.summary,
@@ -972,7 +964,6 @@ export function buildOverview(
       updatedAt: task.updatedAt,
     })),
     rules: store.rules(projectId).map((r) => ({ ref: r.ref, text: r.text, sources: r.sources })),
-    leadTabs,
     workers: {
       current: workers
         .filter((worker) => worker.state !== "retired")

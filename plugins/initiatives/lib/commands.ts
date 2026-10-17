@@ -409,7 +409,7 @@ export const REMOVED_ACTIONS: Record<string, string> = {
   "task-checkpoint": 'Checkpoints were removed: record the outcome with initiative_task {"action":"update","task":"T#","note":"…"}; its status follows its work.',
   "decision-cleanup": "Decision cleanup was removed; the user checks agent decisions in the Inbox.",
   fork: "Forking was removed: spawn a fresh worker with handoffs, or message the existing one.",
-  memory: "Memory moved to the Chat memory plugin (T145): the coordinator reads it with memory_read and memory_zoom, or `bb chat-memory status`; only the user switches it, from the coordinator's Memory pill.",
+  memory: "Memory moved to the Chat memory plugin (T145): the coordinator reads it with memory_read and memory_zoom, or `bb chat-memory status`. Coordinators always use OptChat (R6); there is no mode to switch.",
 };
 export function refuseRemoved(raw: unknown) {
   if (typeof raw !== "object" || raw === null) return;
@@ -491,13 +491,13 @@ export async function runCommand(
       return service.setTaskStatus(projectId, c.task, status, reason, "the user");
     }
     case "task-status":
-      return service.setTaskStatus(projectId, c.task, c.status, c.reason, service.callerName(projectId, author, threadId));
+      return service.setTaskStatus(projectId, c.task, c.status, c.reason, service.callerName(author, threadId));
     case "rule-add":
-      return service.addRule(projectId, c.text, c.sources ?? [], service.callerName(projectId, author, threadId), threadId);
+      return service.addRule(projectId, c.text, c.sources ?? [], service.callerName(author, threadId), threadId);
     case "rule-edit":
-      return service.editRule(projectId, c.rule, c.text, service.callerName(projectId, author, threadId), threadId);
+      return service.editRule(projectId, c.rule, c.text, service.callerName(author, threadId), threadId);
     case "rule-remove":
-      return service.removeRule(projectId, c.rule, service.callerName(projectId, author, threadId), threadId);
+      return service.removeRule(projectId, c.rule, service.callerName(author, threadId), threadId);
     case "rule-move":
       if (author !== "user") throw new ProjectError("Only the user reorders rules, on the Rules tab.");
       return service.moveRule(projectId, c.rule, c.to);

@@ -27,7 +27,7 @@ const worker = (ref: string, over: Partial<WorkerItem> = {}): WorkerItem => ({
   ref, label: `${ref} label`, role: "work", kind: null, area: `${ref} purpose`, bbProjectId: "repo", threadId: `thr_${ref}`,
   generation: 1, generations: 1, state: "active", profile: "claude-code / claude-opus-5-5 / high / tier unspecified", forkedFrom: null,
   nativeParent: true, lastHandoff: null, runtime: "idle", context: { used: null, window: null, estimated: null },
-  lead: null, open: null, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
+  open: null, latestReport: null, stopReason: null, tokens: null, prs: [], since: NOW - 60_000, ...over,
 });
 const child = (threadId: string, title: string, status: string, ago = 6): WorkerChild => ({
   threadId, title, status, archived: false, running: status === "active" ? "active" : null, providerId: "codex", updatedAt: NOW - ago * 60_000, children: 0,
@@ -69,7 +69,7 @@ describe("v9 Workers tab", () => {
     o.workers.current = [
       worker("W1406", { label: "PDF Worker perf", latestReport: report("blocked", "Paid caps CPU at 30 s.", "Split rendering into pages or move to a queue consumer?"), tokens: 4_800_000 }),
       worker("W1247", { label: "Catalog binding fixes", runtime: "error", stopReason: "provider 529", prs: [{ url: "https://github.com/e/m/pull/2500", stage: "in-review" }] }),
-      worker("W1425", { label: "Slot safety fixes", runtime: "active", open: { ref: "A1650", state: "running", tasks: ["T163"] }, lead: "Wallet audit" }),
+      worker("W1425", { label: "Slot safety fixes", runtime: "active", open: { ref: "A1650", state: "running", tasks: ["T163"] } }),
       worker("W1420", { label: "Human-steps SQL fix", open: { ref: "A1641", state: "idle_no_report", tasks: ["T163"] }, prs: [{ url: "https://github.com/e/m/pull/2631", stage: "working" }], tokens: 3_100_000 }),
       worker("W1373", { label: "Enum cleanup", latestReport: report("done", "Removed 23 unused enum types.\nAll tests pass.") }),
     ];
@@ -101,7 +101,8 @@ describe("v9 Workers tab", () => {
     expect(within(stopped).getByText("#2500")).toBeTruthy();
     const working = slot.getByRole("region", { name: "Working" });
     expect(within(working).getByText("Running")).toBeTruthy();
-    expect(within(working).getByText("from Wallet audit")).toBeTruthy();
+    // No worker row names who gave it work: the coordinator always did.
+    expect(within(working).queryByText(/^from /)).toBeNull();
     const waiting = slot.getByRole("region", { name: "Waiting" });
     expect(within(waiting).getByText("Waiting on “Review r3 #2631” (running 6m)")).toBeTruthy();
     expect(within(waiting).getByText("Opus 5.5 · high")).toBeTruthy();
@@ -260,7 +261,7 @@ describe("v9 Rules tab", () => {
     expect(within(list).getByText("3 / 60")).toBeTruthy();
     expect(Array.from(list.querySelectorAll("li")).map((li) => li.querySelector(".cr-ref")!.textContent)).toEqual(["R1", "R2", "R3"]);
     expect(within(list).getByText("from D86, D214")).toBeTruthy();
-    expect(within(list).getByText(/Every lead tab and worker gets these/)).toBeTruthy();
+    expect(within(list).getByText(/The coordinator and every worker get these/)).toBeTruthy();
     fireEvent.click(within(list).getByRole("button", { name: /^Archive/ }));
     expect(slot.getByRole("tab", { name: "Archive" }).getAttribute("aria-selected")).toBe("true");
   });

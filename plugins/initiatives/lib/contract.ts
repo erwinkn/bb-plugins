@@ -20,18 +20,11 @@ const membershipSchema = z
   .object({
     projectId: id,
     name: z.string(),
-    role: z.enum(["coordinator", "work", "review", "adhoc", "discussion"]),
+    role: z.enum(["coordinator", "work", "review", "adhoc"]),
     former: z.boolean(),
   })
   .nullable();
 export type PanelMembership = z.infer<typeof membershipSchema>;
-/**
- * D446 (T149): the threads the header of a current coordinator or a discussion shows as tabs: the
- * Initiative's coordinator, then its discussions oldest first, archived and deleted ones included
- * (the tabs hide those, D483).
- */
-const tabsSchema = z.object({ coordinatorThreadId: id, discussionThreadIds: z.array(id) }).nullable();
-export type InitiativeTabs = z.infer<typeof tabsSchema>;
 /**
  * What the tab looked like when a dashboard read gave up: evidence for whether
  * the device slept, the tab was frozen, or the connection went stale.
@@ -60,19 +53,11 @@ export const projectsContract = defineRpcContract({
   },
   /**
    * Everything a thread's Initiative panel and header need in one request:
-   * the thread's membership and, for a member, the summary-tier overview, and its tabs.
+   * the thread's membership and, for a member, the summary-tier overview.
    */
   panel: {
     input: z.object({ threadId: id }),
-    output: z.object({ membership: membershipSchema, summary: z.custom<Overview>().nullable(), tabs: tabsSchema }),
-  },
-  /**
-   * D446 (T149): start a discussion of the Initiative (the "+" of its tabs). `threadId` is null when
-   * BB did not confirm the thread; the sweep reconciles it, and `note` says so.
-   */
-  discussionCreate: {
-    input: z.object({ projectId: id }),
-    output: z.object({ threadId: z.string().nullable(), note: z.string().nullable() }),
+    output: z.object({ membership: membershipSchema, summary: z.custom<Overview>().nullable() }),
   },
   /**
    * v9: one page of a thread's BB children, archived ones included, as the Workers tab opens a
