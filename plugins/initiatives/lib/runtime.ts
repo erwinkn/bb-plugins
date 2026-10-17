@@ -149,23 +149,22 @@ export class Runtime {
     const { project, worker } = membership;
     this.store.tx(() => {
       const affected = this.store
-        .assignments(project.id)
+        .threadAssignments(project.id, thread.id)
         .filter(
           (a) =>
-            a.threadId === thread.id &&
-            ([
+            [
               "dispatching",
               "queued",
               "running",
               "idle_no_report",
               "stopped",
             ].includes(a.state) ||
-              // A cancelled assignment can still hold a queue receipt or an
-              // unresolved send: the archived thread's queue is gone with it,
-              // so the op is positively settled here too.
-              (a.state === "cancelled" &&
-                (a.queuedMessageId !== null ||
-                  ["pending", "uncertain"].includes(a.opState)))),
+            // A cancelled assignment can still hold a queue receipt or an
+            // unresolved send: the archived thread's queue is gone with it,
+            // so the op is positively settled here too.
+            (a.state === "cancelled" &&
+              (a.queuedMessageId !== null ||
+                ["pending", "uncertain"].includes(a.opState))),
         );
       for (const open of affected) {
         this.store.updateAssignment(project.id, open.num, {

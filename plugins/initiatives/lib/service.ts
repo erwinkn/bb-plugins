@@ -48,7 +48,8 @@ import type { PlacementRecord } from "./schema";
 import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
 import { canonicalPrUrl } from "./pr-stages";
 import { PrNotes } from "./pr-notes";
-import { prsNamed, reportNote } from "./pr-records";
+import { reportNote } from "./pr-records";
+import { prsNamed } from "./pr-refs";
 import {
   briefSchema,
   reportSchema,
@@ -164,9 +165,9 @@ function checkoutNotYetReported(
 
 export type { EnvironmentChoice };
 
-/** W499: where a worker's spawn put it, as recorded; more work for it runs there too. */
-const spawnPlacement = (assignments: AssignmentRecord[], workerNum: number) =>
-  assignments.find(a => a.workerNum === workerNum && a.route === "fresh")?.placement ?? null;
+/** W506: work running or on its way, or whose send is unsettled: what overlap warnings and holds read. */
+const LIVE_STATES: AssignmentState[] = ["dispatching", "queued", "running"];
+const UNSETTLED_OPS: AssignmentRecord["opState"][] = ["pending", "uncertain"];
 
 /**
  * One reviewer to start: a default-plan partition, or an explicit choice
@@ -3296,7 +3297,7 @@ export class ProjectsService {
       );
     if (
       this.store
-        .assignments(projectId)
+        .assignmentsForOverview(projectId, false)
         .some((a) =>
           [
             "dispatching",
@@ -3321,9 +3322,7 @@ export class ProjectsService {
    */
   async stopRunningWork(projectId: string) {
     const project = this.requireProject(projectId);
-    const open = this.store
-      .assignments(project.id)
-      .filter((assignment) => OPEN_WORK.includes(assignment.state));
+    const open = this.store.assignmentsIn(project.id, OPEN_WORK);
     const results: string[] = [];
     for (const assignment of open) {
       try {
@@ -3450,8 +3449,8 @@ export class ProjectsService {
     const unverified: string[] = [];
     if (status === "cancelled")
       for (const assignment of this.store
-        .assignments(projectId)
-        .filter((a) => a.taskNums.includes(task.num) && OPEN_WORK.includes(a.state))) {
+        .assignmentsIn(projectId, OPEN_WORK)
+        .filter((a) => a.taskNums.includes(task.num))) {
         const done = await this.stopWork(projectId, assignment.ref, `Task cancelled: ${reason}`);
         notStopped.push(...(done.notStopped ?? []));
         if (done.unverified) unverified.push(`${assignment.ref}: ${done.unverified}`);
@@ -3856,8 +3855,10 @@ export class ProjectsService {
     if (this.store.worker(project.id, assignment.workerNum)?.state === "retired")
       throw new ProjectError(`${assignment.ref}'s worker was retired, so its blocker is closed and nobody can receive an answer. Your ${what} was not saved.`);
     const tasks = this.store.tasks(project.id);
+    // W506: only this report's outcome counts; later work (no reports read) can close it.
+    const later = this.store.assignmentsForOverview(project.id, false).filter((a) => a.num > assignment.num);
     const open = openBlockers(
-      this.store.assignments(project.id).map((a) => ({ ...a, outcome: a.report?.outcome ?? null })),
+      [{ ...assignment, outcome: assignment.report?.outcome ?? null }, ...later.map((a) => ({ ...a, outcome: null }))],
       (num) => ["done", "cancelled"].includes(tasks.find((task) => task.num === num)?.status ?? "done"),
       (num) => this.store.worker(project.id, num)?.state === "retired",
     ).some((a) => a.num === assignment.num);
@@ -4062,7 +4063,7 @@ export class ProjectsService {
 
   /** W239: why a reviewer gets no more work, and the fresh reviewer to spawn instead. */
   private reviewerNotReused(project: ProjectRecord, reviewer: WorkerRecord): string {
-    const mine = this.store.assignments(project.id).filter(a => a.workerNum === reviewer.num && a.role === "review");
+    const mine = this.store.workerAssignments(project.id, reviewer.num).filter(a => a.role === "review");
     const reviewed = mine[0]?.handoffSources?.[0]?.worker ?? "W#";
     const findings = mine.filter(a => a.report).at(-1)?.ref ?? reviewer.ref;
     return `${reviewer.ref} is a reviewer from before workers ran their own reviews, and reviews are not reused. Send its findings (${findings}) to the worker it reviewed as more work: initiative_message {"to":"${reviewed}","text":"<the findings>","work":true}; that worker runs its own fresh reviewer. A plain message (no work) still reaches ${reviewer.ref}.`;
@@ -4240,7 +4241,7 @@ export class ProjectsService {
     const environmentId = reviewed?.environmentId ?? worker.environmentId ??
       (threadId ? await this.sdk.threads.get({ threadId }).then(t => t.environmentId ?? null, () => null) : null);
     if (environmentId) return { type: "reuse", environmentId };
-    const record = spawnPlacement(this.store.assignments(worker.projectId), worker.num);
+    const record = this.store.spawnPlacement(worker.projectId, worker.num);
     if (!record) return { type: "project-default" };
     if (reviewed && "worktree" in record)
       throw new ProjectError(`${worker.ref}'s worktree on host ${record.hostId} reports no environment yet, so its checkout can't be reused. Try again once BB reports it.`);
@@ -4275,8 +4276,8 @@ export class ProjectsService {
     if (ref) return latestReport(this.store, project.id, ref);
     const nums = (input.reviewOf ?? []).map(r => this.requireTask(project, r).num);
     const found = nums.length
-      ? this.store.assignments(project.id).filter(a => a.role === "work" && a.report && a.taskNums.some(n => nums.includes(n))).at(-1)
-      : undefined;
+      ? this.store.latestWorkReportOn(project.id, nums)
+      : null;
     if (!found) throw new ProjectError('A review names the worker it reviews, e.g. reviews:"W12"; its latest report is embedded in the brief.');
     return found;
   }
@@ -4287,10 +4288,8 @@ export class ProjectsService {
    */
   private async overlapWarnings(project: ProjectRecord, bbProjectId: string, env: { workspace: Workspace; environmentId: string | null; record: PlacementRecord | null }, self: WorkerRecord | null): Promise<string[]> {
     if (env.workspace === "isolated") return [];
-    const all = this.store.assignments(project.id);
-    const live = all.filter(a =>
-      a.role === "work" && a.access === "write" && a.bbProjectId === bbProjectId && a.workerNum !== self?.num &&
-      (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
+    const live = this.store.assignmentsIn(project.id, LIVE_STATES, UNSETTLED_OPS).filter(a =>
+      a.role === "work" && a.access === "write" && a.bbProjectId === bbProjectId && a.workerNum !== self?.num);
     const facts = new Map<string, EnvironmentFacts | null>();
     const writers: { worker: string; work: string }[] = [];
     for (const a of live) {
@@ -4300,7 +4299,7 @@ export class ProjectsService {
         (a.threadId ? await this.sdk.threads.get({ threadId: a.threadId }).then(t => t.environmentId ?? null, () => null) : null);
       if (theirs && !env.environmentId && !facts.has(theirs))
         facts.set(theirs, await this.sdk.environments.get({ environmentId: theirs }).then(e => e as EnvironmentFacts, () => null));
-      const writer = { environmentId: theirs, environment: theirs ? facts.get(theirs) ?? null : null, spawned: spawnPlacement(all, a.workerNum) };
+      const writer = { environmentId: theirs, environment: theirs ? facts.get(theirs) ?? null : null, spawned: this.store.spawnPlacement(project.id, a.workerNum) };
       if (!mayShareCheckout(env, writer)) continue;
       writers.push({ worker: workerRef(a.workerNum), work: `${a.ref}, ${a.state}` });
     }
@@ -4552,12 +4551,8 @@ export class ProjectsService {
       throw new ProjectError("Messaging work keeps the worker's BB project. Spawn a fresh worker in the other project.");
     const unconfirmed = existing
       ? this.store
-          .assignments(project.id)
-          .filter(
-            (a) =>
-              a.workerNum === existing.num &&
-              ["pending", "uncertain"].includes(a.opState),
-          )
+          .assignmentsIn(project.id, [], UNSETTLED_OPS)
+          .filter((a) => a.workerNum === existing.num)
       : [];
     if (existing && unconfirmed.length)
       throw new ProjectError(
@@ -4614,10 +4609,9 @@ export class ProjectsService {
     // after its previously accepted native thread has become quiet. Recheck
     // only that known delivery; unreadable/queued/unconfirmed creates stay held.
     const requestedTasks = new Set(tasks.map(task => task.num));
-    for (const cancelled of this.store.assignments(project.id))
+    for (const cancelled of this.store.assignmentsIn(project.id, [], UNSETTLED_OPS))
       if (cancelled.state === "cancelled" && cancelled.briefDelivered &&
           cancelled.threadId && cancelled.queuedMessageId === null &&
-          ["pending", "uncertain"].includes(cancelled.opState) &&
           cancelled.taskNums.some(num => requestedTasks.has(num)))
         await this.settleCancelledIfQuiet(cancelled);
     const warnings = input.role === "work" && access === "write"
@@ -4628,10 +4622,10 @@ export class ProjectsService {
     // facts below must be current when the dispatch intent is recorded.
     tasks = taskRefs.map((ref) => this.requireTask(project, ref));
     reviewOfTasks = reviewOfRefs.map((ref) => this.requireTask(project, ref));
+    const live = this.store.assignmentsIn(project.id, LIVE_STATES, UNSETTLED_OPS);
     for (const task of tasks) {
-      const other = this.store.assignments(project.id).find(a =>
-        a.role === "work" && a.taskNums.includes(task.num) && a.workerNum !== existing?.num &&
-        (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
+      const other = live.find(a =>
+        a.role === "work" && a.taskNums.includes(task.num) && a.workerNum !== existing?.num);
       if (other) warnings.push(`${task.ref} is also with ${workerRef(other.workerNum)} (${other.ref}, ${other.state}).`);
     }
     const reasons = delegationViolations({
@@ -4764,11 +4758,7 @@ export class ProjectsService {
       appendix: worker.role === "work" ? this.workAppendix(project.id, policy, profile, settings.workerInstructions, input.route) : null,
       opId,
     });
-    this.store.db
-      .prepare(
-        `UPDATE assignments SET brief_text = ? WHERE project_id = ? AND num = ?`,
-      )
-      .run(text, project.id, assignment.num);
+    this.store.setBriefText(project.id, assignment.num, text);
     const metadata = {
       role: "worker",
       projectId: project.id,
@@ -6226,12 +6216,8 @@ export class ProjectsService {
     const worker = this.requireWorker(project, ref);
     if (worker.state === "retired") return worker;
     const unconfirmed = this.store
-      .assignments(project.id)
-      .filter(
-        (a) =>
-          a.workerNum === worker.num &&
-          ["pending", "uncertain"].includes(a.opState),
-      );
+      .assignmentsIn(project.id, [], UNSETTLED_OPS)
+      .filter((a) => a.workerNum === worker.num);
     if (unconfirmed.length)
       throw new ProjectError(
         `${worker.ref} cannot retire while an operation is unconfirmed. ${unconfirmed
@@ -6821,29 +6807,10 @@ export class ProjectsService {
   async report(threadId: string, input: Report & { assignment?: string }, { captured = false } = {}) {
     const membership = this.workerOf(threadId);
     const { project, worker } = membership;
-    const unsettled = this.store
-      .assignments(project.id)
-      .filter(
-        (a) =>
-          a.workerNum === worker.num &&
-          [
-            "running",
-            "queued",
-            "idle_no_report",
-            "reported",
-            "dispatching",
-            "stopped",
-          ].includes(a.state),
-      );
-    void unsettled;
     let assignment = input.assignment
       ? this.requireAssignment(project, input.assignment)
       : (this.store.openAssignment(project.id, worker.num) ??
-        this.store
-          .assignments(project.id)
-          .filter((a) => a.workerNum === worker.num)
-          .at(-1) ??
-        null);
+        this.store.latestAssignment(project.id, worker.num));
     if (!assignment || assignment.workerNum !== worker.num)
       throw new ProjectError(
         `${worker.ref} has no assignment${input.assignment ? ` ${input.assignment}` : ""} to report on.`,

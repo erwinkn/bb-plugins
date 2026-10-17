@@ -6,7 +6,6 @@ import type { PrNotes } from "./pr-notes";
 import type { PrOwners } from "./pr-owners";
 import type { PrLinks } from "./merge-queue";
 import { PR_NOTE_MAX, blankPrRecord, canonicalPrUrl, categoryName, type PrToolInput } from "./pr-stages";
-import { prsReferenced, reportPrs } from "./task-status";
 
 /** Who calls initiative_pr: the coordinator, a worker (its own PRs) or the user's terminal. */
 export interface PrCaller {
@@ -168,23 +167,6 @@ export function recordPrs(
   return { prs, ...(renamed.length ? { renamed } : {}), ...(counts.size ? { categories: sorted } : {}) };
 }
 
-const PR_URL = /https?:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/gi;
-
-/** The canonical URLs of the GitHub PRs a text names, in order, once each. */
-export function prsNamed(text: string): string[] {
-  return [...new Set([...text.matchAll(PR_URL)].flatMap((match) => canonicalPrUrl(match[0]) ?? []))];
-}
-
-/** The PRs a stored report's text names; an unreadable one names none. */
-function storedReportPrs(report: string | null): string[] {
-  if (!report) return [];
-  try {
-    return reportPrs(JSON.parse(report));
-  } catch {
-    return [];
-  }
-}
-
 /** The latest assignment about a PR: who works on it, through which assignment, in which role; and (T156) every assignment naming it. */
 export interface PrWork {
   worker: string;
@@ -196,59 +178,35 @@ export interface PrWork {
 /**
  * Each PR's latest assignment, from what the assignments say: the PRs a brief
  * gave it and those its report opened or reviewed. A later assignment wins.
- * Fills the worker the coordinator hasn't named; recomputed only when an
- * assignment changes.
+ * Fills the worker the coordinator hasn't named. W506: reads the refs Store
+ * indexed when each brief and report was written, never the texts themselves.
  */
 export class AssignedPrs {
-  private cache = new Map<string, { stamp: string; value: ReadonlyMap<string, PrWork>; byWorker: ReadonlyMap<number, ReadonlySet<string>>; referenced: ReadonlyMap<string, Omit<PrWork, "links">> }>();
-
-  constructor(private store: Pick<Store, "assignmentsStamp" | "prMentions">) {}
-
-  private scan(projectId: string) {
-    const stamp = this.store.assignmentsStamp(projectId);
-    const cached = this.cache.get(projectId);
-    if (cached?.stamp === stamp) return cached;
-    const latest = new Map<string, Omit<PrWork, "links">>();
-    const referenced = new Map<string, Omit<PrWork, "links">>();
-    const byWorker = new Map<number, Set<string>>();
-    // Sets while scanning: thousands of assignments can name one base PR.
-    const workers = new Map<string, Set<string>>();
-    const assignments = new Map<string, Set<string>>();
-    for (const row of this.store.prMentions(projectId)) {
-      const work = { worker: `W${row.workerNum}`, assignment: `A${row.num}`, role: row.role };
-      // Both: a review's report rarely repeats the PR its brief gave it.
-      for (const url of prsNamed(`${row.brief}\n${row.report ?? ""}`)) {
-        latest.set(url, work);
-        workers.set(url, (workers.get(url) ?? new Set<string>()).add(`W${row.workerNum}`));
-        assignments.set(url, (assignments.get(url) ?? new Set<string>()).add(`A${row.num}`));
-      }
-      // W492: whose a PR is (a worker's initiative_pr) counts owner/repo#12 too; the report read
-      // from its values, since its JSON would glue an escaped "\n" onto a name. Who works on a
-      // PR, above, stays by URL.
-      for (const url of new Set([...prsReferenced(row.brief), ...storedReportPrs(row.report)])) {
-        referenced.set(url, work);
-        byWorker.set(row.workerNum, (byWorker.get(row.workerNum) ?? new Set()).add(url));
-      }
-    }
-    const value = new Map([...latest].map(([url, work]) =>
-      [url, { ...work, links: { workers: [...workers.get(url)!], assignments: [...assignments.get(url)!] } }]));
-    const entry = { stamp, value, byWorker, referenced };
-    this.cache.set(projectId, entry);
-    return entry;
-  }
+  constructor(private store: Pick<Store, "prRefs" | "workerPrRefs" | "latestPrRef">) {}
 
   read(projectId: string): ReadonlyMap<string, PrWork> {
-    return this.scan(projectId).value;
+    const latest = new Map<string, Omit<PrWork, "links">>();
+    // Sets while reading: thousands of assignments can name one base PR.
+    const workers = new Map<string, Set<string>>();
+    const assignments = new Map<string, Set<string>>();
+    for (const ref of this.store.prRefs(projectId, "named")) {
+      latest.set(ref.url, { worker: `W${ref.workerNum}`, assignment: `A${ref.num}`, role: ref.role });
+      workers.set(ref.url, (workers.get(ref.url) ?? new Set<string>()).add(`W${ref.workerNum}`));
+      assignments.set(ref.url, (assignments.get(ref.url) ?? new Set<string>()).add(`A${ref.num}`));
+    }
+    return new Map([...latest].map(([url, work]) =>
+      [url, { ...work, links: { workers: [...workers.get(url)!], assignments: [...assignments.get(url)!] } }]));
   }
 
   /** Every PR any of this worker's assignments names, by URL or owner/repo#12, latest or not. */
   ofWorker(projectId: string, workerNum: number): ReadonlySet<string> {
-    return this.scan(projectId).byWorker.get(workerNum) ?? new Set();
+    return new Set(this.store.workerPrRefs(projectId, workerNum));
   }
 
   /** W492: the latest assignment naming a PR, by URL or owner/repo#12. */
   referencing(projectId: string, url: string): Omit<PrWork, "links"> | null {
-    return this.scan(projectId).referenced.get(url) ?? null;
+    const ref = this.store.latestPrRef(projectId, url);
+    return ref ? { worker: `W${ref.workerNum}`, assignment: `A${ref.num}`, role: ref.role } : null;
   }
 }
 

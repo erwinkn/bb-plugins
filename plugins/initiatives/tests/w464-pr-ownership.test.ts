@@ -448,8 +448,8 @@ describe("W464 migration", () => {
       const tables = () => db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").pluck().all() as string[];
       const before = tables();
       host.bb.storage.migrate(db, MIGRATIONS);
-      // Later migrations (W468's report_notices) are appended after it.
-      expect(tables()).toEqual([...before, "pr_owners", "report_notices"].sort());
+      // Later migrations (W468's report_notices, W506's PR refs) are appended after it.
+      expect(tables()).toEqual([...before, "pr_owners", "report_notices", "assignment_pr_refs", "assignment_pr_scans"].sort());
       expect(db.prepare("SELECT count(*) FROM pr_owners").pluck().get()).toBe(0);
       expect(db.prepare("SELECT stage FROM pr_records").pluck().all()).toEqual(["in-review"]);
       // Rollback: the previous build's statements are all recorded, so it applies nothing and never reads pr_owners.

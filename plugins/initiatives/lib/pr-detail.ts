@@ -7,7 +7,7 @@
 import type { Store } from "./store";
 import type { PrNote, PrNotes } from "./pr-notes";
 import type { PrRecord, PrStageChange } from "./pr-stages";
-import { prsNamed } from "./pr-records";
+import { prsNamed } from "./pr-refs";
 import { branchThreadId } from "./merge-queue";
 
 /**

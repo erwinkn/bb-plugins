@@ -5,6 +5,7 @@ import { MIGRATIONS, Store } from "../lib/store";
 import { assignStages, attachWorkers, parsePullRequests, type MergeQueue, type QueuedPullRequest } from "../lib/merge-queue";
 import { PR_STAGES, blankPrRecord, type PrStage } from "../lib/pr-stages";
 import { AssignedPrs } from "../lib/pr-records";
+import { prRefsOf } from "./helpers";
 import { categoriesOf, filterPrs, groupPrs, laneLayout, linkStacks, nextUp, prSummary, stackLabel, stateItems } from "../lib/pr-map";
 
 const call = async (f: Awaited<ReturnType<typeof projectFixture>>["f"], tool: string, input: unknown, threadId = "coordinator") =>
@@ -129,19 +130,14 @@ describe("W224 where each PR stands (D438)", () => {
       { num: 3, workerNum: 2, role: "work", brief: "Fix https://github.com/ErwinKN/bb/pull/7 and erwinkn/bb#8", report: JSON.stringify({ summary: "Opened https://github.com/erwinkn/bb/pull/9" }) },
       { num: 4, workerNum: 5, role: "review", brief: "Review https://github.com/erwinkn/bb/pull/9/files", report: null },
     ];
-    let stamp = "1";
-    const store = { assignmentsStamp: () => stamp, prMentions: vi.fn(() => rows) };
-    const assigned = new AssignedPrs(store);
+    const assigned = new AssignedPrs(prRefsOf(rows));
     // A3's brief keeps #7 after its report; A4's brief gives it #9, which A3's report opened.
     expect([...assigned.read("p")]).toEqual([
       [url(7), { worker: "W2", assignment: "A3", role: "work", links: { workers: ["W2"], assignments: ["A3"] } }],
       [url(9), { worker: "W5", assignment: "A4", role: "review", links: { workers: ["W2", "W5"], assignments: ["A3", "A4"] } }],
     ]);
-    // Unchanged assignments: no rescan.
-    assigned.read("p");
-    expect(store.prMentions).toHaveBeenCalledTimes(1);
+    // W506: read from the refs indexed as each brief is written, so a new brief shows at once.
     rows[0]!.brief = "Nothing named";
-    stamp = "2";
     expect(assigned.read("p").has(url(7))).toBe(false);
   });
 

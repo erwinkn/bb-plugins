@@ -6,6 +6,7 @@ import { PR_NOTE_MIGRATIONS } from "../lib/pr-notes";
 import { parsePullRequests, type MergeQueue, type QueuedPullRequest } from "../lib/merge-queue";
 import { PR_STAGES, type PrStage } from "../lib/pr-stages";
 import { AssignedPrs } from "../lib/pr-records";
+import { prRefsOf } from "./helpers";
 import { linkStacks, prSummary } from "../lib/pr-map";
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
@@ -61,10 +62,10 @@ describe("W229 P2/P3 fixes", () => {
   });
 
   it("keeps a review's PR, named in its brief, after its report says nothing of it", () => {
-    const assigned = new AssignedPrs({ assignmentsStamp: () => "1", prMentions: () => [
+    const assigned = new AssignedPrs(prRefsOf([
       { num: 1, workerNum: 1, role: "work", brief: "Implement", report: JSON.stringify({ summary: `Opened ${url(1)}` }) },
       { num: 2, workerNum: 2, role: "review", brief: `Review ${url(1)}`, report: JSON.stringify({ summary: "Two findings; needs attention" }) },
-    ] });
+    ]));
     expect(assigned.read("p").get(url(1))).toEqual({ worker: "W2", assignment: "A2", role: "review", links: { workers: ["W1", "W2"], assignments: ["A1", "A2"] } });
     expect([...assigned.ofWorker("p", 1)]).toEqual([url(1)]);
   });

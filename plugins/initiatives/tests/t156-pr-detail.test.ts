@@ -12,7 +12,7 @@ const { pickPr, searchPrs } = await import("../lib/pr-search");
 const { mentionsNumber, readPrDetail, DETAIL_LIMITS } = await import("../lib/pr-detail");
 const { PrNotes } = await import("../lib/pr-notes");
 const { blankPrRecord } = await import("../lib/pr-stages");
-const { memoryStore } = await import("./helpers");
+const { memoryStore, prRefsOf } = await import("./helpers");
 const { ghCall, searchPage } = await import("./gh-fixtures");
 import type { PrDetail } from "../lib/pr-detail";
 import type { QueuedPullRequest } from "../lib/merge-queue";
@@ -111,11 +111,11 @@ describe("T156 PR search", () => {
 
 describe("T156 PR links in the queue", () => {
   it("links every assignment naming a PR and its worker, each once", () => {
-    const assigned = new AssignedPrs({ assignmentsStamp: () => "1", prMentions: () => [
+    const assigned = new AssignedPrs(prRefsOf([
       { num: 3, workerNum: 2, role: "work", brief: `Fix ${url(7)}`, report: null },
       { num: 4, workerNum: 5, role: "review", brief: `Review ${url(7)}`, report: null },
       { num: 5, workerNum: 2, role: "work", brief: `Unrelated, then ${url(7)} again`, report: JSON.stringify({ summary: `Opened ${url(9)}` }) },
-    ] });
+    ]));
     expect(assigned.read("p").get(url(7))).toEqual({ worker: "W2", assignment: "A5", role: "work", links: { workers: ["W2", "W5"], assignments: ["A3", "A4", "A5"] } });
     const [seven, nine, other] = attachLinks([pr(7), pr(9), pr(10)], assigned.read("p"), new Map());
     expect([seven!.links.assignments, nine!.links.assignments, other!.links]).toEqual([["A3", "A4", "A5"], ["A5"], { workers: [], assignments: [] }]);
@@ -125,7 +125,7 @@ describe("T156 PR links in the queue", () => {
     // Copying the accumulated links per assignment took ~3 s at 10k.
     const rows = Array.from({ length: 20_000 }, (_, i) => ({ num: i + 1, workerNum: (i % 50) + 1, role: "work", brief: `Built on ${url(1)}`, report: null }));
     const start = performance.now();
-    const work = new AssignedPrs({ assignmentsStamp: () => "1", prMentions: () => rows }).read("p").get(url(1))!;
+    const work = new AssignedPrs(prRefsOf(rows)).read("p").get(url(1))!;
     expect(performance.now() - start).toBeLessThan(1000);
     expect([work.assignment, work.links.assignments.length, work.links.workers.length]).toEqual(["A20000", 20_000, 50]);
   });

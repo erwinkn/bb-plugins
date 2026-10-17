@@ -104,6 +104,8 @@ export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new Store(db);
+  // W506: the PR refs of assignments written before the index, or by the previous build.
+  store.catchUpPrRefs();
   // v9 (§7): closes the previous build made stay closed, as hand-set statuses.
   for (const closed of store.reconcileTaskOverrides())
     store.log(closed.projectId, "task", `T${closed.num} was ${closed.status === "done" ? "closed as done" : "cancelled"} while the previous build ran; kept as set by hand.`, { task: closed.num });

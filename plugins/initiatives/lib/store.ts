@@ -45,6 +45,7 @@ import { PR_NOTE_MIGRATIONS } from "./pr-notes";
 import { PR_OWNER_MIGRATIONS } from "./pr-owners";
 import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
 import { ownBriefText } from "./brief";
+import { assignmentPrRefs } from "./pr-refs";
 import { computeTaskStatus, reportPrs, type HandStatus, type PrState } from "./task-status";
 
 
@@ -552,6 +553,27 @@ export const MIGRATIONS = [
   // {hostId, path} or {hostId, worktree: true}; NULL for the project default. The previous build
   // ignores it.
   `ALTER TABLE assignments ADD COLUMN placement TEXT`,
+  // W506: the PRs each assignment's brief and report name (assignmentPrRefs), written with them,
+  // so initiative_pr's ownership checks and the merge queue look PRs up instead of rescanning
+  // every brief and report (1-1.6 s an Initiative with 2,400 assignments). kind "named" is a
+  // PR URL (who works on it), "referenced" a URL or owner/repo#12 (whose it is); pos keeps each
+  // kind's order. assignment_pr_scans holds the report_seq each assignment was read at, and
+  // whether it had a report: a row missing or different there (the first start, or rows the
+  // previous build wrote after a rollback) is read again on start (Store.catchUpPrRefs). The
+  // previous build ignores both tables.
+  `CREATE TABLE assignment_pr_refs (
+    project_id TEXT NOT NULL,
+    num INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    pos INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    worker_num INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY (project_id, num, kind, pos)
+  )`,
+  `CREATE INDEX assignment_pr_refs_url ON assignment_pr_refs(project_id, kind, url, num)`,
+  `CREATE INDEX assignment_pr_refs_worker ON assignment_pr_refs(project_id, worker_num, kind)`,
+  `CREATE TABLE assignment_pr_scans (project_id TEXT NOT NULL, num INTEGER NOT NULL, report_seq INTEGER NOT NULL, reported INTEGER NOT NULL, PRIMARY KEY (project_id, num))`,
 ];
 
 /** W496: a stored ended fact; one that does not parse reads as none, so the thread is read again. */
@@ -2900,11 +2922,20 @@ export class Store {
         now,
         now,
       );
+    this.indexPrRefs(input.projectId, num);
     // W492: new work for a worker cancels a retirement waiting for its thread to go quiet.
     if (this.db.prepare("UPDATE workers SET retire_request = NULL WHERE project_id = ? AND num = ? AND retire_request IS NOT NULL").run(input.projectId, input.workerNum).changes)
       this.log(input.projectId, "worker", `${workerRef(input.workerNum)} was not retired: it got more work after the request.`);
     this.touchProject(input.projectId);
     return this.assignment(input.projectId, num)!;
+  }
+
+  /** W506: replaces a dispatch's brief once it is rendered, with the PRs it names. */
+  setBriefText(projectId: string, num: number, text: string) {
+    this.tx(() => {
+      this.db.prepare("UPDATE assignments SET brief_text = ? WHERE project_id = ? AND num = ?").run(text, projectId, num);
+      this.indexPrRefs(projectId, num);
+    });
   }
 
   assignment(projectId: string, num: number): AssignmentRecord | null {
@@ -2948,6 +2979,45 @@ export class Store {
         .prepare(`SELECT * FROM assignments WHERE project_id = ? ORDER BY num`)
         .all(projectId) as Row[]
     ).map(toAssignment);
+  }
+
+  /**
+   * W506: an Initiative's assignments in one of `states` or `opStates`, oldest first. Both sit
+   * before the brief and report in each row, so only the matching rows' texts are read and
+   * decoded, never the whole ledger's: ~1 ms an Initiative with 2,400 assignments.
+   */
+  assignmentsIn(projectId: string, states: AssignmentState[], opStates: AssignmentRecord["opState"][] = []): AssignmentRecord[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM assignments WHERE project_id = ? AND (state IN (SELECT value FROM json_each(?)) OR op_state IN (SELECT value FROM json_each(?))) ORDER BY num`)
+        .all(projectId, JSON.stringify(states), JSON.stringify(opStates)) as Row[]
+    ).map(toAssignment);
+  }
+
+  /** W506: the newest work assignment with a report on any of these tasks. */
+  latestWorkReportOn(projectId: string, taskNums: number[]): AssignmentRecord | null {
+    const row = this.db
+      .prepare(`SELECT * FROM assignments WHERE project_id = ? AND role = 'work' AND report IS NOT NULL
+        AND EXISTS (SELECT 1 FROM json_each(task_nums) WHERE value IN (SELECT value FROM json_each(?))) ORDER BY num DESC LIMIT 1`)
+      .get(projectId, JSON.stringify(taskNums)) as Row | undefined;
+    return row ? toAssignment(row) : null;
+  }
+
+  /** W506: the assignments one thread of an Initiative ran, oldest first. */
+  threadAssignments(projectId: string, threadId: string): AssignmentRecord[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM assignments WHERE thread_id = ? AND project_id = ? ORDER BY num`)
+        .all(threadId, projectId) as Row[]
+    ).map(toAssignment);
+  }
+
+  /** W499: where a worker's spawn (its first fresh assignment) put it, as recorded. */
+  spawnPlacement(projectId: string, workerNum: number): PlacementRecord | null {
+    const row = this.db
+      .prepare(`SELECT placement FROM assignments WHERE project_id = ? AND worker_num = ? AND route = 'fresh' ORDER BY num LIMIT 1`)
+      .get(projectId, workerNum) as Row | undefined;
+    return row ? decodeNullable("assignments", row, "placement", placementRecordSchema) : null;
   }
 
   /**
@@ -3215,8 +3285,10 @@ export class Store {
           projectId,
           num,
         );
-      if ("report" in patch)
+      if ("report" in patch) {
         this.db.prepare("UPDATE assignments SET blocker_options = ?, blocked_on_lead = CASE WHEN ? THEN report_seq END WHERE project_id = ? AND num = ?").run(json(report.options), Number(report.onLead), projectId, num);
+        this.indexPrRefs(projectId, num);
+      }
       this.touchProject(projectId);
       return this.assignment(projectId, num)!;
     });
@@ -3661,28 +3733,66 @@ export class Store {
       .run(to, projectId, from).changes;
   }
 
-  /** W224: changes whenever any of the Initiative's assignments does; a cache key for prMentions. */
-  assignmentsStamp(projectId: string): string {
-    const row = this.db.prepare("SELECT count(*) AS n, max(updated_at) AS at, total(report_seq) AS seq FROM assignments WHERE project_id = ?")
-      .get(projectId) as Row;
-    return `${row.n}:${row.at}:${row.seq}`;
+  /**
+   * W506: stores the PRs one assignment's brief and report name (assignment_pr_refs), replacing
+   * what it named before, and the report_seq they were read at. Every write of a brief or a
+   * report calls this.
+   */
+  private indexPrRefs(projectId: string, num: number) {
+    // `mentions`: the scan this replaced (W224) read only rows these patterns match, as SQLite
+    // matches them (a NUL ends a text; a JSON-escaped "\/" is no "/"), so the index does too.
+    const row = this.db.prepare(`SELECT worker_num, role, brief_text, report, report_seq,
+        (brief_text LIKE '%github.com/%/pull/%' OR report LIKE '%github.com/%/pull/%' OR brief_text LIKE '%/%#%' OR report LIKE '%/%#%') AS mentions
+      FROM assignments WHERE project_id = ? AND num = ?`).get(projectId, num) as Row | undefined;
+    if (!row) return;
+    this.db.prepare("DELETE FROM assignment_pr_refs WHERE project_id = ? AND num = ?").run(projectId, num);
+    const insert = this.db.prepare("INSERT INTO assignment_pr_refs (project_id, num, kind, pos, url, worker_num, role) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    const refs = row.mentions ? assignmentPrRefs(String(row.brief_text ?? ""), (row.report as string | null) ?? null) : { named: [], referenced: [] };
+    for (const kind of ["named", "referenced"] as const)
+      refs[kind].forEach((url, pos) => insert.run(projectId, num, kind, pos, url, row.worker_num, row.role));
+    this.db.prepare("INSERT OR REPLACE INTO assignment_pr_scans (project_id, num, report_seq, reported) VALUES (?, ?, ?, ?)")
+      .run(projectId, num, row.report_seq, Number(row.report !== null));
   }
 
   /**
-   * W224: the assignments whose brief or report names a GitHub PR, oldest first; the report as
-   * stored JSON, the brief without its shared appendix (ownBriefText).
+   * W506: indexes every assignment not yet read as it now stands: all of them on the first start
+   * after the migration, then those the previous build wrote after a rollback (new work, new or
+   * cleared reports). Briefs are rendered once, in the dispatch that creates the assignment; a
+   * new report bumps report_seq and a cleared one leaves none, so the two tell a stale row.
+   * Returns how many it read.
    */
+  catchUpPrRefs(): number {
+    return this.tx(() => {
+      const stale = this.db.prepare(`SELECT a.project_id, a.num FROM assignments a
+        LEFT JOIN assignment_pr_scans s ON s.project_id = a.project_id AND s.num = a.num
+        WHERE s.report_seq IS NOT a.report_seq OR s.reported IS NOT (a.report IS NOT NULL)`).all() as { project_id: string; num: number }[];
+      for (const row of stale) this.indexPrRefs(row.project_id, row.num);
+      return stale.length;
+    });
+  }
+
+  /** W506: an Initiative's PR refs of one kind, by assignment and then in the order its text names them. */
+  prRefs(projectId: string, kind: "named" | "referenced"): { url: string; num: number; workerNum: number; role: string }[] {
+    return this.db.prepare(`SELECT url, num, worker_num AS workerNum, role FROM assignment_pr_refs
+      WHERE project_id = ? AND kind = ? ORDER BY num, pos`).all(projectId, kind) as { url: string; num: number; workerNum: number; role: string }[];
+  }
+
+  /** W506: every PR one worker's assignments reference, by URL or owner/repo#12, oldest first. */
+  workerPrRefs(projectId: string, workerNum: number): string[] {
+    return this.db.prepare(`SELECT url FROM assignment_pr_refs WHERE project_id = ? AND worker_num = ? AND kind = 'referenced' ORDER BY num, pos`)
+      .pluck().all(projectId, workerNum) as string[];
+  }
+
+  /** W506: the latest assignment referencing a PR, by URL or owner/repo#12. */
+  latestPrRef(projectId: string, url: string): { num: number; workerNum: number; role: string } | null {
+    return (this.db.prepare(`SELECT num, worker_num AS workerNum, role FROM assignment_pr_refs
+      WHERE project_id = ? AND kind = 'referenced' AND url = ? ORDER BY num DESC LIMIT 1`)
+      .get(projectId, url) as { num: number; workerNum: number; role: string } | undefined) ?? null;
+  }
+
   /** W492: who holds a PR in each Adventure's records (its recorded worker), by Adventure. */
   prHolders(url: string): { projectId: string; worker: string }[] {
     return this.db.prepare("SELECT project_id AS projectId, worker FROM pr_records WHERE url = ? AND worker IS NOT NULL").all(url) as { projectId: string; worker: string }[];
-  }
-
-  prMentions(projectId: string): { num: number; workerNum: number; role: string; brief: string; report: string | null }[] {
-    const rows = this.db.prepare(`SELECT num, worker_num, role, brief_text, report FROM assignments
-      WHERE project_id = ? AND (brief_text LIKE '%github.com/%/pull/%' OR report LIKE '%github.com/%/pull/%' OR brief_text LIKE '%/%#%' OR report LIKE '%/%#%') ORDER BY num`)
-      .all(projectId) as Row[];
-    return rows.map((row) => ({ num: row.num as number, workerNum: row.worker_num as number, role: row.role as string,
-      brief: ownBriefText((row.brief_text as string | null) ?? ""), report: (row.report as string | null) ?? null }));
   }
 
   /**

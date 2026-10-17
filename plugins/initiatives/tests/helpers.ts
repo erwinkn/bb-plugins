@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { MIGRATIONS, Store } from "../lib/store";
 import type { Brief } from "../lib/schema";
 import type { Cached, ChildPage } from "../lib/contract";
+import { assignmentPrRefs } from "../lib/pr-refs";
 
 export function memoryStore(start = 1_700_000_000_000) {
   const db = new Database(":memory:");
@@ -9,6 +10,17 @@ export function memoryStore(start = 1_700_000_000_000) {
   const clock = { now: start };
   const store = new Store(db, () => clock.now);
   return { db, store, clock };
+}
+
+/** W506: a Store's PR ref lookups over these assignments, each indexed as Store does on a write. */
+export function prRefsOf(rows: { num: number; workerNum: number; role: string; brief: string; report: string | null }[]) {
+  const refs = (kind: "named" | "referenced") => [...rows].sort((a, b) => a.num - b.num).flatMap((row) =>
+    assignmentPrRefs(row.brief, row.report)[kind].map((url) => ({ url, num: row.num, workerNum: row.workerNum, role: row.role })));
+  return {
+    prRefs: (_projectId: string, kind: "named" | "referenced") => refs(kind),
+    workerPrRefs: (_projectId: string, workerNum: number) => refs("referenced").filter((r) => r.workerNum === workerNum).map((r) => r.url),
+    latestPrRef: (_projectId: string, url: string) => refs("referenced").filter((r) => r.url === url).at(-1) ?? null,
+  };
 }
 
 export const brief = (
