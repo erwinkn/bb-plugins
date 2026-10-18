@@ -100,6 +100,7 @@ import { RunningChildren } from "./context";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
 import { MEMORY_SCOPE_KEY, attachMemory } from "./memory-scopes";
+import { SLOW_CALL_MS, StepTimer } from "./step-timing";
 
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
@@ -1887,7 +1888,7 @@ export class ProjectsService {
         // the archive call itself.
         if ((await this.liveChildren(predecessorId)).length) continue;
         if (signal?.aborted) return;
-        await this.retireThread(predecessorId);
+        await this.retireThread(predecessorId, (line) => this.recordLate(projectId, "coordinator", `Former coordinator: ${line}`));
         this.formerCoordinatorEnded(projectId, predecessorId);
         this.store.log(
           projectId,
@@ -6214,6 +6215,15 @@ export class ProjectsService {
     const project = this.requireProject(projectId);
     const worker = this.requireWorker(project, ref);
     if (worker.state === "retired") return worker;
+    const timer = new StepTimer();
+    try {
+      return await this.retireChecked(project, worker, reason, waited, timer);
+    } finally {
+      if (timer.totalMs > SLOW_CALL_MS) this.bb.log.warn(`Slow retire of ${worker.ref} (${project.id}): ${timer.summary()}`);
+    }
+  }
+
+  private async retireChecked(project: ProjectRecord, worker: WorkerRecord, reason: string, waited: boolean, timer: StepTimer) {
     const unconfirmed = this.store
       .assignmentsIn(project.id, [], UNSETTLED_OPS)
       .filter((a) => a.workerNum === worker.num);
@@ -6231,7 +6241,7 @@ export class ProjectsService {
       );
     if (worker.threadId)
       try {
-        await this.retireThread(worker.threadId);
+        await this.retireThread(worker.threadId, (line) => this.recordLate(project.id, "worker", `${worker.ref} retired, but ${line}`), timer);
       } catch (error) {
         if (!(error instanceof ThreadBusy) || waited) throw error;
         this.store.requestRetire(project.id, worker.num, reason, this.now());
@@ -6239,7 +6249,7 @@ export class ProjectsService {
         return { ...worker, state: "retiring" as const,
           note: `${worker.ref} retires by itself once that ends (${error.message}). More work for it before then cancels this.` };
       }
-    return this.store.tx(() => {
+    return timer.step("db", async () => this.store.tx(() => {
       this.store.clearRetireRequest(project.id, worker.num);
       this.store.closeGeneration(
         project.id,
@@ -6256,7 +6266,7 @@ export class ProjectsService {
         `${worker.ref} retired: ${reason}`,
       );
       return updated;
-    });
+    }));
   }
 
   /**
@@ -6287,9 +6297,14 @@ export class ProjectsService {
       });
   }
 
-  /** Archive and release one thread, after proving nothing under it is still working. */
-  private async retireThread(threadId: string) {
-    const thread = await this.sdk.threads.get({ threadId });
+  /**
+   * Archive and release one thread, after proving nothing under it is still working. The Stop
+   * that follows the archive is not awaited (W514: BB's Stop waits on the host daemon, over a
+   * second per thread, and the thread is already proven quiet and archived): it runs in the
+   * background, and a failure is logged once as `stopFailed` says, never lost.
+   */
+  private async retireThread(threadId: string, stopFailed: (message: string) => void, timer = new StepTimer()) {
+    const thread = await timer.step("get", () => this.sdk.threads.get({ threadId }));
     // Native archive and Stop are destructive: the root DTO must positively
     // prove the thread is quiet or already gone before either runs. A
     // lifecycle field that is merely well-formed-but-null is not proof of an
@@ -6331,7 +6346,7 @@ export class ProjectsService {
       );
     // The GET DTO has no background command or workflow counters; only the thread's
     // own list row proves it quiet before anything destructive is called (T91).
-    const row = (await this.projectListRows(thread.projectId, new Set([threadId]))).get(threadId);
+    const row = (await timer.step("list", () => this.projectListRows(thread.projectId, new Set([threadId])))).get(threadId);
     const quiet = ProjectsService.rowQuiescence(row);
     if (quiet === "running")
       throw new ThreadBusy(
@@ -6341,15 +6356,48 @@ export class ProjectsService {
       throw new ProjectError(
         "its thread could not be proven quiet: BB's list row for it was missing or unreadable",
       );
-    const walk = await this.descendants(threadId, DESCENDANT_BUDGET);
+    const walk = await timer.step("children", () => this.descendants(threadId, DESCENDANT_BUDGET));
     const blockers = await this.liveDescendants(threadId, DESCENDANT_BUDGET, walk);
     if (blockers.length) {
       const why = `archiving cascades to its native descendants, and ${blockers.slice(0, 3).join("; ")}${blockers.length > 3 ? `; and ${blockers.length - 3} more` : ""}`;
       // Only children that are running are waited out; unreadable ones or too many to check refuse.
       throw walk.complete && walk.threads.every((child) => child.running !== "unreadable") ? new ThreadBusy(why) : new ProjectError(why);
     }
-    await this.sdk.threads.archive({ threadId });
-    await this.sdk.threads.stop({ threadId }).catch(() => undefined);
+    await timer.step("archive", () => this.sdk.threads.archive({ threadId }));
+    this.stopInBackground(threadId, stopFailed);
+  }
+
+  /** The server's change signal, for activity written outside any request (a background Stop's failure). */
+  announce: (projectId: string) => void = () => undefined;
+
+  private recordLate(projectId: string, kind: string, line: string) {
+    this.store.log(projectId, kind, line);
+    this.announce(projectId);
+  }
+
+  /** Stops still running after their retire answered, so a test or a shutdown can wait for them. */
+  private backgroundStops = new Set<Promise<void>>();
+
+  private stopInBackground(threadId: string, stopFailed: (message: string) => void) {
+    const stop: Promise<void> = (async () => this.sdk.threads.stop({ threadId }))().then(
+      () => undefined,
+      (error) => {
+        const message = `BB's Stop of the archived thread ${threadId} failed (${errorMessage(error)}); the thread is archived but its process may still be running.`;
+        this.bb.log.warn(message);
+        try {
+          stopFailed(message);
+        } catch (logError) {
+          this.bb.log.warn(`Could not record that failure: ${errorMessage(logError)}`);
+        }
+      },
+    );
+    this.backgroundStops.add(stop);
+    void stop.finally(() => this.backgroundStops.delete(stop));
+  }
+
+  /** Waits for every Stop a retire left running in the background. */
+  async settleBackgroundStops() {
+    while (this.backgroundStops.size) await Promise.all([...this.backgroundStops]);
   }
 
   /**

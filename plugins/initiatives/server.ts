@@ -82,6 +82,7 @@ const BATCH_TOOLS = ["spawn", "message", "task", "worker", "question", "rule", "
 const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | rules (import <id> <file> | export <id> [file]) | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
+import { SLOW_CALL_MS } from "./lib/step-timing";
 import { BUSY_STATUSES, ProjectError, errorMessage } from "./lib/bb";
 import { codeReviewSkillMissing } from "./lib/service";
 import { assembleInstructions, clip80, leadRulesPointer, workerRulesPointer } from "./lib/instructions";
@@ -159,6 +160,7 @@ export default function plugin(bb: BbPluginApi) {
     return next;
   };
   service.serialize = serialized;
+  service.announce = changed;
   // W244, W248: a dashboard write sent again after its answer was lost runs once.
   const receipts = new WriteReceipts(db, ledgerVersion);
   const perform = (
@@ -1362,6 +1364,7 @@ export default function plugin(bb: BbPluginApi) {
       // Every action runs first; the response is built afterwards.
       const full: Result[] = [];
       for (const [index, { tool, ...args }] of actions.entries()) {
+        const began = performance.now();
         try {
           const out = await handlers.get(`initiative_${tool}`)!(args, context);
           let result: unknown = out;
@@ -1374,6 +1377,9 @@ export default function plugin(bb: BbPluginApi) {
           // T147: an argument error keeps its message, led by the action it belongs to.
           full.push({ tool, ok: false, error: `${error instanceof ToolInputError ? `actions[${index}]: ` : ""}${errorMessage(error)}` });
         }
+        // W514: an action over a second is logged once; a retire adds its own step breakdown line.
+        const took = performance.now() - began;
+        if (took > SLOW_CALL_MS) bb.log.warn(`Slow batch action ${index + 1} of ${actions.length} (${tool}${typeof args.action === "string" ? ` ${args.action}` : ""}): ${Math.round(took)} ms`);
       }
       // One budget for the complete serialized response, the size of a single read. Every error is
       // admitted first, clipped to a fixed size, so a failure is never left out for a payload; the
