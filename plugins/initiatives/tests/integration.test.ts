@@ -76,11 +76,10 @@ describe("native queueing", () => {
       route: "continue",
       worker: worker.ref,
       tasks: [t2.ref],
-      delivery: "queue",
     });
     expect(d2.state).toBe("queued");
     const sent = f.send.mock.calls.at(-1)![0];
-    expect(sent.mode).toBe("queue-if-active");
+    expect(sent.mode).toBe("steer-if-active");
     const a2 = f.store.assignment(project.id, 2)!;
     expect(a2.queuedMessageId).toBe("qm-9");
     // BB dispatched it: the ledger follows the native event.

@@ -27,9 +27,9 @@ lead: workers report back to it. This skill only sums up the tools.
   user's explicit instruction settles the open finding; otherwise ask the user
   (`initiative_question`). More work for an idle worker whose large cache has gone cold is
   refused with the rewrite cost; resend it with `resumeCold:true`, or spawn a fresh worker
-  with `handoffs:["W#"]`. From you to a worker, a message steers by default, so corrections and new facts arrive
-  mid-turn in the order you sent them. Pass `mode:"queue"` only for what must wait until
-  the worker's turn ends; a queued message is held back, and a later steer overtakes it.
+  with `handoffs:["W#"]`. From you to a worker, a message always steers, so corrections and new facts arrive
+  mid-turn in the order you sent them. There is no `mode`; a worker that has not started
+  yet reads the message once it starts.
 - A worker's report arrives as one message, "W12 reported (done) on A301: <summary>",
   followed by the report itself when it is short. A done report that arrives while you work
   usually waits in your queue for a turn of its own; a blocked one joins the turn you are in.

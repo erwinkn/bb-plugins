@@ -231,7 +231,6 @@ export interface DelegateInput {
   label?: string;
   area?: string;
   note?: string;
-  delivery?: "steer" | "queue";
   rationale?: string;
   /** Prior A# whose standard handoffs this work brief embeds (T96); provenance only. */
   handoffs?: string[];
@@ -4780,8 +4779,8 @@ export class ProjectsService {
         // it when the thread is free. The receipt lands on the assignment.
         const sent = await this.sdk.threads.send({
           threadId: worker.threadId!,
-          // A lead steers by default: a queued brief would be overtaken by a later steer.
-          mode: input.delivery === "queue" ? "queue-if-active" : "steer-if-active",
+          // A lead always steers: a queued brief would be overtaken by a later steer.
+          mode: "steer-if-active",
           ...(input.replyTo ?? project.coordinatorThreadId ? { senderThreadId: (input.replyTo ?? project.coordinatorThreadId)! } : {}),
           input: textInput(text),
           model: profile.model,

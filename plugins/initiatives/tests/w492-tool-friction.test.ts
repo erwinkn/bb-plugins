@@ -26,7 +26,7 @@ describe("W492 a worker is offered only what it can set", () => {
     expect(Object.keys(worker).sort()).toEqual(["initiative_message", "initiative_pr", "initiative_read", "initiative_report"]);
     expect(properties(worker.initiative_pr, "properties", "prs", "items")).toEqual(["url", "stage", "note", "notes", "initiative"]);
     expect(properties(worker.initiative_pr)).toEqual(["prs"]);
-    expect(properties(worker.initiative_message)).toEqual(["text", "mode", "to"]);
+    expect(properties(worker.initiative_message)).toEqual(["text", "to"]);
     const lead = Object.fromEntries((await configured(f, "coordinator")).map((t) => [t.name, t.inputSchema]));
     expect(properties(lead.initiative_pr, "properties", "prs", "items")).toEqual(expect.arrayContaining(["waitingOn", "worker", "category", "answered"]));
     expect(properties(lead.initiative_message)).toEqual(expect.arrayContaining(["tasks", "work", "resumeCold"]));
@@ -125,7 +125,7 @@ describe("W492 initiative_message", () => {
       note: `${w.worker} is still working on A1, so this went to it as a steer message; its A1 report covers it.` });
     expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ threadId: w.threadId, mode: "steer-if-active" });
     expect(f.store.assignments(project.id)).toHaveLength(assignments);
-    await expect(tool(f, "initiative_message", { to: w.worker, text: "After that, the docs.", work: true, mode: "queue" })).rejects.toThrow(/still working on A1/);
+    await expect(tool(f, "initiative_message", { to: w.worker, text: "After that, the docs.", work: true, mode: "queue" })).rejects.toThrow(/this option was removed/);
   });
 });
 
@@ -236,7 +236,7 @@ describe("W492 review r1", () => {
     // More work already queued (behind a slow write) runs first, and cancels the request.
     let release!: () => void;
     const held = f.service.serialize(() => new Promise<void>((resolve) => { release = resolve; }));
-    const more = f.perform(project.id, { action: "delegate", route: "continue", role: "work", worker: w.worker, note: "One more pass.", delivery: "steer" } as never, "coordinator", "coordinator");
+    const more = f.perform(project.id, { action: "delegate", route: "continue", role: "work", worker: w.worker, note: "One more pass." } as never, "coordinator", "coordinator");
     const retry = f.service.finishRetirements();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(f.archive).not.toHaveBeenCalled();
@@ -346,7 +346,7 @@ describe("W492 review r4", () => {
     const blocker = f.store.assignment(project.id, 1)!.report!.blocker!;
     let release!: () => void;
     const held = f.service.serialize(() => new Promise<void>((resolve) => { release = resolve; }));
-    const more = f.perform(project.id, { action: "delegate", route: "continue", role: "work", worker: w.worker, note: "Use staging; carry on.", delivery: "steer" } as never, "coordinator", "coordinator");
+    const more = f.perform(project.id, { action: "delegate", route: "continue", role: "work", worker: w.worker, note: "Use staging; carry on." } as never, "coordinator", "coordinator");
     const answer = f.service.answerBlocker(project.id, "A1", { question: blocker.question, context: blocker.context }, "Use prod.", "worker");
     await new Promise((resolve) => setTimeout(resolve, 10));
     release();

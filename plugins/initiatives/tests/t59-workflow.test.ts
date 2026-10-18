@@ -26,13 +26,13 @@ describe("T59 native actionable delivery", () => {
     expect(f.send).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["steer", "queue"] as const)("continuation %s delegates to native BB with the coordinator sender", async delivery => {
+  it("a continuation always steers through native BB with the coordinator sender", async () => {
     const { f, project, worker } = await externalWork();
     await f.service.report(worker.threadId!, checkedReport());
     await f.service.setTaskStatus(project.id, "T6", "done", "Closed as done.", "the user");
     f.idle(worker.threadId!);
-    await f.service.delegate(project.id, { route: "continue", worker: worker.worker, tasks: ["T11"], delivery });
-    expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ mode: delivery === "steer" ? "steer-if-active" : "queue-if-active", senderThreadId: "coordinator" });
+    await f.service.delegate(project.id, { route: "continue", worker: worker.worker, tasks: ["T11"] });
+    expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ mode: "steer-if-active", senderThreadId: "coordinator" });
   });
 
 });

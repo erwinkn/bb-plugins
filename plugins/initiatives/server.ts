@@ -1058,13 +1058,13 @@ export default function plugin(bb: BbPluginApi) {
     // W492: more work for a worker still running its open work, on no task beyond it, is that work's
     // too: it steers in as a message, and the open work's report covers it. Only mid-turn: an idle
     // thread (waiting on its reviewer, say) takes more work the usual way, cold-cache check included.
-    if (command.action === "delegate" && command.delivery === "steer" && command.worker) {
+    if (command.action === "delegate" && command.worker) {
       const worker = /^W(\d+)$/i.exec(command.worker) ? store.worker(p.id, Number(command.worker.slice(1))) : null;
       const open = worker ? store.openAssignment(p.id, worker.num) : null;
       if (worker?.threadId && command.note && open?.state === "running" && open.opState === "done" && !open.cancelRequested && worker.role === "work"
         && (command.tasks ?? []).every((task) => open.taskNums.includes(Number(task.replace(/^T/i, ""))))
         && BUSY_STATUSES.has((await bb.sdk.threads.get({ threadId: worker.threadId })).status))
-        return { ...await service.message(threadId, { target: worker.ref, text: command.note, mode: "steer" }),
+        return { ...await service.message(threadId, { target: worker.ref, text: command.note }),
           note: `${worker.ref} is still working on ${open.ref}, so this went to it as a steer message; its ${open.ref} report covers it.` };
     }
     // Work for a reviewer is refused: each review round gets a fresh reviewer (W239).
@@ -1085,7 +1085,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_message",
     parameters: jsonSchema(messageToolAdvertised),
-    description: 'One message to a worker (W#), your lead ("lead", for a worker) or the coordinator tab: {to:"W4",text:"…"}. From a lead, tasks:["T41"] or work:true gives the worker more work (it reports again; the message carries the current worker loop and rules); a plain message corrects work in progress. A lead\'s message to a worker steers by default (it arrives mid-turn, in order); mode:"queue" holds it until the turn ends. Messages never resume a stopped or retired worker.',
+    description: 'One message to a worker (W#), your lead ("lead", for a worker) or the coordinator tab: {to:"W4",text:"…"}. From a lead, tasks:["T41"] or work:true gives the worker more work (it reports again; the message carries the current worker loop and rules); a plain message corrects work in progress. A lead\'s message to a worker always steers (it arrives mid-turn, in order); a worker that has not started yet receives it once it starts. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return receipt(await sendMessage(raw, threadId));

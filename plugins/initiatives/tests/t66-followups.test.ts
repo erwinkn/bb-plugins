@@ -5,16 +5,15 @@ import { readCollection, readRefs, readOptionsSchema } from "../lib/read";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
 describe("A115 notification and native pending boundaries", () => {
-  it("confirmed pending recipients queue with actual sender/receipt; steer and Stop cannot bypass guards", async () => {
+  it("confirmed pending recipients queue with actual sender/receipt; Stop cannot bypass guards", async () => {
     const { f, project } = await projectFixture();
     const [w] = await f.service.delegate(project.id, { route: "fresh", access: "read-only", tasks: [f.task(project.id).ref] });
     f.threads.set(w.threadId!, { ...f.threads.get(w.threadId!)!, status: "pending" });
     f.queueSend("pending-peer");
-    const input = { target: w.worker, text: "Future interface fact", mode: "queue" as const };
+    const input = { target: w.worker, text: "Future interface fact" };
     const r = await f.service.message("coordinator", input);
     expect(r).toMatchObject({ threadId: w.threadId, generation: 1, receipt: { delivery: "queued", queuedMessage: { id: "pending-peer" } } });
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: w.threadId, senderThreadId: "coordinator", mode: "queue-if-active" });
-    await expect(f.service.message("coordinator", { ...input, mode: "steer" })).rejects.toThrow(/has not started yet: send with mode:"queue"/);
     f.store.updateWorker(project.id, 1, { userStopped: true });
     await expect(f.service.message("coordinator", input)).rejects.toThrow(/stopped/);
     expect(f.send).toHaveBeenCalledTimes(1);
@@ -30,7 +29,7 @@ describe("A115 notification and native pending boundaries", () => {
       if (change === "role") f.store.db.prepare("UPDATE workers SET role='review' WHERE project_id=? AND num=1").run(project.id);
       return f.threads.get(threadId);
     });
-    await expect(f.service.message(caller.threadId!, { target: w.worker, text: "Fact", mode: "queue" })).rejects.toThrow();
+    await expect(f.service.message(caller.threadId!, { target: w.worker, text: "Fact" })).rejects.toThrow();
     expect(f.send).not.toHaveBeenCalled();
   });
 });

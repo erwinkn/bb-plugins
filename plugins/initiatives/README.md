@@ -985,9 +985,9 @@ The rows stay in the database unchanged, and D# numbers are never reused
 panel answer is discarded when the question disappears after an external
 withdrawal, answer or close; the form lifecycle is unchanged here.
 
-A work message from the coordinator steers by default, so it arrives mid-turn in
-the order sent; `mode:"queue"` holds it until the worker's turn ends (a later steer
-overtakes a queued message). Actionable human answers and
+A work message from the coordinator always steers, so it arrives mid-turn in
+the order sent; the sender cannot ask for it to wait for the worker's turn to end
+(a queued message would be overtaken by a later steer). Actionable human answers and
 Not okay reviews steer-if-active; worker chat sends carry the recording thread as
 native sender. Fresh briefs carry the coordinator sender and native parent;
 replacement seeds carry the predecessor when there is one. Unparented report
@@ -1362,10 +1362,12 @@ pressure or native timeline costs have disappeared.
 
 `initiative_message` sends one native message from a trusted current managed
 caller, with the SDK's `senderThreadId`. Its input is
-`{target:"W4"|"coordinator",text:"Interface fact",mode:"steer"|"queue"}`.
-`mode` defaults to steer from the coordinator to a worker (so a correction arrives in
-order, mid-turn) and to queue from a worker to the coordinator or another worker. Use
-queue from the coordinator only for what must wait for the worker's turn to end.
+`{target:"W4"|"coordinator",text:"Interface fact"}`. The caller does not choose the
+delivery: a message from the coordinator to a worker always steers (it arrives in
+order, mid-turn), and one from a worker to the coordinator or another worker is
+queued. A `mode` (or a command's `delivery`) is refused with that explanation; it
+was removed because a queued message to a busy worker is overtaken by a later
+steer and then starts a new turn on dropped work.
 Resolve peers through `initiative_read {view:"workers",limit:8,offset:0}`;
 worker summaries include up to three current-generation assignment refs and five
 task refs per assignment, with truncation flags. Reads/configuration do not wake
@@ -1374,14 +1376,14 @@ current W#/generation/role/A#/task context from the ledger, so genuine forks do 
 inherit their source's Initiative identity.
 
 Retained sessions use `bb initiative message '<json>'` or the typed command
-`bb initiative command '{"action":"message","target":"W4","text":"Interface fact","mode":"queue"}'`.
+`bb initiative command '{"action":"message","target":"W4","text":"Interface fact"}'`.
 No `project_message` alias is needed for a tool that never existed; old tools keep
 their existing compatibility path. Do not restart agents to update an allowlist.
 
 Targets are current W# work peers or the current coordinator in the same
 Initiative. Reviewers coordinate through the coordinator to preserve review
 independence. Former/retired/ad-hoc/stopped/cancelled/finished/unconfirmed contexts
-cannot use the wrapper. Native unavailable/error/stopping threads are refused. Confirmed pending recipients accept queue mode; steer is refused with their actual pending status.
+cannot use the wrapper. Native unavailable/error/stopping threads are refused. A confirmed pending worker (not started yet) takes a coordinator's message as a queued one, since a steer cannot reach it.
 The wrapper rechecks membership/assignment after native reads and refuses a changed
 target instead of rerouting or retrying. The reply is
 `{target,threadId,generation,receipt}`, preserving the actual native sent/queued

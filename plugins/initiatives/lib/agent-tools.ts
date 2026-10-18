@@ -4,7 +4,7 @@ import { placementFields } from "./placement";
 import type { Command } from "./commands";
 import { ruleSources, ruleText } from "./rules";
 import { ToolInputError } from "./tool-errors";
-import { MODE_HELP } from "./messaging";
+import { removedMode } from "./messaging";
 import { headTail } from "./handover-packet";
 
 /**
@@ -37,18 +37,19 @@ export const messageToolSchema = z.object({
   /** Older sessions' name for to; not advertised (messageToolAdvertised). */
   target: z.string().max(32).optional(),
   text: text(20000),
-  mode: z.enum(["steer", "queue"]).optional().describe(MODE_HELP),
+  /** Removed, refused with an explanation; not advertised (messageToolAdvertised). */
+  mode: removedMode,
   tasks: z.array(ref).max(30).optional().describe("A lead only: give this worker more work on these tasks."),
   work: z.boolean().optional().describe("A lead only: this message is more work (the worker reports on it again), even without tasks."),
   resumeCold: z.boolean().optional().describe("A lead only: send more work even though the worker is idle with a large, cold cache; the refusal without it states the rewrite cost."),
 }).strict();
 /** What agents see: messageToolSchema without the older target. */
-export const messageToolAdvertised = messageToolSchema.omit({ target: true });
+export const messageToolAdvertised = messageToolSchema.omit({ target: true, mode: true });
 /**
  * W492: initiative_message as a worker's session advertises it (agents.configure): giving work
  * is a lead's, so tasks, work and resumeCold are not offered. Execution parses messageToolSchema.
  */
-export const workerMessageToolSchema = messageToolSchema.pick({ text: true, mode: true }).extend({
+export const workerMessageToolSchema = messageToolSchema.pick({ text: true }).extend({
   to: z.string().max(32).describe('"lead": the tab that gave you your work ("coordinator" reaches it too). W# reaches a peer worker.'),
 }).strict();
 /** What initiative_spawn advertises: no review fields (workers run their own reviews). */
@@ -215,8 +216,7 @@ const spawnCommandOf = (i: z.infer<typeof spawnToolSchema>): Command => ({
 });
 
 /**
- * A message with tasks or work:true gives work (route continue, always coordinator to worker, so steer by
- * default); otherwise it is one plain message whose default sendInitiativeMessage picks from sender and target.
+ * A message with tasks or work:true gives work (route continue, always coordinator to worker, so it steers); otherwise it is one plain message whose default sendInitiativeMessage picks from sender and target.
  */
 export function messageCommand(i: z.infer<typeof messageToolSchema>): Command {
   const to = i.to ?? i.target;
@@ -224,10 +224,10 @@ export function messageCommand(i: z.infer<typeof messageToolSchema>): Command {
   if (i.to && i.target && i.to !== i.target) throw new ToolInputError("Give the recipient once, as to.");
   if (i.tasks?.length || i.work) {
     if (to === "coordinator" || to === "lead") throw new ToolInputError("Work goes to a worker (W#), not a lead.");
-    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "steer", ...(i.resumeCold ? { resumeCold: true } : {}) };
+    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), ...(i.resumeCold ? { resumeCold: true } : {}) };
   }
   if (i.resumeCold) throw new ToolInputError("resumeCold applies to more work (work:true or tasks).");
-  return { action: "message", target: to as never, text: i.text, ...(i.mode ? { mode: i.mode } : {}) };
+  return { action: "message", target: to as never, text: i.text };
 }
 
 export function taskCommand(i: z.infer<typeof taskToolSchema>): Command {

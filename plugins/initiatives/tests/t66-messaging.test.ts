@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { projectFixture, report } from "./fake-native";
 import { messageSchema } from "../lib/messaging";
-import { messageCommand, messageToolSchema } from "../lib/agent-tools";
+import { z } from "zod";
+import { messageCommand, messageToolAdvertised, messageToolSchema, workerMessageToolSchema } from "../lib/agent-tools";
+import { delegateSchema } from "../lib/commands";
 import { readCollection, readOptionsSchema } from "../lib/read";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
-const message = { target: "W2", text: "RPC contract is ready. No scope change.", mode: "queue" as const };
+const message = { target: "W2", text: "RPC contract is ready. No scope change." };
 async function peers() {
   const { f, project } = await projectFixture();
   const workers = [];
@@ -17,15 +19,15 @@ async function peers() {
 }
 
 describe("T66 trusted thin native messaging", () => {
-  it.each(["steer", "queue"] as const)("tool resolves current peers and forwards %s with actual sender and honest receipt", async mode => {
+  it.each(["queued", "sent"] as const)("tool resolves current peers and forwards a worker's message queued with actual sender and honest %s receipt", async delivery => {
     const { f, caller, target } = await peers();
     const queued = { delivery: "queued", queuedMessage: { id: "q-message", senderThreadId: caller, initiator: "agent" } };
-    if (mode === "queue") f.send.mockResolvedValueOnce(queued);
-    const result = JSON.parse(await f.harness.behavior.callAgentTool("initiative_message", { ...message, mode }, { threadId: caller }) as string);
+    if (delivery === "queued") f.send.mockResolvedValueOnce(queued);
+    const result = JSON.parse(await f.harness.behavior.callAgentTool("initiative_message", message, { threadId: caller }) as string);
     // W215: the tool answers with a short receipt.
-    expect(result).toEqual({ to: "W2", delivery: mode === "queue" ? "queued" : "sent" });
+    expect(result).toEqual({ to: "W2", delivery });
     expect(f.send).toHaveBeenCalledTimes(1);
-    expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: target, senderThreadId: caller, mode: `${mode}-if-active` });
+    expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: target, senderThreadId: caller, mode: "queue-if-active" });
     expect(f.send.mock.calls[0][0].input[0].text).toContain("From W1 (work)");
     expect(f.stop).not.toHaveBeenCalled();
   });
@@ -40,36 +42,49 @@ describe("T66 trusted thin native messaging", () => {
     const foreign = await f.harness.runCli(["command", JSON.stringify({ action: "message", ...message }), "foreign"], { threadId: caller });
     expect(foreign.exitCode).toBe(1); expect(f.send).toHaveBeenCalledTimes(2);
   });
-  describe("default mode", () => {
+  describe("delivery is not chosen", () => {
     const plain = { target: "W2", text: "Interface fact." };
-    it("the coordinator steers a worker by default; an explicit queue still queues", async () => {
+    it("a lead steers a running worker", async () => {
       const { f, target } = await peers();
+      f.threads.set(target, { ...f.threads.get(target)!, status: "active" });
       await f.service.message("coordinator", plain);
-      await f.service.message("coordinator", { ...plain, mode: "queue" });
-      expect(f.send.mock.calls.map(c => c[0])).toMatchObject([
-        { threadId: target, senderThreadId: "coordinator", mode: "steer-if-active" },
-        { threadId: target, senderThreadId: "coordinator", mode: "queue-if-active" },
-      ]);
+      expect(f.send.mock.calls.map(c => c[0])).toMatchObject([{ threadId: target, senderThreadId: "coordinator", mode: "steer-if-active" }]);
     });
-    it("a worker queues to the coordinator and to a peer by default; an explicit steer wins", async () => {
+    it("a worker queues to the coordinator and to a peer", async () => {
       const { f, caller } = await peers();
       await f.service.message(caller, { target: "coordinator", text: "Blocked?" });
       await f.service.message(caller, plain);
-      await f.service.message(caller, { ...plain, mode: "steer" });
-      expect(f.send.mock.calls.map(c => c[0].mode)).toEqual(["queue-if-active", "queue-if-active", "steer-if-active"]);
+      expect(f.send.mock.calls.map(c => c[0].mode)).toEqual(["queue-if-active", "queue-if-active"]);
     });
-    it("a worker that has not started yet gets the default as a queue instead of a refusal", async () => {
+    it("a worker that has not started yet gets a lead's message as a queue instead of a refusal", async () => {
       const { f, target } = await peers();
       f.threads.set(target, { ...f.threads.get(target)!, status: "pending" });
       await f.service.message("coordinator", plain);
       expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: target, mode: "queue-if-active" });
-      await expect(f.service.message("coordinator", { ...plain, mode: "steer" })).rejects.toThrow(/W2 has not started yet: send with mode:"queue"/);
     });
-    it("the tool leaves a plain message's mode to the sender/target rule and steers more work", () => {
+    it.each(["queue", "steer"])("a message passing mode:%s is refused with the explanation, from the tool, a batch and the command", async mode => {
+      const { f, project, caller } = await peers();
+      const explained = /mode: delivery is no longer chosen, so this option was removed: a lead's message to a worker always steers/;
+      await expect(f.harness.callAgentTool("initiative_message", { to: "W2", text: "x", mode }, { threadId: "coordinator" })).rejects.toThrow(explained);
+      await expect(f.harness.callAgentTool("initiative_message", { to: "lead", text: "x", mode }, { threadId: caller })).rejects.toThrow(explained);
+      const batch = JSON.parse(await f.harness.callAgentTool("initiative_batch", { actions: [{ tool: "message", to: "W2", text: "x", mode }] }, { threadId: "coordinator" }) as string);
+      expect(batch[0] ?? batch.results?.[0]).toMatchObject({ ok: false, error: expect.stringMatching(explained) });
+      expect(messageSchema.safeParse({ ...plain, mode }).success).toBe(false);
+      const cli = await f.harness.runCli(["command", JSON.stringify({ action: "message", ...plain, mode }), project.id], { threadId: caller });
+      expect(cli.exitCode).toBe(1);
+      expect(`${cli.stdout}${cli.stderr}`).toMatch(/this option was removed/);
+      expect(f.send).not.toHaveBeenCalled();
+    });
+    it("work with a mode or a command's delivery is refused too, and the tool never advertises either", () => {
+      const removed = (r: { success: boolean; error?: z.ZodError }) => !r.success && r.error!.issues.some(i => i.path.length === 1 && /this option was removed/.test(i.message));
+      expect(removed(messageToolSchema.safeParse({ to: "W2", text: "x", tasks: ["T1"], mode: "queue" }))).toBe(true);
+      for (const delivery of ["queue", "steer", true, null]) expect(removed(delegateSchema.safeParse({ action: "delegate", route: "continue", worker: "W2", delivery }))).toBe(true);
+      expect(JSON.stringify(z.toJSONSchema(messageToolAdvertised, { io: "input" }))).not.toMatch(/mode|queue/);
+      expect(JSON.stringify(z.toJSONSchema(workerMessageToolSchema, { io: "input" }))).not.toMatch(/mode|queue/);
+    });
+    it("the tool leaves a plain message's delivery to the sender/target rule and steers more work", () => {
       expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x" }))).toEqual({ action: "message", target: "W2", text: "x" });
-      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x", mode: "queue" }))).toMatchObject({ mode: "queue" });
-      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x", work: true }))).toMatchObject({ route: "continue", delivery: "steer" });
-      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x", tasks: ["T1"], mode: "queue" }))).toMatchObject({ delivery: "queue" });
+      expect(messageCommand(messageToolSchema.parse({ to: "W2", text: "x", work: true }))).toEqual({ action: "delegate", route: "continue", role: "work", worker: "W2", note: "x" });
     });
   });
   it("T136: a worker that already reported can still send and receive messages", async () => {

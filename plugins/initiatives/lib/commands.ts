@@ -19,7 +19,7 @@ import { ProjectError } from "./bb";
 import { ToolInputError } from "./tool-errors";
 import { NO_NEW_REVIEWS } from "./agent-tools";
 import { placementFields, placementOf } from "./placement";
-import { messageSchema } from "./messaging";
+import { messageSchema, removedMode } from "./messaging";
 import { DECISION_ACTIONS, decisionIssues, normalizeDecisionInput } from "./decision-input";
 import { settlementReceipt } from "./receipts";
 import { PROJECT_COLORS, PROJECT_ICONS } from "./tree-schema";
@@ -76,7 +76,8 @@ export const delegateSchema = z
     label: text(200).optional(),
     area: text(300).optional(),
     note: text(20000).optional(),
-    delivery: z.enum(["steer", "queue"]).optional(),
+    /** Removed: refused with MODE_REMOVED (a message to a worker always steers). */
+    delivery: removedMode,
     rationale: text().optional(),
     handoffs: z.array(ref).max(3).optional(),
     permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(),
@@ -85,7 +86,6 @@ export const delegateSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.delivery && value.route !== "continue") ctx.addIssue({ code: "custom", path: ["delivery"], message: "delivery applies only to a message to an existing worker." });
     if (value.kind && (value.route !== "fresh" || value.role === "review"))
       ctx.addIssue({ code: "custom", path: ["kind"], message: "kind applies to a new work worker; a message keeps the worker's model, and a review follows the reviewed worker's model family." });
     if (value.route !== "fresh") {

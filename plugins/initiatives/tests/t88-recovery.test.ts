@@ -59,7 +59,7 @@ describe("T88 a cancelled assignment awaiting native quiet confirmation", () => 
     // A read-only peer: a second writer is refused while A1's reservation holds.
     const [peer] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref], access: "read-only" });
     setStatus(f, peer.threadId!, "active");
-    const message = await refused(f.harness.callAgentTool("initiative_message", { target: worker, text: "The replay inputs moved.", mode: "queue" }, { threadId: peer.threadId! }));
+    const message = await refused(f.harness.callAgentTool("initiative_message", { target: worker, text: "The replay inputs moved." }, { threadId: peer.threadId! }));
     // T136: a stop that has not settled must not be woken by a message.
     expect(message).toMatch(new RegExp(`${worker}'s ${a1.ref} is being stopped or is not confirmed yet; message it once that settles`));
     expect(f.send).not.toHaveBeenCalled();
@@ -168,7 +168,7 @@ describe("T88 A189: each refusal names the real prerequisite and next step", () 
     f.store.updateAssignment(project.id, 1, { state: "dispatching", opState: "pending" } as any);
     const [peer] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id, "Other").ref], access: "read-only" });
     setStatus(f, peer.threadId!, "active");
-    const message = await refused(f.harness.callAgentTool("initiative_message", { target: "W1", text: "hi", mode: "queue" }, { threadId: peer.threadId! }));
+    const message = await refused(f.harness.callAgentTool("initiative_message", { target: "W1", text: "hi" }, { threadId: peer.threadId! }));
     expect(message).toMatch(/W1's A1 is being stopped or is not confirmed yet/);
   });
 
