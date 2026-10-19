@@ -65,6 +65,13 @@ integrations, `executor_resume` continues paused runs, and artifact tools
 manage saved UIs. Auth is a plugin-secret OAuth token pair with automatic
 refresh, or a CF Access service token. See [Executor](plugins/executor/README.md).
 
+`muse` runs Meta's Muse Code as a provider over its session protocol (`muse
+serve`): one Muse session per thread that survives restarts, steering and
+interrupts, bb's tools served to Muse over a local MCP endpoint, bb permission
+modes mapped to Muse's profiles with prompts as bb approvals, and per-turn
+token and subscription usage. It runs on the thread's machine, where Muse must
+be signed in. See [Muse provider](plugins/muse/README.md).
+
 ## Install
 
 Use BB 0.43.1 or later. The bb server needs Git, npm, and GitHub access to this
@@ -299,6 +306,34 @@ Record potential BB issues here for later review and filing. Never open
 issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
+
+### Provider bridges: publish the dynamic-tool MCP server (2026-10-19)
+
+Candidate from the Muse provider (W524); not filed. bb hands a bridge its
+injected tools as `dynamicTools`, but only the Claude bridge (in-process SDK
+server) and the ACP bridge (a private `--mcp-stdio` relay over a local
+socket) can expose them to an agent. A plugin bridge for any other agent
+rebuilds that relay: the Muse plugin serves its own streamable-HTTP MCP
+endpoint (`plugins/muse/src/mcp-http.ts`).
+
+- **Smallest change:** export the ACP bridge's relay from
+  `@get-bb/plugin-sdk/provider-bridge` as one helper that takes
+  `dynamicTools` and a forwarder and returns an MCP server config (stdio and
+  streamable HTTP), with the keep-alive a person-waiting tool needs.
+- **Suggested issue title:** `Provider bridge SDK: public MCP server for dynamicTools`.
+
+### Provider bridges: withdraw a pending interaction (2026-10-19)
+
+Candidate from the Muse provider (W524); not filed. A bridge raises an
+approval with `interaction/request` and waits for the answer, but cannot take
+it back. Muse resolves some approvals on its own (its AI reviewer in Auto, a
+timeout, a stage resolved by policy), and the bb prompt then stays open until
+someone answers it, after which the bridge ignores the answer.
+
+- **Smallest change:** a bridge→runtime `interaction/cancel { requestId,
+  reason }` (or cancelling the JSON-RPC request) that closes the prompt with
+  the reason.
+- **Suggested issue title:** `Provider bridge protocol: let a bridge withdraw a pending interaction`.
 
 ### Background commands: show command, Stop, reconcile stale tasks (2026-10-15)
 
