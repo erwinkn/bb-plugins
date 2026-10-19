@@ -230,7 +230,8 @@ const isPrView = (v: unknown): v is PrView => {
 /**
  * The toolbar (view, grouping, search, filters), Next up, the list or the graph, and the open
  * PR's detail. The Initiative's own PRs come first; the unassigned ones (R2) follow, folded
- * under Unassigned, unless a search is looking through them.
+ * under Unassigned, unless a search or a filter is looking through them: the chip and category
+ * counts include the unassigned PRs, so a filtered list must show them too.
  */
 function PrMap({ queue, loadNotes, loadDetail, onMove }: { queue: MergeQueue; loadNotes?: LoadNotes; loadDetail?: LoadDetail; onMove?: MovePr }) {
   const [view, setView] = useRemembered<PrView>(`initiatives:prs:${queue.projectId}`, DEFAULT_VIEW, isPrView);
@@ -259,7 +260,11 @@ function PrMap({ queue, loadNotes, loadDetail, onMove }: { queue: MergeQueue; lo
   const filtered = category !== undefined || filter.stages.length > 0 || filter.availableOnly;
   const mine = shown.filter((pr) => !pr.unassigned);
   const unassigned = shown.filter((pr) => pr.unassigned).sort(stackOrder(all));
-  const [unassignedOpen, setUnassignedOpen] = useState(false);
+  // Folded with no search and no filter; opened by either. A click overrides that until the search or filter changes.
+  const looking = filtered || !!query.trim();
+  const [fold, setFold] = useState<{ looking: boolean; open: boolean } | null>(null);
+  if (fold && fold.looking !== looking) setFold(null);
+  const unassignedOpen = fold ? fold.open : looking;
   const [menuAt, setMenuAt] = useState<PrMenuAt | null>(null);
   const menuOf = (pr: QueuedPullRequest): MoveMenu | null => {
     const { targets, pending } = moveTargets(pr, queue.projectId, queue.initiatives ?? []);
@@ -341,7 +346,11 @@ function PrMap({ queue, loadNotes, loadDetail, onMove }: { queue: MergeQueue; lo
       {!shown.length ? (
         <p className="cr-empty">No pull requests match {query.trim() ? "this search" : "these filters"}.</p>
       ) : !mine.length ? (
-        <p className="cr-empty">{query.trim() || filtered ? "None of this Adventure's pull requests match." : "No pull request is this Adventure's yet."}</p>
+        <p className="cr-empty">
+          {!looking ? "No pull request is this Adventure's yet."
+            : unassigned.length ? "No pull request assigned to this Adventure matches; the unassigned ones below do."
+            : "None of this Adventure's pull requests match."}
+        </p>
       ) : mode === "graph" ? (
         <PrGraph pullRequests={mine} all={all} beneath={queue.beneath} stages={queue.stages} open={openPr} onOpen={setOpen} menuOf={menuOf} />
       ) : (
@@ -367,12 +376,12 @@ function PrMap({ queue, loadNotes, loadDetail, onMove }: { queue: MergeQueue; lo
       {unassigned.length ? (
         <section className="cr-mq-group cr-mq-unassigned" aria-label="Unassigned">
           <h3>
-            <button type="button" className="cr-mq-fold" aria-expanded={unassignedOpen || !!query.trim()} onClick={() => setUnassignedOpen(!unassignedOpen)}>
+            <button type="button" className="cr-mq-fold" aria-expanded={unassignedOpen} onClick={() => setFold({ looking, open: !unassignedOpen })}>
               Unassigned<span className="cr-count">{unassigned.length}</span>
             </button>
             <span className="cr-pm-hint">shown in every Adventure with their repository{onMove ? "; right-click or long-press one to move it" : ""}</span>
           </h3>
-          {unassignedOpen || query.trim() ? <ul>{unassigned.map(row)}</ul> : null}
+          {unassignedOpen ? <ul>{unassigned.map(row)}</ul> : null}
         </section>
       ) : null}
       </div>
