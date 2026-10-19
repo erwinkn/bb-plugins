@@ -98,6 +98,9 @@
 .cr-pr-delta [data-tone="del"] { color: color-mix(in srgb, var(--destructive) 85%, var(--foreground)); }
 .cr-mq-size { flex: none; display: inline-flex; align-items: baseline; gap: 6px; }
 .cr-mq-files { color: var(--muted-foreground); }
+.cr-mq-size[data-stale] { cursor: help; }
+.cr-mq-size[data-stale] > :not(.cr-mq-stale) { opacity: .55; }
+.cr-mq-stale { color: var(--cr-amber-ink, var(--cr-amber)); font-size: 10.5px; }
 .cr-mq-reviewers { flex: none; display: inline-flex; gap: 6px; color: var(--muted-foreground); }
 .cr-mq-reviewers > span::before { content: "@"; color: var(--cr-faint); }
 .cr-mq-reviewers > span:last-child:not([data-state])::before { content: none; }

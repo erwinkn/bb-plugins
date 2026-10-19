@@ -13,7 +13,7 @@ const { mentionsNumber, readPrDetail, DETAIL_LIMITS } = await import("../lib/pr-
 const { PrNotes } = await import("../lib/pr-notes");
 const { blankPrRecord } = await import("../lib/pr-stages");
 const { memoryStore, prRefsOf } = await import("./helpers");
-const { ghCall, searchPage } = await import("./gh-fixtures");
+const { detailsAnswer, graphqlFetch, queryKind, searchPage } = await import("./gh-fixtures");
 import type { PrDetail } from "../lib/pr-detail";
 import type { QueuedPullRequest } from "../lib/merge-queue";
 
@@ -293,8 +293,8 @@ describe("T156 mergeQueue links (W356 #2)", () => {
     });
     const notes = new PrNotes(db);
     recordPrs(store, notes, "p", { prs: [{ url: url(7), assignment: "A1", worker: null }] }, 1);
-    const gh = async (args: string[]) => args[1] === "user" ? "erwinkn"
-      : searchPage(ghCall(args) === "list" ? [{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }] : []);
+    const gh = async (query: string, variables: Record<string, unknown>) => queryKind(query) === "details" ? detailsAnswer(variables)
+      : searchPage([{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }]);
     const assigned = new AssignedPrs(store);
     const cache = new MergeQueueCache({
       memberProjectIds: () => ["proj"], project: async () => ({ name: "bb", gitRemoteUrl: "https://github.com/erwinkn/bb.git" }),
@@ -316,11 +316,11 @@ describe("T156 mergeQueue links (W356 #2)", () => {
       const out = await next();
       return path === "projects.get" ? { ...(out as object), gitRemoteUrl: "https://github.com/erwinkn/bb.git" } : out;
     });
-    execFile.mockImplementation((_cmd: string, args: string[], _options: unknown, done: (error: Error | null, stdout: string, stderr: string) => void) => {
-      const out = args[1] === "user" ? "erwinkn"
-        : searchPage(ghCall(args) === "list" ? [{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }] : []);
-      done(null, out, "");
-    });
+    // W516: `gh` only hands over its token; GitHub answers over HTTP.
+    execFile.mockImplementation((_cmd: string, args: string[], _options: unknown, done: (error: Error | null, stdout: string, stderr: string) => void) =>
+      done(args.join(" ") === "auth token" ? null : new Error(`unexpected gh ${args.join(" ")}`), "gho_test\n", ""));
+    vi.stubGlobal("fetch", graphqlFetch((query, variables) => queryKind(query) === "details" ? detailsAnswer(variables)
+      : searchPage([{ number: 7, title: "PR 7", url: url(7), headRefName: "feat/7", baseRefName: "main" }])));
     await call(f, "initiative_spawn", { label: "SWC", purpose: "pr", text: `Implement ${url(7)}.` });
     const work = f.store.assignments(project.id).at(-1)!;
     const read = async () => (await f.harness.callRpc("mergeQueue", { projectId: project.id })) as { pullRequests: QueuedPullRequest[] };
@@ -330,5 +330,6 @@ describe("T156 mergeQueue links (W356 #2)", () => {
     expect(seven!.links).toEqual({ workers: [`W${work.workerNum}`], assignments: [work.ref] });
     expect(reads).not.toHaveBeenCalled();
     execFile.mockReset();
+    vi.unstubAllGlobals();
   });
 });

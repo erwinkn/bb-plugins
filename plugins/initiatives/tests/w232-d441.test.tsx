@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 // D441 (W229's second P1): no read waits on GitHub. Each case W229 probed (cold, stale,
-// forced, in flight, and a cold `gh api user`) answers at once with gh held open.
+// forced, in flight) answers at once with GitHub's answer held.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { FETCH_BUDGET_MS, GH_TIMEOUT_MS, MergeQueueCache, MIN_FORCED_REFRESH_MS, REFRESH_MS, type GhRunner } from "../lib/merge-queue-server";
-import { ghCall, searchPage } from "./gh-fixtures";
+import { FETCH_BUDGET_MS, GH_TIMEOUT_MS, IDLE_REFRESH_MS, MergeQueueCache, MIN_FORCED_REFRESH_MS, type GraphQl } from "../lib/merge-queue-server";
+import { detailsAnswer, queryKind, searchPage } from "./gh-fixtures";
 import { PR_STAGES } from "../lib/pr-stages";
 import { parsePullRequests, type MergeQueue } from "../lib/merge-queue";
 import { appReads } from "../lib/dashboard-data";
@@ -17,65 +17,64 @@ const { Dashboard } = await import("../app");
 const slots: ReturnType<typeof renderSlot>[] = [];
 afterEach(() => { slots.splice(0).forEach((s) => s.unmount()); cleanup(); appReads.clear(); vi.restoreAllMocks(); });
 
-const raw = [{ number: 1, title: "Cached PR", url: "https://github.com/o/r/pull/1", headRefName: "a", baseRefName: "main" }];
-const page = searchPage([]);
+const raw = [{ id: "PR_1", number: 1, title: "Cached PR", url: "https://github.com/o/r/pull/1", headRefName: "a", baseRefName: "main" }];
+const details = (variables: Record<string, unknown>) => detailsAnswer(variables, () => ({ number: 1, additions: 1 }));
 /** Settles within this many macrotasks or reports that it is still waiting. */
 const promptly = <T,>(promise: Promise<T>) =>
   Promise.race([promise, new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 20))]);
 
-/** A cache whose gh calls of one kind (`hold`) wait until released. */
+/** A cache whose GitHub requests of one kind (`hold`) wait until released. */
 const setup = () => {
   let now = 1_000_000;
   const held = new Map<string, { release: () => void; promise: Promise<void> }>();
-  const hold = (kind: string) => {
+  const hold = (kind: "list" | "details") => {
     let release!: () => void;
     const promise = new Promise<void>((resolve) => { release = resolve; });
     held.set(kind, { release, promise });
     return release;
   };
-  const gh = vi.fn<GhRunner>(async (args) => {
-    const kind = args[1] === "user" ? "user" : ghCall(args) === "details" ? "graphql" : "list";
+  const github = vi.fn<GraphQl>(async (query, variables) => {
+    const kind = queryKind(query);
     await held.get(kind)?.promise;
-    return kind === "user" ? "o" : kind === "graphql" ? page : searchPage(raw);
+    return kind === "details" ? details(variables) : searchPage(raw, null, raw.length, "o");
   });
   const cache = new MergeQueueCache({
     memberProjectIds: () => ["b"], project: async () => ({ name: "R", gitRemoteUrl: "https://github.com/o/r" }),
     workers: () => new Map(), prRecords: () => new Map(), assignedPrs: () => new Map(), notes: () => new Map(),
-  }, gh, () => now);
-  const calls = (kind: "graphql" | "list") => gh.mock.calls.filter(([args]) => ghCall(args) === (kind === "graphql" ? "details" : "list")).length;
-  return { cache, gh, hold, calls, advance: (ms: number) => { now += ms; }, releaseAll: () => held.forEach((h) => h.release()) };
+  }, github, () => now);
+  const calls = (kind: "list" | "details") => github.mock.calls.filter(([query]) => queryKind(query) === kind).length;
+  return { cache, github, hold, calls, advance: (ms: number) => { now += ms; }, releaseAll: () => held.forEach((h) => h.release()) };
 };
 
-describe("D441: MergeQueueCache reads never wait on gh", () => {
-  it("cold: answers with a fetching, empty snapshot while the login, list and details are held", async () => {
+describe("D441: MergeQueueCache reads never wait on GitHub", () => {
+  it("cold: answers with a fetching, empty snapshot while the list is held, then with the list while its details are", async () => {
     const s = setup();
-    s.hold("user");
+    s.hold("list");
     const q = await promptly(s.cache.read("p"));
     expect(q).not.toBe("waiting");
     expect(q).toMatchObject({ login: null, pullRequests: [], repos: [{ repo: "o/r", fetchedAt: null, fetching: true }] });
     s.releaseAll();
-    s.hold("graphql");
-    // The login landed; the list lands while graphql is still held: the read still answers at once.
-    await waitFor(() => expect(s.calls("graphql")).toBe(1));
-    expect(await promptly(s.cache.read("p"))).toMatchObject({ login: "o", repos: [{ fetching: true }] });
+    s.hold("details");
+    // The list landed; its details are still held: the read still answers at once, with the list.
+    await waitFor(() => expect(s.calls("details")).toBe(1));
+    expect(await promptly(s.cache.read("p"))).toMatchObject({ login: "o", pullRequests: [{ title: "Cached PR", size: null }], repos: [{ fetching: true }] });
     s.releaseAll();
     await s.cache.settled();
-    expect((await s.cache.read("p")).pullRequests.map((pr) => pr.title)).toEqual(["Cached PR"]);
+    expect((await s.cache.read("p")).pullRequests.map((pr) => [pr.title, pr.size?.additions])).toEqual([["Cached PR", 1]]);
   });
 
   it("stale: serves the cached PRs and refreshes behind them; a concurrent read joins that one fetch", async () => {
     const s = setup();
     await s.cache.read("p");
     await s.cache.settled();
-    s.advance(REFRESH_MS);
-    s.hold("graphql");
+    s.advance(IDLE_REFRESH_MS);
     s.hold("list");
     const [first, second] = await Promise.all([promptly(s.cache.read("p")), promptly(s.cache.read("other-initiative"))]);
     for (const q of [first, second]) expect(q).toMatchObject({ pullRequests: [{ title: "Cached PR" }], repos: [{ fetching: true }] });
-    await waitFor(() => expect(s.calls("graphql")).toBe(2));
+    await waitFor(() => expect(s.calls("list")).toBe(2));
     // In flight: more reads join it, never start another and never wait.
     expect(await promptly(s.cache.read("p", { refresh: true }))).toMatchObject({ repos: [{ fetching: true }] });
-    expect([s.calls("list"), s.calls("graphql")]).toEqual([2, 2]);
+    expect([s.calls("list"), s.calls("details")]).toEqual([2, 1]);
     s.releaseAll();
     await s.cache.settled();
     expect((await s.cache.read("p")).repos[0]!.fetching).toBe(false);
@@ -86,20 +85,20 @@ describe("D441: MergeQueueCache reads never wait on gh", () => {
     await s.cache.read("p");
     await s.cache.settled();
     s.advance(MIN_FORCED_REFRESH_MS);
-    s.hold("graphql");
+    s.hold("list");
     const q = await promptly(s.cache.read("p", { refresh: true }));
     expect(q).toMatchObject({ pullRequests: [{ title: "Cached PR" }], repos: [{ fetching: true }] });
-    await waitFor(() => expect(s.calls("graphql")).toBe(2));
+    await waitFor(() => expect(s.calls("list")).toBe(2));
     s.releaseAll();
     await s.cache.settled();
   });
 });
 
-describe("D441: nor on BB, nor past the details budget (W229)", () => {
+describe("D441: nor on BB, nor past the list's budget (W229)", () => {
   const sources = (project: () => Promise<{ name: string; gitRemoteUrl: string | null }>) => ({
     memberProjectIds: () => ["b"], project, workers: () => new Map(), prRecords: () => new Map(), assignedPrs: () => new Map(), notes: () => new Map(),
   });
-  const answer = async (args: string[]) => args[1] === "user" ? "o" : ghCall(args) === "details" ? page : searchPage(raw);
+  const answer: GraphQl = async (query, variables) => queryKind(query) === "details" ? details(variables) : searchPage(raw);
 
   it("serves the last member remote to every read while BB is asked again, and asks once", async () => {
     let now = 1;
@@ -121,20 +120,20 @@ describe("D441: nor on BB, nor past the details budget (W229)", () => {
 
   it("gives each page at most 20 s of the 60 s budget left, retries a failed one once, and starts none once it is spent", async () => {
     let now = 1;
-    /** A gh whose details attempts take these many ms, killed like the real one once its time is up; `pages` pages, one PR each. */
+    /** A GitHub whose list attempts take these many ms, aborted once their time is up; `pages` pages, one PR each. */
     const run = async (durations: number[], pages: number) => {
-      const timeouts: (number | undefined)[] = [];
+      const timeouts: number[] = [];
       let read = 0;
-      const gh: GhRunner = async (args, timeoutMs) => {
-        if (ghCall(args) !== "details") return answer(args);
+      const github: GraphQl = async (query, variables, timeoutMs) => {
+        if (queryKind(query) !== "list") return answer(query, variables, timeoutMs);
         const took = durations[timeouts.push(timeoutMs) - 1]!;
-        now += Math.min(took, timeoutMs!);
-        if (took > timeoutMs!) throw new Error("gh timed out");
+        now += Math.min(took, timeoutMs);
+        if (took > timeoutMs) throw new Error("GitHub didn't answer in time");
         read++;
-        return searchPage([{ number: read }], read < pages ? `c${read}` : null, pages);
+        return searchPage([{ number: read, url: `https://github.com/o/r/pull/${read}` }], read < pages ? `c${read}` : null, pages);
       };
       const start = now;
-      const cache = new MergeQueueCache(sources(async () => ({ name: "R", gitRemoteUrl: "https://github.com/o/r" })), gh, () => now);
+      const cache = new MergeQueueCache(sources(async () => ({ name: "R", gitRemoteUrl: "https://github.com/o/r" })), github, () => now);
       await cache.read("p");
       await cache.settled();
       return { timeouts, took: now - start, repo: (await cache.read("p")).repos[0]! };
@@ -142,25 +141,25 @@ describe("D441: nor on BB, nor past the details budget (W229)", () => {
     expect(GH_TIMEOUT_MS * 3).toBe(FETCH_BUDGET_MS);
     // Four pages spend the budget, the fourth getting the 15 s left: no fifth starts, and the query says so.
     expect(await run([15_000, 15_000, 15_000, 15_000, 1], 5)).toMatchObject({
-      timeouts: [20_000, 20_000, 20_000, 15_000], took: 60_000, repo: { detailsError: "the details query took over 60 s (read 4 of 5 PRs)", error: null },
+      timeouts: [20_000, 20_000, 20_000, 15_000], took: 60_000, repo: { error: "the PR list query took over 60 s (read 4 of 5 PRs)", fetchedAt: null },
     });
     // A page that times out is tried once more, quietly, with the time left.
-    expect(await run([25_000, 5_000], 1)).toMatchObject({ timeouts: [20_000, 20_000], took: 25_000, repo: { detailsError: null } });
+    expect(await run([25_000, 5_000], 1)).toMatchObject({ timeouts: [20_000, 20_000], took: 25_000, repo: { error: null } });
     // Twice: the query fails with the page's own error, and no third attempt starts.
-    expect(await run([25_000, 25_000, 1], 1)).toMatchObject({ timeouts: [20_000, 20_000], took: 40_000, repo: { detailsError: "gh timed out" } });
+    expect(await run([25_000, 25_000, 1], 1)).toMatchObject({ timeouts: [20_000, 20_000], took: 40_000, repo: { error: "GitHub didn't answer in time" } });
     // A page ends a millisecond short: the next gets that millisecond, and no retry once it is spent.
     expect(await run([20_000, 20_000, 19_999, 5_000, 1], 5)).toMatchObject({
-      timeouts: [20_000, 20_000, 20_000, 1], took: 60_000, repo: { detailsError: "gh timed out", error: null },
+      timeouts: [20_000, 20_000, 20_000, 1], took: 60_000, repo: { error: "GitHub didn't answer in time" },
     });
   });
 });
 
 describe("D441: the server handlers answer at once", () => {
   it("initiative_read {view:prs} and the mergeQueue RPC return while the GitHub fetch never ends", async () => {
-    // Every fetch hangs, and no gh process is spawned: a handler that awaited one would never resolve.
+    // Every fetch hangs, and nothing reaches GitHub: a handler that awaited one would never resolve.
     const fetches: string[] = [];
-    vi.spyOn(MergeQueueCache.prototype as unknown as { fetch: (entry: { name: string }) => Promise<void> }, "fetch")
-      .mockImplementation((entry) => { fetches.push(entry.name); return new Promise(() => {}); });
+    vi.spyOn(MergeQueueCache.prototype as unknown as { fetch: (group: { name: string }[]) => Promise<void> }, "fetch")
+      .mockImplementation((group) => { fetches.push(...group.map((entry) => entry.name)); return new Promise(() => {}); });
     const { f, project } = await projectFixture();
     f.intercept(async (path, _input, next) => {
       const out = await next();

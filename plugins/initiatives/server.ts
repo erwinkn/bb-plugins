@@ -601,7 +601,8 @@ export default function plugin(bb: BbPluginApi) {
   (repo) => bb.realtime.publish("merge-queue-changed", { repo }));
   bb.rpc.register(projectsContract, {
     mergeQueue: async ({ projectId, refresh }) => {
-      const queue = await mergeQueue.read(projectId, { refresh });
+      // W516: the dashboard's read keeps its repositories on the two-minute cadence; agents' reads don't.
+      const queue = await mergeQueue.read(projectId, { refresh, viewer: true });
       // From the remotes cache; one never read is looked up behind the answer and announced.
       return { ...queue, initiatives: store.projects().map((p) => ({ id: p.id, name: p.name, repos: mergeQueue.cachedRepos(p.id) })) };
     },

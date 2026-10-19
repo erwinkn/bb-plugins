@@ -6,8 +6,8 @@ import { memoryStore } from "./helpers";
 import { projectFixture } from "./fake-native";
 import { MIGRATIONS, Store } from "../lib/store";
 import { PR_OWNER_MIGRATIONS, PrOwners, MISS_TTL_MS, ledgerThreads } from "../lib/pr-owners";
-import { MergeQueueCache, REMOTE_TTL_MS, type GhRunner } from "../lib/merge-queue-server";
-import { ghCall, searchPage } from "./gh-fixtures";
+import { MergeQueueCache, REMOTE_TTL_MS, type GraphQl } from "../lib/merge-queue-server";
+import { detailsAnswer, queryKind, searchPage } from "./gh-fixtures";
 import { prSummary, prsByRef } from "../lib/pr-map";
 import { blankPrRecord, type PrRecord } from "../lib/pr-stages";
 
@@ -38,7 +38,7 @@ function setup(open = OPEN, held?: Promise<void>, gone = new Set<string>()) {
   /** Each Initiative's PR records, by URL. */
   const records = new Map<string, Map<string, PrRecord>>();
   const owners = new PrOwners(db, ledgerThreads(store, parentOf), changed, () => clock.now);
-  const gh = vi.fn<GhRunner>(async (args) => (args[1] === "user" ? "erwinkn" : searchPage(ghCall(args) === "list" ? open : [])));
+  const gh = vi.fn<GraphQl>(async (query, variables) => (queryKind(query) === "details" ? detailsAnswer(variables) : searchPage(open)));
   // `held` holds bb-plugins' remote lookup; a project in `gone` answers 404.
   const project = vi.fn(async (id: string) => {
     if (gone.has(id)) throw new Error("404 project not found");

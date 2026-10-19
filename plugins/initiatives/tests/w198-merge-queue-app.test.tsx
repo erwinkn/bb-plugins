@@ -135,6 +135,21 @@ describe("W198 merge queue view", () => {
     expect(slot.getByRole("status").textContent).toBe("erwinkn/bb-plugins: read 1000 of 1012 open PRs, as many as GitHub's search returns.");
   });
 
+  it("names the repositories one capped search covered together, once, and separate searches apart (W516)", () => {
+    const repo = (name: string, search: string[]) => ({ repo: name, fetchedAt: NOW - 60_000, error: null, fetching: false, detailsFetchedAt: NOW - 60_000, detailsError: null, capped: { listed: 1000, total: 1012, search } });
+    const shared = ["erwinkn/bb-plugins", "erwinkn/bb"];
+    const together = view({ queue: queue({ repos: [repo("erwinkn/bb-plugins", shared), repo("erwinkn/bb", shared)] }) });
+    expect(together.getByRole("status").textContent).toBe("erwinkn/bb-plugins, erwinkn/bb: read 1000 of 1012 open PRs, as many as GitHub's search returns.");
+    together.unmount();
+    // The same counts from two searches: two notes.
+    const apart = view({ queue: queue({ repos: [repo("erwinkn/bb-plugins", ["erwinkn/bb-plugins"]), repo("erwinkn/bb", ["erwinkn/bb"])] }) });
+    expect(apart.getByRole("status").textContent).toBe("erwinkn/bb-plugins: read 1000 of 1012 open PRs · erwinkn/bb: read 1000 of 1012 open PRs, as many as GitHub's search returns.");
+    apart.unmount();
+    // Another Adventure's read searched both; this one lists only bb-plugins: the counts are both repositories'.
+    const subset = view({ queue: queue({ repos: [repo("erwinkn/bb-plugins", shared)] }) });
+    expect(subset.getByRole("status").textContent).toBe("erwinkn/bb-plugins, erwinkn/bb: read 1000 of 1012 open PRs, as many as GitHub's search returns.");
+  });
+
   it("explains a fetch that never succeeded and retries from the alert", () => {
     const onRefresh = vi.fn();
     const slot = view({

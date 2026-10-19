@@ -54,8 +54,8 @@ What changed from v8 (the previous build, `3d46353`):
   new work, and new work clears a hand-set planned or done. Old closes made by the previous
   build come back as hand-set on every load. A task's PRs are those any of its work names, in
   its PR records or anywhere in its reports; the newest work decides the outcome. PR states (`pr_states`) come from the merge
-  queue's open lists plus a background `gh pr view` pass (10 PRs, 2 at a time, after each
-  fetch); reads never call GitHub.
+  queue's open lists plus a background lookup pass after each fetch (up to 50 PRs in one
+  GraphQL request, W516); reads never call GitHub.
 - **Standing rules replace the decision log** (D518, D523): `initiative_rule`, the Rules
   tab, `initiative_read {view:"rules"}`, `bb initiative rules import|export`. The list
   travels in briefs, work messages and each coordinator's first message; instructions carry
@@ -408,8 +408,8 @@ localStorage and reopen it when the dashboard mounts again, e.g. after a
 browser tab took the panel. The PRs tab's list or graph view, grouping and
 filters are remembered the same way.
 
-The PRs tab lists the open pull requests authored by the `gh` account (`gh api
-user`, resolved once) in the GitHub repositories of the Initiative's member BB
+The PRs tab lists the open pull requests authored by the `gh` account (the
+token `gh auth token` prints) in the GitHub repositories of the Initiative's member BB
 projects. A project's repository comes from the `gitRemoteUrl` BB records for
 it (its `origin`); projects without a GitHub remote are named in the footer.
 For bb-plugins that is `erwinkn/bb-plugins` and, through bb-fork,
@@ -522,23 +522,70 @@ The server keeps one cache per repository, shared by every Initiative and
 client (`lib/merge-queue-server.ts`). Nothing waits on GitHub (D441): the
 `mergeQueue` RPC and `initiative_read {view:"prs"}` answer from the cache at
 once and start a fetch behind the answer when a repository's last attempt is
-two minutes old, or on Refresh (at most once per 10 s). The repository shows
-`fetching` meanwhile, and the end of each fetch is announced on the
-`merge-queue-changed` realtime channel, so the dashboard reads again at once.
-Until the first fetch lands the tab shows skeleton rows. Each fetch is one
-asynchronous `gh pr list --repo R --author LOGIN --state open --json …`,
-capped at 200 PRs, and beside it the details query for sizes and reviewers
-(additions, deletions, changed files, commit count, latest reviews, requested
-reviewers): `gh api graphql`, one call per page of 50 and never more than the
-list's 200 PRs (about 3 s a page). They can't share one query: GitHub answers
-502 when `gh pr list` asks for additions beside the checks rollup at 100 PRs a
-page. Every `gh` call has a 20 s timeout, the details pages 20 s in all (each
-page gets only the time left), and a repository has at most one fetch in flight: it is released only when both the list and the details have
-settled. A failed details query never fails the list: it keeps the last sizes,
-hides reviewer states (they may have changed) and says so above the list. No
-token is stored. A failed fetch keeps the last good list with "Couldn't
-refresh" and the error; a repository that never loaded shows the error with
-Retry.
+old enough, or on Refresh (at most once per 10 s). Old enough is two minutes
+while a dashboard shows the repository (a `mergeQueue` RPC read within the last
+minute; open dashboards poll every 15 s) and ten minutes when only agents read
+it. The repository shows `fetching` meanwhile, and the list landing and each
+details answer are announced on the `merge-queue-changed` realtime channel,
+so the dashboard reads again at once. Until the first list lands the tab shows
+skeleton rows.
+
+W516: the server talks to GitHub's GraphQL API over HTTP (`lib/github-api.ts`)
+and never spawns `gh` per request. Each spawn forked the 2.6 GB BB server, and
+a refresh forked 20–60 times, often in a single event-loop turn. Those forks
+caused 23 of 55 event-loop stalls on 2026-10-18 (1.0–1.7 s each). The token
+comes from `gh auth token`, read once and read again after a 401. No token is
+stored. A fetch runs three steps:
+
+- **List.** One paged search over every due repository of the read (`repo:`
+  qualifiers ORed, at most 10 repositories a search, 100 PRs a page, one
+  GraphQL point a page). Each PR is filed under its repository by URL. It
+  covers state, checks counted by state, mergeability and branches, plus
+  `viewer { login }` for the dashboard's "by …". The list is read whole each
+  time: half of the PRs' checks finish after their `updatedAt`, so a read
+  limited to what changed would miss them.
+- **Details.** Sizes and reviewers (additions, deletions, changed files,
+  commit count, latest reviews, requested reviewers) are read by node id,
+  only for PRs whose `updatedAt` moved since their details were read (a push
+  or a review moves it), or whose details are 30 minutes old. They can't
+  share the list's query: GitHub answers 502 when one query asks for
+  additions beside the checks rollup at 100 PRs a page.
+
+  W520: each PR's details are read and retried on their own, at most 4
+  requests at a time across every repository. A request asks for up to 50
+  PRs of one repository. It costs one GraphQL point whatever the count: on
+  2026-10-19, Equisafe's 227 open PRs took 5 points and 5–9 s in batches of
+  50, against 227 points and 27 s one PR a request. A request that fails is
+  split in two, each half queued on its own, down to single PRs, so a PR
+  whose read always fails or hangs ends up alone and every other PR loads.
+  Halves split again only once a details request of the same fetch
+  succeeded (a half that fails first waits for the others). When GitHub
+  fails them all, the fault may be GitHub's: a fetch asks at most three
+  times per batch, and the next fetch goes on from those halves, so two bad
+  PRs in one batch are still found. A PR asked alone in a first request is
+  retried once; one a split left alone isn't. One that fails alone keeps its
+  last size and hides its reviewer states (they may have changed). Its row marks the size as stale and a note above the list
+  names it. It is asked alone again after 2 minutes, then 4, 8, 16 and 30.
+- **Lookups.** Up to 50 tracked PRs that no open list names are looked up in
+  one request (`resource(url:)` aliases).
+
+Each request gets at most 20 s. A search's pages share a 60 s budget, and a
+failed page is retried once, quietly, while time is left. A repository has at
+most one list fetch in flight. Details never hold it up: the list is announced
+as it lands, each details answer as it lands, and a PR whose details are being
+read isn't asked for again meanwhile. A failed details read never fails the
+list. A failed fetch
+keeps the last good list with "Couldn't refresh" and the error; a repository
+that never loaded shows the error with Retry.
+
+Measured on live data on 2026-10-19 for Equisafe: Infra (4 repositories,
+228 open PRs), in a process holding 2.6 GB like the server:
+
+| Per refresh | Before (`gh`) | After (HTTP) |
+|---|---|---|
+| Processes spawned | 35 | 0 (1 per server life for the token) |
+| GitHub requests | 35 | 9 cold, 4 warm |
+| Main-thread time | 5.8 s, longest block 1.3 s | 0.17 s cold, 0.06 s warm; longest block 6 ms |
 
 ## Backend and tools
 

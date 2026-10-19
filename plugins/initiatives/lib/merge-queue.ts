@@ -53,6 +53,11 @@ export interface QueuedPullRequest extends PrState {
   size: PrSize | null;
   /** Each reviewer's latest review, then those asked who haven't reviewed yet. */
   reviewers: Reviewer[];
+  /**
+   * W520: why its latest details read failed. Its size stays from an earlier read, if any, and its
+   * reviewers are withheld until a read succeeds. Absent when the details are current.
+   */
+  detailsError?: string;
   /** Its place in a stack of PRs (see linkStacks); null when nothing stacks on it or under it. */
   stack: PrStack | null;
   /** Ready for the user, and so is every PR it is stacked on: it can be reviewed now. */
@@ -132,14 +137,19 @@ export interface MergeQueueRepo {
   /** A fetch is running now; reads never wait for it, and its end is announced (merge-queue-changed). */
   fetching: boolean;
   /**
-   * The sizes and reviewers (the details query) fail apart from the list: when
-   * they last loaded, and why the latest attempt failed. Sizes from an older
-   * load stay shown; reviewer states are withheld until the details load again.
+   * The sizes and reviewers (the details query) fail apart from the list, PR by PR (W520): when
+   * a details read of this repository last succeeded, and, while some listed PRs' latest read
+   * failed, the latest error and how many PRs it holds back. Each such PR says so itself
+   * (`detailsError`).
    */
   detailsFetchedAt: number | null;
   detailsError: string | null;
-  /** Set when the last list read stopped short of every open PR GitHub counts (PR_LIMIT): how many it read of how many. */
-  capped?: { listed: number; total: number };
+  /**
+   * Set when the last list read stopped short of every open PR GitHub counts (PR_LIMIT): how many it
+   * read of how many, over the repositories its search covered (W516: `search`, one search spans
+   * several; absent from older servers).
+   */
+  capped?: { listed: number; total: number; search?: string[] };
 }
 
 export interface MergeQueue {
@@ -173,19 +183,26 @@ export function githubRepo(remoteUrl: string | null | undefined): string | null 
 }
 
 /**
- * The open PRs a search finds, one page of LIST_PAGE. The keys are `gh pr list --json`'s, but
- * the checks come as counts by state, every check of the last commit: `gh pr list --json
- * statusCheckRollup` reads the first 100 one by one, each with its workflow's name. W490, 209
- * PRs in 3 pages: 11–12 s as counts, 11–13 s check by check, 6–7 s without mergeability (which
- * the queue needs). Details beside it on the same pages fail with a 502 or 504 (GH_DETAILS_QUERY).
+ * The open PRs a search finds, one page of LIST_PAGE, with the account it searched as. The keys
+ * are `gh pr list --json`'s, but the checks come as counts by state, every check of the last
+ * commit: `gh pr list --json statusCheckRollup` reads the first 100 one by one, each with its
+ * workflow's name. W490, 209 PRs in 3 pages: 11–12 s as counts, 11–13 s check by check, 6–7 s
+ * without mergeability (which the queue needs). Details beside it on the same pages fail with a
+ * 502 or 504 (GH_DETAILS_QUERY). `id` is what the details query asks for.
+ *
+ * W516: one search covers several repositories (prSearch): a page costs one GraphQL point
+ * whatever it holds, and most repositories have a PR or none. The list is read whole every
+ * time: half the PRs' checks finish after their `updatedAt` (live, 2026-10-19), so paging only
+ * what changed since the last read would miss them.
  */
 export const LIST_PAGE = 100;
 export const GH_LIST_QUERY = `query($q: String!, $endCursor: String) {
+  viewer { login }
   search(query: $q, type: ISSUE, first: ${LIST_PAGE}, after: $endCursor) {
     issueCount
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      number title url isDraft reviewDecision mergeable mergeStateStatus headRefName baseRefName createdAt updatedAt
+      id number title url isDraft reviewDecision mergeable mergeStateStatus headRefName baseRefName createdAt updatedAt
       statusCheckRollup: commits(last: 1) { nodes { commit { statusCheckRollup { contexts {
         checkRunCountsByState { state count } statusContextCountsByState { state count }
       } } } } }
@@ -266,35 +283,26 @@ export function branchThreadId(branch: string): string | null {
   return /(?:^|[-/])(thr_[a-z0-9]+)$/i.exec(branch)?.[1] ?? null;
 }
 
-/**
- * `gh` output as JSON. Empty or cut-off output says so, with its size, rather than in
- * JSON.parse's words ("Unexpected end of JSON input", W490).
- */
-export function ghJson(raw: string, what: string): unknown {
-  if (!raw.trim()) throw new Error(`${what} returned no output`);
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new Error(`${what} returned malformed JSON (${raw.length} bytes)`);
-  }
-}
-
-/** One page of a search query: its nodes, how many results GitHub counts in all, and the next page's cursor. */
+/** One page of a search: its nodes, how many results GitHub counts in all, the next page's cursor, and who searched. */
 export interface SearchPage {
   nodes: unknown[];
   total: number;
   next: string | null;
+  login: string | null;
 }
 
-/** One page of GH_LIST_QUERY or GH_DETAILS_QUERY (`gh api graphql` output); a response without search results throws. */
-export function parseSearchPage(raw: string, what: string): SearchPage {
-  const page = (ghJson(raw, what) as { data?: { search?: { nodes?: unknown; issueCount?: unknown; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } } } } | null)?.data?.search;
+/** One page of GH_LIST_QUERY (its `data`); an answer without search results throws. */
+export function parseSearchPage(data: unknown, what: string): SearchPage {
+  const d = data as { viewer?: { login?: unknown }; search?: { nodes?: unknown; issueCount?: unknown; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } } } | null;
+  const page = d?.search;
   if (!page || !Array.isArray(page.nodes)) throw new Error(`${what} returned no search results`);
   const info = page.pageInfo;
+  const login = d?.viewer?.login;
   return {
     nodes: page.nodes,
     total: typeof page.issueCount === "number" ? page.issueCount : page.nodes.length,
     next: info?.hasNextPage === true && typeof info.endCursor === "string" ? info.endCursor : null,
+    login: typeof login === "string" && /^[\w-]+$/.test(login) ? login : null,
   };
 }
 
@@ -349,24 +357,61 @@ export function parsePullRequests(repo: string, nodes: readonly unknown[]): Queu
 /**
  * Diff size and reviewers come from a second, lighter query: GitHub times out
  * (502) when one query asks for additions and deletions beside the checks and
- * mergeability at 100 PRs a page. One `gh api graphql` per page of 50 (about
- * 3 s each), run beside the list over the same search.
+ * mergeability at 100 PRs a page. W516: by node id, for the PRs whose
+ * `updatedAt` moved since their details were read (a push or a review moves
+ * it), DETAILS_PAGE a request (about 3 s and one point).
+ *
+ * W520: a request costs one point whether it asks for 1 PR or 50 (live, 2026-10-19). Equisafe's
+ * 227 open PRs cost 5 points in batches of 50 and 227 one by one, which also took 27 s against
+ * 5–9 s, 4 requests at a time. So a request asks for up to 50 PRs of one repository, and only
+ * a failing request is split (MergeQueueCache.loadDetails).
  */
 export const DETAILS_PAGE = 50;
-export const GH_DETAILS_QUERY = `query($q: String!, $endCursor: String) {
-  search(query: $q, type: ISSUE, first: ${DETAILS_PAGE}, after: $endCursor) {
-    issueCount
-    pageInfo { hasNextPage endCursor }
-    nodes { ... on PullRequest {
-      number additions deletions changedFiles commits { totalCount }
-      latestReviews(first: 20) { nodes { author { login } state } }
-      reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Team { name } } } }
-    } }
-  }
+export const GH_DETAILS_QUERY = `query($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on PullRequest {
+    id number additions deletions changedFiles commits { totalCount }
+    latestReviews(first: 20) { nodes { author { login } state } }
+    reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Team { name } } } }
+  } }
 }`;
 
-/** The search both queries run: the user's open PRs in the repository. */
-export const prSearch = (repo: string, login: string) => `repo:${repo} is:pr is:open author:${login}`;
+/** The details query's nodes (its `data`), one per id asked, null for one gone; an answer without them throws. */
+export function parseDetailsNodes(data: unknown, what: string): unknown[] {
+  const nodes = (data as { nodes?: unknown } | null)?.nodes;
+  if (!Array.isArray(nodes)) throw new Error(`${what} returned no nodes`);
+  return nodes;
+}
+
+/**
+ * The search the list runs: the user's open PRs in these repositories. Repository qualifiers
+ * are ORed and don't count toward search's 256-character limit (15 repositories, 353
+ * characters, read fine on 2026-10-19).
+ */
+export const prSearch = (repos: readonly string[]) => `is:pr is:open author:@me ${repos.map((repo) => `repo:${repo}`).join(" ")}`;
+
+/** The repository of a PR URL, lower case, as the cache keys it. */
+export const prRepoKey = (url: string): string | null => /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i.exec(url)?.[1]?.toLowerCase() ?? null;
+
+/**
+ * v9 (§7): the state of each PR URL, `p0` to `p<n-1>`, in one request (W516: one point for 50,
+ * where each `gh pr view` was a spawn and a point). A URL GitHub can't resolve answers null.
+ */
+export function prLookupQuery(count: number): string {
+  const indexes = Array.from({ length: count }, (_, i) => i);
+  return `query(${indexes.map((i) => `$u${i}: URI!`).join(", ")}) {\n${indexes
+    .map((i) => `  p${i}: resource(url: $u${i}) { ... on PullRequest { state mergedAt closedAt } }`)
+    .join("\n")}\n}`;
+}
+
+/** One PR's looked-up state from its prLookupQuery node, or why there is none. */
+export function parsePrLookup(node: unknown): { state: "OPEN" | "MERGED" | "CLOSED"; mergedAt: number | null; closedAt: number | null } | { error: string } {
+  if (node === null || node === undefined) return { error: "not found on GitHub" };
+  const n = node as { state?: unknown; mergedAt?: unknown; closedAt?: unknown };
+  const state = n.state === "MERGED" || n.state === "CLOSED" || n.state === "OPEN" ? n.state : null;
+  if (!state) return { error: n.state === undefined ? "not a pull request" : `unexpected state ${String(n.state)}` };
+  const at = (value: unknown) => (typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null);
+  return { state, mergedAt: at(n.mergedAt), closedAt: at(n.closedAt) };
+}
 
 const REVIEW_STATES: Record<string, Reviewer["state"]> = {
   APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", COMMENTED: "commented", DISMISSED: "dismissed",
@@ -374,44 +419,54 @@ const REVIEW_STATES: Record<string, Reviewer["state"]> = {
 
 export type PrDetails = Map<number, { size: PrSize; reviewers: Reviewer[] }>;
 
-/** Each PR's size and reviewers by number, from the details query's nodes; a malformed PR drops out alone. */
-export function parseDetails(nodes: readonly unknown[]): PrDetails {
-  const details: PrDetails = new Map();
+/** One PR's number, size and reviewers from a details node; null for a malformed one. */
+export function parseDetail(node: unknown): { number: number; size: PrSize; reviewers: Reviewer[] } | null {
   const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0);
   const list = (value: unknown): unknown[] => {
     const nodes = (value as { nodes?: unknown } | null | undefined)?.nodes;
     return Array.isArray(nodes) ? nodes : [];
   };
+  const e = node as Record<string, any> | null;
+  if (!e || typeof e !== "object" || typeof e.number !== "number") return null;
+  const reviewers: Reviewer[] = [];
+  for (const review of list(e.latestReviews) as Record<string, any>[]) {
+    const login = review?.author?.login;
+    const state = typeof review?.state === "string" && Object.hasOwn(REVIEW_STATES, review.state) ? REVIEW_STATES[review.state] : undefined;
+    if (typeof login === "string" && state && !reviewers.some((r) => r.login === login)) reviewers.push({ login, state });
+  }
+  for (const request of list(e.reviewRequests) as Record<string, any>[]) {
+    const login = request?.requestedReviewer?.login ?? request?.requestedReviewer?.name;
+    if (typeof login === "string" && !reviewers.some((r) => r.login === login)) reviewers.push({ login, state: "requested" });
+  }
+  return {
+    number: e.number,
+    size: { additions: count(e.additions), deletions: count(e.deletions), files: count(e.changedFiles), commits: count(e.commits?.totalCount) },
+    reviewers,
+  };
+}
+
+/** Each PR's size and reviewers by number, from details nodes of one repository; a malformed PR drops out alone. */
+export function parseDetails(nodes: readonly unknown[]): PrDetails {
+  const details: PrDetails = new Map();
   for (const node of nodes) {
-    const e = node as Record<string, any> | null;
-    if (!e || typeof e !== "object" || typeof e.number !== "number") continue;
-    const reviewers: Reviewer[] = [];
-    for (const review of list(e.latestReviews) as Record<string, any>[]) {
-      const login = review?.author?.login;
-      const state = REVIEW_STATES[review?.state];
-      if (typeof login === "string" && state && !reviewers.some((r) => r.login === login)) reviewers.push({ login, state });
-    }
-    for (const request of list(e.reviewRequests) as Record<string, any>[]) {
-      const login = request?.requestedReviewer?.login ?? request?.requestedReviewer?.name;
-      if (typeof login === "string" && !reviewers.some((r) => r.login === login)) reviewers.push({ login, state: "requested" });
-    }
-    details.set(e.number, {
-      size: { additions: count(e.additions), deletions: count(e.deletions), files: count(e.changedFiles), commits: count(e.commits?.totalCount) },
-      reviewers,
-    });
+    const d = parseDetail(node);
+    if (d) details.set(d.number, { size: d.size, reviewers: d.reviewers });
   }
   return details;
 }
 
-/** Each PR with its size and, unless withheld as stale, its reviewers, when the details query had it. */
+/**
+ * Each PR with its size and reviewers, when a details read had them. W520: one whose latest read
+ * failed (`error`) keeps its size and has its reviewers withheld, as they may be stale.
+ */
 export function attachDetails(
   pullRequests: readonly QueuedPullRequest[],
-  details: ReadonlyMap<number, { size: PrSize; reviewers: Reviewer[] }> | null,
-  { reviewers = true }: { reviewers?: boolean } = {},
+  details: ReadonlyMap<number, { size: PrSize | null; reviewers: Reviewer[]; error: string | null }>,
 ): QueuedPullRequest[] {
   return pullRequests.map((pr) => {
-    const d = details?.get(pr.number);
-    return d ? { ...pr, size: d.size, reviewers: reviewers ? d.reviewers : [] } : pr;
+    const d = details.get(pr.number);
+    if (!d) return pr;
+    return d.error === null ? { ...pr, size: d.size, reviewers: d.reviewers } : { ...pr, size: d.size, reviewers: [], detailsError: d.error };
   });
 }
 

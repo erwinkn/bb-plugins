@@ -114,7 +114,7 @@ function Row({ pr, login, blocker, loadNotes, open, onOpen, menu }: {
           </span>
           <span className="cr-mq-line cr-mq-meta">
             <span className="cr-mq-repo">{repoLabel(pr.repo, login)} #{pr.number}</span>
-            {pr.size ? <span className="cr-mq-size"><SizeDelta size={pr.size} /> <span className="cr-mq-files">{sizeDetail(pr.size)}</span></span> : null}
+            <Size pr={pr} />
             {pr.stack ? (
               <span className="cr-mq-stack" title={`Stacked: level ${pr.stack.level} of ${pr.stack.levels} in a stack of ${pr.stack.size} PRs`}>
                 {stackLabel(pr.stack)}
@@ -399,6 +399,38 @@ function QueueSkeleton() {
   );
 }
 
+/** W520: a PR's size, dimmed and marked when its latest details read failed (`detailsError`). */
+function Size({ pr }: { pr: QueuedPullRequest }) {
+  if (!pr.size && !pr.detailsError) return null;
+  return (
+    <span className="cr-mq-size" data-stale={pr.detailsError ? "" : undefined} title={pr.detailsError ? `Size and reviewers didn't refresh: ${pr.detailsError}` : undefined}>
+      {pr.size ? <><SizeDelta size={pr.size} /> <span className="cr-mq-files">{sizeDetail(pr.size)}</span></> : null}
+      {pr.detailsError ? <span className="cr-mq-stale">{pr.size ? "stale" : "size didn't load"}</span> : null}
+    </span>
+  );
+}
+
+/** W520: the PRs whose details didn't refresh, for the note: the first few by name, then how many more. */
+function stalePrs(prs: readonly QueuedPullRequest[], queue: MergeQueue): string {
+  const SHOWN = 4;
+  const names = prs.slice(0, SHOWN).map((pr) => (queue.repos.length > 1 ? `${repoLabel(pr.repo, queue.login)} #${pr.number}` : `#${pr.number}`));
+  return prs.length > SHOWN ? `${names.join(", ")} and ${prs.length - SHOWN} more` : names.join(", ");
+}
+
+/**
+ * W516: one search covers several repositories, so those cut short by the same search share one
+ * note, which names every repository the search covered: its counts are theirs together, even
+ * where this Adventure lists only some of them.
+ */
+function cappedSearches(repos: readonly MergeQueue["repos"][number][]): string[] {
+  const searches = new Map<string, { counts: string; names: string[] }>();
+  for (const r of repos) {
+    const counts = `read ${r.capped!.listed} of ${r.capped!.total} open PRs`;
+    const names = r.capped!.search ?? [r.repo];
+    searches.set(JSON.stringify([names, counts]), { counts, names });
+  }
+  return [...searches.values()].map(({ counts, names }) => `${names.join(", ")}: ${counts}`);
+}
 export function MergeQueueView({
   queue,
   error,
@@ -421,8 +453,8 @@ export function MergeQueueView({
   const failed = queue?.repos.filter((r) => r.error) ?? [];
   const neverLoaded = !!queue && queue.repos.length > 0 && queue.repos.every((r) => r.fetchedAt === null);
   const fetching = refreshing || !!queue?.repos.some((r) => r.fetching);
-  // Sizes kept from an older read; reviewer states are withheld until the details load again.
-  const staleDetails = queue?.repos.filter((r) => r.fetchedAt !== null && !r.error && r.detailsError) ?? [];
+  // W520: PR by PR; sizes kept from an older read, reviewer states withheld until the details load again.
+  const staleDetails = queue?.pullRequests.filter((pr) => pr.detailsError) ?? [];
   const capped = queue?.repos.filter((r) => r.capped) ?? [];
   return (
     <section className="cr-mq" aria-label="Merge queue" aria-busy={fetching}>
@@ -446,13 +478,13 @@ export function MergeQueueView({
       ) : null}
       {capped.length ? (
         <p className="cr-mq-note" role="status">
-          {capped.map((r) => `${r.repo}: read ${r.capped!.listed} of ${r.capped!.total} open PRs`).join(" · ")}, as many as GitHub's search returns.
+          {cappedSearches(capped).join(" · ")}, as many as GitHub's search returns.
         </p>
       ) : null}
       {staleDetails.length ? (
         <p className="cr-mq-note" role="status">
-          {staleDetails.map((r) => `${r.repo}: sizes and reviewers didn't refresh (${r.detailsError})`).join(" · ")}.
-          {" "}Sizes are from {staleDetails.some((r) => r.detailsFetchedAt) ? "an earlier read" : "no read yet"}; reviewers are hidden until they load.
+          {stalePrs(staleDetails, queue!)}: sizes and reviewers didn't refresh ({[...new Set(staleDetails.map((pr) => pr.detailsError))].slice(0, 2).join("; ")}).
+          {" "}Sizes shown are from an earlier read; reviewers are hidden until they load.
         </p>
       ) : null}
       {neverLoaded && failed.length && !fetching ? (

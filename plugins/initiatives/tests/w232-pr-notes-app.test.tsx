@@ -93,8 +93,15 @@ describe("W232 PR notes (D442)", () => {
     expect(first.getByText("Refreshing…")).toBeTruthy();
     expect(first.getByRole("button", { name: "Refresh merge queue" }).hasAttribute("disabled")).toBe(true);
     cleanup();
-    const stale = view({ queue: queue(undefined, [repo({ detailsError: "HTTP 502" })]) });
-    expect(stale.getByRole("status").textContent).toBe("erwinkn/bb: sizes and reviewers didn't refresh (HTTP 502). Sizes are from an earlier read; reviewers are hidden until they load.");
+    // W520: PR by PR, in queue order (oldest first). #1 keeps the size of an earlier read, #2 never had one.
+    const size = { additions: 12, deletions: 3, files: 2, commits: 1 };
+    const stale = view({ queue: queue((pr) => ({ ...pr, size: pr.number === 1 ? size : null, detailsError: "GitHub answered HTTP 502" }), [repo({ detailsError: "GitHub answered HTTP 502 (2 PRs)" })]) });
+    expect(stale.getByRole("status").textContent).toBe("#2, #1: sizes and reviewers didn't refresh (GitHub answered HTTP 502). Sizes shown are from an earlier read; reviewers are hidden until they load.");
+    const marks = Array.from(stale.container.querySelectorAll(".cr-mq-size[data-stale]"));
+    expect(marks.map((m) => [m.querySelector(".cr-mq-stale")!.textContent, m.getAttribute("title")])).toEqual([
+      ["size didn't load", "Size and reviewers didn't refresh: GitHub answered HTTP 502"],
+      ["stale", "Size and reviewers didn't refresh: GitHub answered HTTP 502"],
+    ]);
   });
 });
 
