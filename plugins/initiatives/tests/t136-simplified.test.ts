@@ -183,17 +183,18 @@ describe("T136 instructions", () => {
     // W259: one PR per worker, model by difficulty, fresh fix workers.
     // Erwin (2026-10-10): slow hands-on work goes to a worker, so the coordinator answers fast.
     // W488: record the user's chat answer on its Inbox card before continuing the worker.
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(2600);
+    // W534 (rule R8, Erwin 2026-10-20): the clean-review rule and the second-reviewer line grew both texts.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(3000);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     // W210 (D417): reports go through initiative_report; stop background work first.
     // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
     // v9: the worker owns its review loop; the reviewer command moved to briefs.
     // Erwin (2026-10-15): trivial changes skip review; 6 converging review rounds.
     // W498 (Erwin, 2026-10-17): rule R5 replaced the round caps; questions go in blocked reports.
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(2300);
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(2800);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn. Don't start reviewers: workers do.");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while findings converge");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while P1s and P2s converge");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
   });
 

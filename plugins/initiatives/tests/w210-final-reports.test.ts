@@ -337,7 +337,7 @@ describe("W210 guidance", () => {
   it("defaults say how to report; the previous shipped defaults upgrade to them", async () => {
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report {outcome, summary, report}.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Ending a turn reports nothing.");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("A worker reports once: done (clean review) or blocked");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("A worker reports once: done (clean review: verdict correct, no P1 or P2) or blocked");
     const before = { coordinator: PREVIOUS_DEFAULTS.coordinator.find(text => text.includes("Read it, send fixes back"))!, worker: PREVIOUS_DEFAULTS.worker.find(text => text.includes("Your final message is your report"))! };
     const f = fixture({ coordinatorInstructions: before.coordinator, workerInstructions: before.worker });
     f.store.setFlag(GUIDANCE_RESET_FLAG);

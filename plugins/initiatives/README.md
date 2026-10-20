@@ -27,8 +27,12 @@ An example, in the Equisafe Initiative:
    reviewer's brief, and ends its turn: BB's child turn-end notice wakes it. Ending a turn
    records nothing; only `initiative_report` finishes work.
 3. No fixed round cap (rule R5, Erwin 2026-10-17, in the worker guidance; the plugin counts
-   nothing): it keeps reviewing while the findings converge. Clean: it sets the PR to
-   `ready-for-erwin` and reports done once. Whack-a-mole (P1s, or P2s that keep reappearing
+   nothing): it keeps reviewing while the P1s and P2s converge. Clean (rule R8, Erwin
+   2026-10-20) means the reviewer's verdict is correct with no P1 or P2; P3s left are fixed
+   if cheap and listed in the PR notes, with no re-review. One reviewer per round; Fable 5.1
+   is a second one only when the brief asks for it on a high-risk change (auth, locking,
+   migrations, crypto, concurrency), consulted once after the first has passed the head. On
+   a clean review the worker sets the PR to `ready-for-erwin` and reports done once. Whack-a-mole (P1s, or P2s that keep reappearing
    in the same area round after round) or scope creep: it reports blocked with the open
    findings and options. The lead sends it back to review (`initiative_message work:true`)
    only when a standing rule or Erwin's explicit instruction settles the finding; otherwise

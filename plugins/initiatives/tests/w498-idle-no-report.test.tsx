@@ -132,7 +132,7 @@ describe("worker guidance: questions go in a blocked report; reviews follow rule
     expect(skill("initiative-worker").replace(/\s+/g, " ")).toContain("whack-a-mole (P1s, or P2s that keep reappearing in the same area round after round) or on scope creep");
   });
   it.each(["coordinator", "worker"] as const)("a saved copy of the %s default from before R5 upgrades to the current one", async (field) => {
-    const previous = PREVIOUS_DEFAULTS[field][0]!;
+    const previous = PREVIOUS_DEFAULTS[field].find((text) => text.includes("6 review rounds"))!;
     expect(previous).toContain("6 review rounds");
     const key = field === "coordinator" ? "coordinatorInstructions" : "workerInstructions";
     const f = fixture({ [key]: previous });

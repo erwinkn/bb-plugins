@@ -14,8 +14,11 @@ lead: workers report back to it. This skill only sums up the tools.
   lookups, scans, simple edits) or `explorer` (read lots and report; no building or running;
   `analyst` and `investigator` still work as aliases); Settings map each kind to a
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
-  own review loop (a fresh reviewer from the other model family per round, for as long as the
-  findings converge) and reports once. A trivial change (one line, a handful of small tweaks, an urgent
+  own review loop (one fresh reviewer from the other model family per round, for as long as the
+  P1s and P2s converge; clean means verdict correct, no P1 or P2) and reports once. Ask for a
+  second reviewer only on a high-risk change (auth, locking, migrations, crypto, concurrency)
+  and say so in the brief: Fable 5.1, consulted once after the first reviewer has passed the
+  head. Never require both clean on the same head. A trivial change (one line, a handful of small tweaks, an urgent
   hotfix) skips review: say "No review: trivial" in its brief. `handoffs:["W9"]` embeds earlier reports. A worker runs in the project's checkout on its
   default host; `host:"<name or id>"` picks another host and `worktree:true` a new worktree
   there. An unknown, ambiguous or disconnected host, or no checkout on that host, fails the

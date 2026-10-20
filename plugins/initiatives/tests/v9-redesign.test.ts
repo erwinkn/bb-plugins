@@ -76,8 +76,8 @@ describe("v9 §6.1 the instruction budget", () => {
 
 describe("v9 §3 the worker owns its review loop", () => {
   it("guidance: fresh reviewer each round from the other family, no round cap while findings converge (R5), blocked on whack-a-mole or scope creep; leads send it back only on a rule or the user's word", () => {
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("a fresh reviewer each round, from the other model family, started with the reviewer command in your brief");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while findings converge (fewer, milder each round); no round cap. Done when the last verdict is clean. Blocked (each open finding, your view, the options) on whack-a-mole (P1s, or P2s reappearing in the same area round after round) or scope creep.");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("one fresh reviewer each round, from the other model family, started with the reviewer command in your brief");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while P1s and P2s converge; no round cap. Once only P3s remain, fix the cheap ones, list the rest in your PR notes (initiative_pr) and report done: no re-review to confirm P3 fixes. If your brief asks for a second reviewer (Fable 5.1), consult it once, after the first has passed the head. Done when the last verdict is clean. Blocked (each open finding, your view, the options) on whack-a-mole (P1s, or P2s reappearing in the same area round after round) or scope creep.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child or background job runs, end your turn; its result wakes you. Ending a turn reports nothing. End one without a report only to wait like that.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("if a standing rule or the user's explicit instruction settles it, answer the worker and let it keep reviewing");
     // W498 (R5): no 4- or 6-round limit is left in either default.

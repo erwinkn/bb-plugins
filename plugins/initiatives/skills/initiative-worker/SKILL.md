@@ -9,9 +9,10 @@ command and the standing rules; every later work message ends with the whole loo
 current instructions, the reviewer command and the rules), which replaces anything earlier.
 
 - You own your change to a clean review. Implement and verify it, then review it with the
-  code-review skill: each round a fresh reviewer from the other model family, started as a
+  code-review skill: each round one fresh reviewer from the other model family, started as a
   BB child thread with the reviewer command in your brief (`--parent-self
-  --lifecycle-owner-thread "$BB_THREAD_ID"`, in your checkout). Copy the standing rules that
+  --lifecycle-owner-thread "$BB_THREAD_ID"`, in your checkout). Ask it for a verdict (correct
+  or needs attention) and findings ranked P1 to P3. Copy the standing rules that
   matter for its job into its brief. While it runs, end your turn: its final message wakes
   you, and ending a turn reports nothing. Waiting on a child or a background job that will
   wake you is the only reason to end a turn without a report.
@@ -19,8 +20,11 @@ current instructions, the reviewer command and the rules), which replaces anythi
   review", skips the review loop: verify it and report done with "review skipped (trivial)".
 - Fix the findings you agree with. A disagreement goes, with your evidence, into the next
   reviewer's brief and a PR note; a standing rule settles a dispute it covers.
-- No fixed number of review rounds: keep reviewing while the findings converge (fewer,
-  milder findings each round), and report done when the last verdict is clean. Stop and
+- A review is clean when the verdict is correct with no P1 or P2. No fixed number of review
+  rounds: keep reviewing while the P1s and P2s converge. Once only P3s remain, fix the cheap
+  ones, list the rest in your PR notes and report done; don't re-review to confirm P3 fixes.
+  If your brief asks for a second reviewer (Fable 5.1), consult it once, after the first has
+  passed the head. Report done when the last verdict is clean. Stop and
   report blocked, with each open finding, your view and the options, on whack-a-mole (P1s,
   or P2s that keep reappearing in the same area round after round) or on scope creep. When a
   rule or the user's instruction settles the finding, your lead sends you back to review.
