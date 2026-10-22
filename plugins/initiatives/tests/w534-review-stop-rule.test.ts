@@ -41,7 +41,7 @@ describe("W534 review stop rule", () => {
   });
 
   it.each(["coordinator", "worker"] as const)("the %s default from before R8 is kept as a legacy text and upgrades to the current one", async (field) => {
-    const previous = PREVIOUS_DEFAULTS[field][0]!;
+    const previous = field === "coordinator" ? PREVIOUS_DEFAULTS.coordinator[0]! : PREVIOUS_DEFAULTS.worker.find((text) => text.includes("a fresh reviewer each round"))!;
     expect(previous).toContain("Initiative");
     expect(previous).not.toContain("no P1 or P2");
     expect(previous).not.toContain("P1 to P3");

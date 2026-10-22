@@ -40,7 +40,7 @@ export function ProjectsSettings() {
         settings. Permissions still use the explicit permissionMode parameter.
       </p>
       {profiles ? (
-        <table aria-label="Global fallback profiles">
+        <table aria-label="Global default profiles">
           <tbody>
             {PROFILE_KEYS.map((key) => (
               <tr key={key}>
@@ -51,7 +51,7 @@ export function ProjectsSettings() {
           </tbody>
         </table>
       ) : (
-        <p>Global fallback profiles are unavailable.</p>
+        <p>Global default profiles are unavailable.</p>
       )}
       <p>Reset a saved field to its populated default.</p>
       {([

@@ -206,7 +206,7 @@ describe("project dashboard", () => {
       rpc: { resetSetting },
     });
     mounted.push(slot);
-    expect(slot.getByRole("table", { name: "Global fallback profiles" }).textContent).toContain("codex / gpt-6.1-sol / high / fast");
+    expect(slot.getByRole("table", { name: "Global default profiles" }).textContent).toContain("codex / gpt-6.1-sol / high / fast");
     fireEvent.click(slot.getByRole("button", { name: "Reset worker instructions" }));
     await waitFor(() => expect(resetSetting).toHaveBeenCalledWith({ field: "workerInstructions" }));
     await slot.findByRole("status");

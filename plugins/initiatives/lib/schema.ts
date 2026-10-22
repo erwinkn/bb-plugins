@@ -66,6 +66,7 @@ export const PROFILE_KEYS = [
   ...WORK_KINDS,
   "reviewOfClaude",
   "reviewOfGpt",
+  "reviewFallback",
 ] as const;
 export type ProfileKey = (typeof PROFILE_KEYS)[number];
 
@@ -87,6 +88,7 @@ export const PROFILE_ROLE_LABELS: Record<ProfileKey, string> = {
   mechanical: "Very fast worker (mechanical)",
   reviewOfClaude: "Reviewer (of Claude work)",
   reviewOfGpt: "Reviewer (of GPT work)",
+  reviewFallback: "Fallback reviewer",
   experiment: "Experimenter (prototypes and spikes)",
 };
 
@@ -133,6 +135,12 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
     providerId: "claude-code",
     model: "claude-fable-5-1",
     reasoningLevel: "xhigh",
+  },
+  // When the reviewer above can't run (usage limit, model unavailable), for either family (W537).
+  reviewFallback: {
+    providerId: "claude-code",
+    model: "claude-opus-5-5",
+    reasoningLevel: "high",
   },
 };
 

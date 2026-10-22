@@ -4088,12 +4088,13 @@ export class ProjectsService {
   }
 
   /**
-   * v9 (§6.1): what a work brief ends with. A fresh brief: the reviewer command and the full
-   * rules (the plugin builds that session with this build's instructions). Every later work
-   * message: the whole loop, the worker guidance as a new session would get it included.
+   * v9 (§6.1): what a work brief ends with. A fresh brief: the reviewer command (with its
+   * fallback, W537) and the full rules (the plugin builds that session with this build's
+   * instructions). Every later work message: the whole loop, the worker guidance as a new
+   * session would get it included.
    */
   private workAppendix(projectId: string, policy: Policy, profile: Profile, guidance: string, route: "fresh" | "continue") {
-    const reviewer = reviewerCommand(profileFor(policy, seriesOf(profile) === "gpt" ? "reviewOfGpt" : "reviewOfClaude"));
+    const reviewer = reviewerCommand(profileFor(policy, seriesOf(profile) === "gpt" ? "reviewOfGpt" : "reviewOfClaude"), profileFor(policy, "reviewFallback"));
     const rules = renderRules(this.store.rules(projectId));
     return route === "fresh" ? briefAppendix(reviewer, rules) : workLoopBlock(guidance, reviewer, rules);
   }

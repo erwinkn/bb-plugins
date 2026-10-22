@@ -1,5 +1,5 @@
 import type { Brief, Profile } from "./schema";
-import { describeProfile } from "./policy";
+import { describeProfile, sameProfile } from "./policy";
 import type { ProjectRecord, TaskRecord } from "./store";
 import { PLUGIN_ID } from "./identity";
 
@@ -86,17 +86,30 @@ const LOOP_HEADING = "How you work in this Initiative (current; replaces anythin
 /**
  * v9: the command a worker starts each round's reviewer with: a BB child thread in its own
  * checkout, from the other model family, archived with the worker. The prompt file lives in the
- * worker's thread storage, so the checkout stays clean.
+ * worker's thread storage, so the checkout stays clean. W537: a fallback that differs from the
+ * reviewer follows it, to rerun a round the reviewer couldn't run; it is never a second reviewer.
  */
-export function reviewerCommand(reviewer: Profile): string {
+export function reviewerCommand(reviewer: Profile, fallback?: Profile): string {
   return [
     REVIEWER_HEADING,
-    `bb thread spawn --project "$BB_PROJECT_ID" --parent-self \\`,
-    `  --lifecycle-owner-thread "$BB_THREAD_ID" --environment "$BB_ENVIRONMENT_ID" \\`,
-    `  --provider ${reviewer.providerId} --model ${reviewer.model} --reasoning-level ${reviewer.reasoningLevel}${reviewer.serviceTier ? ` --service-tier ${reviewer.serviceTier}` : ""} \\`,
-    `  --title "Review r<N> <PR>" --prompt-file "$BB_THREAD_STORAGE/review-r<N>.md"`,
+    spawnReviewer(reviewer),
+    ...(fallback && !sameProfile(fallback, reviewer)
+      ? [
+          "",
+          "Fallback reviewer command: if a usage or quota limit or an unavailable model keeps the reviewer from starting or from giving a verdict, delete any retry queued on it (`bb thread queue list <id>`, `bb thread queue delete <id> <message-id>`), archive it and run that round again with this command, even if it is your own model family. A reviewer running again on an automatic retry is still the round's reviewer: wait for it. Name the fallback rounds in your report; if the fallback can't run either, report blocked. A review that gave a verdict or findings is never redone on the fallback.",
+          spawnReviewer(fallback),
+        ]
+      : []),
   ].join("\n");
 }
+
+const spawnReviewer = (profile: Profile) =>
+  [
+    `bb thread spawn --project "$BB_PROJECT_ID" --parent-self \\`,
+    `  --lifecycle-owner-thread "$BB_THREAD_ID" --environment "$BB_ENVIRONMENT_ID" \\`,
+    `  --provider ${profile.providerId} --model ${profile.model} --reasoning-level ${profile.reasoningLevel}${profile.serviceTier ? ` --service-tier ${profile.serviceTier}` : ""} \\`,
+    `  --title "Review r<N> <PR>" --prompt-file "$BB_THREAD_STORAGE/review-r<N>.md"`,
+  ].join("\n");
 
 /** What a fresh brief ends with: the reviewer command and the full rules. */
 export const briefAppendix = (reviewer: string, rules: string) => [reviewer, rules].join("\n\n");

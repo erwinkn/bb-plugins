@@ -36,7 +36,8 @@ describe("T136 giving work: spawn or message, tasks optional", () => {
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
     // v9: a brief ends with the reviewer command and the standing rules (D523).
     expect(brief).toMatch(/^W1 "Search index" \(search ranking\) · work\n\nIndex archived records\. Verify with npm test\.\n\nExecution: .*\n\nFinish by calling initiative_report with your full report\.\n\nReviewer command \(code-review skill, other model family\):\nbb thread spawn [^]*\n\nStanding rules: none yet\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
-    expect(brief.length).toBeLessThan(900);
+    // W537: the default fallback reviewer differs from the default reviewer, so its command follows.
+    expect(brief.length).toBeLessThan(1700);
     expect(f.store.assignment(project.id, 1)).toMatchObject({ taskNums: [], role: "work" });
   });
 

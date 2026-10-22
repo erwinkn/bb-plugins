@@ -20,7 +20,15 @@ An example, in the Equisafe Initiative:
    The coordinator spawns W1420: `initiative_spawn {label, purpose, text, tasks:["T163"]}`.
    Its assignment A1641 records `reply_to` = the coordinator tab. The brief ends with the
    **reviewer command** (a `bb thread spawn` of the other model family, from the
-   `reviewOfClaude`/`reviewOfGpt` profile) and the **standing rules**.
+   `reviewOfClaude`/`reviewOfGpt` profile) and the **standing rules**. When the
+   `reviewFallback` profile differs from that reviewer, a second command follows it. If a usage
+   limit or an unavailable model keeps the reviewer from starting or from giving a verdict,
+   the worker deletes any retry queued on it (BB's provider-retry would otherwise run it again
+   after the limit resets, a second reviewer on the round), archives it, runs the round again
+   on the fallback, even if that is its own model family, and names those rounds in its
+   report. A reviewer already running again on an automatic retry (a short overload) is still
+   the round's reviewer; if the fallback can't run either, the worker reports blocked. A
+   review that gave a verdict or findings is never redone on the fallback.
 2. W1420 implements, opens its PR and keeps its stage with `initiative_pr`. For each review
    round it starts a fresh reviewer as an ordinary BB child thread (`--parent-self
    --lifecycle-owner-thread`, in its checkout), copies the rules that matter into the
@@ -722,7 +730,8 @@ Profiles are stored under their original JSON keys but named by role in
 Settings: `coordinator` (coordinator), `implementation` (worker),
 `experiment` (experimenter), `straightforward` (fast worker), `mechanical`
 (very fast worker), `investigation` (explorer), `reviewOfClaude` and `reviewOfGpt` (the reviewer for work done by that
-model family, so a different family reviews by default). A coordinator picks a
+model family, so a different family reviews by default) and `reviewFallback`
+(the fallback reviewer, for either family; default Claude Opus 5.5 high). A coordinator picks a
 role on spawn with `kind`: `worker` (default, `implementation`: implement a known
 change), `experimenter` (`experiment`: prototypes and spikes that answer open
 questions by running code; reports options, doesn't ship), `fast`
