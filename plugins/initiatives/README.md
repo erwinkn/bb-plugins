@@ -345,10 +345,9 @@ records that upstream candidate; no issue was filed.
 
 | Work                                      | Default model          |
 | ----------------------------------------- | ---------------------- |
-| Coordination, implementation, experiments | Opus 5.5 High          |
-| Investigation (explorer)                  | GPT-6 Luna Extra High  |
-| Mechanical (very fast) work               | Haiku 5.5 High         |
-| Straightforward implementation            | GPT-6.1 Sol High       |
+| Coordination, worker (everything else)    | Opus 5.5 High          |
+| Fast worker (small, well-specified)       | Sonnet 5.5 High        |
+| Very fast worker (mechanical)             | Haiku 5.5 High         |
 | Review of Claude work                     | GPT-6 Astra Extra High |
 | Review of GPT work                        | Fable 5.1 Extra High   |
 
@@ -728,19 +727,18 @@ briefs never repeat them.
 
 Profiles are stored under their original JSON keys but named by role in
 Settings: `coordinator` (coordinator), `implementation` (worker),
-`experiment` (experimenter), `straightforward` (fast worker), `mechanical`
-(very fast worker), `investigation` (explorer), `reviewOfClaude` and `reviewOfGpt` (the reviewer for work done by that
+`straightforward` (fast worker), `mechanical` (very fast worker),
+`reviewOfClaude` and `reviewOfGpt` (the reviewer for work done by that
 model family, so a different family reviews by default) and `reviewFallback`
-(the fallback reviewer, for either family; default Claude Opus 5.5 high). A coordinator picks a
-role on spawn with `kind`: `worker` (default, `implementation`: implement a known
-change), `experimenter` (`experiment`: prototypes and spikes that answer open
-questions by running code; reports options, doesn't ship), `fast`
-(`straightforward`: small, well-specified changes), `very-fast` (`mechanical`:
-lookups, scans, renames and simple scripted checks) or `explorer`
-(`investigation`: reads threads, logs and docs and reports; read and report only,
-anything that builds or runs is an experimenter). `analyst` and `investigator`
-are still accepted as deprecated aliases for `explorer`, and a worker stored
-with either shows as explorer. Swapping a model is a settings change only. The kind is
+(the fallback reviewer, for either family; default Claude Opus 5.5 high). The old
+`experiment` and `investigation` keys are ignored wherever they still appear (Settings,
+per-Initiative policies). A coordinator picks a role on spawn with `kind`: `worker`
+(default, `implementation`, Opus 5.5 high: everything else, including investigations,
+read-only exploration and prototypes; the brief says that a job is read-only or a
+prototype), `fast` (`straightforward`, Sonnet 5.5 high: small, well-specified changes) or
+`very-fast` (`mechanical`, Haiku 5.5 high: lookups, scans, renames and simple scripted
+checks). The old kinds `explorer`, `experimenter`, `analyst` and `investigator` are
+refused with an error naming the valid kinds; a worker stored with one shows as worker. Swapping a model is a settings change only. The kind is
 recorded on the worker and shown beside its W# in the dashboard. An explicit
 `profile` on spawn wins over `kind`; a user-chosen task profile still wins over
 the coordinator's; a work message keeps the worker's native model; a review
@@ -752,7 +750,7 @@ override the same keys. Settings never rewrite stored Initiative policies.
 Read recorded Initiative policy and explicit user/task choices before selecting
 settings. The current bb-plugins policy remains GPT workers. Good means a
 deliberate choice of `claude-code / claude-opus-5-5 / high / default`.
-Fast means `codex / gpt-6.1-sol / high / fast`. These are documented choices
+Fast (the service tier, not the `fast` worker kind) means `codex / gpt-6.1-sol / high / fast`. These are documented choices
 through editable profiles; they do not create presets or change other
 Initiatives. Existing profiles without `serviceTier` still decode.
 

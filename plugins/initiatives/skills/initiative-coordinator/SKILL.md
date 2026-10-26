@@ -9,10 +9,10 @@ lead: workers report back to it. This skill only sums up the tools.
 
 - `initiative_spawn` starts a worker: label, purpose and a complete brief (the task, the
   context it needs, explicit user instructions that matter, how to verify). Tasks are
-  optional. Pick `kind`: `worker` (default; implement a known change), `experimenter` (try things,
-  prototype, report options), `fast` (small, well-specified), `very-fast` (mechanical:
-  lookups, scans, simple edits) or `explorer` (read lots and report; no building or running;
-  `analyst` and `investigator` still work as aliases); Settings map each kind to a
+  optional. Pick `kind`: `worker` (default;
+  everything else, including investigations, read-only exploration and prototypes: say so in
+  the brief), `fast` (small, well-specified changes) or `very-fast` (mechanical: lookups,
+  scans, renames, simple scripted checks). Settings map each kind to a
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
   own review loop (one fresh reviewer from the other model family per round, for as long as the
   P1s and P2s converge; clean means verdict correct, no P1 or P2) and reports once. Ask for a

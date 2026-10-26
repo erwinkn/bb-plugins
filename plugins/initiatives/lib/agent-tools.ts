@@ -16,6 +16,8 @@ import { headTail } from "./handover-packet";
 const text = (max = 2000) => z.string().trim().min(1).max(max);
 const ref = text(80);
 
+const KIND_DESCRIPTION = "Work only: worker (default; everything else, investigations, read-only exploration and prototypes included: say so in the brief), fast (small, well-specified changes) or very-fast (mechanical: lookups, scans, renames, simple scripted checks). Settings map each to a model.";
+
 export const spawnToolSchema = z.object({
   label: text(200).describe("Short name, shown in the W# title."),
   purpose: text(300).describe("What this worker is for."),
@@ -25,7 +27,7 @@ export const spawnToolSchema = z.object({
   tasks: z.array(ref).max(30).optional().describe("T# tasks this work is for."),
   reviews: ref.optional(),
   handoffs: z.array(ref).max(3).optional().describe("Up to 3 prior reports to embed, as W# (latest report) or A#."),
-  kind: workerKindSchema.optional().describe("Work only: worker (default; a known change), experimenter (prototype, report options), fast (small, well-specified), very-fast (mechanical: lookups, scans, simple edits) or explorer (read and report; no building). Settings map each to a model."),
+  kind: workerKindSchema.optional().describe(KIND_DESCRIPTION),
   profile: profileSchema.optional().describe("An explicit model; wins over kind."),
   project: ref.optional().describe("Member BB project id, when not the primary one."),
   ...placementFields,

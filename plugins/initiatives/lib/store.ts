@@ -25,6 +25,7 @@ import {
   DEFAULT_POLICY,
   answerOptionsSchema,
   canonicalWorkerKind,
+  canonicalWorkKind,
   briefSchema,
   decisionFieldsSchema,
   environmentSchema,
@@ -418,7 +419,7 @@ export const MIGRATIONS = [
     set_at INTEGER NOT NULL,
     PRIMARY KEY (project_id, url)
   )`,
-  // W206: the role a coordinator asked for on spawn (worker, experimenter, fast, very-fast, explorer); null for reviewers and older workers.
+  // W206: the role a coordinator asked for on spawn (worker, fast, very-fast; an old explorer or experimenter reads back as worker); null for reviewers and older workers.
   `ALTER TABLE workers ADD COLUMN kind TEXT`,
   // W220 (D431): coordinator memory: mode, log, cursors, tree nodes and saved views. T145 moved
   // memory to the Chat memory plugin, which copies these tables once; they stay, unwritten, as its
@@ -1317,7 +1318,7 @@ function toTask(row: Row): TaskRecord {
     statusSetAt: row.status_set_at == null ? null : Number(row.status_set_at),
     priority: Number(row.priority),
     dependsOn: decode("tasks", row, "depends_on", numsSchema),
-    workKind: row.work_kind as WorkKind,
+    workKind: canonicalWorkKind(row.work_kind as string),
     profileOverride: decodeNullable(
       "tasks",
       row,
@@ -1374,7 +1375,7 @@ function toAssignment(row: Row): AssignmentRecord {
     route: row.route as Route,
     role: row.role as Role,
     access: row.role === "review" || row.access === "read-only" ? "read-only" : "write",
-    workKind: (row.work_kind as WorkKind | null) ?? null,
+    workKind: row.work_kind ? canonicalWorkKind(row.work_kind as string) : null,
     threadId: (row.thread_id as string | null) ?? null,
     generation: Number(row.generation),
     profile: decode("assignments", row, "profile", profileSchema),

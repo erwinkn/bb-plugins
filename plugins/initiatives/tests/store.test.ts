@@ -217,9 +217,11 @@ describe("store", () => {
     });
     // Historical blobs carrying removed engines normalize to profiles only.
     db.prepare(
-      `UPDATE projects SET policy = '{"batching":{"quietMs":"soon"},"warming":{"enabled":true},"profiles":{"investigation":{"providerId":"codex","model":"gpt-6.1-sol","reasoningLevel":"high"}}}' WHERE id = 'p1'`,
+      `UPDATE projects SET policy = '{"batching":{"quietMs":"soon"},"warming":{"enabled":true},"profiles":{"straightforward":{"providerId":"codex","model":"gpt-6.1-sol","reasoningLevel":"high"},"investigation":{"providerId":"codex","model":"gpt-6-luna","reasoningLevel":"xhigh"}}}' WHERE id = 'p1'`,
     ).run();
-    expect(store.project("p1")!.policy.profiles.investigation).toEqual({
+    // The retired investigation key is ignored (R9).
+    expect(store.project("p1")!.policy.profiles).not.toHaveProperty("investigation");
+    expect(store.project("p1")!.policy.profiles.straightforward).toEqual({
       providerId: "codex",
       model: "gpt-6.1-sol",
       reasoningLevel: "high",
@@ -331,8 +333,8 @@ describe("assignment access migration", () => {
         (project_id, num, worker_num, task_nums, route, role, generation, profile,
          bb_project_id, state, op_id, op_state, brief_text, created_at, updated_at)
         VALUES ('p1', ?, ?, '[1]', 'fresh', ?, 1, ?, 'proj_a', ?, ?, ?, 'legacy audit brief', 1, 1)`);
-      insert.run(1, 1, "work", JSON.stringify(DEFAULT_PROFILES.investigation), "queued", "op_legacy_work", "done");
-      insert.run(2, 2, "work", JSON.stringify(DEFAULT_PROFILES.investigation), "cancelled", "op_legacy_uncertain", "uncertain");
+      insert.run(1, 1, "work", JSON.stringify(DEFAULT_PROFILES.implementation), "queued", "op_legacy_work", "done");
+      insert.run(2, 2, "work", JSON.stringify(DEFAULT_PROFILES.implementation), "cancelled", "op_legacy_uncertain", "uncertain");
       insert.run(3, 3, "review", JSON.stringify(DEFAULT_PROFILES.reviewOfGpt), "running", "op_legacy_review", "done");
       for (const statement of MIGRATIONS.slice(firstNew)) db.exec(statement);
       const reopened = new Store(db);

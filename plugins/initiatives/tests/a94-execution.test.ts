@@ -28,7 +28,7 @@ describe("A94 native execution and complete startup", () => {
     expect(profileSchema.parse(old)).toEqual(old);
     expect(storedPolicySchema.parse({ profiles: { implementation: old } }).profiles.implementation).toEqual(old);
     expect(DEFAULT_PROFILES.implementation).toEqual({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" });
-    expect(DEFAULT_PROFILES.investigation).not.toHaveProperty("serviceTier");
+    expect(DEFAULT_PROFILES.straightforward).not.toHaveProperty("serviceTier");
   });
 
   it.each(["default", "fast"] as const)("validates %s in policy/task/delegation/replacement CLI commands", (serviceTier) => {

@@ -82,14 +82,10 @@ describe("profiles", () => {
       model: "claude-opus-5-5",
       reasoningLevel: "high",
     });
-    expect(DEFAULT_PROFILES.investigation).toEqual({
-      providerId: "codex",
-      model: "gpt-6-luna",
-      reasoningLevel: "xhigh",
-    });
+    expect(DEFAULT_PROFILES).not.toHaveProperty("investigation");
     expect(DEFAULT_PROFILES.straightforward).toEqual({
-      providerId: "codex",
-      model: "gpt-6.1-sol",
+      providerId: "claude-code",
+      model: "claude-sonnet-5-5",
       reasoningLevel: "high",
     });
     expect(DEFAULT_PROFILES.reviewOfClaude).toEqual({
@@ -132,13 +128,13 @@ describe("profiles", () => {
     expect(
       chooseWorkProfile({
         policy: DEFAULT_POLICY,
-        kind: "investigation",
+        kind: "mechanical",
         task: task(1),
         explicit: null,
       }),
     ).toEqual({
       ok: true,
-      profile: DEFAULT_PROFILES.investigation,
+      profile: DEFAULT_PROFILES.mechanical,
       source: "default",
     });
   });
@@ -180,7 +176,7 @@ describe("delegation eligibility (T136)", () => {
   });
 
   it("does not continue a worker on a different model", () => {
-    expect(delegationViolations(facts({ route: "continue", worker: worker(), requestedProfile: DEFAULT_PROFILES.investigation, thread: idle })).join(" ")).toMatch(/mix models/);
+    expect(delegationViolations(facts({ route: "continue", worker: worker(), requestedProfile: DEFAULT_PROFILES.mechanical, thread: idle })).join(" ")).toMatch(/mix models/);
   });
 
   it("refuses a retired worker's thread and an archived one", () => {

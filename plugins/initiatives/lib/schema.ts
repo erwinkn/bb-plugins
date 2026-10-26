@@ -28,29 +28,23 @@ export const profileSchema = z
 export type Profile = z.infer<typeof profileSchema>;
 
 /** What a work assignment is for; selects its default profile. */
-export const WORK_KINDS = [
-  "implementation",
-  "experiment",
-  "investigation",
-  "straightforward",
-  "mechanical",
-] as const;
+export const WORK_KINDS = ["implementation", "straightforward", "mechanical"] as const;
 export type WorkKind = (typeof WORK_KINDS)[number];
+/** Profile keys and stored work kinds retired by R9 (W538): read as implementation, never errors. */
+export const LEGACY_WORK_KINDS = ["experiment", "investigation"] as const;
+export const canonicalWorkKind = (kind: string): WorkKind =>
+  (WORK_KINDS as readonly string[]).includes(kind) ? (kind as WorkKind) : "implementation";
 
 /**
  * What a coordinator asks for when it spawns work: a role, not a model. Settings map
  * each kind to a profile key, so swapping models is a settings change only.
  */
-export const WORKER_KINDS = ["worker", "experimenter", "fast", "very-fast", "explorer"] as const;
+export const WORKER_KINDS = ["worker", "fast", "very-fast"] as const;
 export type WorkerKind = (typeof WORKER_KINDS)[number];
-/** Kinds a coordinator may still pass: explorer was called investigator, then analyst (W209, W413). */
-export const DEPRECATED_WORKER_KINDS = { investigator: "explorer", analyst: "explorer" } as const satisfies Record<string, WorkerKind>;
-/** Maps an alias to its kind; a stored "investigator" or "analyst" (no migration) reads back as explorer. */
+/** A stored kind from before R9 (explorer, experimenter, investigator, analyst) is history, not input: it reads back as worker, with no migration. */
 export const canonicalWorkerKind = (kind: string): WorkerKind =>
-  (DEPRECATED_WORKER_KINDS as Record<string, WorkerKind>)[kind] ?? (kind as WorkerKind);
-export const workerKindSchema = z
-  .enum([...WORKER_KINDS, ...(Object.keys(DEPRECATED_WORKER_KINDS) as (keyof typeof DEPRECATED_WORKER_KINDS)[])])
-  .transform(canonicalWorkerKind);
+  (WORKER_KINDS as readonly string[]).includes(kind) ? (kind as WorkerKind) : "worker";
+export const workerKindSchema = z.enum(WORKER_KINDS);
 export const DEFAULT_WORKER_KIND: WorkerKind = "worker";
 
 /** Immutable for the life of a worker, across reuse, forks, and generations. */
@@ -73,10 +67,8 @@ export type ProfileKey = (typeof PROFILE_KEYS)[number];
 /** The stored profile key behind each worker kind (the JSON keys predate the roles). */
 export const WORKER_KIND_PROFILE: Record<WorkerKind, WorkKind> = {
   worker: "implementation",
-  experimenter: "experiment",
   fast: "straightforward",
   "very-fast": "mechanical",
-  explorer: "investigation",
 };
 
 /** How Settings names each stored key; the JSON keys predate the roles and stay as they are. */
@@ -84,12 +76,10 @@ export const PROFILE_ROLE_LABELS: Record<ProfileKey, string> = {
   coordinator: "Coordinator",
   implementation: "Worker",
   straightforward: "Fast worker",
-  investigation: "Explorer (reads and reports)",
-  mechanical: "Very fast worker (mechanical)",
+  mechanical: "Very fast worker",
   reviewOfClaude: "Reviewer (of Claude work)",
   reviewOfGpt: "Reviewer (of GPT work)",
   reviewFallback: "Fallback reviewer",
-  experiment: "Experimenter (prototypes and spikes)",
 };
 
 export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
@@ -98,26 +88,16 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
     model: "claude-opus-5-5",
     reasoningLevel: "high",
   },
-  // Good: Opus for implementation and experiments.
+  // Worker: Opus for everything else, investigations, exploration and experiments included (R9).
   implementation: {
     providerId: "claude-code",
     model: "claude-opus-5-5",
     reasoningLevel: "high",
   },
-  experiment: {
-    providerId: "claude-code",
-    model: "claude-opus-5-5",
-    reasoningLevel: "high",
-  },
-  // Fast: GPT Luna for exploring (D419), GPT Sol for straightforward work.
-  investigation: {
-    providerId: "codex",
-    model: "gpt-6-luna",
-    reasoningLevel: "xhigh",
-  },
+  // Fast: Sonnet for small, well-specified changes.
   straightforward: {
-    providerId: "codex",
-    model: "gpt-6.1-sol",
+    providerId: "claude-code",
+    model: "claude-sonnet-5-5",
     reasoningLevel: "high",
   },
   // Very fast: Haiku for lookups, scans, renames and simple scripted checks.
@@ -144,22 +124,27 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
   },
 };
 
+/** Profiles by key; the `experiment` and `investigation` keys of older settings and policies are ignored (R9). */
+const profilesSchema = z.preprocess(
+  (value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).filter(([key]) => !(LEGACY_WORK_KINDS as readonly string[]).includes(key)))
+      : value,
+  z.partialRecord(z.enum(PROFILE_KEYS), profileSchema).default({}),
+);
+
 /**
  * Only profiles remain tunable; batching, retention and warming are gone —
  * BB owns message delivery and native lifecycle. Old stored policies carrying
  * the removed keys are normalized on read by `storedPolicySchema`.
  */
 export const policySchema = z
-  .object({
-    profiles: z.partialRecord(z.enum(PROFILE_KEYS), profileSchema).default({}),
-  })
+  .object({ profiles: profilesSchema })
   .strict();
 export type Policy = z.infer<typeof policySchema>;
 export const DEFAULT_POLICY: Policy = policySchema.parse({});
 /** Reads historical policy blobs; unknown removed keys are dropped. */
-export const storedPolicySchema = z.object({
-  profiles: z.partialRecord(z.enum(PROFILE_KEYS), profileSchema).default({}),
-});
+export const storedPolicySchema = z.object({ profiles: profilesSchema });
 
 const line = (max: number) => z.string().trim().min(1).max(max);
 
