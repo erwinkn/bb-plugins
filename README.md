@@ -307,6 +307,20 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### GitHub plugin sync: stop forking `git` on the server loop (2026-10-26)
+
+Candidate from W540's freeze analysis; not filed. BB's built-in GitHub plugin
+syncs about every 15 minutes and starts `git`/`gh` about 80 times per sync
+from inside the server process. With the server at ~3.7 GB, each spawn blocks
+the event loop for 64–109 ms, so one sync adds up to ~7 s of blocking over
+~40 s: 24% of all frozen time in 46 hours of logs. Most of those spawns are
+`git remote get-url` for paths whose remotes rarely change.
+
+- **Smallest change:** cache `git remote get-url` per checkout path
+  (invalidate on the checkout's `.git/config` mtime), and run the remaining
+  spawns from a worker or child process rather than the server's main thread.
+- **Suggested issue title:** `GitHub sync: cache remote lookups; ~80 git spawns per sync block the server loop`.
+
 ### Provider bridges: publish the dynamic-tool MCP server (2026-10-19)
 
 Candidate from the Muse provider (W524); not filed. bb hands a bridge its
