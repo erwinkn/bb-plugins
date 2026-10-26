@@ -394,6 +394,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
         list: async (
           args: {
             parentThreadId?: string;
+            hasParent?: boolean;
             originPluginId?: string;
             archived?: boolean;
             offset?: number;
@@ -404,15 +405,17 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
             .filter((t) =>
               args.parentThreadId
                 ? t.parentThreadId === args.parentThreadId &&
+                  !t.deletedAt &&
                   // Simplification: BB's real route hides only deleted children and
                   // returns archived ones unless `archived` is passed. t87 routes
                   // discovery listings through that real behaviour.
-                  t.archivedAt === null
+                  (args.archived === undefined ? t.archivedAt === null : (t.archivedAt != null) === args.archived)
                 : (!args.originPluginId ||
                     t.originPluginId === args.originPluginId) &&
                   // As BB's route: deleted threads are never listed; `archived` picks a side.
                   !t.deletedAt &&
-                  (args.archived === undefined || (t.archivedAt != null) === args.archived),
+                  (args.archived === undefined || (t.archivedAt != null) === args.archived) &&
+                  (args.hasParent === undefined || (t.parentThreadId != null) === args.hasParent),
             )
             .slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 200))
             // The list DTO carries full native activity and queue evidence

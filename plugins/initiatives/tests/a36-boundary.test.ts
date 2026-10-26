@@ -44,10 +44,10 @@ const corrupt = (row: any, kind: string) => {
   return row;
 };
 
-// T91: retirement also reads the root thread's own row from its project listing. BB lists
-// the (quiet) root there; these stubs model only descendants, so add that root row.
+// T91: retirement also reads the root thread's own row, from its parent's listing (W544). BB
+// lists the (quiet) root there; these stubs model only descendants, so add that root row.
 const withRootRow = (x: Awaited<ReturnType<typeof retirementReady>>, descendants: (args: any) => Promise<any[]>) =>
-  async (args: any) => args.parentThreadId ? descendants(args) : [{
+  async (args: any) => args.parentThreadId !== x.f.threads.get(x.threadId)!.parentThreadId ? descendants(args) : args.archived ? [] : [{
     ...x.f.threads.get(x.threadId), queuedWork: "none", hasPendingInteraction: false,
     activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeWorkflowCount: 0 },
   }];

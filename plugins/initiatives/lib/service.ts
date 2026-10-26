@@ -5753,10 +5753,8 @@ export class ProjectsService {
     // the list row carries the fresher foreground status plus the complete
     // activity counters. One row verdict — the same the report and reconcile
     // paths compute — governs every candidate here. The row comes from the
-    // thread's own project listing, as for every other end check (A207 R1).
-    const verdict = ProjectsService.rowQuiescence(
-      (await this.projectListRows(thread.projectId, new Set([thread.id]))).get(thread.id) ?? null,
-    );
+    // thread's own narrow listing, as for every other end check (A207 R1).
+    const verdict = ProjectsService.rowQuiescence(await this.threadListRow(thread));
     if (verdict !== "ended") return;
     for (const candidate of candidates)
       await this.settleCancelledIfQuiet(candidate, "ended");
@@ -5921,8 +5919,8 @@ export class ProjectsService {
 
   /**
    * The same verdict, plus what positively ended it. The quiet check reads the
-   * thread's own row from its project listing (bounded, filter verified on the
-   * installed server; A205 F2), never a truncated global scan.
+   * thread's own row from its narrow listing (threadListRow), never a truncated
+   * global or project-wide scan.
    */
   private async nativeEnd(
     threadId: string,
@@ -5947,10 +5945,7 @@ export class ProjectsService {
     if (live.deletedAt !== null) return { verdict: "ended", seen: "deleted" };
     if (live.archivedAt !== null) return { verdict: "ended", seen: "archived" };
     if (ProjectsService.threadRunnable(live)) return { verdict: "running", seen: "running" };
-    const row = typeof live.projectId === "string" && live.projectId
-      ? (await this.projectListRows(live.projectId, new Set([threadId]))).get(threadId)
-      : undefined;
-    const verdict = ProjectsService.rowQuiescence(row);
+    const verdict = ProjectsService.rowQuiescence(await this.threadListRow(live));
     return { verdict, seen: verdict === "ended" ? "quiet (idle, no background commands, workflows, agents or queued work)" : verdict === "running" ? "running" : "unreadable" };
   }
 
@@ -6033,17 +6028,20 @@ export class ProjectsService {
   /**
    * List rows of one BB project, matched by id; stops when all ids are found or the page/byte
    * budget is spent. `onPage` gets each page's matched rows as they arrive, and a read of that
-   * same page again.
+   * same page again. `scope` narrows the listing with BB's parent and archived filters.
    */
-  private async projectListRows(bbProjectId: string, ids: Set<string>, rotate = false,
-    onPage?: (rows: ThreadListRow[], again: () => Promise<ThreadListRow[]>) => Promise<void>) {
+  private async projectListRows(bbProjectId: string, ids: Set<string>, { rotate = false, onPage, scope = {} }: {
+    rotate?: boolean;
+    onPage?: (rows: ThreadListRow[], again: () => Promise<ThreadListRow[]>) => Promise<void>;
+    scope?: { parentThreadId?: string; hasParent?: boolean; archived?: boolean };
+  } = {}) {
     const rows = new Map<string, ThreadListRow>();
     let bytes = 0;
     // `rotate`: start where the last rotating scan of this project stopped, so threads beyond
     // one scan's budget are reached by later ones.
     let offset = rotate ? (this.listCursors.get(bbProjectId) ?? 0) : 0;
     for (let read = 0; read < LIST_SCAN_BUDGET && rows.size < ids.size && bytes < HOLD_LIST_BYTES; read += LIST_PAGE) {
-      const query = { projectId: bbProjectId, includeHidden: true, limit: LIST_PAGE, offset };
+      const query = { projectId: bbProjectId, ...scope, includeHidden: true, limit: LIST_PAGE, offset };
       let page: ThreadListRow[];
       try {
         page = await this.sdk.threads.list(query);
@@ -6063,6 +6061,30 @@ export class ProjectsService {
   }
   /** Where each project's rotating list scan resumes. */
   private listCursors = new Map<string, number>();
+
+  /**
+   * One known thread's list row, read from the narrowest listing that holds it: its parent's
+   * children (a root thread: the project's root threads) on its side of archived. A whole-project
+   * scan stops at its budget, so in a project with thousands of threads an older one was never
+   * reached and read as unknown (W544). The same budget still bounds the narrow listing: a
+   * parent with over 1,000 children on the thread's side of archived (or as many live root
+   * threads) can again leave an old one unread, which refuses rather than passes. A DTO whose
+   * project, parent or archive field is malformed reads no row: unknown, never quiet.
+   */
+  private async threadListRow(thread: ThreadDto): Promise<ThreadListRow | undefined> {
+    const parent = thread.parentThreadId as unknown;
+    if (
+      typeof thread.projectId !== "string" || !thread.projectId ||
+      (parent !== null && (typeof parent !== "string" || !parent)) ||
+      !ProjectsService.lifecycleWellFormed(thread.archivedAt)
+    )
+      return undefined;
+    const scope = {
+      ...(typeof parent === "string" ? { parentThreadId: parent } : { hasParent: false }),
+      archived: thread.archivedAt !== null,
+    };
+    return (await this.projectListRows(thread.projectId, new Set([thread.id]), { scope })).get(thread.id);
+  }
 
   /**
    * Release a cancelled assignment's reservation only on positive evidence
@@ -6347,7 +6369,7 @@ export class ProjectsService {
       );
     // The GET DTO has no background command or workflow counters; only the thread's
     // own list row proves it quiet before anything destructive is called (T91).
-    const row = (await timer.step("list", () => this.projectListRows(thread.projectId, new Set([threadId])))).get(threadId);
+    const row = await timer.step("list", () => this.threadListRow(thread));
     const quiet = ProjectsService.rowQuiescence(row);
     if (quiet === "running")
       throw new ThreadBusy(
@@ -7137,7 +7159,7 @@ export class ProjectsService {
       const rows = new Map<string, ThreadListRow>();
       const byThread = new Map(closable.map(a => [a.threadId!, a]));
       for (const [bbProjectId, ids] of reads)
-        for (const [id, row] of await this.projectListRows(bbProjectId, ids, full, (page, again) => this.closeFailedAssignments(byThread, page, again)))
+        for (const [id, row] of await this.projectListRows(bbProjectId, ids, { rotate: full, onPage: (page, again) => this.closeFailedAssignments(byThread, page, again) }))
           rows.set(id, row);
       for (const { project, workers } of stuck) await this.flagStuckWorkers(project, workers, rows, failing);
     }
