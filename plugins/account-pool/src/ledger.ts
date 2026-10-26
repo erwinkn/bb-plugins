@@ -771,6 +771,19 @@ export function readSettingsRows(
 // one is still open and says nothing yet.
 const NO_RESUME_MS = 3 * 60 * 60_000;
 
+// The outer WHERE repeats the predicate of the usage_warming_resume partial index (store.ts), which
+// is what lets SQLite answer the wait scan from the index without reading the table; keep them in
+// step.
+export const RESUME_SAMPLES_SQL = `SELECT w.role, w.state, w.wait_started_at, (
+         SELECT MIN(r.at) FROM usage_requests r
+         WHERE r.session_key = w.session_key AND r.model IS w.model AND r.kind = 'native'
+           AND r.at > w.wait_started_at
+       ) AS resumed_at
+       FROM usage_warming w
+       WHERE w.wait_started_at >= ? AND w.state IS NOT NULL AND w.role IS NOT NULL
+         AND w.review_hold IS NULL
+       ORDER BY w.wait_started_at DESC LIMIT ?`;
+
 // The waits warming reached a refresh decision on since `since`, newest first and at most `limit`
 // of them, each with how long it lasted: until the next native request of its session on the same
 // model. A wait under a review hold is left out: its odds are the review's, not its role's.
@@ -781,19 +794,7 @@ export function readResumeSamples(
   now: number,
   limit: number,
 ): ResumeSample[] {
-  const rows = db
-    .prepare(
-      `SELECT w.role, w.state, w.wait_started_at, (
-         SELECT MIN(r.at) FROM usage_requests r
-         WHERE r.session_key = w.session_key AND r.model IS w.model AND r.kind = 'native'
-           AND r.at > w.wait_started_at
-       ) AS resumed_at
-       FROM usage_warming w
-       WHERE w.wait_started_at >= ? AND w.state IS NOT NULL AND w.role IS NOT NULL
-         AND w.review_hold IS NULL
-       ORDER BY w.wait_started_at DESC LIMIT ?`,
-    )
-    .all(since, limit) as Array<{
+  const rows = db.prepare(RESUME_SAMPLES_SQL).all(since, limit) as Array<{
     role: string;
     state: string;
     wait_started_at: number;

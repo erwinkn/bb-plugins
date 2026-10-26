@@ -12,6 +12,7 @@ import type { AccountQuota } from "./contracts.js";
 import {
   openLedgerDatabase,
   readResumeSamples,
+  RESUME_SAMPLES_SQL,
   UsageLedger,
   type LedgerDeps,
   type RequestRecord,
@@ -778,6 +779,20 @@ describe("usage ledger warming outcomes (T141)", () => {
       { session_key: "session:s1", review_hold: null },
       { session_key: "session:s2", review_hold: "review of W1 by W2 running (A2)" },
     ]);
+    expect(readResumeSamples(r.db, T0 - DAY, T0, 100)).toEqual([{ role: "worker", state: "idle", waitMs: null }]);
+  });
+
+  it("W543: answers the wait scan from the usage_warming_resume partial index, without the table", () => {
+    const r = rig();
+    const plan = (r.db.prepare(`EXPLAIN QUERY PLAN ${RESUME_SAMPLES_SQL}`).all(0, 10) as Array<{ detail: string }>).map(
+      (step) => step.detail,
+    );
+    expect(plan.join(" ")).toContain("USING COVERING INDEX usage_warming_resume");
+    // Waits that never reached a decision, or ran under a review hold, stay out of the samples.
+    r.ledger.warming(outcome({ sessionId: "s1", state: "idle", waitStartedAt: T0 - 4 * 60 * MINUTE }));
+    r.ledger.warming(outcome({ sessionId: "s2", state: null, waitStartedAt: T0 - 4 * 60 * MINUTE }));
+    r.ledger.warming(outcome({ sessionId: "s3", state: "idle", waitStartedAt: T0 - 4 * 60 * MINUTE, reviewHold: "review of W1 by W2 running (A2)" }));
+    r.flushes[0]?.();
     expect(readResumeSamples(r.db, T0 - DAY, T0, 100)).toEqual([{ role: "worker", state: "idle", waitMs: null }]);
   });
 

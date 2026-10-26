@@ -854,4 +854,10 @@ export const QUOTA_MIGRATIONS = [
   // thread goes in the existing thread_id column.
   `ALTER TABLE usage_requests ADD COLUMN initiative TEXT`,
   `ALTER TABLE usage_requests ADD COLUMN purpose TEXT`,
+  // Calibration (readResumeSamples) wants the few decided waits of the last days, but the filter
+  // on state, role and review_hold sent it through every wait in the window, one table read each.
+  // This holds just those waits, with every column the query reads (review_hold, always NULL here,
+  // so SQLite sees the index as covering), so the scan never opens the table.
+  `CREATE INDEX usage_warming_resume ON usage_warming (wait_started_at, role, state, session_key, model, review_hold)
+    WHERE state IS NOT NULL AND role IS NOT NULL AND review_hold IS NULL`,
 ];
