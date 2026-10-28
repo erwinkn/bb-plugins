@@ -63,6 +63,7 @@ import {
 } from "./lib/overview";
 import { Background, FIRST_READ_WAIT_MS, LiveThreads, Recent, liveOf } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
+import { PrWatcher, WATCH_TICK_MS, WatchLedger, ownerNow, readPrWatch } from "./lib/pr-watch";
 import { canonicalPrUrl, prToolSchema, workerPrToolSchema } from "./lib/pr-stages";
 import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
 import { AssignedPrs, COORDINATOR, initiativeNamed, recordPrs, type PrCaller } from "./lib/pr-records";
@@ -600,7 +601,37 @@ export default function plugin(bb: BbPluginApi) {
     },
   }, undefined, undefined,
   // D441: reads never wait on GitHub; a finished fetch tells the dashboards to read again.
-  (repo) => bb.realtime.publish("merge-queue-changed", { repo }));
+  (repo) => bb.realtime.publish("merge-queue-changed", { repo }),
+  // W548: a landed list is diffed by the PR watches.
+  () => prWatcher.poke());
+  // W548: every PR an Adventure owns is watched; a change on GitHub wakes its owner.
+  const watchLedger = new WatchLedger(store.db, () => store.now());
+  /** A wake as a lead's more work (initiative_message work:true) from the coordinator, serialized with every other write. */
+  const prWatchWork = (projectId: string, workerRef: string, text: string, still: () => void = () => {}) => announcing(() => serialized(async () => {
+    // The wake may have stopped applying while earlier writes ran (a mute, a pause, a retire), or
+    // while the dispatch reads BB: checked before, and again just before the work is recorded.
+    still();
+    const project = service.requireProject(projectId);
+    const [result] = await service.delegate(projectId, { route: "continue", role: "work", worker: workerRef, note: text, replyTo: project.coordinatorThreadId, ready: still });
+    return result!.assignment;
+  }), () => projectId);
+  const prWatcher = new PrWatcher({
+    store,
+    ledger: watchLedger,
+    cache: mergeQueue,
+    sdk: bb.sdk,
+    coldCheck: (worker) => service.coldCache.check(worker),
+    giveWork: prWatchWork,
+    changed: () => bb.realtime.publish("merge-queue-changed", { repo: null }),
+    warn: (message) => bb.log.warn(message),
+    ownerOf: (url) => ownerNow(url, {
+      recorded: (key) => prOwners.recorded(key),
+      cachedPr: (key) => mergeQueue.cachedPr(key),
+      recordWorker: (projectId, key) => watchLedger.recordWorker(projectId, key),
+      assignedWorker: (projectId, key) => assignedPrs.naming(projectId, key)?.worker ?? null,
+      threadWorker: (projectId, threadId) => watchLedger.threadWorker(projectId, threadId),
+    }),
+  });
   bb.rpc.register(projectsContract, {
     mergeQueue: async ({ projectId, refresh }) => {
       // W516: the dashboard's read keeps its repositories on the two-minute cadence; agents' reads don't.
@@ -624,6 +655,21 @@ export default function plugin(bb: BbPluginApi) {
       const key = canonicalPrUrl(url);
       if (!key) throw new ProjectError("Expected a GitHub PR URL.");
       return service.prNotes.list(projectId, key);
+    },
+    prWatch: ({ projectId, url }) => {
+      service.requireProject(projectId);
+      const key = canonicalPrUrl(url);
+      if (!key) throw new ProjectError("Expected a GitHub PR URL.");
+      return readPrWatch(watchLedger, key, prOwners.all().get(key)?.projectId === projectId && mergeQueue.cachedPr(key) !== null);
+    },
+    setPrWatch: ({ projectId, url, muted }) => {
+      service.requireProject(projectId);
+      const key = canonicalPrUrl(url);
+      if (!key) throw new ProjectError("Expected a GitHub PR URL.");
+      if (prOwners.all().get(key)?.projectId !== projectId) throw new ProjectError("Only a PR this Adventure owns is watched; move it here first.");
+      watchLedger.setMuted(key, projectId, muted);
+      bb.realtime.publish("merge-queue-changed", { repo: null });
+      return readPrWatch(watchLedger, key, mergeQueue.cachedPr(key) !== null);
     },
     prDetail: ({ projectId, url }) => {
       service.requireProject(projectId);
@@ -1666,6 +1712,30 @@ export default function plugin(bb: BbPluginApi) {
     "message.cancelled",
     event(({ entry }) => runtime.onMessageCancelled(entry.id)),
   );
+  // W548: a pass of the PR watches every WATCH_TICK_MS; one also follows each list that lands.
+  bb.background.service("initiatives-pr-watch", {
+    async start(signal) {
+      try {
+        prWatcher.recover();
+      } catch (error) {
+        bb.log.warn(`PR watch recovery failed: ${errorMessage(error)}`);
+      }
+      while (!signal.aborted) {
+        await prWatcher.check();
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", done);
+            resolve();
+          };
+          const timer = setTimeout(done, WATCH_TICK_MS);
+          signal.addEventListener("abort", done, { once: true });
+          if (signal.aborted) done();
+        });
+      }
+      prWatcher.stop();
+    },
+  });
   bb.background.service("initiatives-sweep", {
     async start(signal) {
       runtime.start(signal);
@@ -1693,5 +1763,5 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Tests drive commands as an entry point would, announcement included.
   const command = (...args: Parameters<typeof perform>) => announcing(() => perform(...args), () => args[0]);
-  return { service, store, runtime, perform: command, overview, tree, preferences };
+  return { service, store, runtime, perform: command, overview, tree, preferences, prWatcher, prWatchWork };
 }

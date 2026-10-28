@@ -44,6 +44,7 @@ import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-sc
 import { PR_STAGE_IDS, type PrRecord, type PrStage, type PrStageChange } from "./pr-stages";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
 import { PR_OWNER_MIGRATIONS } from "./pr-owners";
+import { PR_WATCH_MIGRATIONS } from "./pr-watch-migrations";
 import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
 import { ownBriefText } from "./brief";
 import { assignmentPrRefs } from "./pr-refs";
@@ -575,6 +576,8 @@ export const MIGRATIONS = [
   `CREATE INDEX assignment_pr_refs_url ON assignment_pr_refs(project_id, kind, url, num)`,
   `CREATE INDEX assignment_pr_refs_worker ON assignment_pr_refs(project_id, worker_num, kind)`,
   `CREATE TABLE assignment_pr_scans (project_id TEXT NOT NULL, num INTEGER NOT NULL, report_seq INTEGER NOT NULL, reported INTEGER NOT NULL, PRIMARY KEY (project_id, num))`,
+  // W548: PR watches, their states and wakes.
+  ...PR_WATCH_MIGRATIONS,
 ];
 
 /** W496: a stored ended fact; one that does not parse reads as none, so the thread is read again. */
@@ -3795,11 +3798,11 @@ export class Store {
       .pluck().all(projectId, workerNum) as string[];
   }
 
-  /** W506: the latest assignment referencing a PR, by URL or owner/repo#12. */
-  latestPrRef(projectId: string, url: string): { num: number; workerNum: number; role: string } | null {
+  /** W506: the latest assignment that names (W548) or references a PR, by URL or owner/repo#12. */
+  latestPrRef(projectId: string, url: string, kind: "named" | "referenced"): { num: number; workerNum: number; role: string } | null {
     return (this.db.prepare(`SELECT num, worker_num AS workerNum, role FROM assignment_pr_refs
-      WHERE project_id = ? AND kind = 'referenced' AND url = ? ORDER BY num DESC LIMIT 1`)
-      .get(projectId, url) as { num: number; workerNum: number; role: string } | undefined) ?? null;
+      WHERE project_id = ? AND kind = ? AND url = ? ORDER BY num DESC LIMIT 1`)
+      .get(projectId, kind, url) as { num: number; workerNum: number; role: string } | undefined) ?? null;
   }
 
   /** W492: who holds a PR in each Adventure's records (its recorded worker), by Adventure. */

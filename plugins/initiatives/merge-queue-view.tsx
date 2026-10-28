@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useRemembered } from "./ui-memory";
 import {
   type MergeQueue,
@@ -233,7 +233,7 @@ const isPrView = (v: unknown): v is PrView => {
  * under Unassigned, unless a search or a filter is looking through them: the chip and category
  * counts include the unassigned PRs, so a filtered list must show them too.
  */
-function PrMap({ queue, loadNotes, loadDetail, onMove }: { queue: MergeQueue; loadNotes?: LoadNotes; loadDetail?: LoadDetail; onMove?: MovePr }) {
+function PrMap({ queue, loadNotes, loadDetail, watch, onMove }: { queue: MergeQueue; loadNotes?: LoadNotes; loadDetail?: LoadDetail; watch?: (pr: QueuedPullRequest) => ReactNode; onMove?: MovePr }) {
   const [view, setView] = useRemembered<PrView>(`initiatives:prs:${queue.projectId}`, DEFAULT_VIEW, isPrView);
   const { mode, by, filter, query = "" } = view;
   const setMode = (mode: PrView["mode"]) => setView({ ...view, mode });
@@ -387,7 +387,7 @@ function PrMap({ queue, loadNotes, loadDetail, onMove }: { queue: MergeQueue; lo
       </div>
       {openPr ? (
         <PrDetailPanel pr={openPr} all={all} beneath={queue.beneath} stages={queue.stages}
-          login={queue.login} load={loadDetail} revision={queue} onOpen={setOpen} onClose={() => setOpen(null)} />
+          login={queue.login} load={loadDetail} revision={queue} watch={watch} onOpen={setOpen} onClose={() => setOpen(null)} />
       ) : null}
       </div>
     </>
@@ -447,6 +447,7 @@ export function MergeQueueView({
   onRefresh,
   loadNotes,
   loadDetail,
+  watch,
   onMove,
 }: {
   queue: MergeQueue | null;
@@ -456,6 +457,8 @@ export function MergeQueueView({
   onRefresh: () => void;
   loadNotes?: LoadNotes;
   loadDetail?: LoadDetail;
+  /** W548: a PR's watch control in its detail panel. */
+  watch?: (pr: QueuedPullRequest) => ReactNode;
   /** R2: the row menu's "Move to Initiative"; without it rows have no menu. */
   onMove?: MovePr;
 }) {
@@ -511,7 +514,7 @@ export function MergeQueueView({
       ) : !queue.pullRequests.length ? (
         <p className="cr-empty">No open pull requests{queue.login ? ` by ${queue.login}` : ""}.</p>
       ) : (
-        <PrMap queue={queue} loadNotes={loadNotes} loadDetail={loadDetail} onMove={onMove} />
+        <PrMap queue={queue} loadNotes={loadNotes} loadDetail={loadDetail} watch={watch} onMove={onMove} />
       )}
       {queue && queue.repos.length ? (
         <p className="cr-mq-foot">

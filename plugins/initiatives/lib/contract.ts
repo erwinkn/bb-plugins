@@ -5,6 +5,7 @@ import { legacyThreadCreateSchema } from "./legacy";
 import type { MergeQueue } from "./merge-queue";
 import type { PrNote } from "./pr-notes";
 import type { PrDetail } from "./pr-detail";
+import type { PrWatchView } from "./pr-watch";
 import type { Overview, WorkerChild } from "./overview";
 import type { Cached } from "./live-threads";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
@@ -115,6 +116,16 @@ export const projectsContract = defineRpcContract({
   prOwner: {
     input: z.object({ projectId: id, url: z.string().min(1).max(300), initiative: id.nullable() }),
     output: z.object({ url: z.string(), initiative: z.string().nullable() }),
+  },
+  /** W548: one PR's watch: on or muted, and its latest wakes. Local state only. */
+  prWatch: {
+    input: z.object({ projectId: id, url: z.string().min(1).max(300) }),
+    output: z.custom<PrWatchView>(),
+  },
+  /** W548: mute or unmute one PR's watch; an unmuted watch starts from the PR as it is then. */
+  setPrWatch: {
+    input: z.object({ projectId: id, url: z.string().min(1).max(300), muted: z.boolean() }),
+    output: z.custom<PrWatchView>(),
   },
   /** D442: one PR's whole notes log, oldest first (the queue carries only the last few). */
   prNotes: {

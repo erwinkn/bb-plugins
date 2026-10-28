@@ -75,6 +75,12 @@ export class PrOwners {
     return this.rows;
   }
 
+  /** W548: the open Initiative a PR's recorded owner is now; null for none (never found, unassigned by hand, or archived). */
+  recorded(url: string): string | null {
+    const id = this.all().get(url)?.projectId ?? null;
+    return id && this.lookup.isOpen(id) ? id : null;
+  }
+
   /** A manual move to `projectId`, or out of every Initiative with null. */
   move(url: string, projectId: string | null, at: number) {
     this.db.prepare(`INSERT INTO pr_owners (url, project_id, source, set_at) VALUES (?, ?, 'manual', ?)

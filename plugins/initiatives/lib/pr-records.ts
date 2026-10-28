@@ -205,7 +205,13 @@ export class AssignedPrs {
 
   /** W492: the latest assignment naming a PR, by URL or owner/repo#12. */
   referencing(projectId: string, url: string): Omit<PrWork, "links"> | null {
-    const ref = this.store.latestPrRef(projectId, url);
+    const ref = this.store.latestPrRef(projectId, url, "referenced");
+    return ref ? { worker: `W${ref.workerNum}`, assignment: `A${ref.num}`, role: ref.role } : null;
+  }
+
+  /** W548: `read()`'s entry for one PR, by key: the latest assignment that names it, not one that merely mentions it. */
+  naming(projectId: string, url: string): Omit<PrWork, "links"> | null {
+    const ref = this.store.latestPrRef(projectId, url, "named");
     return ref ? { worker: `W${ref.workerNum}`, assignment: `A${ref.num}`, role: ref.role } : null;
   }
 }

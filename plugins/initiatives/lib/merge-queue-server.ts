@@ -130,6 +130,8 @@ interface RepoEntry {
   attemptedAt: number;
   /** W516: the last dashboard read that showed this repository. */
   viewedAt: number;
+  /** W548: the last PR-watch read that asked for it: an Adventure with an unmuted watch lists it. */
+  watchedAt: number;
   /** The running list fetch. W520: details run on their own and never hold it. */
   pending: Promise<void> | null;
 }
@@ -250,6 +252,8 @@ export class MergeQueueCache {
   private remotes = new Map<string, { at: number; value: Promise<Remote>; last: Remote | null; announce: boolean }>();
   /** The running PR-state lookup pass, one at a time. */
   private lookups: Promise<void> | null = null;
+  /** W548: each listed PR by canonical URL, kept as each list lands. */
+  private listedPrs = new Map<string, QueuedPullRequest>();
   /** W520: the details requests queued or running, and the slots they take turns in. */
   private detailsRunning = new Set<Promise<void>>();
   private detailsSlots = semaphore(DETAILS_CONCURRENCY);
@@ -259,10 +263,15 @@ export class MergeQueueCache {
     private github: GraphQl = githubGraphQl(() => runGh(["auth", "token"])),
     private now: () => number = Date.now,
     private fetched: (repo: string) => void = () => {},
+    /** W548: a repository's open list landed (the PR watches diff it); not its details. */
+    private listed: (repo: string) => void = () => {},
   ) {}
 
-  /** `viewer`: a dashboard read, which keeps its repositories on the REFRESH_MS cadence. */
-  async read(projectId: string, options: { refresh?: boolean; viewer?: boolean } = {}): Promise<MergeQueue> {
+  /**
+   * `viewer`: a dashboard read, which keeps its repositories on the REFRESH_MS cadence. W548:
+   * `watch`, a PR-watch read for an Adventure with an unmuted watch, does the same.
+   */
+  async read(projectId: string, options: { refresh?: boolean; viewer?: boolean; watch?: boolean } = {}): Promise<MergeQueue> {
     const members = await Promise.all(this.sources.memberProjectIds(projectId).map((id) => this.remote(id)));
     // GitHub names are case-insensitive: key, cache and rate-limit by lower case,
     // and show the first member remote's own casing.
@@ -270,7 +279,7 @@ export class MergeQueueCache {
     for (const m of members) if (m.repo && !display.has(m.repo.toLowerCase())) display.set(m.repo.toLowerCase(), m.repo);
     const repos = [...display.keys()];
     const skipped = members.filter((m) => !m.repo).map((m) => ({ project: m.name, reason: "no GitHub origin remote" }));
-    this.refresh(repos.map((repo) => this.entry(repo, display.get(repo)!)), options.refresh === true, options.viewer === true);
+    this.refresh(repos.map((repo) => this.entry(repo, display.get(repo)!)), options.refresh === true, options.viewer === true, options.watch === true);
     const workers = this.sources.workers(projectId);
     const records = this.sources.prRecords(projectId);
     const assigned = this.sources.assignedPrs(projectId);
@@ -382,12 +391,25 @@ export class MergeQueueCache {
     return [...new Set(members.flatMap((m) => (m.repo ? [m.repo.toLowerCase()] : [])))];
   }
 
+  /** The account the last search ran as; null until one answers. */
+  get login(): string | null {
+    return this.loginName;
+  }
+
+  /**
+   * W548: one GraphQL request of the PR watches, in the details' slots (DETAILS_CONCURRENCY across
+   * every repository), so the watches add requests to the queue, never concurrency.
+   */
+  watchQuery(query: string, variables: Record<string, unknown>): Promise<unknown> {
+    const task = this.detailsSlots(() => this.github(query, variables, GH_TIMEOUT_MS));
+    const tracked = task.then(() => undefined, () => undefined).finally(() => this.detailsRunning.delete(tracked));
+    this.detailsRunning.add(tracked);
+    return task;
+  }
+
   /** The cached open PR at this URL, if any; never fetches. */
   cachedPr(url: string): QueuedPullRequest | null {
-    const key = canonicalPrUrl(url);
-    for (const entry of this.repos.values())
-      for (const pr of entry.pullRequests ?? []) if (canonicalPrUrl(pr.url) === key) return pr;
-    return null;
+    return this.listedPrs.get(canonicalPrUrl(url) ?? "") ?? null;
   }
 
   /**
@@ -437,7 +459,7 @@ export class MergeQueueCache {
       entry = {
         key: repo, name, pullRequests: null, fetchedAt: null, error: null, capped: null,
         details: new Map(), detailsFetchedAt: null,
-        attemptedAt: -Infinity, viewedAt: -Infinity, pending: null,
+        attemptedAt: -Infinity, viewedAt: -Infinity, watchedAt: -Infinity, pending: null,
       };
       this.repos.set(repo, entry);
     }
@@ -445,12 +467,13 @@ export class MergeQueueCache {
   }
 
   /** Starts one fetch for the due repositories among `entries`, REPOS_PER_SEARCH a search; never waits for it. */
-  private refresh(entries: RepoEntry[], force: boolean, viewer: boolean): void {
+  private refresh(entries: RepoEntry[], force: boolean, viewer: boolean, watch: boolean): void {
     const now = this.now();
     const due = entries.filter((entry) => {
       if (viewer) entry.viewedAt = now;
+      if (watch) entry.watchedAt = now;
       if (entry.pending) return false;
-      const every = force ? MIN_FORCED_REFRESH_MS : now - entry.viewedAt < VIEWER_MS ? REFRESH_MS : IDLE_REFRESH_MS;
+      const every = force ? MIN_FORCED_REFRESH_MS : now - Math.max(entry.viewedAt, entry.watchedAt) < VIEWER_MS ? REFRESH_MS : IDLE_REFRESH_MS;
       return now - entry.attemptedAt >= every;
     });
     for (let i = 0; i < due.length; i += REPOS_PER_SEARCH) {
@@ -491,7 +514,15 @@ export class MergeQueueCache {
     }
     const at = this.now();
     for (const entry of group) {
+      for (const pr of entry.pullRequests ?? []) {
+        const key = canonicalPrUrl(pr.url);
+        if (key) this.listedPrs.delete(key);
+      }
       entry.pullRequests = parsePullRequests(entry.name, byKey.get(entry.key)!);
+      for (const pr of entry.pullRequests) {
+        const key = canonicalPrUrl(pr.url);
+        if (key) this.listedPrs.set(key, pr);
+      }
       entry.capped = list.complete ? null : { listed: list.nodes.length, total: list.total, search: group.map((e) => e.name) };
       entry.fetchedAt = at;
       entry.error = null;
@@ -500,6 +531,11 @@ export class MergeQueueCache {
       this.sources.prStates?.markOpen(group.flatMap((entry) => entry.pullRequests!.flatMap((pr) => canonicalPrUrl(pr.url) ?? [])), at);
     } catch { /* the states are a cache; the next fetch writes them again */ }
     this.lookUp();
+    for (const entry of group) {
+      try {
+        this.listed(entry.key);
+      } catch { /* a hint; the watches' own tick reads anyway */ }
+    }
     // The list shows before its details land: the fetch ends here, and is announced.
     this.loadDetails(group, byKey);
   }

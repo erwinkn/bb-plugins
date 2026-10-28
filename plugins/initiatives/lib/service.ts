@@ -241,6 +241,11 @@ export interface DelegateInput {
   replyTo?: string | null;
   /** D529: send to a large cold worker anyway. */
   resumeCold?: boolean;
+  /**
+   * W548: runs last, after every awaited check, just before the work is recorded and sent (no
+   * await between): throws to call it off. A PR watch's wake checks there that it still applies.
+   */
+  ready?: () => void;
 }
 
 /** v9 (§8.2, D516): where the code-review skill the worker loop names lives on the server host. */
@@ -386,7 +391,8 @@ export class ProjectsService {
     }
   }
 
-  private readonly coldCache: ColdCacheGuard;
+  /** T142: also read by the PR watches (W548), which route a cold worker's wake to the coordinator. */
+  readonly coldCache: ColdCacheGuard;
   /** D442: each PR's notes log; a worker's report lands on the PRs it is about. */
   readonly prNotes: PrNotes;
 
@@ -4663,6 +4669,7 @@ export class ProjectsService {
           "The worker context changed during dispatch. Read it again before giving out the work.",
         );
     }
+    input.ready?.();
     // Record intent before calling BB so a crash leaves a reconcilable operation.
     const { worker, assignment } = this.store.tx(() => {
       const worker =

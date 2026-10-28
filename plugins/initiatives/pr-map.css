@@ -248,3 +248,7 @@
 .cr-mq-fold::before { content: "▸"; font-size: 9px; transition: transform .12s; }
 .cr-mq-fold[aria-expanded="true"]::before { transform: rotate(90deg); }
 .cr-mq-menu-here { color: var(--muted-foreground); }
+/* W548: a PR's watch: its toggle sits at the end of the section's heading. */
+.cr-pd-watch h4 .cr-pd-watch-toggle { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.cr-pd-watch-status { margin: 0; font-size: 11.5px; color: var(--cr-ink-secondary); }
+.cr-pd-watch-status[data-muted] { color: var(--muted-foreground); }

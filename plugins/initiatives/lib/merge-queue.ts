@@ -31,6 +31,11 @@ export interface QueuedPullRequest extends PrState {
   /** GitHub's mergeStateStatus, lower case: clean, behind, blocked, dirty, unstable, unknown… */
   mergeState: string;
   head: string;
+  /** W548: the head commit's SHA and the PR's GraphQL node id, for PR watches; absent from older servers. */
+  headOid?: string;
+  nodeId?: string;
+  /** W548: the head's checks counted by their raw states ("run:SUCCESS=3 ctx:PENDING=1"): a rerun moves it even when the summary's counts don't. */
+  checkStates?: string;
   base: string;
   createdAt: number;
   updatedAt: number;
@@ -202,7 +207,7 @@ export const GH_LIST_QUERY = `query($q: String!, $endCursor: String) {
     issueCount
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      id number title url isDraft reviewDecision mergeable mergeStateStatus headRefName baseRefName createdAt updatedAt
+      id number title url isDraft reviewDecision mergeable mergeStateStatus headRefName headRefOid baseRefName createdAt updatedAt
       statusCheckRollup: commits(last: 1) { nodes { commit { statusCheckRollup { contexts {
         checkRunCountsByState { state count } statusContextCountsByState { state count }
       } } } } }
@@ -210,8 +215,8 @@ export const GH_LIST_QUERY = `query($q: String!, $endCursor: String) {
   }
 }`;
 
-const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"]);
+export const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+export const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"]);
 
 /**
  * The checks of the PR's last commit, from the list query's counts: check runs by CheckRunState
@@ -233,6 +238,17 @@ export function summarizeChecks(rollup: unknown): QueuedPullRequest["checks"] {
   return { state, ...counts, total };
 }
 
+/** W548: the list's check counts by raw state, as one comparable string. */
+export function checkStateKey(rollup: unknown): string {
+  const contexts = (rollup as { nodes?: { commit?: { statusCheckRollup?: { contexts?: Record<string, unknown> } | null } }[] } | null)
+    ?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  const parts: string[] = [];
+  for (const [kind, byState] of [["run", contexts?.checkRunCountsByState], ["ctx", contexts?.statusContextCountsByState]] as const)
+    for (const entry of Array.isArray(byState) ? (byState as { state?: unknown; count?: unknown }[]) : [])
+      if (typeof entry?.state === "string" && typeof entry.count === "number" && entry.count > 0) parts.push(`${kind}:${entry.state}=${entry.count}`);
+  return parts.sort().join(" ");
+}
+
 function review(decision: unknown): ReviewState {
   switch (decision) {
     case "APPROVED":
@@ -247,7 +263,7 @@ function review(decision: unknown): ReviewState {
   }
 }
 
-function mergeable(value: unknown): MergeableState {
+export function mergeable(value: unknown): MergeableState {
   return value === "MERGEABLE" ? "mergeable" : value === "CONFLICTING" ? "conflicting" : "unknown";
 }
 
@@ -329,6 +345,9 @@ export function parsePullRequests(repo: string, nodes: readonly unknown[]): Queu
       url: e.url,
       ...base,
       head,
+      ...(typeof e.headRefOid === "string" ? { headOid: e.headRefOid } : {}),
+      ...(typeof e.id === "string" ? { nodeId: e.id } : {}),
+      checkStates: checkStateKey(e.statusCheckRollup),
       base: typeof e.baseRefName === "string" ? e.baseRefName : "",
       createdAt: time(e.createdAt),
       updatedAt: time(e.updatedAt),

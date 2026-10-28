@@ -19,7 +19,7 @@ export function prRefsOf(rows: { num: number; workerNum: number; role: string; b
   return {
     prRefs: (_projectId: string, kind: "named" | "referenced") => refs(kind),
     workerPrRefs: (_projectId: string, workerNum: number) => refs("referenced").filter((r) => r.workerNum === workerNum).map((r) => r.url),
-    latestPrRef: (_projectId: string, url: string) => refs("referenced").filter((r) => r.url === url).at(-1) ?? null,
+    latestPrRef: (_projectId: string, url: string, kind: "named" | "referenced") => refs(kind).filter((r) => r.url === url).at(-1) ?? null,
   };
 }
 

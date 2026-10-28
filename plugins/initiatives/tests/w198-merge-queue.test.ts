@@ -70,6 +70,9 @@ describe("parsing gh pr list", () => {
       mergeable: "mergeable",
       mergeState: "clean",
       head: "fix/questions-tool-schema-grammar",
+      // W548: the list's node id (its URL in these fixtures) and, when it asks, the head SHA.
+      nodeId: "https://github.com/erwinkn/bb-plugins/pull/68",
+      checkStates: "ctx:SUCCESS=1 run:SKIPPED=1 run:SUCCESS=1",
       base: "main",
       createdAt: Date.parse("2026-09-18T18:31:58Z"),
       updatedAt: Date.parse("2026-09-18T18:41:56Z"),

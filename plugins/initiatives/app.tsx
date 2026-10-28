@@ -42,6 +42,7 @@ import { AnswerChoices, AutoTextarea, ControlRoom, pickByKey, pickedLabel, Split
 import { useRemembered } from "./ui-memory";
 import { sendWrite } from "./lib/write-timeout";
 import { MergeQueueView } from "./merge-queue-view";
+import { PrWatch } from "./pr-watch-view";
 import type { MergeQueue } from "./lib/merge-queue";
 
 export const PROJECT_PANEL = "initiative-overview";
@@ -812,6 +813,7 @@ export function Dashboard({
                 onRefresh={() => void refreshQueue()}
                 loadNotes={(url) => api.call("prNotes", { projectId, url })}
                 loadDetail={(url) => api.call("prDetail", { projectId, url })}
+                watch={(pr) => <PrWatch projectId={projectId} url={pr.url} />}
                 onMove={async (url, initiative) => {
                   await api.call("prOwner", { projectId, url, initiative });
                   await queue.refresh().catch(() => undefined);

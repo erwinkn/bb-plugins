@@ -103,7 +103,7 @@ function Bones() {
  * Initiative's (record, stage history, notes, work, decisions, updates) from prDetail.
  * Esc closes it, wherever focus is in the PRs tab.
  */
-export function PrDetailPanel({ pr, all, beneath = [], stages, login, load, revision, onOpen, onClose }: {
+export function PrDetailPanel({ pr, all, beneath = [], stages, login, load, revision, watch, onOpen, onClose }: {
   pr: QueuedPullRequest;
   /** Every PR, for its stack. */
   all: readonly QueuedPullRequest[];
@@ -115,6 +115,8 @@ export function PrDetailPanel({ pr, all, beneath = [], stages, login, load, revi
   load?: LoadDetail;
   /** Changes when the queue is read again. */
   revision: unknown;
+  /** W548: the PR's watch control; this Adventure's PRs only, not the unassigned ones. */
+  watch?: (pr: QueuedPullRequest) => ReactNode;
   onOpen: (pr: QueuedPullRequest) => void;
   onClose: () => void;
 }) {
@@ -230,6 +232,7 @@ export function PrDetailPanel({ pr, all, beneath = [], stages, login, load, revi
             {pr.worker ? <><dt>Worker</dt><dd title={workerTitle(pr.worker)}><ThreadLink threadId={pr.worker.threadId}><span className="cr-mq-worker">{workerLabel(pr.worker)}</span></ThreadLink> <span className="cr-pd-label">{workerTitle(pr.worker)}</span></dd></> : null}
           </dl>
         </section>
+        {watch && !pr.unassigned ? watch(pr) : null}
 
         {!load ? null : !read ? <Bones /> : !detail ? (
           <p className="cr-mq-note" role="status">Couldn't read the PR's history: {read.error}</p>
