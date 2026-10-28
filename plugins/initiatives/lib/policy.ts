@@ -35,6 +35,14 @@ export const sameProfile = (a: Profile, b: Profile) =>
   a.reasoningLevel === b.reasoningLevel &&
   a.serviceTier === b.serviceTier;
 
+/**
+ * W545: whether a fallback can rerun a round its reviewer couldn't: another provider or model. The
+ * same model at another effort or tier hits the same quota. The brief shows a fallback command
+ * exactly when this holds, so a worker told to wait for the plugin always has one to wait for.
+ */
+export const fallbackDiffers = (reviewer: Profile, fallback: Profile | undefined): fallback is Profile =>
+  !!fallback && (fallback.providerId !== reviewer.providerId || fallback.model !== reviewer.model);
+
 export const describeProfile = (profile: Profile) =>
   `${profile.providerId} / ${profile.model} / ${profile.reasoningLevel} / ${profile.serviceTier ?? "tier unspecified"}`;
 

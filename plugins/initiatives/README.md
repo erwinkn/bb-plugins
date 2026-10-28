@@ -21,14 +21,29 @@ An example, in the Equisafe Initiative:
    Its assignment A1641 records `reply_to` = the coordinator tab. The brief ends with the
    **reviewer command** (a `bb thread spawn` of the other model family, from the
    `reviewOfClaude`/`reviewOfGpt` profile) and the **standing rules**. When the
-   `reviewFallback` profile differs from that reviewer, a second command follows it. If a usage
-   limit or an unavailable model keeps the reviewer from starting or from giving a verdict,
-   the worker deletes any retry queued on it (BB's provider-retry would otherwise run it again
-   after the limit resets, a second reviewer on the round), archives it, runs the round again
-   on the fallback, even if that is its own model family, and names those rounds in its
-   report. A reviewer already running again on an automatic retry (a short overload) is still
-   the round's reviewer; if the fallback can't run either, the worker reports blocked. A
-   review that gave a verdict or findings is never redone on the fallback.
+   `reviewFallback` profile runs another provider or model than that reviewer (the same model
+   at another effort hits the same quota), a second command follows it. If a usage limit or an
+   unavailable model stops the reviewer before its verdict, the plugin switches it (W545,
+   `lib/reviewer-fallback.ts`): on BB's `thread.failed`/`turn.failed` for a direct child of a
+   worker running that worker's reviewer profile and titled as a review, it reads the failed turn's own provider
+   error (`errorInfo.category` billing or budget-exceeded; rate-limit when the window is
+   blocked or the text says the usage limit or quota is spent; otherwise a usage-limit, quota
+   or model-not-found text), stops the reviewer, deletes the retries queued on it (BB's
+   provider-retry would otherwise run it again after the limit resets, a second reviewer on
+   the round), archives it, starts the same prompt on the fallback under the same worker and
+   steers a note into the worker ("muse-wonder-1.0 xhigh is out of quota (usage limit) →
+   round 2 rerun on claude-opus-5-5 high", with the new thread). A transient failure
+   (overloaded, a dropped connection, a per-minute 429) is left to BB's own retry. A reviewer
+   that ever finished a turn may have given its verdict: the plugin leaves it and tells the
+   worker, because a review that gave a verdict or findings is never redone on the fallback.
+   Whatever it decides after claiming a failed reviewer reaches the worker. The fallback runs
+   another provider or model, so it is never switched in turn; if it can't run either, the
+   worker reports blocked. The worker runs the fallback command itself only when the reviewer
+   command is refused, the plugin's note asks it to, or BB reports a limit failure and no
+   plugin note comes within minutes, and names fallback rounds in its report. Before it
+   stops the reviewer, the plugin steers a first note ("don't start a reviewer for this
+   round yourself"), so a worker woken by BB's "child failed" notice waits; and it starts no
+   fallback when the worker already started one (a worker on an older brief).
 2. W1420 implements, opens its PR and keeps its stage with `initiative_pr`. For each review
    round it starts a fresh reviewer as an ordinary BB child thread (`--parent-self
    --lifecycle-owner-thread`, in its checkout), copies the rules that matter into the

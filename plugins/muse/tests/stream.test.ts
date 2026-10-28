@@ -405,8 +405,12 @@ describe("failures", () => {
     const all = events();
     expect(all.find((event) => event.type === "turn/completed")).toMatchObject({ status: "failed" });
     expect(deltas(session.threadId)).toContainEqual(
-      expect.objectContaining({ kind: "provider.error", category: "rate-limit", message: expect.stringContaining("usage limit") }),
+      expect.objectContaining({ kind: "provider.error", errorInfo: expect.objectContaining({ category: "rate-limit" }), message: expect.stringContaining("usage limit") }),
     );
+    // W545: bb stores the classification with the error, where turn.failed listeners read it.
+    expect(all.find((event) => event.type === "provider/error")).toMatchObject({
+      errorInfo: { category: "rate-limit", httpStatusCode: 429, providerCode: null },
+    });
     expect(harness.messages.find((message) => message.method === "provider/recovery")?.params).toMatchObject({
       threadId: session.threadId,
       kind: "rateLimited",

@@ -307,6 +307,27 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Provider bridges: a `provider.error` delta's bare `category` is dropped (2026-10-28)
+
+Candidate from W545; not filed. The bridge delta schema accepts both
+`category` and `errorInfo` on `provider.error`, but the assembler stores only
+`errorInfo`, so a bridge that sends `category` (Muse did until W545) loses
+its classification without an error: `turn.failed` reports
+`errorInfo: null`, provider-retry declines as "not-retryable", and every
+Muse quota failure on 2026-10-27/28 reached BB unclassified. The Muse plugin
+now sends `errorInfo`.
+
+- **Smallest change:** fold a bare `category` into `errorInfo`
+  (`{ category, httpStatusCode: null, providerCode: null }`) in the
+  assembler, or reject it in the schema so the mistake shows up.
+- **Related gap:** a plugin can't hold back BB's "child failed" notice to the
+  parent while it handles the failure itself. Adventures' reviewer fallback
+  steers a "don't start one yourself" note in before it acts and starts no
+  fallback when the worker already did, but a worker that acts on the notice
+  first can still put a second reviewer on the round. An opt-in hold on that
+  notice, per failure, would close it.
+- **Suggested issue title:** `provider.error: category is accepted but dropped; only errorInfo reaches turn.failed`.
+
 ### GitHub plugin sync: stop forking `git` on the server loop (2026-10-26)
 
 Candidate from W540's freeze analysis; not filed. BB's built-in GitHub plugin

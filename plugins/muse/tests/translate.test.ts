@@ -248,13 +248,13 @@ describe("models", () => {
 describe("turn failures", () => {
   it("classifies quota, auth and plain failures", () => {
     expect(describeTurnFailure({ kind: "modelError", message: "429 quota exceeded" }, null)).toMatchObject({
-      category: "rate-limit",
+      errorInfo: { category: "rate-limit", httpStatusCode: 429, providerCode: null },
       recovery: "rateLimited",
     });
     expect(describeTurnFailure({ kind: "authRequired", message: "token expired" }, null)).toMatchObject({
       recovery: "authRequired",
       message: expect.stringContaining("muse login"),
     });
-    expect(describeTurnFailure(null, "crash")).toEqual({ message: "crash", category: null, recovery: null });
+    expect(describeTurnFailure(null, "crash")).toEqual({ message: "crash", errorInfo: null, recovery: null });
   });
 });

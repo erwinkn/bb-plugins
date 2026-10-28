@@ -33,13 +33,15 @@ describe("W537 fallback reviewer", () => {
     expect(both.startsWith("Reviewer command (code-review skill, other model family):\nbb thread spawn")).toBe(true);
     expect(both.indexOf(spawnOf(muse))).toBeLessThan(both.indexOf(FALLBACK));
     expect(both.indexOf(FALLBACK)).toBeLessThan(both.indexOf(spawnOf(opus)));
-    expect(both).toContain(`\n\n${FALLBACK} if a usage or quota limit or an unavailable model keeps the reviewer from starting or from giving a verdict, delete any retry queued on it (\`bb thread queue list <id>\`, \`bb thread queue delete <id> <message-id>\`), archive it and run that round again with this command, even if it is your own model family. A reviewer running again on an automatic retry is still the round's reviewer: wait for it. Name the fallback rounds in your report; if the fallback can't run either, report blocked. A review that gave a verdict or findings is never redone on the fallback.\nbb thread spawn`);
-    for (const single of [reviewerCommand(opus, opus), reviewerCommand(opus), reviewerCommand(muse, { ...muse })]) {
+    // W545: the plugin reruns the round itself; the worker runs the command only when the reviewer command is refused.
+    expect(both).toContain(`\n\n${FALLBACK} when a usage limit or an unavailable model stops a reviewer before its verdict, the plugin archives it, reruns that round on this profile itself (same prompt, under you) and tells you in this thread: wait for that reviewer; don't start another. Run this command yourself, even if it is your own model family, only when the reviewer command is refused, the plugin's message asks you to, or BB reports the reviewer failed on a limit and no plugin message comes within minutes. Name the fallback rounds in your report; if the fallback can't run either, report blocked. A review that gave a verdict or findings is never redone on the fallback.\nbb thread spawn`);
+    // W545: the same model at another effort or tier hits the same quota, so it is no fallback.
+    for (const single of [reviewerCommand(opus, opus), reviewerCommand(opus), reviewerCommand(muse, { ...muse }), reviewerCommand(muse, { ...muse, reasoningLevel: "high" }), reviewerCommand(opus, { ...opus, serviceTier: "fast" })]) {
       expect(single).not.toContain(FALLBACK);
       expect(single.match(/bb thread spawn/g)).toHaveLength(1);
     }
-    // A different service tier is a different profile.
-    expect(reviewerCommand(opus, { ...opus, serviceTier: "fast" })).toContain(`${spawnOf(opus)} --service-tier fast`);
+    // The fallback's own tier is carried.
+    expect(reviewerCommand(muse, { ...opus, serviceTier: "fast" })).toContain(`${spawnOf(opus)} --service-tier fast`);
   });
 
   it("a brief and a work message carry the global fallback; the default one when unset", async () => {
@@ -77,22 +79,26 @@ describe("W537 fallback reviewer", () => {
   it("worker guidance, skill and README name the fallback; one reviewer per round stays", () => {
     const worker = flat(DEFAULT_WORKER_INSTRUCTIONS);
     expect(worker).toContain("one fresh reviewer each round");
-    expect(worker).toContain("If it can't run (usage limit, model unavailable), follow the fallback command's note in your brief (no fallback command: report blocked) and name those rounds in your report.");
-    expect(flat(readFileSync("skills/initiative-worker/SKILL.md", "utf8"))).toContain("follow the fallback command's note in your brief (no fallback command: report blocked) and name those rounds in your report.");
+    expect(worker).toContain("If it can't run (usage limit, model unavailable), the plugin reruns it on the fallback and tells you (no fallback command in your brief: report blocked); name those rounds in your report.");
+    expect(flat(readFileSync("skills/initiative-worker/SKILL.md", "utf8"))).toContain("the plugin reruns it on the fallback and tells you (no fallback command in your brief: report blocked); name those rounds in your report.");
     const readme = flat(readFileSync("README.md", "utf8"));
-    expect(readme).toContain("the worker deletes any retry queued on it");
-    expect(readme).toContain("A review that gave a verdict or findings is never redone on the fallback.");
+    expect(readme).toContain("deletes the retries queued on it");
+    expect(readme).toContain("a review that gave a verdict or findings is never redone on the fallback.");
     expect(readme).toContain("`reviewFallback` (the fallback reviewer, for either family; default Claude Opus 5.5 high)");
   });
 
   it("the worker default from before the fallback is kept as a legacy text and upgrades to the current one", async () => {
-    const previous = PREVIOUS_DEFAULTS.worker[0]!;
+    // W545 keeps W537's text as the newest legacy one, before it.
+    const [w537, previous] = PREVIOUS_DEFAULTS.worker as [string, string];
+    expect(w537).toContain("follow the fallback command's note in your brief (no fallback command: report blocked)");
     expect(previous).toContain("Clean means the verdict is correct with no P1 or P2.");
     expect(previous).not.toContain("fallback");
-    const f = fixture({ workerInstructions: previous });
-    f.store.setFlag(GUIDANCE_RESET_FLAG);
-    await f.preferences.ready;
-    expect(f.preferences.configuration().workerInstructions).toBe(DEFAULT_WORKER_INSTRUCTIONS);
+    for (const old of [w537, previous]) {
+      const f = fixture({ workerInstructions: old });
+      f.store.setFlag(GUIDANCE_RESET_FLAG);
+      await f.preferences.ready;
+      expect(f.preferences.configuration().workerInstructions).toBe(DEFAULT_WORKER_INSTRUCTIONS);
+    }
     expect(PREVIOUS_DEFAULTS.worker).not.toContain(DEFAULT_WORKER_INSTRUCTIONS);
   });
 });

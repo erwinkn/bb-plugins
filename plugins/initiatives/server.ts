@@ -51,6 +51,8 @@ import { CHAT_MEMORY_PLUGIN_ID } from "./lib/memory-scopes";
 import { Store, MIGRATIONS, type WorkerRecord } from "./lib/store";
 import { CHILD_PAGE, ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
+import { ReviewerFallback } from "./lib/reviewer-fallback";
+import { withProfileDefaults } from "./lib/settings";
 import {
   buildOverview,
   buildSummary,
@@ -1614,6 +1616,18 @@ export default function plugin(bb: BbPluginApi) {
     "thread.failed",
     event(({ thread, error }) => runtime.onThreadFailed(thread, error)),
   );
+  // W545: a worker's reviewer that a usage limit or an unavailable model stops is rerun on the
+  // fallback reviewer by the plugin. thread.failed carries the error text; turn.failed the
+  // classification of a request refused at the door.
+  const reviewerFallback = new ReviewerFallback({
+    sdk: bb.sdk,
+    store,
+    policy: async (projectId) => withProfileDefaults(store.project(projectId)?.policy ?? { profiles: {} }, await preferences.read()),
+    warn: (message) => bb.log.warn(message),
+  });
+  bb.events.on("thread.failed", ({ thread, error }) => reviewerFallback.onFailed(thread.id, { error, parentThreadId: thread.parentThreadId }));
+  bb.events.on("turn.failed", ({ threadId, errorInfo, rateLimits }) =>
+    reviewerFallback.onFailed(threadId, { errorInfo, rateLimitBlocked: rateLimits?.status === "blocked" }));
   bb.events.on(
     "thread.archived",
     event(({ thread }) => runtime.onThreadArchived(thread)),
@@ -1655,6 +1669,8 @@ export default function plugin(bb: BbPluginApi) {
   bb.background.service("initiatives-sweep", {
     async start(signal) {
       runtime.start(signal);
+      // W545: a reviewer switch the previous load cut short goes back to its worker.
+      void reviewerFallback.recover().catch((error) => bb.log.warn(`Reviewer fallback recovery failed: ${errorMessage(error)}`));
       // v9 (§12): a load that follows the previous build's activity tells the coordinators once.
       await announcing(() => service.runCutover()).catch((error) => bb.log.warn(`Cutover check failed: ${errorMessage(error)}`));
       while (!signal.aborted) {

@@ -13,8 +13,8 @@ current instructions, the reviewer command and the rules), which replaces anythi
   BB child thread with the reviewer command in your brief (`--parent-self
   --lifecycle-owner-thread "$BB_THREAD_ID"`, in your checkout). Ask it for a verdict (correct
   or needs attention) and findings ranked P1 to P3. If it can't run (usage limit, model
-  unavailable), follow the fallback command's note in your brief (no fallback command:
-  report blocked) and name those rounds in your report. Copy the standing rules that
+  unavailable), the plugin reruns it on the fallback and tells you (no fallback command in
+  your brief: report blocked); name those rounds in your report. Copy the standing rules that
   matter for its job into its brief. While it runs, end your turn: its final message wakes
   you, and ending a turn reports nothing. Waiting on a child or a background job that will
   wake you is the only reason to end a turn without a report.

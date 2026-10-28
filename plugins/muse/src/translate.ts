@@ -16,6 +16,7 @@ import {
   type ProviderRateLimitState,
   type ProviderRecoveryKind,
   type ProviderUsageWindow,
+  type ThreadDelta,
   type ThreadEventItemStatus,
   type ThreadEventTokenUsageBreakdown,
   experimental_COMPACTION_PRESENTATION as COMPACTION_PRESENTATION,
@@ -776,13 +777,26 @@ export function rateLimitState(usage: MspAccountUsage): ProviderRateLimitState |
   };
 }
 
-/** A failed Muse turn in bb's terms: the message, an error category, a recovery hint. */
+type ProviderErrorInfo = NonNullable<Extract<ThreadDelta, { kind: "provider.error" }>["errorInfo"]>;
+
+/**
+ * A provider error's classification as bb stores it (W545). bb keeps `errorInfo` with the
+ * error, where `turn.failed` listeners (provider-retry, Adventures' reviewer fallback) read it;
+ * a bare `category` on the delta is dropped.
+ */
+export const errorInfo = (category: ProviderErrorInfo["category"], httpStatusCode: number | null = null): ProviderErrorInfo => ({
+  category,
+  httpStatusCode,
+  providerCode: null,
+});
+
+/** A failed Muse turn in bb's terms: the message, an error classification, a recovery hint. */
 export function describeTurnFailure(
   error: MspTurnError | null,
   reason: string | null,
 ): {
   message: string;
-  category: "rate-limit" | "internal" | "bad-request" | null;
+  errorInfo: ProviderErrorInfo | null;
   recovery: ProviderRecoveryKind | null;
 } {
   const raw = error?.message ?? reason ?? "Muse reported a failed turn";
@@ -791,17 +805,17 @@ export function describeTurnFailure(
   if (usageLimited) {
     const resetsAt = error?.quota?.resetsAtMs;
     const when = typeof resetsAt === "number" ? ` It resets at ${new Date(resetsAt).toISOString()}.` : "";
-    return { message: `Muse usage limit reached: ${raw}.${when}`, category: "rate-limit", recovery: "rateLimited" };
+    return { message: `Muse usage limit reached: ${raw}.${when}`, errorInfo: errorInfo("rate-limit", 429), recovery: "rateLimited" };
   }
   if (error?.kind === "authRequired") {
     return {
       message: `Muse needs you to sign in again: ${raw}. Run \`muse login\` on this machine.`,
-      category: null,
+      errorInfo: null,
       recovery: "authRequired",
     };
   }
   if (error?.kind === "configError" || error?.kind === "mcpLinkError") {
-    return { message: `Muse ${error.kind}: ${raw}`, category: "bad-request", recovery: null };
+    return { message: `Muse ${error.kind}: ${raw}`, errorInfo: errorInfo("bad-request"), recovery: null };
   }
-  return { message: error?.kind ? `Muse ${error.kind}: ${raw}` : raw, category: null, recovery: null };
+  return { message: error?.kind ? `Muse ${error.kind}: ${raw}` : raw, errorInfo: null, recovery: null };
 }

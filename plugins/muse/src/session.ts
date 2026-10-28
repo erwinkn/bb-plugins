@@ -91,6 +91,7 @@ import {
   choiceFor,
   describeItem,
   describeTurnFailure,
+  errorInfo,
   isSkippedItemKind,
   itemStatus,
   museAnswers,
@@ -439,7 +440,7 @@ export class MuseSession {
     for (const turnId of [...this.awaitingStart.keys()]) this.joinTurn(turnId);
     if (this.turn !== null) {
       if (ending.status === "failed" && ending.error !== undefined) {
-        this.emit([{ kind: "provider.error", message: ending.error, category: "internal" }]);
+        this.emit([{ kind: "provider.error", message: ending.error, errorInfo: errorInfo("internal") }]);
       }
       this.closeTurn(ending);
     }
@@ -752,7 +753,7 @@ export class MuseSession {
     const message = `${what}${working ? ", so this turn was stopped" : ""}. Send a message to continue: Muse picks the session up from its own record.`;
     process.stderr.write(`muse bridge: ${message}\n`);
     // A turn shows the error as it fails; with none open it goes on the thread.
-    if (!working) this.emit([{ kind: "provider.error", message, category: "internal", threadScoped: true }]);
+    if (!working) this.emit([{ kind: "provider.error", message, errorInfo: errorInfo("internal"), threadScoped: true }]);
     await this.closeHost({ status: "failed", error: message });
   }
 
@@ -793,7 +794,7 @@ export class MuseSession {
             kind: "provider.error",
             message: `Muse is retrying${attempt ? ` (attempt ${attempt}${frame.maxAttempts ? ` of ${frame.maxAttempts}` : ""})` : ""}: ${frame.reason ?? frame.errorKind ?? "provider error"}${status}`,
             willRetry: true,
-            category: frame.httpStatus === 429 ? "rate-limit" : "overloaded",
+            errorInfo: errorInfo(frame.httpStatus === 429 ? "rate-limit" : "overloaded", frame.httpStatus ?? null),
           },
         ]);
         return;
@@ -950,7 +951,7 @@ export class MuseSession {
       {
         kind: "provider.error",
         message: failure.message,
-        ...(failure.category ? { category: failure.category } : {}),
+        ...(failure.errorInfo ? { errorInfo: failure.errorInfo } : {}),
         ...(this.turn === null ? { threadScoped: true } : {}),
       },
     ]);

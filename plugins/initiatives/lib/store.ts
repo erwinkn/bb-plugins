@@ -2093,6 +2093,17 @@ export class Store {
     this.db.prepare("INSERT OR IGNORE INTO plugin_flags(key, set_at) VALUES(?, ?)").run(key, Date.now());
   }
 
+  /** W545: the ids claimed under `claimed<id>` with no `done<id>` flag yet, in one query. */
+  unfinishedClaims(claimed: string, done: string): string[] {
+    return this.db
+      .prepare(
+        `SELECT substr(c.key, length(?) + 1) FROM plugin_flags c WHERE substr(c.key, 1, length(?)) = ?
+           AND NOT EXISTS (SELECT 1 FROM plugin_flags d WHERE d.key = ? || substr(c.key, length(?) + 1)) ORDER BY c.set_at`,
+      )
+      .pluck()
+      .all(claimed, claimed, claimed, done, claimed) as string[];
+  }
+
   /** When a flag was set; null when it is absent. */
   flagSetAt(key: string): number | null {
     const row = this.db.prepare("SELECT set_at FROM plugin_flags WHERE key=?").get(key) as { set_at: number } | undefined;
