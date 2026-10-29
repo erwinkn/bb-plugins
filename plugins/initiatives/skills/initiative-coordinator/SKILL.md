@@ -68,6 +68,10 @@ lead: workers report back to it. This skill only sums up the tools.
   A category is a free-form workstream ("Security", "CI"); reuse one from the result's
   `categories`, and merge near-duplicates with `{rename:[{from:"Sec",to:"Security"}]}`.
   `bb initiative pr '<json>'` is the CLI form.
+- Workers watch their own PRs (`initiative_pr_watch {pr}`): a change on GitHub wakes the
+  thread that watched it. Watch one yourself with `{pr}`, or for a worker with
+  `{pr, worker:"W3"}`; `initiative_pr_unwatch {pr}` stops any watch of this Adventure. News a
+  watching worker can't take (retired, stopped, cold) comes to you, with why.
 - Each PR belongs to one Adventure at most. A PR a worker (or a worker's child thread)
   opened is that worker's Adventure's automatically; the others are unassigned and show in
   every Adventure sharing the repository, apart, under Unassigned. `initiative:"<name or

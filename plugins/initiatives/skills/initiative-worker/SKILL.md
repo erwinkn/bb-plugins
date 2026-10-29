@@ -40,6 +40,12 @@ current instructions, the reviewer command and the rules), which replaces anythi
   assignment names, you opened, or no one else holds yet. Your report's summary is added to the PRs it
   names by itself. A PR your thread (or its child) opened belongs to your Adventure;
   `initiative:"<name>"` moves one elsewhere, `initiative:null` unassigns it.
+- `initiative_pr_watch {pr}` after you open or push a PR: the plugin then wakes you when it
+  changes on GitHub (checks failing, required checks passing, new comments or reviews, a
+  conflict, no check 15 minutes after a push), until it merges or closes. The answer shows the
+  PR as it is now, which wakes nobody later: handle a failure or conflict it shows at once.
+  `initiative_pr_unwatch {pr}` once you hand the PR off or stop caring. Never wait on CI
+  yourself (sleep, loops, `gh pr checks --watch`).
 - Report blocked when you can't go on, a question included: never ask it in a plain message
   and then stop, since nothing wakes you and nothing shows on the dashboard. A question for
   your lead goes in the summary, and your lead decides what happens next. If only the user

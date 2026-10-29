@@ -208,12 +208,6 @@ export class AssignedPrs {
     const ref = this.store.latestPrRef(projectId, url, "referenced");
     return ref ? { worker: `W${ref.workerNum}`, assignment: `A${ref.num}`, role: ref.role } : null;
   }
-
-  /** W548: `read()`'s entry for one PR, by key: the latest assignment that names it, not one that merely mentions it. */
-  naming(projectId: string, url: string): Omit<PrWork, "links"> | null {
-    const ref = this.store.latestPrRef(projectId, url, "named");
-    return ref ? { worker: `W${ref.workerNum}`, assignment: `A${ref.num}`, role: ref.role } : null;
-  }
 }
 
 /** A worker report's summary as a note: its first PR_NOTE_MAX characters. */

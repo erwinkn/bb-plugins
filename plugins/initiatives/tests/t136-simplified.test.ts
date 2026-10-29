@@ -193,7 +193,8 @@ describe("T136 instructions", () => {
     // Erwin (2026-10-15): trivial changes skip review; 6 converging review rounds.
     // W498 (Erwin, 2026-10-17): rule R5 replaced the round caps; questions go in blocked reports.
     // W548: never wait on CI, the plugin wakes you (the cap is MAX_GUIDANCE_CHARACTERS, 3,584).
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(3000);
+    // W554: watch your PR after opening or pushing it, unwatch it once handed off.
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(3100);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn. Don't start reviewers: workers do.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while P1s and P2s converge");

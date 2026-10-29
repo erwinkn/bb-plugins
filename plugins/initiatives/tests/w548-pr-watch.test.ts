@@ -1,5 +1,6 @@
-// W548: PR watches. Every open PR an Adventure owns is diffed against the last state the watcher
-// saw; a change wakes its owner (worker, or coordinator), once, across reloads too.
+// W548, W554: PR watches. Each PR an agent watches (initiative_pr_watch) is diffed against the
+// last state the watcher saw, from the baseline its watch call read; a change wakes the thread that
+// watched it (or its coordinator when that thread can't take it), once, across reloads too.
 import { describe, expect, it, vi } from "vitest";
 import { memoryStore } from "./helpers";
 import { projectFixture } from "./fake-native";
@@ -9,13 +10,12 @@ import { DETAILS_CONCURRENCY, IDLE_REFRESH_MS, MergeQueueCache, REFRESH_MS, type
 import { PrOwners, ledgerThreads } from "../lib/pr-owners";
 import { AssignedPrs } from "../lib/pr-records";
 import {
-  COMMENT_WAKE_CAP, NOT_A_MERGE, NO_CHECKS_MS, PrWatcher, WATCH_PAGE, WatchLedger, diffWatch, parseWatch, readPrWatch,
-  type WatchFacts, type WatchState,
+  COMMENT_WAKE_CAP, NOT_A_MERGE, NO_CHECKS_MS, PR_ID_QUERY, PrWatcher, UNLISTED_READ_MS, WATCH_PAGE, WatchLedger, baselineState, diffWatch, parseWatch, readPrWatch,
+  watchAnswer, type WatchFacts, type WatchState,
 } from "../lib/pr-watch";
 import type { Sdk } from "../lib/bb";
-import { blankPrRecord } from "../lib/pr-stages";
-import { WATCH_RESYNC_MS, CHECKS_PAST_100, CHECKS_PAGE_QUERY, WAKE_REFUSALS, ownerNow } from "../lib/pr-watch";
-import { DEFAULT_WORKER_INSTRUCTIONS } from "../lib/guidance";
+import { WATCH_RESYNC_MS, CHECKS_PAST_100, CHECKS_PAGE_QUERY, WAKE_REFUSALS } from "../lib/pr-watch";
+import { DEFAULT_WORKER_INSTRUCTIONS, PREVIOUS_DEFAULTS } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
 const MINUTE = 60_000;
@@ -28,26 +28,23 @@ const facts = (over: Partial<WatchFacts> = {}): WatchFacts => ({
   checks: [{ name: "tests", outcome: "passed", required: false }, { name: "lint", outcome: "pending", required: false }],
   comments: [], ...over,
 });
-const ctx = (over: Partial<Parameters<typeof diffWatch>[2]> = {}) => ({ now: T0, since: T0 - 10 * MINUTE, login: "erwinkn", repoHasChecks: true, fingerprint: "f1", ...over });
-/** The state after a baseline of `f`. */
-const base = (f = facts()) => diffWatch(null, f, ctx()).state;
+const ctx = (over: Partial<Parameters<typeof diffWatch>[2]> = {}) => ({ now: T0, login: "erwinkn", repoHasChecks: true, fingerprint: "f1", ...over });
+/** The state a watch call leaves for `f`. */
+const base = (f = facts()) => baselineState(f, T0, "f1");
 const kinds = (r: { changes: { kind: string }[] }) => r.changes.map((c) => c.kind);
 
 describe("W548 diffWatch", () => {
-  it("takes a PR opened before the watches as a baseline: its old state wakes nobody", () => {
-    const r = diffWatch(null, facts({ mergeable: "conflicting", checks: [{ name: "tests", outcome: "failed", required: false }], comments: [{ url: "u", at: T0 - 20 * MINUTE, author: "coderabbitai", bot: true, review: null }] }), ctx());
-    expect(r.changes).toEqual([]);
-    expect(r.state).toMatchObject({ head: "aaa", failing: ["tests"], mergeable: "conflicting", seenUntil: T0 - 20 * MINUTE, pushedAt: null, noChecksDone: true });
+  it("takes the PR as the watch call read it as a baseline: its state then wakes nobody", () => {
+    const failing = facts({ mergeable: "conflicting", checks: [{ name: "tests", outcome: "failed", required: false }], comments: [{ url: "u", at: T0 - 20 * MINUTE, author: "coderabbitai", bot: true, review: null }] });
+    const state = baselineState(failing, T0, "f1");
+    expect(state).toMatchObject({ head: "aaa", failing: ["tests"], mergeable: "conflicting", seenUntil: T0 - 20 * MINUTE, pushedAt: null, noChecksDone: true, readAt: T0, ended: null });
+    expect(diffWatch(state, failing, ctx({ now: T0 + MINUTE })).changes).toEqual([]);
   });
 
-  it("takes a PR opened since from nothing: its failing checks, conflict and comments are news", () => {
-    const r = diffWatch(null, facts({
-      createdAt: T0 - 5 * MINUTE, mergeable: "conflicting",
-      checks: [{ name: "tests", outcome: "failed", required: false }],
-      comments: [{ url: "c1", at: T0 - 4 * MINUTE, author: "coderabbitai", bot: true, review: "changes_requested" }],
-    }), ctx());
-    expect(kinds(r)).toEqual(["checks-failed", "new-comments", "conflicting"]);
-    expect(r.state.pushedAt).toBe(T0 - 5 * MINUTE);
+  it("counts a head without any check at the watch as pushed then: no check 15 min later wakes", () => {
+    const state = baselineState(facts({ checks: [] }), T0, "f1");
+    expect(state).toMatchObject({ pushedAt: T0, noChecksDone: false });
+    expect(kinds(diffWatch(state, facts({ checks: [] }), ctx({ now: T0 + NO_CHECKS_MS })))).toEqual(["no-checks"]);
   });
 
   it("names only newly failing checks on the same head, and every failing one after a push", () => {
@@ -197,6 +194,11 @@ interface FakePr {
   state: "OPEN" | "MERGED" | "CLOSED";
   checks: { name: string; outcome: "passed" | "failed" | "pending"; required?: boolean }[];
   comments: { url: string; at: number; login: string; bot?: boolean; review?: string }[];
+  /** GitHub's review decision, and whether each review thread is resolved: only a watch call reads them. */
+  decision?: string;
+  threads?: boolean[];
+  /** By another author: no list shows it. */
+  unlisted?: boolean;
 }
 const iso = (at: number) => new Date(at).toISOString();
 const listNode = (pr: FakePr) => withId({
@@ -216,8 +218,9 @@ const contextPage = (pr: FakePr, start: number) => ({
     conclusion: c.outcome === "passed" ? "SUCCESS" : c.outcome === "failed" ? "FAILURE" : null, isRequired: c.required ?? false,
   })),
 });
-const watchNode = (pr: FakePr) => ({
-  id: prUrl(pr.number), number: pr.number, state: pr.state, headRefOid: pr.head, mergeable: pr.mergeable, createdAt: iso(pr.createdAt),
+const watchNode = (pr: FakePr, baseline: boolean) => ({
+  id: prUrl(pr.number), number: pr.number, title: `PR ${pr.number}`, state: pr.state, headRefOid: pr.head, mergeable: pr.mergeable, createdAt: iso(pr.createdAt),
+  ...(baseline ? { reviewDecision: pr.decision ?? null, reviewThreads: { totalCount: pr.threads?.length ?? 0, nodes: (pr.threads ?? []).map((isResolved) => ({ isResolved })) } } : {}),
   commits: { nodes: [{ commit: { statusCheckRollup: {
     state: pr.checks.some((c) => c.outcome === "failed") ? "FAILURE" : pr.checks.some((c) => c.outcome === "pending") ? "PENDING" : "SUCCESS",
     contexts: contextPage(pr, 0),
@@ -240,7 +243,7 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
   }
   const prs = new Map<number, FakePr>();
   for (const pr of options.prs ?? []) prs.set(pr.number, pr);
-  const requests: { kind: "list" | "watch" | "details"; count: number }[] = [];
+  const requests: { kind: "list" | "watch" | "id" | "details"; count: number }[] = [];
   /** Runs as a watch query arrives, before it answers. */
   const hooks: { onWatch?: () => Promise<void> | void; onThread?: () => void; onPage?: () => void } = {};
   let inFlight = 0;
@@ -252,7 +255,7 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
       await new Promise((resolve) => setTimeout(resolve, 1));
       if (query === GH_LIST_QUERY) {
         requests.push({ kind: "list", count: 1 });
-        return searchPage([...prs.values()].filter((pr) => pr.state === "OPEN").map(listNode));
+        return searchPage([...prs.values()].filter((pr) => pr.state === "OPEN" && !pr.unlisted).map(listNode));
       }
       if (query === CHECKS_PAGE_QUERY) {
         requests.push({ kind: "watch", count: 1 });
@@ -269,11 +272,16 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
         const hook = hooks.onWatch;
         hooks.onWatch = undefined;
         await hook?.();
-        return Object.fromEntries(ids.map((k) => {
+        return Object.fromEntries([["viewer", { login: "erwinkn" }], ...ids.map((k) => {
           const number = Number(/pull\/(\d+)$/.exec(String(variables[k]))![1]);
           const pr = prs.get(number);
-          return [`p${k.slice(1)}`, pr ? watchNode(pr) : null];
-        }));
+          return [`p${k.slice(1)}`, pr ? watchNode(pr, query.includes("reviewThreads")) : null];
+        })]);
+      }
+      if (query === PR_ID_QUERY) {
+        requests.push({ kind: "id", count: 1 });
+        const pr = prs.get(Number(variables.number));
+        return { repository: { pullRequest: pr ? { id: prUrl(pr.number) } : null } };
       }
       requests.push({ kind: "details", count: 1 });
       return { nodes: [] };
@@ -309,10 +317,7 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
   const make = () => {
     const cache = makeCache();
     const ledger = new WatchLedger(db, () => clock.now);
-    const watcher = new PrWatcher({ store, ledger, cache, sdk, coldCheck, giveWork, changed, warn, ownerOf: (url) => ownerNow(url, {
-      recorded: (key) => owners.recorded(key), cachedPr: (key) => cache.cachedPr(key), assignedWorker: (projectId, key) => assigned.naming(projectId, key)?.worker ?? null,
-      recordWorker: (projectId, key) => ledger.recordWorker(projectId, key), threadWorker: (projectId, thread) => ledger.threadWorker(projectId, thread),
-    }) }, () => clock.now);
+    const watcher = new PrWatcher({ store, ledger, cache, sdk, coldCheck, giveWork, changed, warn }, () => clock.now);
     return { cache, ledger, watcher };
   };
   let live = make();
@@ -325,8 +330,21 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
     await live.cache.settled();
   };
   const sent = () => send.mock.calls.map(([args]) => ({ to: args.threadId, mode: args.mode, text: args.input[0]!.text }));
+  /** initiative_pr_watch: `thread` (by default the one its branch names) watches PR `n` for `projectId`. */
+  const watch = (n: number, thread = /(thr_\w+)$/.exec(prs.get(n)!.branch)![1]!, projectId = "eq") => live.watcher.watch(prUrl(n), projectId, thread);
+  /** The list, then every PR watched from it, as workers do after they push. */
+  const start = async () => {
+    await poll(0);
+    for (const n of prs.keys()) await watch(n);
+  };
+  /** A watch again from the state stored (no read): its generation moves, as a watch call's does. */
+  const rewatch = (n: number, thread: string, projectId = "eq") => {
+    const row = live.ledger.row(prUrl(n))!;
+    live.ledger.watch(prUrl(n), projectId, thread, row.nodeId!, row.state!);
+  };
   return {
     store, db, clock, prs, gh, requests, hooks, peak: () => peak, owners, assigned, sdk, send, deleteQueued, sent, threads, coldCheck, giveWork, changed, warn, listed, poll,
+    watch, start, rewatch,
     get cache() { return live.cache; }, get ledger() { return live.ledger; }, get watcher() { return live.watcher; },
     /** A plugin reload: a new cache and watcher over the same database. */
     reload: () => { live = make(); live.watcher.recover(); },
@@ -340,9 +358,9 @@ const fakePr = (number: number, over: Partial<FakePr> = {}): FakePr => ({
 const wakeRows = (t: ReturnType<typeof setup>) => t.db.prepare("SELECT url, state, routed, changes FROM pr_wakes ORDER BY id").all() as { url: string; state: string; routed: string; changes: string }[];
 
 describe("W548 PrWatcher", () => {
-  it("takes the first pass as a baseline, then wakes the PR's idle worker once with more work naming the change and head", async () => {
+  it("takes the watch call's read as a baseline, then wakes the watching worker, idle, once with more work naming the change and head", async () => {
     const t = setup({ prs: [fakePr(1, { checks: [{ name: "old", outcome: "failed" }] })] });
-    await t.poll(0);
+    await t.start();
     // The size and reviewers (details) are the cache's own, read beside.
     expect(t.requests.filter((r) => r.kind !== "details").map((r) => r.kind)).toEqual(["list", "watch"]);
     expect(t.giveWork).not.toHaveBeenCalled();
@@ -370,7 +388,7 @@ describe("W548 PrWatcher", () => {
 
   it("coalesces one worker's PRs into one wake a pass, and messages a busy worker instead of giving it work", async () => {
     const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
-    await t.poll(0);
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
@@ -383,7 +401,7 @@ describe("W548 PrWatcher", () => {
 
   it("sends to the coordinator, in one message a pass, when the worker is retired, or idle with a cold cache", async () => {
     const t = setup({ prs: [fakePr(1), fakePr(2, { branch: "bb/w2-thr_w2" })] });
-    await t.poll(0);
+    await t.start();
     t.store.updateWorker("eq", 1, { state: "retired" });
     t.coldCheck.mockImplementation(async () => "W2's cache is cold (last request 40 min ago) and its context is ~300k tokens: resuming it costs ~375k tokens of cache rewrite.");
     for (const n of [1, 2]) t.prs.get(n)!.mergeable = "CONFLICTING";
@@ -402,7 +420,7 @@ describe("W548 PrWatcher", () => {
 
   it("skips a wake whose head moved before it could be sent", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     // Paused: the wake is stored and held.
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
@@ -420,14 +438,14 @@ describe("W548 PrWatcher", () => {
 
   it("neither repeats nor misses a wake across a reload; a send a reload cut short is never repeated", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
     expect(t.giveWork).toHaveBeenCalledTimes(1);
 
     // Reload: the same failure is not news again.
     t.reload();
-    await t.poll(0);
+    await t.start();
     expect(t.giveWork).toHaveBeenCalledTimes(1);
 
     // A comment while the plugin is down is news after the next reload.
@@ -447,33 +465,31 @@ describe("W548 PrWatcher", () => {
     expect(t.giveWork).toHaveBeenCalledTimes(2);
   });
 
-  it("sends a wake still pending at a reload once it is listed and a watch read confirms its head", async () => {
+  it("sends a wake still pending at a reload once a watch read confirms its head, listed yet or not", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
     t.reload();
     t.store.updateProject("eq", { paused: false });
-    // The reloaded cache has no list yet: the wake waits for one.
+    // The reloaded cache has no list yet: the pass reads the PR itself.
     t.clock.now += MINUTE;
-    await t.watcher.check();
-    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
-    await t.cache.settled();
     await t.watcher.check();
     expect(wakeRows(t).map((w) => w.state)).toEqual(["sent"]);
     expect(t.giveWork).toHaveBeenCalledTimes(1);
   });
-
-  it("wakes nobody while muted, and starts from the PR as it is when unmuted", async () => {
+  it("wakes nobody once unwatched, and starts from the PR as it is when watched again", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
-    t.ledger.setMuted(prUrl(1), "eq", true);
+    await t.start();
+    t.ledger.unwatch(prUrl(1));
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
     expect(t.requests.filter((r) => r.kind === "watch")).toHaveLength(1);
-    expect(readPrWatch(t.ledger, prUrl(1), true)).toMatchObject({ watched: true, muted: true });
-    t.ledger.setMuted(prUrl(1), "eq", false);
+    expect(readPrWatch(t.store, t.ledger, prUrl(1))).toMatchObject({ watcher: null, ended: null });
+    // Watched again: the answer shows the failure, which wakes nobody later.
+    const { facts } = await t.watch(1);
+    expect(watchAnswer(prUrl(1), facts, "you", null)).toMatchObject({ now: { checks: "failing: tests" }, attention: expect.stringContaining("Checks failing: tests.") });
     await t.poll();
     expect(t.giveWork).not.toHaveBeenCalled();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }, { name: "lint", outcome: "failed" }];
@@ -481,21 +497,25 @@ describe("W548 PrWatcher", () => {
     expect(t.giveWork).toHaveBeenCalledTimes(1);
     expect(t.giveWork.mock.calls[0]![2]).toContain("Checks failed: lint.");
   });
-
-  it("ends a merged PR's watch without waking anyone", async () => {
+  it("ends a merged PR's watch without waking anyone, once a read finds it gone from the list", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.state = "MERGED";
     await t.poll();
+    expect(t.ledger.row(prUrl(1))?.state?.ended).toBeNull();
+    await t.poll(UNLISTED_READ_MS);
     expect(t.ledger.row(prUrl(1))?.state?.ended).toBe("MERGED");
     expect(wakeRows(t)).toEqual([]);
     expect(t.sent()).toEqual([]);
-    expect(readPrWatch(t.ledger, prUrl(1), false)).toMatchObject({ watched: false, ended: "MERGED" });
+    expect(readPrWatch(t.store, t.ledger, prUrl(1))).toMatchObject({ watcher: { label: "W1" }, ended: "MERGED" });
+    // An ended watch is read no more.
+    const reads = t.requests.filter((r) => r.kind === "watch").length;
+    await t.poll(UNLISTED_READ_MS);
+    expect(t.requests.filter((r) => r.kind === "watch").length).toBe(reads);
   });
-
   it("stops waking for comments after the cap and says so in the activity", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     for (let i = 1; i <= COMMENT_WAKE_CAP + 1; i++) {
       t.prs.get(1)!.comments.push({ url: `https://c/${i}`, at: t.clock.now + 1, login: "coderabbitai", bot: true });
       t.prs.get(1)!.updatedAt = t.clock.now + 1;
@@ -503,112 +523,112 @@ describe("W548 PrWatcher", () => {
     }
     expect(t.giveWork).toHaveBeenCalledTimes(COMMENT_WAKE_CAP);
     expect(t.store.activity("eq").some((a) => /woke nobody after 10 comment-only wakes/.test(a.summary))).toBe(true);
-    expect(readPrWatch(t.ledger, prUrl(1), true).commentWakes).toBe(COMMENT_WAKE_CAP);
+    expect(readPrWatch(t.store, t.ledger, prUrl(1)).commentWakes).toBe(COMMENT_WAKE_CAP);
   });
 
-  it(`reads changed PRs ${WATCH_PAGE} a request in the details slots, and keeps a watched Adventure on the 2-minute cadence`, async () => {
+  it(`reads changed PRs ${WATCH_PAGE} a request in the details slots, and keeps a watched repository on the 2-minute cadence`, async () => {
     const prs = Array.from({ length: 60 }, (_, i) => fakePr(i + 1, { head: `h${i + 1}` }));
     const t = setup({ prs });
-    await t.poll(0);
-    const watch = t.requests.filter((r) => r.kind === "watch");
-    expect(watch.map((r) => r.count)).toEqual([25, 25, 10]);
+    await t.start();
+    const started = t.requests.length;
+    for (const pr of prs) pr.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(t.requests.slice(started).filter((r) => r.kind === "watch").map((r) => r.count)).toEqual([25, 25, 10]);
     expect(t.peak()).toBeLessThanOrEqual(DETAILS_CONCURRENCY);
     // Watched: a list read every 2 minutes, a watch read only for what moved.
     const before = t.requests.length;
     await t.poll(REFRESH_MS);
     expect(t.requests.slice(before).filter((r) => r.kind !== "details").map((r) => r.kind)).toEqual(["list"]);
-    // Every PR muted: back to the idle cadence (one more pass learns it).
-    for (const pr of prs) t.ledger.setMuted(prUrl(pr.number), "eq", true);
+    // Every PR unwatched: back to the idle cadence (one more pass learns it).
+    for (const pr of prs) t.ledger.unwatch(prUrl(pr.number));
     await t.poll(REFRESH_MS);
-    const muted = t.requests.length;
+    const unwatched = t.requests.length;
     await t.poll(REFRESH_MS);
-    expect(t.requests.length).toBe(muted);
+    expect(t.requests.length).toBe(unwatched);
     await t.poll(IDLE_REFRESH_MS - REFRESH_MS);
-    expect(t.requests.slice(muted).filter((r) => r.kind !== "details").map((r) => r.kind)).toEqual(["list"]);
+    expect(t.requests.slice(unwatched).filter((r) => r.kind !== "details").map((r) => r.kind)).toEqual(["list"]);
   });
-
   it("retries a failed watch read later, in smaller requests, without diffing on stale facts", async () => {
     const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
+    await t.start();
     const real = t.gh.getMockImplementation()!;
     t.gh.mockImplementation(async (query, variables, timeout) => {
       if (query.includes("isRequired(pullRequestId")) throw new Error("502 Bad Gateway");
       return real(query, variables, timeout);
     });
-    await t.poll(0);
-    expect(t.ledger.rows().size).toBe(0);
+    for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "failed" }];
+    const before = t.requests.length;
+    await t.poll();
     expect(t.warn).toHaveBeenCalledWith(expect.stringContaining("PR watch read of 2 PRs failed: 502 Bad Gateway"));
+    expect(wakeRows(t)).toEqual([]);
     t.gh.mockImplementation(real);
     await t.poll();
-    expect(t.requests.filter((r) => r.kind === "watch").map((r) => r.count)).toEqual([1, 1]);
-    expect(t.ledger.rows().size).toBe(2);
-    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(t.requests.slice(before).filter((r) => r.kind === "watch").map((r) => r.count)).toEqual([1, 1]);
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
   });
 });
 
 
 describe("W548 review r1 regressions", () => {
-  it("rechecks a wake just before it is sent: a mute, a pause or a retire while routing waits on BB holds it", async () => {
-    for (const change of ["mute", "pause", "retire"] as const) {
+  it("rechecks a wake just before it is sent: an unwatch drops it, a pause or a retire while routing waits on BB holds it", async () => {
+    for (const change of ["unwatch", "pause", "retire"] as const) {
       const t = setup({ prs: [fakePr(1)] });
-      await t.poll(0);
+      await t.start();
       t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
       t.hooks.onThread = () => {
-        if (change === "mute") t.ledger.setMuted(prUrl(1), "eq", true);
+        if (change === "unwatch") t.ledger.unwatch(prUrl(1));
         if (change === "pause") t.store.updateProject("eq", { paused: true });
         if (change === "retire") t.store.updateWorker("eq", 1, { state: "retired" });
       };
       await t.poll();
       expect(t.giveWork, change).not.toHaveBeenCalled();
       expect(t.sent(), change).toEqual([]);
-      expect(wakeRows(t).map((w) => w.state), change).toEqual([change === "mute" ? "muted" : "pending"]);
+      expect(wakeRows(t).map((w) => w.state), change).toEqual([change === "unwatch" ? "stale" : "pending"]);
     }
   });
 
   it("rechecks inside the serialized work step too", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     t.giveWork.mockImplementation(async (_p, _r, _t, still) => {
-      t.ledger.setMuted(prUrl(1), "eq", true);
+      t.ledger.unwatch(prUrl(1));
       still();
       return "A7";
     });
     await t.poll();
-    expect(wakeRows(t).map((w) => w.state)).toEqual(["muted"]);
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "stale", routed: "unwatched" })]);
   });
 
-  it("drops a pass's write and a held wake from before a mute and unmute", async () => {
+  it("drops a pass's write and a held wake from before a watch again", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
-    // Mute and unmute while the watch read is out: the pass's old snapshot doesn't land.
+    await t.start();
+    // Watched again while the pass's read is out: the pass's write doesn't land; the new baseline holds the failure.
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
-    t.hooks.onWatch = () => {
-      t.ledger.setMuted(prUrl(1), "eq", true);
-      t.ledger.setMuted(prUrl(1), "eq", false);
+    t.hooks.onWatch = async () => {
+      await t.watch(1);
     };
     await t.poll();
     expect(wakeRows(t)).toEqual([]);
-    expect(t.ledger.row(prUrl(1))?.state).toBeNull();
-    // The next pass is a baseline from the PR as it is.
+    expect(t.ledger.row(prUrl(1))?.state).toMatchObject({ failing: ["tests"] });
     await t.poll();
     expect(t.giveWork).not.toHaveBeenCalled();
 
-    // A wake held by a pause, then a mute and unmute: it no longer applies.
+    // A wake held by a pause, then a watch again: it no longer applies.
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }, { name: "lint", outcome: "failed" }];
     await t.poll();
     expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
-    t.ledger.setMuted(prUrl(1), "eq", true);
-    t.ledger.setMuted(prUrl(1), "eq", false);
+    await t.watch(1, "thr_w2");
     t.store.updateProject("eq", { paused: false });
     await t.poll();
-    expect(wakeRows(t).map((w) => w.state)).toEqual(["stale"]);
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "stale", routed: "watched again since" })]);
     expect(t.giveWork).not.toHaveBeenCalled();
+    expect(t.sent()).toEqual([]);
   });
-
   it("sends a wake on what its watch read saw, whatever a list landing meanwhile shows; that list only calls for the next read", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     // While the watch read (head A) is out, a list started meanwhile already shows B.
     t.hooks.onWatch = async () => {
@@ -632,21 +652,20 @@ describe("W548 review r1 regressions", () => {
     expect(t.giveWork.mock.calls[1]![2]).not.toContain("tests");
   });
 
-  it("drops a held wake for a PR no Adventure owns any more", async () => {
+  it("drops a held wake once its PR is unwatched", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
-    t.owners.move(prUrl(1), null, t.clock.now);
+    t.ledger.unwatch(prUrl(1));
     t.store.updateProject("eq", { paused: false });
     await t.poll();
-    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "stale", routed: "no Adventure owns it now" })]);
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "stale", routed: "unwatched" })]);
   });
-
   it("reads a PR again after WATCH_RESYNC_MS even when its list facts stay (two reruns that swap outcomes)", async () => {
     const t = setup({ prs: [fakePr(1, { checks: [{ name: "tests", outcome: "failed" }, { name: "lint", outcome: "passed" }] })] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "passed" }, { name: "lint", outcome: "failed" }];
     await t.poll();
     expect(t.giveWork).not.toHaveBeenCalled();
@@ -657,7 +676,7 @@ describe("W548 review r1 regressions", () => {
 
   it("keeps a repository's CI evidence: its only PR pushed without checks wakes, across a reload too", async () => {
     const t = setup({ prs: [fakePr(1, { checks: [{ name: "tests", outcome: "passed" }] })] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.head = "head1b";
     t.prs.get(1)!.checks = [];
     await t.poll();
@@ -669,7 +688,7 @@ describe("W548 review r1 regressions", () => {
 
   it("expires a held wake before a list with its head could send it", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
@@ -701,30 +720,29 @@ describe("W548 review r1 regressions", () => {
 describe("W548 review r2 regressions", () => {
   it("drops one wake that stopped applying and still sends the others of its message", async () => {
     const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
-    await t.poll(0);
+    await t.start();
     for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "failed" }];
-    t.hooks.onThread = () => t.ledger.setMuted(prUrl(1), "eq", true);
+    t.hooks.onThread = () => t.ledger.unwatch(prUrl(1));
     await t.poll();
-    expect(wakeRows(t).map((w) => [w.url, w.state])).toEqual([[prUrl(1), "muted"], [prUrl(2), "sent"]]);
+    expect(wakeRows(t).map((w) => [w.url, w.state])).toEqual([[prUrl(1), "stale"], [prUrl(2), "sent"]]);
     expect(t.giveWork).toHaveBeenCalledTimes(1);
     expect(t.giveWork.mock.calls[0]![2]).toContain("#2");
     expect(t.giveWork.mock.calls[0]![2]).not.toContain("#1 ");
   });
 
-  it("checks R2 ownership as it is when sending, not as the pass read it", async () => {
+  it("checks the watch as it is when sending: one watched by another thread while routing waits on BB is dropped", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
-    t.hooks.onThread = () => t.owners.move(prUrl(1), null, t.clock.now);
+    t.hooks.onThread = () => t.rewatch(1, "thr_w2");
     await t.poll();
-    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "stale", routed: "no Adventure owns it now" })]);
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "stale", routed: "watched again since" })]);
     expect(t.giveWork).not.toHaveBeenCalled();
     expect(t.sent()).toEqual([]);
   });
-
   it("takes check presence from the watch read when a push landed after the list", async () => {
     const t = setup({ prs: [fakePr(1, { checks: [{ name: "tests", outcome: "passed" }] })] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.updatedAt += 1;
     // The list shows head A with its checks; the watch read already sees B, without any.
     t.hooks.onWatch = () => {
@@ -741,7 +759,7 @@ describe("W548 review r2 regressions", () => {
   it("reads checks past the first 100, so a newly failing one there is named", async () => {
     const checks = Array.from({ length: 150 }, (_, i) => ({ name: `c${i}`, outcome: i === 0 ? "failed" as const : "passed" as const }));
     const t = setup({ prs: [fakePr(1, { checks })] });
-    await t.poll(0);
+    await t.start();
     expect(t.ledger.row(prUrl(1))?.state?.failing).toEqual(["c0"]);
     t.prs.get(1)!.checks = checks.map((c, i) => (i === 140 ? { ...c, outcome: "failed" as const } : c));
     await t.poll();
@@ -765,7 +783,7 @@ describe("W548 review r2 regressions", () => {
 describe("W548 review r3 regressions", () => {
   it("drops a held wake once a later watch read saw a push the list hasn't shown yet", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
@@ -782,19 +800,16 @@ describe("W548 review r3 regressions", () => {
     expect(t.giveWork).not.toHaveBeenCalled();
   });
 
-  it("sends to the PR's worker as it is when sending: a reassignment meanwhile retargets the wake", async () => {
+  it("wakes the thread that watched the PR, not the worker whose branch opened it", async () => {
     const t = setup({ prs: [fakePr(1)] });
     await t.poll(0);
+    await t.watch(1, "thr_w2");
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
-    t.hooks.onThread = () => t.store.savePrRecord("eq", { ...blankPrRecord(prUrl(1), t.clock.now), worker: "W2" });
     await t.poll();
-    // Routed to W1 first, then held: the next pass sends it to W2.
-    expect(t.giveWork).not.toHaveBeenCalled();
-    await t.poll();
-    expect(t.giveWork).toHaveBeenCalledTimes(1);
-    expect(t.giveWork.mock.calls[0]![1]).toBe("W2");
+    expect(t.giveWork.mock.calls.map((c) => c[1])).toEqual(["W2"]);
+    expect(t.giveWork.mock.calls[0]![2]).toContain("GitHub news on the PR you watch.");
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent", routed: "W2: A7" })]);
   });
-
   it("announces required checks only once every required one reported and passed", () => {
     const prev = base(facts({ checks: [{ name: "lint", outcome: "pending", required: false }] }));
     const lintOnly = facts({ required: ["lint", "test"], checks: [{ name: "lint", outcome: "passed", required: true }] });
@@ -820,52 +835,49 @@ describe("W548 review r3 regressions", () => {
   it("backs off a PR whose later check pages keep failing", async () => {
     const checks = Array.from({ length: 150 }, (_, i) => ({ name: `c${i}`, outcome: "passed" as const }));
     const t = setup({ prs: [fakePr(1, { checks })] });
+    await t.start();
     const real = t.gh.getMockImplementation()!;
     t.gh.mockImplementation(async (query, variables, timeout) => {
       if (query === CHECKS_PAGE_QUERY) throw new Error("502 Bad Gateway");
       return real(query, variables, timeout);
     });
     const pageReads = () => t.gh.mock.calls.filter(([q]) => q === CHECKS_PAGE_QUERY).length;
-    await t.poll(0);
-    expect(pageReads()).toBe(1);
-    expect(t.ledger.rows().size).toBe(0);
+    const before = pageReads();
+    t.prs.get(1)!.updatedAt += 1;
+    await t.poll();
+    expect(pageReads()).toBe(before + 1);
     // Retried after 2 minutes, then 4: not at the next 2-minute poll.
     await t.poll();
-    expect(pageReads()).toBe(2);
+    expect(pageReads()).toBe(before + 2);
     await t.poll();
-    expect(pageReads()).toBe(2);
+    expect(pageReads()).toBe(before + 2);
     await t.poll();
-    expect(pageReads()).toBe(3);
+    expect(pageReads()).toBe(before + 3);
+    expect(wakeRows(t)).toEqual([]);
   });
 });
 
 
 describe("W548 review r4 regressions", () => {
-  it("retargets a held wake to the PR's new Adventure before looking at the old one, even archived", async () => {
+  it("drops a held wake once its watcher's Adventure is archived", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
-    await t.poll(0);
+    await t.start();
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
-    t.owners.move(prUrl(1), "ui", t.clock.now);
-    t.store.updateProject("eq", { archivedAt: t.clock.now });
-    // Equisafe UI had no watch, so its list refresh starts on the pass that finds the move: the wake goes on the next.
+    t.store.updateProject("eq", { archivedAt: t.clock.now, paused: false });
     await t.poll();
-    await t.poll();
-    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent", routed: "coordinator: no worker is linked to it" })]);
-    expect(t.sent()).toEqual([expect.objectContaining({ to: "thr_c_ui" })]);
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "stale", routed: "the Adventure is archived" })]);
+    expect(t.sent()).toEqual([]);
   });
-
-  it("resolves owners by key: a burst of 300 wakes for one worker stays cheap", async () => {
+  it("routes by key: a burst of 300 wakes for one worker stays cheap", async () => {
     const prs = Array.from({ length: 300 }, (_, i) => fakePr(i + 1, { head: `h${i + 1}` }));
     const t = setup({ prs });
     for (let i = 3; i <= 300; i++) {
       const w = t.store.createWorker({ projectId: "eq", role: "work", label: `W${i}`, area: "a", bbProjectId: "proj_eq" });
       t.store.updateWorker("eq", w.num, { threadId: `thr_x${i}`, generation: 1 });
     }
-    for (const pr of prs) t.store.savePrRecord("eq", { ...blankPrRecord(prUrl(pr.number), t.clock.now), worker: "W1" });
-    await t.poll(0);
+    await t.start();
     for (const pr of prs) pr.checks = [{ name: "tests", outcome: "failed" }];
     const started = performance.now();
     await t.poll();
@@ -880,7 +892,7 @@ describe("W548 review r4 regressions", () => {
 describe("W548 review r4 stale-head cases (D551)", () => {
   it("keeps a wake on a fresh head, and its comment, when a dashboard list started earlier lands showing the old head", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.updatedAt += 1;
     // The pass read list A. While its watch read is out, a dashboard refresh lists A again (it
     // started before the push showed), then the watch read sees pushed B and a new bot comment.
@@ -904,7 +916,7 @@ describe("W548 review r4 stale-head cases (D551)", () => {
   it("wakes nobody for the old head when a push lands between pages of over 100 checks; the new head is read next pass", async () => {
     const checks = Array.from({ length: 150 }, (_, i) => ({ name: `c${i}`, outcome: "passed" as const }));
     const t = setup({ prs: [fakePr(1, { checks })] });
-    await t.poll(0);
+    await t.start();
     // Page 1 of head A shows c0 newly failing; a push to B lands before page 2.
     t.prs.get(1)!.checks = checks.map((c, i) => (i === 0 ? { ...c, outcome: "failed" as const } : c));
     t.hooks.onPage = () => {
@@ -933,7 +945,7 @@ const assign = (t: ReturnType<typeof setup>, workerNum: number, briefText: strin
 describe("W549 one source per wake (D552)", () => {
   it("never mixes a list on head A with a watch read on head B: A's conflict is no news for B", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     // The list shows head A conflicting (which calls for a read); the read already sees a push
     // to B, which merges cleanly and fails its own check.
     t.prs.get(1)!.mergeable = "CONFLICTING";
@@ -955,7 +967,7 @@ describe("W549 one source per wake (D552)", () => {
 
   it("reads a PR whose list starts or stops conflicting, not one GitHub only recomputes", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     const watchReads = () => t.requests.filter((r) => r.kind === "watch").length;
     const before = watchReads();
     t.prs.get(1)!.mergeable = "UNKNOWN";
@@ -971,7 +983,7 @@ describe("W549 one source per wake (D552)", () => {
 
   it("never resumes or gives work to a worker its user stopped: Stop cancels its work, which routes the wake to the coordinator", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     // What Stop leaves (cancelAssignment): the work cancelled with its cancel request; userStopped untouched.
     const stopped = assign(t, 1, "Do the thing.", "cancelled");
     t.store.updateAssignment("eq", stopped.num, { cancelRequested: true });
@@ -990,7 +1002,7 @@ describe("W549 one source per wake (D552)", () => {
 
   it("holds a wake when a Stop lands while routing waits on BB", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     const running = assign(t, 1, "Do the thing.");
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     // Stop's first write, before BB stops the thread: the cancel request.
@@ -1004,51 +1016,41 @@ describe("W549 one source per wake (D552)", () => {
     expect(t.giveWork).not.toHaveBeenCalled();
   });
 
-  it("judges a held wake by the PR's current Adventure after pause, move, archive and a reload with an empty cache", async () => {
-    const t = setup({ prs: [fakePr(1)] });
-    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
+  it("reroutes to the coordinator when the watching thread is no longer the Adventure's, and wakes a coordinator that watches", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
     await t.poll(0);
-    t.store.updateProject("eq", { paused: true });
-    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.watch(1, "thr_gone");
+    await t.watch(2, "thr_c");
+    for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
-    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
-    t.owners.move(prUrl(1), "ui", t.clock.now);
-    t.store.updateProject("eq", { archivedAt: t.clock.now });
-    t.reload();
-    // Nothing listed yet: held for Equisafe UI, not dropped with archived Equisafe.
-    t.clock.now += MINUTE;
-    await t.watcher.check();
-    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
-    expect(t.db.prepare("SELECT project_id FROM pr_wakes").pluck().get()).toBe("ui");
-    await t.cache.settled();
-    await t.watcher.check();
-    await t.cache.settled();
-    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent", routed: "coordinator: no worker is linked to it" })]);
-    expect(t.sent()).toEqual([expect.objectContaining({ to: "thr_c_ui" })]);
+    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(t.sent()).toHaveLength(1);
+    const [message] = t.sent();
+    expect(message).toMatchObject({ to: "thr_c", mode: "queue-if-active" });
+    expect(message!.text).toContain("The thread that watches it (thr_gone) is no longer this Adventure's coordinator or one of its workers:");
+    expect(message!.text).toMatch(/PRs you watch:\n\nequisafe\/market#2/);
+    expect(wakeRows(t).map((w) => w.routed)).toEqual([
+      "coordinator: the thread that watches it (thr_gone) is no longer this Adventure's coordinator or one of its workers; its own watch",
+      "coordinator: the thread that watches it (thr_gone) is no longer this Adventure's coordinator or one of its workers; its own watch",
+    ]);
   });
-
-  it("keeps a PR's wake with its worker when a later brief only mentions it in passing; one that names its URL takes it", async () => {
+  it("never watches a PR by ownership: an owned PR nobody watched is never read and wakes nobody", async () => {
     const t = setup({ prs: [fakePr(1)] });
+    t.owners.move(prUrl(1), "eq", t.clock.now);
     await t.poll(0);
-    assign(t, 2, `Write the docs; ${REPO}#1 changed the API.`);
-    expect(t.assigned.referencing("eq", prUrl(1))?.worker).toBe("W2");
-    expect(t.assigned.naming("eq", prUrl(1))).toBeNull();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    t.prs.get(1)!.mergeable = "CONFLICTING";
     await t.poll();
-    expect(t.giveWork.mock.calls.map((c) => c[1])).toEqual(["W1"]);
-    // The keyed lookup and the queue's own read agree.
-    assign(t, 2, `Fix ${prUrl(1)}.`);
-    expect(t.assigned.naming("eq", prUrl(1))).toEqual({ ...t.assigned.read("eq").get(prUrl(1)), links: undefined });
-    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }, { name: "lint", outcome: "failed" }];
-    await t.poll();
-    // W2 is on that open work: a message it covers.
-    expect(t.giveWork.mock.calls.map((c) => c[1])).toEqual(["W1"]);
-    expect(t.sent()).toEqual([expect.objectContaining({ to: "thr_w2" })]);
+    await t.poll(UNLISTED_READ_MS);
+    expect(t.requests.filter((r) => r.kind === "watch")).toEqual([]);
+    expect(t.ledger.row(prUrl(1))).toBeNull();
+    expect(wakeRows(t)).toEqual([]);
+    expect(t.sent()).toEqual([]);
+    expect(t.giveWork).not.toHaveBeenCalled();
   });
-
   it("reads no PR for a wake a pause holds, and one read confirms it once resumed", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.store.updateProject("eq", { paused: true });
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     await t.poll();
@@ -1067,7 +1069,7 @@ describe("W549 one source per wake (D552)", () => {
 describe("W549 review r1 regressions", () => {
   it("holds a message wake when the worker's open assignment closed while routing waited on BB", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     const open = assign(t, 1, "Do it.");
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     // Routed as a message within A1; A1 is accepted during the cold-cache check.
@@ -1086,7 +1088,7 @@ describe("W549 review r1 regressions", () => {
 
   it("keeps a wake BB refused pending, so the next pass routes it again; gives up after a few refusals", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     // Busy W1's thread is archived between routing and the send: BB answers 409.
@@ -1119,7 +1121,7 @@ describe("W549 review r1 regressions", () => {
 
   it("wakes for a second conflict on one head after GitHub's recomputation resolved the first", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.mergeable = "CONFLICTING";
     await t.poll();
     expect(t.giveWork).toHaveBeenCalledTimes(1);
@@ -1140,37 +1142,23 @@ describe("W549 review r1 regressions", () => {
     expect(t.giveWork.mock.calls[1]![2]).toContain("It conflicts with its base branch.");
   });
 
-  it("reads and wakes a PR once when it moves between two Adventures' list reads of one pass", async () => {
+  it("reads and wakes a PR once when two Adventures list it", async () => {
     const t = setup({ prs: [fakePr(1)] });
     t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
-    await t.poll(0);
+    await t.start();
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
-    t.clock.now += REFRESH_MS;
-    await t.cache.read("eq", { watch: true });
-    await t.cache.settled();
-    // Equisafe's list is read, then the PR moves to Equisafe UI, whose list is read next.
-    const read = t.cache.read.bind(t.cache);
-    let moved = false;
-    vi.spyOn(t.cache, "read").mockImplementation(async (projectId, options) => {
-      const queue = await read(projectId, options);
-      if (projectId === "eq" && !moved) {
-        moved = true;
-        t.owners.move(prUrl(1), "ui", t.clock.now);
-      }
-      return queue;
-    });
     const before = t.requests.length;
-    await t.watcher.check();
+    await t.poll();
     expect(t.requests.slice(before).filter((r) => r.kind === "watch").reduce((sum, r) => sum + r.count, 0)).toBe(1);
     expect(wakeRows(t)).toHaveLength(1);
-    expect(t.sent()).toEqual([expect.objectContaining({ to: "thr_c_ui" })]);
+    expect(t.giveWork).toHaveBeenCalledOnce();
   });
 });
 
 describe("W551 PR watch P3s", () => {
   it("sends a wake to the coordinator while the worker's thread is stopping, not into the ending turn", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     assign(t, 1, "Do it.");
     t.threads.get("thr_w1")!.status = "stopping";
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
@@ -1183,7 +1171,7 @@ describe("W551 PR watch P3s", () => {
 
   it("tells the coordinator too when a Stop lands as the steer goes out", async () => {
     const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a", branch: "bb/w2-thr_w2" })] });
-    await t.poll(0);
+    await t.start();
     assign(t, 1, "Do it.");
     t.threads.get("thr_w1")!.status = "active";
     t.threads.get("thr_w2")!.status = "active";
@@ -1213,7 +1201,7 @@ describe("W551 PR watch P3s", () => {
 
   it("never sends a wake BB took again when the coordinator's note about the Stop is refused", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     t.send.mockImplementation(async ({ threadId }) => {
@@ -1235,7 +1223,7 @@ describe("W551 PR watch P3s", () => {
 
   it("takes back a message BB queued behind a Stop, so nothing reached the worker and it is routed afresh", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     // The Stop lands between routing and the send: BB queues the message on its stopping wait.
@@ -1284,44 +1272,24 @@ describe("W551 PR watch P3s", () => {
     expect(t.giveWork).not.toHaveBeenCalled();
   });
 
-  it("sends a Stop's note to the PR's Adventure as it is after the read, and none once it is muted", async () => {
-    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
-    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
-    await t.poll(0);
+  it("sends no Stop's note for a PR unwatched while the plugin read the thread again", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
-    // The Stop lands with the steer; the PR moves to Equisafe UI while the plugin reads the thread again.
     t.send.mockImplementationOnce(async () => {
       t.threads.get("thr_w1")!.status = "stopping";
-      t.hooks.onThread = () => t.owners.move(prUrl(1), "ui", t.clock.now);
+      t.hooks.onThread = () => t.ledger.unwatch(prUrl(1));
       return { delivery: "sent" };
     });
     await t.poll();
-    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c_ui"]);
-    expect(t.sent()[1]!.text).toContain("Adventures · Equisafe UI · PR watch");
-    // Equisafe's W1 is no worker of Equisafe UI: the note names it with its Adventure, and suggests none.
-    expect(t.sent()[1]!.text).toContain("(W1 of the Equisafe Adventure, which owned the PR then):");
-    expect(t.sent()[1]!.text).toContain("If it needs work, give it to a worker; or leave it.");
-    expect(t.sent()[1]!.text).not.toContain('handoffs:["W1"]');
-    expect(wakeRows(t)[0]).toMatchObject({ state: "sent" });
-
-    // PR 2: muted during that read: the wake stays sent, and nobody else is told.
-    t.threads.get("thr_w1")!.status = "active";
-    t.prs.get(2)!.checks = [{ name: "tests", outcome: "failed" }];
-    t.send.mockImplementationOnce(async () => {
-      t.threads.get("thr_w1")!.status = "stopping";
-      t.hooks.onThread = () => t.ledger.setMuted(prUrl(2), "eq", true);
-      return { delivery: "sent" };
-    });
-    await t.poll();
-    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c_ui", "thr_w1"]);
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1"]);
     expect(wakeRows(t).at(-1)).toMatchObject({ state: "sent" });
-    expect(t.store.activity("eq").some((a) => /woke W1 about equisafe\/market#2, but .* Nobody is told/.test(a.summary))).toBe(true);
+    expect(t.store.activity("eq").some((a) => /woke W1 about equisafe\/market#1, but .* Nobody is told: unwatched/.test(a.summary))).toBe(true);
   });
-
   it("records a steer BB queued instead of sending", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     t.send.mockImplementationOnce(async () => ({ delivery: "queued" }));
@@ -1332,7 +1300,7 @@ describe("W551 PR watch P3s", () => {
 
   it("tells the coordinator once, with BB's last answer, when it gives up on a wake BB keeps refusing", async () => {
     const t = setup({ prs: [fakePr(1)] });
-    await t.poll(0);
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
     t.send.mockImplementation(async ({ threadId }) => {
@@ -1353,58 +1321,162 @@ describe("W551 PR watch P3s", () => {
     expect(t.send).toHaveBeenCalledTimes(WAKE_REFUSALS + 1);
   });
 
-  it("judges the wakes left again before each coordinator's note: a mute during the first note skips the second", async () => {
+  it("judges each wake again before the coordinator's note: one unwatched meanwhile is left out", async () => {
     const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
-    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
-    await t.poll(0);
+    await t.start();
     t.threads.get("thr_w1")!.status = "active";
     for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "failed" }];
     let tries = 0;
     t.send.mockImplementation(async ({ threadId }) => {
-      // Equisafe UI's note is sent first; PR 2 is muted while it waits on BB.
-      if (threadId === "thr_c_ui") t.ledger.setMuted(prUrl(2), "eq", true);
       if (threadId !== "thr_w1") return { delivery: "sent" };
-      // While the last refused send of both waits on BB, PR 1 moves to Equisafe UI.
-      if (++tries === WAKE_REFUSALS) t.owners.move(prUrl(1), "ui", t.clock.now);
+      // While the last refused send of both waits on BB, PR 2 is unwatched.
+      if (++tries === WAKE_REFUSALS) t.ledger.unwatch(prUrl(2));
       throw Object.assign(new Error("Thread is not writable"), { status: 409 });
     });
     for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
-    expect(t.sent().map((m) => m.to)).toEqual([...Array(WAKE_REFUSALS).fill("thr_w1"), "thr_c_ui"]);
+    expect(t.sent().map((m) => m.to)).toEqual([...Array(WAKE_REFUSALS).fill("thr_w1"), "thr_c"]);
     expect(t.sent().at(-1)!.text).toContain("equisafe/market#1");
     expect(t.sent().at(-1)!.text).not.toContain("equisafe/market#2");
-    expect(t.store.activity("eq").some((a) => /gave up on equisafe\/market#2 \(W1\).*Nobody is told/.test(a.summary))).toBe(true);
+    expect(t.store.activity("eq").some((a) => /gave up on equisafe\/market#2 \(W1\).*Nobody is told: unwatched/.test(a.summary))).toBe(true);
+  });
+  it("gives up on a coordinator's own watch like any other: logged, told once", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.poll(0);
+    await t.watch(1, "thr_c");
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    t.send.mockImplementation(async () => { throw Object.assign(new Error("Thread is not writable"), { status: 409 }); });
+    for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(Array(WAKE_REFUSALS + 1).fill("thr_c"));
+    expect(t.sent().at(-1)!.text).toContain("equisafe/market#1 (the coordinator)");
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "failed" })]);
+    await t.poll();
+    expect(t.send).toHaveBeenCalledTimes(WAKE_REFUSALS + 1);
+  });
+});
+
+describe("W554 explicit watches", () => {
+  it("answers a watch with the PR as it is (checks, conflict, review), which wakes nobody later", async () => {
+    const t = setup({ prs: [fakePr(1, {
+      checks: [{ name: "tests", outcome: "failed" }, { name: "lint", outcome: "pending" }], mergeable: "CONFLICTING",
+      decision: "CHANGES_REQUESTED", threads: [false, false, true],
+    })] });
+    await t.poll(0);
+    const before = t.requests.length;
+    const { facts, replaced } = await t.watch(1);
+    expect(t.requests.slice(before).map((r) => r.kind)).toEqual(["watch"]);
+    expect(replaced).toBeNull();
+    expect(watchAnswer(prUrl(1), facts, "you", null)).toEqual({
+      watching: prUrl(1), title: "PR 1", wakes: "you",
+      now: { head: "head1a", checks: "failing: tests; 1 check pending", mergeable: "conflicting", review: "changes_requested", unresolvedThreads: "2" },
+      attention: "Checks failing: tests. It conflicts with its base branch. Changes are requested. 2 unresolved review threads. The watch wakes only on later changes: handle these now.",
+      note: "Wakes you on newly failing checks, required checks passing, new comments or reviews by others, a conflict, or no check 15 min after a push; ends when the PR merges or closes, or with initiative_pr_unwatch.",
+    });
+    expect(t.ledger.row(prUrl(1))).toMatchObject({ watcher: "thr_w1", projectId: "eq", state: { failing: ["tests"], mergeable: "conflicting" } });
+    await t.poll();
+    await t.poll(WATCH_RESYNC_MS);
+    expect(wakeRows(t)).toEqual([]);
+    // A clean PR needs nothing now.
+    const clean = watchAnswer(prUrl(1), { ...facts, checks: [{ name: "tests", outcome: "passed", required: false }], mergeable: "mergeable", review: { decision: "approved", unresolved: 0, more: false } }, "W2", "W1");
+    expect(clean).toMatchObject({ wakes: "W2", replaced: "W1 watched it before; W2 does now.", now: { checks: "all passed (1 check)", review: "approved", unresolvedThreads: "0" } });
+    expect(clean).not.toHaveProperty("attention");
+    // Past 100 review threads, all resolved as far as read: the rest may not be, so it says to look.
+    const many = watchAnswer(prUrl(1), { ...facts, checks: [{ name: "tests", outcome: "passed", required: false }], mergeable: "mergeable", review: { decision: "approved", unresolved: 0, more: true } }, "you", null);
+    expect(many).toMatchObject({ now: { unresolvedThreads: "0+" }, attention: "Only its first 100 review threads were read: check the rest on GitHub. The watch wakes only on later changes: handle these now." });
   });
 
-  it("tells the PR's current Adventure when it gives up, and nobody when the PR was muted meanwhile", async () => {
-    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
-    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
+  it("watches a PR no list shows: finds its node id, reads it every UNLISTED_READ_MS, and wakes its watcher", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(7, { unlisted: true })] });
     await t.poll(0);
-    t.threads.get("thr_w1")!.status = "active";
-    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
-    let tries = 0;
-    t.send.mockImplementation(async ({ threadId }) => {
-      if (threadId !== "thr_w1") return { delivery: "sent" };
-      // While the last refused send waits on BB, the PR moves to Equisafe UI.
-      if (++tries === WAKE_REFUSALS) t.owners.move(prUrl(1), "ui", t.clock.now);
-      throw Object.assign(new Error("Thread is not writable"), { status: 409 });
-    });
-    for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
-    expect(t.sent().map((m) => m.to)).toEqual([...Array(WAKE_REFUSALS).fill("thr_w1"), "thr_c_ui"]);
-    expect(t.sent().at(-1)!.text).toContain("Adventures · Equisafe UI · PR watch");
-    expect(t.sent().at(-1)!.text).toContain("equisafe/market#1 (no worker)");
+    expect(t.cache.cachedPr(prUrl(7))).toBeNull();
+    const before = t.requests.length;
+    await t.watch(7, "thr_w2");
+    expect(t.requests.slice(before).map((r) => r.kind)).toEqual(["id", "watch"]);
+    t.prs.get(7)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(t.giveWork).not.toHaveBeenCalled();
+    await t.poll(UNLISTED_READ_MS);
+    expect(t.giveWork).toHaveBeenCalledOnce();
+    expect(t.giveWork.mock.calls[0]![1]).toBe("W2");
+    expect(t.giveWork.mock.calls[0]![2]).toMatch(/equisafe\/market#7 "PR 7" at head head7a[\s\S]*Checks failed: tests\./);
+  });
 
-    // PR 2: muted while its last refused send waits on BB: logged, nobody told.
-    tries = 0;
-    t.send.mockImplementation(async ({ threadId }) => {
-      if (threadId !== "thr_w1") return { delivery: "sent" };
-      if (++tries === WAKE_REFUSALS) t.ledger.setMuted(prUrl(2), "eq", true);
-      throw Object.assign(new Error("Thread is not writable"), { status: 409 });
-    });
-    const before = t.send.mock.calls.length;
-    t.prs.get(2)!.checks = [{ name: "tests", outcome: "failed" }];
-    for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
-    expect(t.sent().slice(before).map((m) => m.to)).toEqual(Array(WAKE_REFUSALS).fill("thr_w1"));
-    expect(t.store.activity("eq").some((a) => /gave up on equisafe\/market#2 \(W1\).*Nobody is told/.test(a.summary))).toBe(true);
+  it("refuses to watch a PR merged, closed or unknown to GitHub", async () => {
+    const t = setup({ prs: [fakePr(1, { state: "MERGED" }), fakePr(2, { state: "CLOSED" })] });
+    await t.poll(0);
+    await expect(t.watch(1)).rejects.toThrow(`${prUrl(1)} is merged: there is nothing to watch.`);
+    await expect(t.watch(2)).rejects.toThrow(`${prUrl(2)} is closed: there is nothing to watch.`);
+    await expect(t.watcher.watch(prUrl(99), "eq", "thr_w1")).rejects.toThrow(`GitHub has no PR at ${prUrl(99)}`);
+    expect(t.ledger.row(prUrl(1))).toBeNull();
+  });
+
+  it("takes one watcher per PR: a new watch replaces the old one, and unwatch only clears the watcher it names", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.start();
+    const { replaced } = await t.watch(1, "thr_w2");
+    expect(replaced).toMatchObject({ watcher: "thr_w1" });
+    expect(readPrWatch(t.store, t.ledger, prUrl(1)).watcher).toEqual({ label: "W2", projectId: "eq", adventure: "Equisafe" });
+    expect(t.ledger.unwatch(prUrl(1), "thr_w1")).toBe(false);
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(t.giveWork.mock.calls.map((c) => c[1])).toEqual(["W2"]);
+    expect(t.ledger.unwatch(prUrl(1), "thr_w2")).toBe(true);
+    expect(readPrWatch(t.store, t.ledger, prUrl(1)).watcher).toBeNull();
+    // The previous build reads an unwatched PR as muted.
+    expect(t.db.prepare("SELECT muted FROM pr_watches WHERE url = ?").pluck().get(prUrl(1))).toBe(1);
+  });
+
+  it("leaves a W548 watch made from ownership unwatched: never read, no wake", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.poll(0);
+    // As the previous build left it: a state, no watcher.
+    t.db.prepare("INSERT INTO pr_watches (url, project_id, node_id, muted, since, state, gen, updated_at) VALUES (?, 'eq', ?, 0, ?, ?, 0, ?)")
+      .run(prUrl(1), prUrl(1), T0, JSON.stringify(baselineState(parseWatch({ state: "OPEN", headRefOid: "head1a" })!, T0, "")), T0);
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    await t.poll(UNLISTED_READ_MS);
+    expect(t.requests.filter((r) => r.kind === "watch")).toEqual([]);
+    expect(wakeRows(t)).toEqual([]);
+    expect(readPrWatch(t.store, t.ledger, prUrl(1)).watcher).toBeNull();
+  });
+});
+
+describe("W554 review r1 regressions", () => {
+  it("learns a repository's CI from watch reads: a watched PR no list shows wakes when a push reports no check", async () => {
+    const t = setup({ prs: [fakePr(7, { unlisted: true, checks: [{ name: "tests", outcome: "passed" }] })] });
+    await t.poll(0);
+    await t.watch(7, "thr_w1");
+    t.prs.get(7)!.head = "head7b";
+    t.prs.get(7)!.checks = [];
+    await t.poll(UNLISTED_READ_MS);
+    expect(t.ledger.row(prUrl(7))?.state).toMatchObject({ head: "head7b", noChecksDone: false });
+    await t.poll(NO_CHECKS_MS);
+    expect(t.giveWork).toHaveBeenCalledOnce();
+    expect(t.giveWork.mock.calls[0]![2]).toContain("No check has reported 15 min after the push of head7b.");
+  });
+
+  it("learns the gh account from watch reads when no list has: others' comments wake, its own never do", async () => {
+    const t = setup({ prs: [fakePr(7, { unlisted: true })] });
+    await t.poll(0);
+    vi.spyOn(t.cache, "login", "get").mockReturnValue(null);
+    await t.watch(7, "thr_w1");
+    t.prs.get(7)!.comments = [
+      { url: "https://c/mine", at: t.clock.now + 1, login: "erwinkn" },
+      { url: "https://c/bot", at: t.clock.now + 2, login: "coderabbitai", bot: true },
+    ];
+    await t.poll(UNLISTED_READ_MS);
+    expect(t.giveWork).toHaveBeenCalledOnce();
+    expect(t.giveWork.mock.calls[0]![2]).toContain("coderabbitai (bot): https://c/bot");
+    expect(t.giveWork.mock.calls[0]![2]).not.toContain("https://c/mine");
+  });
+
+  it("mutes a W548 row on an unwatch without a watcher named, so a rollback leaves it alone; a named one leaves it", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    t.db.prepare("INSERT INTO pr_watches (url, project_id, node_id, muted, since, state, gen, updated_at) VALUES (?, 'eq', ?, 0, ?, NULL, 0, ?)").run(prUrl(1), prUrl(1), T0, T0);
+    expect(t.ledger.unwatch(prUrl(1), "thr_w1")).toBe(false);
+    expect(t.ledger.row(prUrl(1))?.muted).toBe(false);
+    expect(t.ledger.unwatch(prUrl(1))).toBe(true);
+    expect(t.ledger.row(prUrl(1))?.muted).toBe(true);
+    expect(t.ledger.unwatch(prUrl(1))).toBe(false);
   });
 });
 
@@ -1422,7 +1494,7 @@ describe("W548 wiring", () => {
     expect(call.threadId).toBe(w.threadId);
     expect(call.senderThreadId).toBe("coordinator");
     expect(call.input[0]!.text).toContain("PR watch (sent by the Adventures plugin, not your lead): checks failed.");
-    expect(call.input[0]!.text).toContain("the plugin wakes you");
+    expect(call.input[0]!.text).toContain("watch it with initiative_pr_watch");
   });
 
   it("checks a wake once more just before the work is recorded, after the dispatch's reads", async () => {
@@ -1433,17 +1505,20 @@ describe("W548 wiring", () => {
     const before = f.store.assignments(project.id).length;
     const sends = f.send.mock.calls.length;
     let checks = 0;
-    // Muted while the dispatch read BB: the first check passes, the last one doesn't.
+    // Unwatched while the dispatch read BB: the first check passes, the last one doesn't.
     await expect(f.prWatchWork(project.id, "W1", "PR watch: checks failed.", () => {
-      if (++checks > 1) throw new Error("muted meanwhile");
-    })).rejects.toThrow("muted meanwhile");
+      if (++checks > 1) throw new Error("unwatched meanwhile");
+    })).rejects.toThrow("unwatched meanwhile");
     expect(checks).toBe(2);
     expect(f.store.assignments(project.id).length).toBe(before);
     expect(f.send.mock.calls.length).toBe(sends);
   });
 
-  it("tells workers never to wait on CI, within the guidance cap", () => {
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Never wait on CI with sleep, loops, `gh pr checks --watch`, Monitor or ScheduleWakeup: the plugin wakes you when your PR changes.");
+  it("tells workers to watch their PRs and never to wait on CI, within the guidance cap", () => {
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("After you open or push a PR, watch it with initiative_pr_watch; unwatch it (initiative_pr_unwatch) once you hand it off or stop caring.");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Never wait on CI with sleep, loops, `gh pr checks --watch`, Monitor or ScheduleWakeup: the watch wakes you when your PR changes.");
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
+    // W548's text is a legacy default: saved unedited, it upgrades to this one.
+    expect(PREVIOUS_DEFAULTS.worker[0]).toContain("the plugin wakes you when your PR changes.");
   });
 });

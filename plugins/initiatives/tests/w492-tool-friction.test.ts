@@ -23,7 +23,7 @@ describe("W492 a worker is offered only what it can set", () => {
   it("advertises initiative_pr and initiative_message without the lead's fields to workers, and whole to leads", async () => {
     const { f, w } = await spawned();
     const worker = Object.fromEntries((await configured(f, w.threadId)).map((t) => [t.name, t.inputSchema]));
-    expect(Object.keys(worker).sort()).toEqual(["initiative_message", "initiative_pr", "initiative_read", "initiative_report"]);
+    expect(Object.keys(worker).sort()).toEqual(["initiative_message", "initiative_pr", "initiative_pr_unwatch", "initiative_pr_watch", "initiative_read", "initiative_report"]);
     expect(properties(worker.initiative_pr, "properties", "prs", "items")).toEqual(["url", "stage", "note", "notes", "initiative"]);
     expect(properties(worker.initiative_pr)).toEqual(["prs"]);
     expect(properties(worker.initiative_message)).toEqual(["text", "to"]);

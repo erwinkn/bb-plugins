@@ -551,8 +551,8 @@ client (`lib/merge-queue-server.ts`). Nothing waits on GitHub (D441): the
 once and start a fetch behind the answer when a repository's last attempt is
 old enough, or on Refresh (at most once per 10 s). Old enough is two minutes
 while a dashboard shows the repository (a `mergeQueue` RPC read within the last
-minute; open dashboards poll every 15 s) or an Adventure listing it has an
-unmuted PR watch (W548, below), and ten minutes when only agents read it. The repository shows `fetching` meanwhile, and the list landing and each
+minute; open dashboards poll every 15 s) or it holds a watched PR (W548,
+W554, below), and ten minutes when only agents read it. The repository shows `fetching` meanwhile, and the list landing and each
 details answer are announced on the `merge-queue-changed` realtime channel,
 so the dashboard reads again at once. Until the first list lands the tab shows
 skeleton rows.
@@ -614,46 +614,74 @@ Measured on live data on 2026-10-19 for Equisafe: Infra (4 repositories,
 | GitHub requests | 35 | 9 cold, 4 warm |
 | Main-thread time | 5.8 s, longest block 1.3 s | 0.17 s cold, 0.06 s warm; longest block 6 ms |
 
-### PR watches (W548)
+### PR watches (W548, W554)
 
-Every open PR an Adventure owns (R2) is watched, with no tool to call: when it
-changes on GitHub, the plugin wakes whoever owns it (`lib/pr-watch.ts`).
-Unassigned PRs aren't watched.
+An agent watches a PR with `initiative_pr_watch {pr}`; when it changes on GitHub,
+the plugin wakes the thread that watched it (`lib/pr-watch.ts`). Workers watch
+their PRs after opening or pushing them (worker guidance); a lead watches for
+itself, or for a worker with `{pr, worker:"W3"}`. `initiative_pr_unwatch {pr}`
+stops a watch: a worker its own, a lead any of its Adventure's. `pr` is a URL,
+`owner/repo#12`, or `#12`/`repo#12` when exactly one PR the Adventure lists
+matches. One watcher per PR: a new watch replaces the old one and says whose.
 
+Watching has nothing to do with ownership (R2). W548 watched every PR an
+Adventure owned, with no tool to call; on 2026-10-29 that covered 19 PRs across
+5 projects and none in the busiest Adventures, and had woken nobody, because
+ownership resolves for few PRs (134 manual owners against 5 automatic: the
+automatic one needs a `thr_…` suffix in the branch name, which most Equisafe
+branches lack). W554 made watching explicit. The 19 rows W548 left are not
+watched (no watcher); their state stays, and the previous build would pick
+them up again on a rollback.
+
+- **Baseline.** The watch call reads the PR once (the watch query plus its
+  review decision and unresolved review threads; a PR no list shows first has
+  its node id looked up) and answers with its state: head, checks, mergeability,
+  review decision, unresolved threads, and an `attention` line naming what needs
+  action now (failing checks, a conflict, requested changes, unresolved
+  threads). That baseline wakes nobody, so a PR already failing is never silent:
+  the caller sees it in the answer. A head with no check yet counts as pushed at
+  the watch, so no check 15 minutes later still wakes. A merged, closed or
+  unknown PR is refused.
 - **What wakes.** Newly failing checks (by name; after a push, every failing
   one), required checks passing (the base branch's, from classic protection
   and rulesets: each must have reported and passed, since a required workflow
   skipped by its path filter blocks the merge; every check, where none is
-  required), new comments and reviews since the last pass, a conflict with the
+  required), new comments and reviews since the last read, a conflict with the
   base, and no check reported 15 minutes after a push (only in a repository
-  where some PR ever reported checks; kept across reloads). Past 100 checks on
+  where some PR ever reported checks, listed or read by a watch; kept across
+  reloads). Past 100 checks on
   a commit, the rest are read 100 a page (up to 1,000); past that, the
   rollup's overall state stands in for the unread ones. A merge or a close
-  only ends the watch.
+  only ends the watch, waking nobody.
 - **Whose comments.** Never the `gh` account's own. Agents and the user share
   it, and nothing in GitHub's data tells them apart: on Equisafe's last 60
   PRs every one of its ~37 comments and reviews was an agent's (proofs,
   `@coderabbitai review`, replies to CodeRabbit). Bots (`coderabbitai`) and
   other people (teammates) wake. To wake a worker yourself, use BB. A comment
-  is new when it is later than the newest seen, or as late but not seen.
-- **Who hears it.** The PR's worker (the coordinator's record, else the
-  latest assignment naming its URL, as the PRs tab reads it: a brief that only
-  mentions `owner/repo#12` in passing doesn't take it; else the branch). Idle and free: more work, as a
-  lead's `initiative_message work:true` from the coordinator, so it reports
+  is new when it is later than the newest seen, or as late but not seen. The
+  account's login comes from the lists, or from the watch reads themselves
+  (`viewer { login }`) when no list has run, say for a repository no
+  Adventure lists.
+- **Who hears it.** The watching thread. A worker, idle and free: more work, as
+  a lead's `initiative_message work:true` from the coordinator, so it reports
   again. Working, or still on an open assignment: a steer message its open
   report covers. Retired, stopped (Stop cancels its work; the worker counts as
-  stopped until its lead gives it new work), its thread stopping, a reviewer, archived, or idle with a cold
-  cache over the T142 threshold: the coordinator, which picks
-  `resumeCold:true` or a fresh worker with handoffs. Wakes are routed first and
-  sent after: each worker gets one message a pass, and each Adventure's
-  coordinator one for every PR routed to it, each with why. Messages name the
-  PRs, changes, check names, comment links and head SHAs, and say a wake is not
-  a merge decision.
+  stopped until its lead gives it new work), its thread stopping, a reviewer,
+  archived, or idle with a cold cache over the T142 threshold: its Adventure's
+  coordinator, which picks `resumeCold:true` or a fresh worker with handoffs.
+  The coordinator itself: a message ("PRs you watch"). A thread that is no
+  longer its Adventure's coordinator or one of its workers (a replaced
+  coordinator, a worker on a new thread): the coordinator, saying so. Wakes are
+  routed first and sent after: each watcher gets one message a pass, and each
+  Adventure's coordinator one for every PR routed to it, each with why.
+  Messages name the PRs, changes, check names, comment links and head SHAs, and
+  say a wake is not a merge decision.
 - **Guards.** After 10 comment-only wakes in a row, comments stop waking
   (logged once each time); news about checks, a conflict or a push resets the
   count. A wake whose head moved before it went out is dropped (`stale`), as is
-  one for a PR no Adventure owns any more; one whose PR moved goes to its new
-  owner. A paused Adventure holds its wakes; one older than a day is dropped.
+  one whose PR was unwatched or watched again since (each moves the watch's
+  generation), or whose watcher's Adventure was archived. A paused Adventure
+  holds its wakes; one older than a day is dropped.
   Routing waits on BB, so each send checks again, just before it, that each
   wake still applies and the worker can still take it as routed (same thread,
   and the same open assignment: none for more work, the one a message names);
@@ -661,65 +689,60 @@ Unassigned PRs aren't watched.
   recorded (`DelegateInput.ready`). A wake that stopped applying leaves the
   message alone; the others still go. A send BB refuses (a 4xx, say 409 for a
   thread archived meanwhile) goes back to pending and is routed afresh next
-  pass, here to the coordinator; the third refusal fails it, and the coordinator
-  of the Adventure that owns the PR then gets one note naming the PR, its worker
-  and BB's last answer (W551).
-  Any other send error fails it at once, since it may have arrived. A Stop that
-  lands while a message goes out (the thread reads stopping after it, or the
-  worker stopped): a message BB queued behind it (BB would start a turn with it
-  once idle) is taken back and the wake routed afresh, nothing having reached
-  the worker; one BB refuses to delete is gone to the worker, so the wake is
-  sent; any other delete error leaves it `uncertain` (never sent again) and the
-  coordinator is asked to check the worker's thread. A
-  steer that joined the stopping turn may never be acted on: the wake stays sent
-  (BB took it) and the coordinator gets one note too. Both kinds of note (this
-  and a give-up) go to the Adventure that owns the PR at the time, skip a PR
-  muted, unowned or pushed since, and are a single try outside the ledger, so a
-  refused note never sends the wake again. R2 ownership and the PR's worker are read then,
-  from the ledger, listed or not (a reassignment or a move retargets the wake,
-  even after a reload with nothing listed yet). Its head must still be the
-  one the PR's latest watch read saw.
-- **Baseline and reloads.** `pr_watches` keeps each PR's last seen state and
-  mute, `pr_wakes` each wake, written in one transaction. A mute or unmute
-  moves the watch's generation: a pass that read the PR before, or a wake
-  stored before, no longer applies. A PR opened before the watches started (or
-  unmuted) starts from a baseline: its old state wakes nobody. A PR opened since starts from nothing. A reload diffs against the
-  stored state, so a change made while the plugin was down still wakes and
-  none wakes twice. A wake held over a pass (a pause, a reload, a failed send's
-  retry) goes only once a watch read in the pass that sends it confirms its
-  head, so one PR read; a paused Adventure's held wakes read nothing. A send a
-  reload cut short is marked `uncertain` and never repeated.
-  Both tables are additive: the previous build ignores them.
+  pass, here to the coordinator; the third refusal fails it, and the
+  coordinator gets one note naming the PR, its watcher and BB's last answer
+  (W551). Any other send error fails it at once, since it may have arrived. A
+  Stop that lands while a message goes out (the thread reads stopping after
+  it, or the worker stopped): a message BB queued behind it (BB would start a
+  turn with it once idle) is taken back and the wake routed afresh, nothing
+  having reached the worker; one BB refuses to delete is gone to the worker, so
+  the wake is sent; any other delete error leaves it `uncertain` (never sent
+  again) and the coordinator is asked to check the worker's thread. A steer
+  that joined the stopping turn may never be acted on: the wake stays sent (BB
+  took it) and the coordinator gets one note too. Both kinds of note (this and
+  a give-up) skip a PR unwatched, ended or pushed since, and are a single try
+  outside the ledger, so a refused note never sends the wake again.
+- **State and reloads.** `pr_watches` keeps each PR's watcher
+  (`watcher_thread_id`, its Adventure in `project_id`) and last seen state,
+  `pr_wakes` each wake with the watcher it was found for (`thread_id`), written
+  in one transaction. A reload diffs against the stored state, so a change made
+  while the plugin was down still wakes and none wakes twice. A wake held over
+  a pass (a pause, a reload, a failed send's retry) goes only once a watch read
+  in the pass that sends it confirms its head; a paused Adventure's held wakes
+  read nothing. A send a reload cut short is marked `uncertain` and never
+  repeated. The W554 columns are additive; an unwatch also sets the old
+  `muted`, so the previous build leaves that PR alone, and so does a lead's
+  unwatch of a W548 row nobody watches.
 - **One source per wake (D552).** Every fact a wake carries (head, checks,
-  comments, mergeability, when the PR opened) comes from one watch read; the
-  list only says when to read. A list and a read can see two heads (a list
-  can lag a push, or land while a read is out): for example, the list shows
-  head A conflicting, the read already sees B, mergeable, failing `e2e`. The
-  wake is B's failing `e2e`; A's conflict is nobody's news, and the next read
-  goes by B's own state. A push between pages of a PR's checks fails that
-  read, retried against the new head. W548 mixed the two and needed list
-  timestamps and holds to order them; five review rounds kept finding races
-  where they met.
-- **Reads.** The list query now also reads each PR's head SHA (same 4 points
-  for Equisafe's 304 open PRs, 18–21 s against 20–28 s without it, live
-  2026-10-28). A PR whose head, `updatedAt` or check counts by raw state moved,
-  whose listed mergeability is known and differs from the stored one (a
-  conflict starting or ending; GitHub's "unknown" while it recomputes after a
-  push to the base says nothing), whose last read is 30 minutes old (two
-  reruns can swap outcomes and leave the counts as they were), or whose
-  no-checks wake is due, is read again with the watch query (mergeability,
-  checks with `isRequired`, the last 20 comments and reviews), 25 PRs a request, in the details' 4 slots; 25 took ~2.5 s and
-  one point. A failed read is retried after 2 minutes, doubling up to 30, in
-  smaller requests. A watch pass runs every 2 minutes and after each list
-  lands. It takes each PR once, by URL: one that moves between two
-  Adventures' list reads is read and woken once. A pass over 300 owned PRs with nothing moved took ~28 ms of main
-  thread in W548, longest block 22 ms (a dashboard read alone is ~14 ms). In
-  the test harness (fake GitHub, W549) it takes 11–16 ms with no watch read,
-  and one where all 300 fail ~130 ms, with 12 watch requests of 25.
-- **Mute.** The PR detail panel's Watch section shows the latest wakes and
-  mutes or unmutes the PR (`prWatch` and `setPrWatch` RPCs, read with TanStack
-  Query). Muted PRs aren't read; an Adventure whose watches are all muted goes
-  back to the ten-minute cadence.
+  comments, mergeability, title) comes from one watch read; the list only says
+  when to read. A list and a read can see two heads (a list can lag a push, or
+  land while a read is out): for example, the list shows head A conflicting,
+  the read already sees B, mergeable, failing `e2e`. The wake is B's failing
+  `e2e`; A's conflict is nobody's news, and the next read goes by B's own
+  state. A push between pages of a PR's checks fails that read, retried
+  against the new head. W548 mixed the two and needed list timestamps and
+  holds to order them; five review rounds kept finding races where they met.
+- **Reads.** The list query also reads each PR's head SHA (same 4 points for
+  Equisafe's 304 open PRs, 18–21 s against 20–28 s without it, live
+  2026-10-28). A watched PR some Adventure lists is read again with the watch
+  query (mergeability, checks with `isRequired`, the last 20 comments and
+  reviews) when its head, `updatedAt` or check counts by raw state moved, when
+  its listed mergeability is known and differs from the stored one (a conflict
+  starting or ending; GitHub's "unknown" while it recomputes after a push to
+  the base says nothing), when its last read is 30 minutes old (two reruns can
+  swap outcomes and leave the counts as they were), or when its no-checks wake
+  is due. One no list shows (another author, a repository no Adventure lists,
+  or merged or closed since) is read every 10 minutes; that read is also what
+  ends a merged watch. Reads go 25 PRs a request, in the details' 4 slots; 25
+  took ~2.5 s and one point. A failed read is retried after 2 minutes,
+  doubling up to 30, in smaller requests. A watch pass runs every 2 minutes and
+  after each list lands; it takes each PR once, by URL, whichever Adventures
+  list it. Only the repositories holding a watched PR stay on the 2-minute
+  cadence. A pass with 300 watched PRs of which all fail takes well under
+  400 ms in the test harness (fake GitHub), one watch request per 25.
+- **Dashboard.** The PR detail panel's Watch section shows who watches the PR
+  (and in which Adventure, when not this one), the latest wakes, and an
+  Unwatch button (`prWatch` and `prUnwatch` RPCs, read with TanStack Query).
 
 ## Backend and tools
 

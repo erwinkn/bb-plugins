@@ -7,11 +7,11 @@ import { prWatchQuery, queryKeys, useQuerySync } from "./lib/queries";
 import { compactAge } from "./control-room";
 
 const STATES: Record<PrWatchView["wakes"][number]["state"], string> = {
-  pending: "waiting to send", sending: "sending", sent: "sent", stale: "skipped: head moved", muted: "skipped: muted",
+  pending: "waiting to send", sending: "sending", sent: "sent", stale: "skipped", muted: "skipped: muted",
   failed: "not sent", uncertain: "may not have arrived",
 };
 
-/** W548: one PR's watch in its detail panel: whether a change on GitHub wakes its owner, and the latest wakes. */
+/** W548, W554: one PR's watch in its detail panel: who watches it, and the latest wakes. Agents watch with initiative_pr_watch. */
 export function PrWatch({ projectId, url }: { projectId: string; url: string }) {
   return (
     <QueryClientProvider client={adventuresQueryClient()}>
@@ -26,33 +26,33 @@ function WatchSection({ projectId, url }: { projectId: string; url: string }) {
   const client = useQueryClient();
   const watch = useQuery(prWatchQuery(api, projectId, url));
   // The PR travels with the mutation: the panel may show another PR by the time it answers.
-  const mute = useMutation({
-    mutationFn: (input: { projectId: string; url: string; muted: boolean }) => api.call("setPrWatch", input),
+  const unwatch = useMutation({
+    mutationFn: (input: { projectId: string; url: string }) => api.call("prUnwatch", input),
     onSuccess: (view, input) => client.setQueryData(queryKeys.prWatch(input.projectId, input.url), view),
   });
-  const mine = mute.variables?.url === url && mute.variables.projectId === projectId;
+  const mine = unwatch.variables?.url === url && unwatch.variables.projectId === projectId;
   const view = watch.data;
+  const who = view?.watcher ? `${view.watcher.label}${view.watcher.projectId === projectId ? "" : ` (${view.watcher.adventure})`}` : null;
   const status = !view
     ? watch.error ? `Couldn't read the watch: ${watch.error.message}` : "Loading…"
-    : view.ended ? `${view.ended === "MERGED" ? "Merged" : "Closed"}: no longer watched.`
-    : view.muted ? "Muted: changes on GitHub wake nobody."
-    : !view.watched ? "Not listed open yet: watched once it is."
-    : view.commentWakes >= view.commentCap ? `Comments stopped waking after ${view.commentCap} comment-only wakes in a row; news about checks, a conflict or a push wakes again.`
-    : "Failing or passing checks, new comments and reviews, conflicts and missing checks wake its worker (or the coordinator).";
+    : view.ended ? `${view.ended === "MERGED" ? "Merged" : "Closed"}: the watch ended.`
+    : !who ? "Not watched. An agent watches a PR with initiative_pr_watch; changes on GitHub then wake it."
+    : view.commentWakes >= view.commentCap ? `Watched by ${who}. Comments stopped waking it after ${view.commentCap} comment-only wakes in a row; news about checks, a conflict or a push wakes it again.`
+    : `Watched by ${who}: failing or passing checks, new comments and reviews, conflicts and missing checks wake it.`;
   return (
-    <section className="cr-pd-section cr-pd-watch" aria-label="Watch" aria-busy={watch.isFetching || (mine && mute.isPending)}>
+    <section className="cr-pd-section cr-pd-watch" aria-label="Watch" aria-busy={watch.isFetching || (mine && unwatch.isPending)}>
       <h4>
         Watch
-        {view && !view.ended ? (
-          <button type="button" className="cr-pm-more cr-pd-watch-toggle" aria-pressed={view.muted} disabled={mine && mute.isPending}
-            title={view.muted ? "Wake its owner again on GitHub changes, from the PR as it is now" : "Stop waking its owner on GitHub changes"}
-            onClick={() => mute.mutate({ projectId, url, muted: !view.muted })}>
-            {view.muted ? "Unmute" : "Mute"}
+        {who && !view?.ended ? (
+          <button type="button" className="cr-pm-more cr-pd-watch-toggle" disabled={mine && unwatch.isPending}
+            title={`Stop waking ${who} on GitHub changes`}
+            onClick={() => unwatch.mutate({ projectId, url })}>
+            Unwatch
           </button>
         ) : null}
       </h4>
-      <p className="cr-pd-watch-status" data-muted={view?.muted || undefined}>{status}</p>
-      {mine && mute.error ? <p className="cr-mq-note" role="status">Couldn't {mute.variables!.muted ? "mute" : "unmute"}: {mute.error.message}</p> : null}
+      <p className="cr-pd-watch-status" data-off={!who || !!view?.ended || undefined}>{status}</p>
+      {mine && unwatch.error ? <p className="cr-mq-note" role="status">Couldn't unwatch: {unwatch.error.message}</p> : null}
       {view?.wakes.length ? (
         <ul>
           {view.wakes.map((wake) => (

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// W548: the PR detail panel's Watch section, read with TanStack Query.
+// W548, W554: the PR detail panel's Watch section, read with TanStack Query.
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { createElement } from "react";
@@ -17,8 +17,8 @@ afterEach(() => {
 });
 
 const url = (n: number) => `https://github.com/eq/market/pull/${n}`;
-const view = (n: number, muted = false): PrWatchView => ({
-  url: url(n), watched: true, muted, commentWakes: 0, commentCap: 10, ended: null,
+const view = (n: number, watched = true): PrWatchView => ({
+  url: url(n), watcher: watched ? { label: "W1", projectId: "eq", adventure: "Equisafe" } : null, commentWakes: 0, commentCap: 10, ended: null,
   wakes: [{ at: Date.UTC(2026, 9, 28, 12), head: "abc1234def", changes: ["Checks failed: tests."], state: "sent", routed: "W1: A7" }],
 });
 
@@ -35,29 +35,34 @@ describe("W548 PR watch view", () => {
     await waitFor(() => expect(reads()).toBe(2));
   });
 
-  it("applies a mute's answer to the PR it was for, even after the panel moved to another", async () => {
-    const muted = new Map<string, boolean>();
+  it("shows who watches the PR, and applies an unwatch's answer to the PR it was for, even after the panel moved to another", async () => {
+    const unwatched = new Set<string>();
     let release: () => void = () => {};
     const slot = renderSlot({ component: PrWatch }, { projectId: "eq", url: url(1) }, { rpc: {
       prWatch: async (input) => {
         const u = (input as { url: string }).url;
-        return view(Number(u.split("/").pop()), muted.get(u) ?? false);
+        return view(Number(u.split("/").pop()), !unwatched.has(u));
       },
-      setPrWatch: async (input) => {
-        const { url: u, muted: m } = input as { url: string; muted: boolean };
+      prUnwatch: async (input) => {
+        const { url: u } = input as { url: string };
         await new Promise<void>((resolve) => { release = resolve; });
-        muted.set(u, m);
-        return view(Number(u.split("/").pop()), m);
+        unwatched.add(u);
+        return view(Number(u.split("/").pop()), false);
       },
     } });
     slots.push(slot);
-    fireEvent.click(await slot.findByRole("button", { name: "Mute" }));
+    await slot.findByText(/Watched by W1:/);
+    fireEvent.click(await slot.findByRole("button", { name: "Unwatch" }));
     slot.rerender(createElement(PrWatch, { projectId: "eq", url: url(2) }));
-    await slot.findByRole("button", { name: "Mute" });
+    await slot.findByRole("button", { name: "Unwatch" });
     await act(async () => release());
-    await waitFor(() => expect(adventuresQueryClient().getQueryData<PrWatchView>(["pr-watch", "eq", url(1)])?.muted).toBe(true));
-    expect(adventuresQueryClient().getQueryData<PrWatchView>(["pr-watch", "eq", url(2)])?.muted).toBe(false);
-    expect(slot.getByRole("button", { name: "Mute" })).toBeTruthy();
-    expect(slot.rpcCalls.find((c) => c.method === "setPrWatch")?.input).toEqual({ projectId: "eq", url: url(1), muted: true });
+    await waitFor(() => expect(adventuresQueryClient().getQueryData<PrWatchView>(["pr-watch", "eq", url(1)])?.watcher).toBeNull());
+    expect(adventuresQueryClient().getQueryData<PrWatchView>(["pr-watch", "eq", url(2)])?.watcher?.label).toBe("W1");
+    expect(slot.getByRole("button", { name: "Unwatch" })).toBeTruthy();
+    expect(slot.rpcCalls.find((c) => c.method === "prUnwatch")?.input).toEqual({ projectId: "eq", url: url(1) });
+    // Back on PR 1: nobody watches it, and there is nothing to unwatch.
+    slot.rerender(createElement(PrWatch, { projectId: "eq", url: url(1) }));
+    await slot.findByText(/^Not watched\./);
+    expect(slot.queryByRole("button", { name: "Unwatch" })).toBeNull();
   });
 });

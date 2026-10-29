@@ -54,6 +54,15 @@ export const messageToolAdvertised = messageToolSchema.omit({ target: true, mode
 export const workerMessageToolSchema = messageToolSchema.pick({ text: true }).extend({
   to: z.string().max(32).describe('"lead": the tab that gave you your work ("coordinator" reaches it too). W# reaches a peer worker.'),
 }).strict();
+/** W554: initiative_pr_watch. */
+export const prWatchToolSchema = z.object({
+  pr: text(300).describe('The PR: its URL or "owner/repo#12"; "#12" or "repo#12" when one PR this Adventure lists matches.'),
+  worker: ref.optional().describe("A lead only: watch for this W#, whose thread the PR's news then wakes."),
+}).strict();
+/** What a worker's session advertises: it watches for itself. */
+export const workerPrWatchToolSchema = prWatchToolSchema.omit({ worker: true });
+/** W554: initiative_pr_unwatch. */
+export const prUnwatchToolSchema = workerPrWatchToolSchema;
 /** What initiative_spawn advertises: no review fields (workers run their own reviews). */
 export const spawnToolAdvertised = spawnToolSchema.omit({ role: true, reviews: true });
 

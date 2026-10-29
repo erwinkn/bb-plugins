@@ -35,4 +35,10 @@ export const PR_WATCH_MIGRATIONS = [
   )`,
   `CREATE INDEX pr_wakes_state ON pr_wakes(state, id)`,
   `CREATE INDEX pr_wakes_url ON pr_wakes(url, id)`,
+  // W554: watches are explicit (initiative_pr_watch). `watcher_thread_id`: the thread that watches
+  // the PR, NULL when nobody does (unwatched, or a W548 row made from ownership). An unwatch also
+  // sets `muted`, so the previous build leaves that PR alone. A wake's `thread_id`: the
+  // watcher it was found for. The previous build ignores both columns.
+  `ALTER TABLE pr_watches ADD COLUMN watcher_thread_id TEXT`,
+  `ALTER TABLE pr_wakes ADD COLUMN thread_id TEXT`,
 ];

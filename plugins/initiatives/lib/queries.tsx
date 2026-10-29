@@ -15,7 +15,7 @@ export const queryKeys = {
 
 type Api = PluginRpcClient<typeof projectsContract>;
 
-/** W548: one PR's watch (muted or on, its latest wakes). */
+/** W548: one PR's watch (who watches it, its latest wakes). */
 export const prWatchQuery = (api: Api, projectId: string, url: string) =>
   queryOptions({
     queryKey: queryKeys.prWatch(projectId, url),
@@ -24,7 +24,7 @@ export const prWatchQuery = (api: Api, projectId: string, url: string) =>
   });
 
 /**
- * Routes realtime signals to the keys they concern: a wake or a mute is announced on
+ * Routes realtime signals to the keys they concern: a wake or a watch change is announced on
  * merge-queue-changed. Everything is read again on reconnect, when signals may have been missed.
  */
 export function useQuerySync() {

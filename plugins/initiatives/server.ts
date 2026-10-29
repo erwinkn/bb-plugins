@@ -28,6 +28,8 @@ import {
   messageToolAdvertised,
   messageToolSchema,
   normalizeReport,
+  prUnwatchToolSchema,
+  prWatchToolSchema,
   reportToolSchema,
   questionToolSchema,
   ruleCommand,
@@ -41,6 +43,7 @@ import {
   updateToolSchema,
   workerCommand,
   workerMessageToolSchema,
+  workerPrWatchToolSchema,
   workerToolSchema,
 } from "./lib/agent-tools";
 import { legacyReportSchema, LEGACY_TOOL_NAMES } from "./lib/legacy";
@@ -63,7 +66,7 @@ import {
 } from "./lib/overview";
 import { Background, FIRST_READ_WAIT_MS, LiveThreads, Recent, liveOf } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
-import { PrWatcher, WATCH_TICK_MS, WatchLedger, ownerNow, readPrWatch } from "./lib/pr-watch";
+import { PrWatcher, WATCH_TICK_MS, WatchLedger, readPrWatch, watchAnswer, watcherLabel } from "./lib/pr-watch";
 import { canonicalPrUrl, prToolSchema, workerPrToolSchema } from "./lib/pr-stages";
 import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
 import { AssignedPrs, COORDINATOR, initiativeNamed, recordPrs, type PrCaller } from "./lib/pr-records";
@@ -71,7 +74,7 @@ import { prsReferenced } from "./lib/task-status";
 import { PrOwners, ledgerThreads } from "./lib/pr-owners";
 import { readPrDetail } from "./lib/pr-detail";
 import { branchThreadId } from "./lib/merge-queue";
-import { prsByRef, prSummary } from "./lib/pr-map";
+import { matchesRef, prsByRef, prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
@@ -604,7 +607,7 @@ export default function plugin(bb: BbPluginApi) {
   (repo) => bb.realtime.publish("merge-queue-changed", { repo }),
   // W548: a landed list is diffed by the PR watches.
   () => prWatcher.poke());
-  // W548: every PR an Adventure owns is watched; a change on GitHub wakes its owner.
+  // W548, W554: a PR an agent watches (initiative_pr_watch) wakes it when it changes on GitHub.
   const watchLedger = new WatchLedger(store.db, () => store.now());
   /** A wake as a lead's more work (initiative_message work:true) from the coordinator, serialized with every other write. */
   const prWatchWork = (projectId: string, workerRef: string, text: string, still: () => void = () => {}) => announcing(() => serialized(async () => {
@@ -624,13 +627,6 @@ export default function plugin(bb: BbPluginApi) {
     giveWork: prWatchWork,
     changed: () => bb.realtime.publish("merge-queue-changed", { repo: null }),
     warn: (message) => bb.log.warn(message),
-    ownerOf: (url) => ownerNow(url, {
-      recorded: (key) => prOwners.recorded(key),
-      cachedPr: (key) => mergeQueue.cachedPr(key),
-      recordWorker: (projectId, key) => watchLedger.recordWorker(projectId, key),
-      assignedWorker: (projectId, key) => assignedPrs.naming(projectId, key)?.worker ?? null,
-      threadWorker: (projectId, threadId) => watchLedger.threadWorker(projectId, threadId),
-    }),
   });
   bb.rpc.register(projectsContract, {
     mergeQueue: async ({ projectId, refresh }) => {
@@ -660,16 +656,14 @@ export default function plugin(bb: BbPluginApi) {
       service.requireProject(projectId);
       const key = canonicalPrUrl(url);
       if (!key) throw new ProjectError("Expected a GitHub PR URL.");
-      return readPrWatch(watchLedger, key, prOwners.all().get(key)?.projectId === projectId && mergeQueue.cachedPr(key) !== null);
+      return readPrWatch(store, watchLedger, key);
     },
-    setPrWatch: ({ projectId, url, muted }) => {
+    prUnwatch: ({ projectId, url }) => {
       service.requireProject(projectId);
       const key = canonicalPrUrl(url);
       if (!key) throw new ProjectError("Expected a GitHub PR URL.");
-      if (prOwners.all().get(key)?.projectId !== projectId) throw new ProjectError("Only a PR this Adventure owns is watched; move it here first.");
-      watchLedger.setMuted(key, projectId, muted);
-      bb.realtime.publish("merge-queue-changed", { repo: null });
-      return readPrWatch(watchLedger, key, mergeQueue.cachedPr(key) !== null);
+      if (watchLedger.unwatch(key)) bb.realtime.publish("merge-queue-changed", { repo: null });
+      return readPrWatch(store, watchLedger, key);
     },
     prDetail: ({ projectId, url }) => {
       service.requireProject(projectId);
@@ -875,6 +869,8 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_report",
     { name: "initiative_message", parameters: advertisedSchema(workerMessageToolSchema) },
     { name: "initiative_pr", parameters: advertisedSchema(workerPrToolSchema) },
+    { name: "initiative_pr_watch", parameters: advertisedSchema(workerPrWatchToolSchema) },
+    "initiative_pr_unwatch",
   ];
   const leadTools = [
     "initiative_read",
@@ -887,6 +883,8 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_update",
     "initiative_manage",
     "initiative_pr",
+    "initiative_pr_watch",
+    "initiative_pr_unwatch",
     "initiative_batch",
   ];
   bb.agents.configure((ctx) => {
@@ -1331,6 +1329,73 @@ export default function plugin(bb: BbPluginApi) {
       return receipt(await setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, threadId }));
     },
   });
+  /** W554: the PR a watch tool names: a URL or owner/repo#12, else "#12" or "repo#12" among the PRs this Adventure lists. */
+  const watchedPr = async (projectId: string, pr: string) => {
+    const url = canonicalPrUrl(pr);
+    if (url) return url;
+    const matches = matchesRef(pr);
+    if (!matches) throw new ToolInputError(`"${pr}" names no PR: give its URL, "owner/repo#12" or "#12".`);
+    const found = (await mergeQueue.read(projectId)).pullRequests.filter(matches);
+    if (found.length !== 1)
+      throw new ToolInputError(found.length
+        ? `"${pr}" matches ${found.length} PRs (${found.map((p) => `${p.repo}#${p.number}`).join(", ")}): give its URL.`
+        : `"${pr}" matches no PR this Adventure lists: give its URL.`);
+    return canonicalPrUrl(found[0]!.url)!;
+  };
+  /** W554: whose watch a watch tool call is: a worker's own; a lead's own, or with `worker` that worker's thread's. */
+  const watchCaller = async (threadId: string | undefined, worker: string | undefined) => {
+    if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
+    await ensureMember(threadId);
+    const m = store.membership(threadId);
+    if (m && !m.former && m.workerNum > 0 && m.worker) {
+      if (worker && worker !== m.worker.ref) throw new ToolInputError(`Workers watch for themselves; only your lead watches a PR for ${worker}.`);
+      return { projectId: m.project.id, threadId, label: m.worker.ref, worker: true };
+    }
+    const p = await coordinatorProject(threadId);
+    if (!worker) return { projectId: p.id, threadId, label: "the coordinator", worker: false };
+    const w = /^W\d+$/.test(worker) ? store.worker(p.id, Number(worker.slice(1))) : null;
+    if (!w) throw new ToolInputError(`${worker} is no worker of this Adventure.`);
+    if (w.role !== "work" || w.state === "retired" || !w.threadId)
+      throw new ToolInputError(`${worker} can't take a PR's news (${w.role !== "work" ? "a reviewer" : w.state === "retired" ? "retired" : "no thread yet"}): watch it yourself, or for a working worker.`);
+    return { projectId: p.id, threadId: w.threadId, label: w.ref, worker: false };
+  };
+  registerTool({
+    name: "initiative_pr_watch",
+    parameters: jsonSchema(prWatchToolSchema),
+    description: 'Watch a pull request: the plugin wakes this thread when it changes on GitHub (checks failing, required checks passing, new comments or reviews by others, a conflict, no check 15 min after a push) until it merges or closes, or you unwatch it. Call it after you open or push a PR: {pr:"https://github.com/o/r/pull/12"}. It answers with the PR\'s state now (checks, review decision, conflicts, unresolved threads): only later changes wake, so act on what it shows. One watcher per PR; a new watch replaces the old. A lead may watch for a worker: {pr, worker:"W3"}.',
+    async execute(raw, { threadId }) {
+      const input = parseToolInput(prWatchToolSchema, raw, "initiative_pr_watch");
+      const caller = await watchCaller(threadId, input.worker);
+      const url = await watchedPr(caller.projectId, input.pr);
+      const { facts, replaced } = await prWatcher.watch(url, caller.projectId, caller.threadId);
+      const was = replaced?.watcher && replaced.watcher !== caller.threadId && !replaced.state?.ended
+        ? `${watcherLabel(store, watchLedger, replaced.projectId, replaced.watcher)}${replaced.projectId === caller.projectId ? "" : ` (${store.project(replaced.projectId)?.name ?? replaced.projectId})`}`
+        : null;
+      return JSON.stringify(watchAnswer(url, facts, caller.worker || !input.worker ? "you" : caller.label, was));
+    },
+  });
+  registerTool({
+    name: "initiative_pr_unwatch",
+    parameters: jsonSchema(prUnwatchToolSchema),
+    description: 'Stop watching a pull request, for example once you hand it off or stop caring: {pr}. A worker unwatches its own watches; a lead, any of its Adventure\'s.',
+    async execute(raw, { threadId }) {
+      const input = parseToolInput(prUnwatchToolSchema, raw, "initiative_pr_unwatch");
+      const caller = await watchCaller(threadId, undefined);
+      const url = await watchedPr(caller.projectId, input.pr);
+      const row = watchLedger.row(url);
+      if (!row?.watcher) {
+        // A W548 row its Adventure's lead unwatches stays unwatched after a rollback too.
+        if (row && !row.muted && !caller.worker && row.projectId === caller.projectId) watchLedger.unwatch(url);
+        return JSON.stringify({ url, unwatched: false, note: "Nobody watches it." });
+      }
+      const label = watcherLabel(store, watchLedger, row.projectId, row.watcher);
+      if (caller.worker ? row.watcher !== caller.threadId : row.projectId !== caller.projectId)
+        throw new ProjectError(`${label}${row.projectId === caller.projectId ? "" : ` of ${store.project(row.projectId)?.name ?? row.projectId}`} watches ${url}; ${caller.worker ? "only your lead unwatches it for them" : "only its own Adventure unwatches it"}.`);
+      if (!watchLedger.unwatch(url, row.watcher)) return JSON.stringify({ url, unwatched: false, note: "Its watch changed meanwhile; read it again." });
+      bb.realtime.publish("merge-queue-changed", { repo: null });
+      return JSON.stringify({ url, unwatched: true, ...(row.watcher === caller.threadId ? {} : { was: label }) });
+    },
+  });
   registerTool({
     name: "initiative_update",
     description: "Tell the user how things stand in a short update: what is done, what is next, what you need. Write for someone who has not read the threads.",
@@ -1763,5 +1828,5 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Tests drive commands as an entry point would, announcement included.
   const command = (...args: Parameters<typeof perform>) => announcing(() => perform(...args), () => args[0]);
-  return { service, store, runtime, perform: command, overview, tree, preferences, prWatcher, prWatchWork };
+  return { service, store, runtime, perform: command, overview, tree, preferences, prWatcher, prWatchWork, mergeQueue };
 }

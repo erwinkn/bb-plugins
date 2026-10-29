@@ -1,28 +1,33 @@
-// W548: PR watches. Every open PR an Adventure owns (R2) is watched: when it changes on GitHub
-// (checks fail, required checks pass, someone comments, it conflicts, or no check reports after a
-// push), the plugin wakes whoever owns it, so nobody has to notice a red check in the PRs tab.
+// W548, W554: PR watches. An agent watches a PR with initiative_pr_watch: when it changes on
+// GitHub (checks fail, required checks pass, someone comments, it conflicts, or no check reports
+// after a push), the plugin wakes the thread that watched it, so nobody has to notice a red check
+// in the PRs tab. Watching has nothing to do with R2 ownership (W554: ownership resolves for few
+// PRs, so watching by owner covered almost none).
 //
+// - The watch call reads the PR once and answers with its state: that is the baseline, and only
+//   changes after it wake. A merge or a close ends the watch, waking nobody; so does an unwatch.
 // - The merge queue's cache lists each repository's open PRs (merge-queue-server.ts). The list
-//   only says when to read a PR (its head, updatedAt, check counts or a conflict moved): every
-//   fact a wake carries comes from one watch read (the query below, in the cache's details
-//   slots), diffed against the state the last read left. A list and a watch read can see two
-//   heads; a wake never mixes them.
+//   only says when to read a watched PR (its head, updatedAt, check counts or a conflict moved);
+//   one it doesn't list (another author, a repository no Adventure lists) is read every
+//   UNLISTED_READ_MS. Every fact a wake carries comes from one watch read (the query below, in the
+//   cache's details slots), diffed against the state the last read left. A list and a watch read
+//   can see two heads; a wake never mixes them.
 // - State and wakes are stored (pr_watches, pr_wakes), so a reload neither misses a change nor
-//   repeats a wake. The first snapshot of a PR opened before the watches existed, or unmuted, is a
-//   baseline: old state wakes nobody.
-// - A wake goes to the PR's worker as more work, or as a message when it is busy; to the
-//   coordinator when that worker is retired or stopped, or idle with a cold cache (cold-cache.ts).
-//   Each recipient gets one message a pass, whatever it covers.
+//   repeats a wake.
+// - A wake goes to its watcher: a worker as more work, or as a message when it is busy; the
+//   coordinator as a message. To the coordinator, with why, when the worker is retired or stopped,
+//   idle with a cold cache (cold-cache.ts), or the thread is no longer the Adventure's. Each
+//   recipient gets one message a pass, whatever it covers.
 // - Comments by the `gh` account never wake: agents and the user share it, and nothing in GitHub's
 //   data tells them apart. Bots and other people do.
 import type Database from "better-sqlite3";
-import { BUSY_STATUSES, errorMessage, isDefiniteRejection, textInput, type Sdk, type ThreadDto } from "./bb";
-import { FAILED, PASSED, branchThreadId, mergeable as mergeableState, type MergeQueue, type MergeableState, type QueuedPullRequest } from "./merge-queue";
+import { BUSY_STATUSES, ProjectError, errorMessage, isDefiniteRejection, textInput, type Sdk, type ThreadDto } from "./bb";
+import { FAILED, PASSED, mergeable as mergeableState, type MergeQueue, type MergeableState, type QueuedPullRequest } from "./merge-queue";
 import { canonicalPrUrl } from "./pr-stages";
 export { PR_WATCH_MIGRATIONS } from "./pr-watch-migrations";
 import type { ProjectRecord, Store, WorkerRecord } from "./store";
 
-/** A pass every this often: lists Adventures with an unmuted watch on the 2-minute cadence. */
+/** A pass every this often: keeps the repositories of watched PRs on the 2-minute cadence. */
 export const WATCH_TICK_MS = 2 * 60_000;
 /** A pass after a list lands waits this long for the other lists of the same fetch. */
 export const WATCH_SETTLE_MS = 2_000;
@@ -37,8 +42,8 @@ export const WATCH_RETRY_MS = 2 * 60_000;
 export const WATCH_RETRY_MAX_MS = 30 * 60_000;
 /** A watched PR is read again this often even when its list facts stay, which bounds what they can't tell (listFingerprint). */
 export const WATCH_RESYNC_MS = 30 * 60_000;
-/** A PR gone from the open list but still open on GitHub (another author, a capped list) is read again after this. */
-export const LEFT_RECHECK_MS = 30 * 60_000;
+/** A watched PR no list shows (another author, merged or closed since, a capped list) is read this often. */
+export const UNLISTED_READ_MS = 10 * 60_000;
 /** Comments and reviews a watch read sees, newest; more since the last pass read as "20+". */
 export const WATCH_COMMENTS = 20;
 /** Wakes kept per PR, newest. */
@@ -48,7 +53,7 @@ export const WAKE_MAX_AGE_MS = 24 * 60 * 60_000;
 /** Sends of a wake BB may refuse (a 4xx: nothing happened), each routed afresh, before it fails. */
 export const WAKE_REFUSALS = 3;
 
-/** What wakes a PR's owner. A merge or a close only ends the watch (Erwin, 2026-10-28). */
+/** What wakes a PR's watcher. A merge or a close only ends the watch (Erwin, 2026-10-28). */
 export type ChangeKind = "checks-failed" | "checks-passed" | "new-comments" | "conflicting" | "no-checks";
 
 // GitHub ---------------------------------------------------------------------
@@ -68,15 +73,25 @@ export const CHECKS_PAGE_QUERY = `query($id: ID!, $after: String!) {
 /** Pages of checks a watch read takes at most (1,000 checks); past them, the rollup's state speaks for the rest. */
 export const CHECK_PAGES = 10;
 
+/** A PR's node id by repository and number, for a watch on a PR no list shows. */
+export const PR_ID_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) { id } }
+}`;
+
 /**
- * The watch query for `count` PRs by node id, `p0` to `p<count-1>`: state, head, mergeability,
- * the head commit's checks with whether the base branch requires each (`isRequired` needs the PR's
- * id, so each PR is its own alias), and the latest comments and reviews.
+ * The watch query for `count` PRs by node id, `p0` to `p<count-1>`: state, title, head,
+ * mergeability, the head commit's checks with whether the base branch requires each (`isRequired`
+ * needs the PR's id, so each PR is its own alias), and the latest comments and reviews.
+ * `baseline`: also the review decision and unresolved review threads, which only the watch call's
+ * answer shows. And the `gh` account's login, whose comments never wake: a watch whose repository
+ * no Adventure lists learns it here.
  */
-export function watchQuery(count: number): string {
+export function watchQuery(count: number, baseline = false): string {
   const indexes = Array.from({ length: count }, (_, i) => i);
-  return `query(${indexes.map((i) => `$i${i}: ID!`).join(", ")}) {\n${indexes.map((i) => `  p${i}: node(id: $i${i}) { ... on PullRequest {
-    id number state headRefOid mergeable createdAt
+  const review = baseline ? `
+    reviewDecision reviewThreads(first: 100) { totalCount nodes { isResolved } }` : "";
+  return `query(${indexes.map((i) => `$i${i}: ID!`).join(", ")}) {\n  viewer { login }\n${indexes.map((i) => `  p${i}: node(id: $i${i}) { ... on PullRequest {
+    id number title state headRefOid mergeable createdAt${review}
     baseRef { branchProtectionRule { requiredStatusCheckContexts }
       rules(first: 50) { pageInfo { hasNextPage } nodes { type parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { ${contextFields(`$i${i}`)} } } } } }
@@ -103,6 +118,8 @@ export interface WatchComment {
 /** What a watch read says of one PR. */
 export interface WatchFacts {
   state: "OPEN" | "MERGED" | "CLOSED";
+  /** Absent in a node without it (older fixtures). */
+  title?: string;
   head: string;
   /** GitHub's "unknown" while it computes. */
   mergeable: MergeableState;
@@ -121,6 +138,8 @@ export interface WatchFacts {
    */
   required?: string[];
   comments: WatchComment[];
+  /** A baseline read's review state (watchQuery's `baseline`): GitHub's decision, lower case, and the unresolved threads of the first 100. */
+  review?: { decision: string | null; unresolved: number; more: boolean };
 }
 
 /** The failing check's name when only checks past the first 100 fail. */
@@ -155,7 +174,18 @@ export function parseWatch(node: unknown): WatchFacts | null {
   comments.sort((a, b) => a.at - b.at);
   const more = rollup?.contexts?.pageInfo?.hasNextPage === true ? { more: { rollup: String(rollup.state ?? ""), cursor: nextCursor(rollup.contexts) } } : {};
   const required = requiredNames(n.baseRef);
-  return { state, head: n.headRefOid, mergeable: mergeableState(n.mergeable), createdAt: time(n.createdAt) ?? 0, checks, ...more, ...(required ? { required } : {}), comments };
+  const threads = n.reviewThreads as { totalCount?: unknown; nodes?: unknown } | null | undefined;
+  const review = threads && typeof threads === "object"
+    ? { review: {
+      decision: typeof n.reviewDecision === "string" && n.reviewDecision ? n.reviewDecision.toLowerCase() : null,
+      unresolved: nodes(threads).filter((t) => t.isResolved === false).length,
+      more: typeof threads.totalCount === "number" && threads.totalCount > nodes(threads).length,
+    } }
+    : {};
+  return {
+    state, ...(typeof n.title === "string" ? { title: n.title } : {}), head: n.headRefOid, mergeable: mergeableState(n.mergeable), createdAt: time(n.createdAt) ?? 0,
+    checks, ...more, ...(required ? { required } : {}), comments, ...review,
+  };
 }
 
 /** The checks a base branch requires, from classic protection and rulesets; null when its rules can't all be read. */
@@ -207,7 +237,7 @@ export interface WatchState {
   seenUntil: number;
   /** The URLs of those seen at `seenUntil`. */
   seenAt?: string[];
-  /** When `head` was pushed, as far as the watcher knows; null for a baseline's head. */
+  /** When `head` was pushed, as far as the watcher knows; null for a baseline's head that had checks. */
   pushedAt: number | null;
   /** No-checks woke (or can no longer wake) for `head`. */
   noChecksDone: boolean;
@@ -238,14 +268,15 @@ export const listFingerprint = (pr: Pick<QueuedPullRequest, "headOid" | "updated
   `${pr.headOid ?? ""}|${pr.updatedAt}|${pr.checkStates ?? `${pr.checks.passed}/${pr.checks.failed}/${pr.checks.pending}`}`;
 
 /**
- * Whether a listed PR calls for a watch read: none yet, its list facts moved, the list knows a
- * mergeability other than the stored one (a conflict starting or ending; GitHub's "unknown" while
- * it computes, which every PR shows after a push to its base, says nothing), its last read is
- * WATCH_RESYNC_MS old, or its no-checks wake is due (`repoHasChecks`, as in diffWatch).
+ * Whether a watched PR calls for a watch read. Listed (`pr`): its list facts moved, the list knows
+ * a mergeability other than the stored one (a conflict starting or ending; GitHub's "unknown"
+ * while it computes, which every PR shows after a push to its base, says nothing), or its last
+ * read is WATCH_RESYNC_MS old. Unlisted (null): its last read is UNLISTED_READ_MS old. Either:
+ * its no-checks wake is due (`repoHasChecks`, as in diffWatch).
  */
-export function needsRead(state: WatchState | null | undefined, pr: Parameters<typeof listFingerprint>[0] & Pick<QueuedPullRequest, "mergeable">, now: number, repoHasChecks: boolean): boolean {
-  if (!state || state.ended !== null || state.fingerprint !== listFingerprint(pr) || now - state.readAt >= WATCH_RESYNC_MS) return true;
-  if (pr.mergeable !== "unknown" && pr.mergeable !== state.mergeable) return true;
+export function needsRead(state: WatchState, pr: (Parameters<typeof listFingerprint>[0] & Pick<QueuedPullRequest, "mergeable">) | null, now: number, repoHasChecks: boolean): boolean {
+  if (pr ? state.fingerprint !== listFingerprint(pr) || now - state.readAt >= WATCH_RESYNC_MS : now - state.readAt >= UNLISTED_READ_MS) return true;
+  if (pr && pr.mergeable !== "unknown" && pr.mergeable !== state.mergeable) return true;
   return repoHasChecks && !state.noChecksDone && state.pushedAt !== null && now - state.pushedAt >= NO_CHECKS_MS;
 }
 
@@ -284,8 +315,12 @@ function seen(prev: Pick<WatchState, "seenUntil" | "seenAt"> | null, comments: r
   return { seenUntil: until, seenAt: [...new Set([...(prev && prev.seenUntil === until ? prev.seenAt ?? [] : []), ...at])] };
 }
 
-/** A baseline: the PR as it is, waking nobody. */
-function baselineState(watch: WatchFacts, now: number, fingerprint: string): WatchState {
+/**
+ * A baseline: the PR as the watch call read it, waking nobody. A head without any check yet counts
+ * as pushed now, so no check NO_CHECKS_MS after the watch still wakes.
+ */
+export function baselineState(watch: WatchFacts, now: number, fingerprint: string): WatchState {
+  const unchecked = watch.checks.length === 0 && !watch.more;
   return {
     ...EMPTY,
     head: watch.head,
@@ -295,29 +330,26 @@ function baselineState(watch: WatchFacts, now: number, fingerprint: string): Wat
     passed: gate(watch).passed,
     mergeable: watch.mergeable,
     ...seen(null, watch.comments),
-    // Checks reported or not, a baseline's head is no push the watcher saw.
-    noChecksDone: true,
+    pushedAt: unchecked ? now : null,
+    noChecksDone: !unchecked,
     ended: watch.state === "OPEN" ? null : watch.state,
   };
 }
 
 /**
- * The changes from `prev` to the PR as one watch read saw it: every fact comes from that read, so
- * none of a wake's can be of another head. `prev` null: a PR opened after `since` starts from
- * nothing (all of it is news), one opened before is a baseline. `login` is the `gh` account, whose
- * comments never wake (null: comments are left for a pass that knows it). `repoHasChecks`: some
- * listed PR of its repository has checks, so a PR without any after a push is news. `fingerprint`:
- * the list facts the read was for (WatchState.fingerprint). `capped`: comments that would have
- * woken past COMMENT_WAKE_CAP.
+ * The changes from `prev` (the baseline, or the last read's state) to the PR as one watch read saw
+ * it: every fact comes from that read, so none of a wake's can be of another head. `login` is the
+ * `gh` account, whose comments never wake (null: comments are left for a pass that knows it).
+ * `repoHasChecks`: some listed PR of its repository has checks, so a PR without any after a push
+ * is news. `fingerprint`: the list facts the read was for (WatchState.fingerprint). `capped`:
+ * comments that would have woken past COMMENT_WAKE_CAP.
  */
 export function diffWatch(
-  prev: WatchState | null,
+  prev: WatchState,
   watch: WatchFacts,
-  context: { now: number; since: number; login: string | null; repoHasChecks: boolean; fingerprint: string },
+  context: { now: number; login: string | null; repoHasChecks: boolean; fingerprint: string },
 ): { state: WatchState; changes: Change[]; capped: boolean } {
   const { now, fingerprint } = context;
-  if (!prev && watch.createdAt <= context.since) return { state: baselineState(watch, now, fingerprint), changes: [], capped: false };
-  prev ??= { ...EMPTY, fingerprint: "", seenUntil: context.since, readAt: 0 };
   if (watch.state !== "OPEN") return { state: { ...prev, fingerprint, readAt: now, ended: watch.state }, changes: [], capped: false };
   const pushed = watch.head !== prev.head;
   let changes: Change[] = [];
@@ -337,8 +369,8 @@ export function diffWatch(
   }
   if (watch.mergeable === "conflicting" && prev.mergeable !== "conflicting") changes.push({ kind: "conflicting" });
   const mergeable = watch.mergeable === "unknown" ? prev.mergeable : watch.mergeable;
-  // A new PR's first head was pushed when it opened; a later one when the watcher first saw it.
-  const pushedAt = pushed ? (prev.head === "" ? watch.createdAt : now) : prev.pushedAt;
+  // A head is pushed when the watcher first sees it.
+  const pushedAt = pushed ? now : prev.pushedAt;
   let noChecksDone = (pushed ? false : prev.noChecksDone) || watch.checks.length > 0 || !!watch.more;
   if (!noChecksDone && pushedAt !== null && now - pushedAt >= NO_CHECKS_MS && context.repoHasChecks) {
     changes.push({ kind: "no-checks" });
@@ -396,18 +428,60 @@ export function wakeBody(wakes: readonly { url: string; head: string; pr: WakePr
   return wakes.map((w) => `${w.pr.repo}#${w.pr.number} "${w.pr.title}" at head ${short(w.head)} (${w.url})\n${w.changes.map((c) => `- ${changeLine(c, w.head)}`).join("\n")}`).join("\n\n");
 }
 
+/**
+ * initiative_pr_watch's answer: the PR as the watch read it. That baseline wakes nobody, so what
+ * needs action now (failing checks, a conflict, requested changes, unresolved threads) is named.
+ * `who`: whom it wakes ("you", or a W#); `replaced`: who watched it before.
+ */
+export function watchAnswer(url: string, facts: WatchFacts, who: string, replaced: string | null) {
+  const failing = failingNames(facts);
+  const pending = [...new Set(facts.checks.filter((c) => c.outcome === "pending").map((c) => c.name))];
+  const gating = gate(facts);
+  const checks = !facts.checks.length && !facts.more
+    ? "none reported yet"
+    : gating.passed ? `${gating.required ? "required" : "all"} passed (${plural(gating.names.length, "check")})`
+    : [failing.length ? `failing: ${failing.join(", ")}` : "", pending.length ? `${plural(pending.length, "check")} pending` : "", gating.required ? `required: ${gating.names.join(", ")}` : ""].filter(Boolean).join("; ") || "not all passed";
+  const unresolved = facts.review ? `${facts.review.unresolved}${facts.review.more ? "+" : ""}` : null;
+  const attention = [
+    failing.length ? `Checks failing: ${failing.join(", ")}.` : "",
+    facts.mergeable === "conflicting" ? "It conflicts with its base branch." : "",
+    facts.review?.decision === "changes_requested" ? "Changes are requested." : "",
+    facts.review?.unresolved ? `${unresolved} unresolved review thread${unresolved === "1" ? "" : "s"}.` : "",
+    // Past the first 100 threads none was read, and an unresolved one there wakes nobody later.
+    facts.review?.more ? "Only its first 100 review threads were read: check the rest on GitHub." : "",
+  ].filter(Boolean);
+  return {
+    watching: url,
+    ...(facts.title ? { title: facts.title } : {}),
+    wakes: who,
+    ...(replaced ? { replaced: `${replaced} watched it before; ${who === "you" ? "you do" : `${who} does`} now.` } : {}),
+    now: {
+      head: short(facts.head),
+      checks,
+      mergeable: facts.mergeable,
+      review: facts.review?.decision ?? null,
+      ...(unresolved !== null ? { unresolvedThreads: unresolved } : {}),
+    },
+    ...(attention.length ? { attention: `${attention.join(" ")} The watch wakes only on later changes: handle these now.` } : {}),
+    note: `Wakes ${who === "you" ? "you" : who} on newly failing checks, required checks passing, new comments or reviews by others, a conflict, or no check ${NO_CHECKS_MS / 60_000} min after a push; ends when the PR merges or closes, or with initiative_pr_unwatch.`,
+  };
+}
+
 export const NOT_A_MERGE = "A wake is not a merge decision: check the PR yourself before you act.";
 
 // The ledger ---------------------------------------------------------------------
 
 export interface WatchRow {
   url: string;
+  /** The watcher's Adventure: its coordinator hears what the watcher can't take. */
   projectId: string;
   nodeId: string | null;
+  /** The thread that watches the PR; null when nobody does. */
+  watcher: string | null;
+  /** The previous build's mute, which an unwatch sets so a rollback leaves the PR alone. */
   muted: boolean;
-  since: number;
   state: WatchState | null;
-  /** Moves on each mute and unmute. */
+  /** Moves on each watch and unwatch. */
   gen: number;
   updatedAt: number;
 }
@@ -416,12 +490,16 @@ export interface WakeRow {
   id: number;
   projectId: string;
   url: string;
+  /** The watcher's W# when the wake was found; null for the coordinator or another thread. */
   worker: string | null;
+  /** The watcher the wake was found for (null in a W548 row). */
+  threadId: string | null;
   head: string;
   pr: WakePr;
   changes: Change[];
   createdAt: number;
   gen: number;
+  /** muted: a W548 wake skipped by a mute. */
   state: "pending" | "sending" | "sent" | "stale" | "muted" | "failed" | "uncertain";
   sentAt: number | null;
   routed: string | null;
@@ -432,15 +510,10 @@ export interface WakeRow {
 /** What one pass writes for a PR: its new state, and the wake it found, if any. */
 export interface WatchWrite {
   url: string;
-  projectId: string;
-  nodeId: string | null;
-  since: number;
-  /** The watch's generation the pass read: a mute or unmute since makes the write a no-op. */
+  /** The watch's generation the pass read: a watch or unwatch since makes the write a no-op. */
   gen: number;
-  /** The row existed when the pass read it. */
-  existed: boolean;
   state: WatchState;
-  wake: { worker: string | null; pr: WakePr; changes: Change[] } | null;
+  wake: { projectId: string; threadId: string; worker: string | null; pr: WakePr; changes: Change[] } | null;
 }
 
 const parse = <T,>(text: unknown): T | null => {
@@ -458,28 +531,12 @@ const CI_FLAG = "pr-watch-ci:";
 export class WatchLedger {
   constructor(private readonly db: Database.Database, private readonly now: () => number) {}
 
-  private recordWorkerQuery?: Database.Statement;
   private threadWorkerQuery?: Database.Statement;
-  /** ownerNow's lookups by key, prepared once: the coordinator's record of a PR names this worker. */
-  recordWorker(projectId: string, url: string): string | null {
-    this.recordWorkerQuery ??= this.db.prepare("SELECT worker FROM pr_records WHERE project_id = ? AND url = ?").pluck();
-    return (this.recordWorkerQuery.get(projectId, url) as string | null | undefined) ?? null;
-  }
-
-  /** The W# whose current thread this is. */
+  /** The W# whose current thread this is, by key. */
   threadWorker(projectId: string, threadId: string): string | null {
     this.threadWorkerQuery ??= this.db.prepare("SELECT num FROM workers WHERE project_id = ? AND thread_id = ? LIMIT 1").pluck();
     const num = this.threadWorkerQuery.get(projectId, threadId) as number | undefined;
     return num === undefined ? null : `W${num}`;
-  }
-
-  /**
-   * When the watches started: a PR opened before is watched from a baseline, one opened since from
-   * nothing. Set on the first call, kept in plugin_flags.
-   */
-  since(): number {
-    this.db.prepare("INSERT OR IGNORE INTO plugin_flags(key, set_at) VALUES('pr-watch-since', ?)").run(this.now());
-    return Number((this.db.prepare("SELECT set_at FROM plugin_flags WHERE key = 'pr-watch-since'").get() as { set_at: number }).set_at);
   }
 
   /** Repositories (lower case) where some PR ever reported checks: a PR there without any after a push is news. */
@@ -493,8 +550,10 @@ export class WatchLedger {
     this.db.transaction(() => { for (const repo of repos) insert.run(`${CI_FLAG}${repo}`, at); })();
   }
 
-  rows(): Map<string, WatchRow> {
-    return new Map((this.db.prepare("SELECT * FROM pr_watches").all() as Record<string, unknown>[]).map((r) => [String(r.url), toWatch(r)]));
+  /** The watches a pass reads: watched, not ended. */
+  active(): Map<string, WatchRow> {
+    const rows = (this.db.prepare("SELECT * FROM pr_watches WHERE watcher_thread_id IS NOT NULL AND state IS NOT NULL").all() as Record<string, unknown>[]).map(toWatch);
+    return new Map(rows.filter((r) => !r.state!.ended).map((r) => [r.url, r]));
   }
 
   row(url: string): WatchRow | null {
@@ -504,27 +563,22 @@ export class WatchLedger {
 
   /**
    * One pass's states and wakes, together: a wake is never stored without the state that found
-   * it, nor the reverse. A PR muted or unmuted since the pass read it (its generation moved, or a
-   * row appeared) is left as the mute left it. The URLs whose state was stored.
+   * it, nor the reverse. A PR watched again or unwatched since the pass read it (its generation
+   * moved) is left as that left it. The URLs whose state was stored.
    */
   write(writes: readonly WatchWrite[]): Set<string> {
     const stored = new Set<string>();
     if (!writes.length) return stored;
     const at = this.now();
-    const insert = this.db.prepare(`INSERT OR IGNORE INTO pr_watches (url, project_id, node_id, muted, since, state, gen, updated_at) VALUES (?, ?, ?, 0, ?, ?, 0, ?)`);
-    const update = this.db.prepare(`UPDATE pr_watches SET project_id = ?, node_id = COALESCE(?, node_id), state = ?, updated_at = ? WHERE url = ? AND gen = ? AND muted = 0`);
-    const wake = this.db.prepare(`INSERT INTO pr_wakes (project_id, url, worker, head, pr, changes, created_at, gen, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`);
+    const update = this.db.prepare(`UPDATE pr_watches SET state = ?, updated_at = ? WHERE url = ? AND gen = ? AND watcher_thread_id IS NOT NULL`);
+    const wake = this.db.prepare(`INSERT INTO pr_wakes (project_id, url, worker, thread_id, head, pr, changes, created_at, gen, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`);
     const prune = this.db.prepare(`DELETE FROM pr_wakes WHERE url = ? AND state NOT IN ('pending', 'sending') AND id <= (SELECT id FROM pr_wakes WHERE url = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`);
     this.db.transaction(() => {
       for (const w of writes) {
-        const state = JSON.stringify(w.state);
-        const applied = w.existed
-          ? update.run(w.projectId, w.nodeId, state, at, w.url, w.gen).changes
-          : insert.run(w.url, w.projectId, w.nodeId, w.since, state, at).changes;
-        if (!applied) continue;
+        if (!update.run(JSON.stringify(w.state), at, w.url, w.gen).changes) continue;
         stored.add(w.url);
         if (!w.wake) continue;
-        wake.run(w.projectId, w.url, w.wake.worker, w.state.head, JSON.stringify(w.wake.pr), JSON.stringify(w.wake.changes), at, w.gen);
+        wake.run(w.wake.projectId, w.url, w.wake.worker, w.wake.threadId, w.state.head, JSON.stringify(w.wake.pr), JSON.stringify(w.wake.changes), at, w.gen);
         prune.run(w.url, w.url, WAKES_KEPT);
       }
     })();
@@ -532,17 +586,30 @@ export class WatchLedger {
   }
 
   /**
-   * A mute keeps the state; an unmute drops it, so the next pass is a baseline from now. Either
-   * moves the generation: a pass that read the PR before, and a wake stored before, no longer apply.
+   * `threadId` watches the PR from `state` (the watch call's baseline), for `projectId`; it
+   * replaces any earlier watcher. Moves the generation: a pass that read the PR before, and a wake
+   * stored before, no longer apply. The row as it was.
    */
-  setMuted(url: string, projectId: string, muted: boolean) {
+  watch(url: string, projectId: string, threadId: string, nodeId: string, state: WatchState): WatchRow | null {
     const at = this.now();
-    this.db.prepare(`INSERT INTO pr_watches (url, project_id, muted, since, state, gen, updated_at) VALUES (?, ?, ?, ?, NULL, 1, ?)
-      ON CONFLICT (url) DO UPDATE SET muted = excluded.muted, project_id = excluded.project_id,
-      state = CASE WHEN excluded.muted = 0 AND pr_watches.muted = 1 THEN NULL ELSE pr_watches.state END,
-      since = CASE WHEN excluded.muted = 0 AND pr_watches.muted = 1 THEN excluded.since ELSE pr_watches.since END,
-      gen = CASE WHEN excluded.muted <> pr_watches.muted THEN pr_watches.gen + 1 ELSE pr_watches.gen END,
-      updated_at = excluded.updated_at`).run(url, projectId, muted ? 1 : 0, at, at);
+    return this.db.transaction(() => {
+      const before = this.row(url);
+      this.db.prepare(`INSERT INTO pr_watches (url, project_id, node_id, muted, since, state, gen, updated_at, watcher_thread_id) VALUES (?, ?, ?, 0, ?, ?, 1, ?, ?)
+        ON CONFLICT (url) DO UPDATE SET project_id = excluded.project_id, node_id = excluded.node_id, muted = 0, since = excluded.since,
+        state = excluded.state, gen = pr_watches.gen + 1, updated_at = excluded.updated_at, watcher_thread_id = excluded.watcher_thread_id`)
+        .run(url, projectId, nodeId, at, JSON.stringify(state), at, threadId);
+      return before;
+    })();
+  }
+
+  /**
+   * Nobody watches the PR any more (when `of` watches it, if given); its state and wakes stay to
+   * read. A W548 row nobody watches is muted, so a rollback leaves it alone too. Whether it changed.
+   */
+  unwatch(url: string, of?: string): boolean {
+    return this.db.prepare(`UPDATE pr_watches SET watcher_thread_id = NULL, muted = 1, gen = gen + 1, updated_at = ?
+      WHERE url = ? AND (watcher_thread_id = ? OR (? IS NULL AND (watcher_thread_id IS NOT NULL OR muted = 0)))`)
+      .run(this.now(), url, of ?? null, of ?? null).changes > 0;
   }
 
   pending(): WakeRow[] {
@@ -570,11 +637,6 @@ export class WatchLedger {
     return this.db.transaction(() => ids.filter((id) => (update.get(note, WAKE_REFUSALS, id) as { state: string } | undefined)?.state === "failed"))();
   }
 
-  /** A pending wake whose PR moved to another Adventure, or to another worker, goes to its owner now. */
-  retarget(id: number, projectId: string, worker: string | null) {
-    this.db.prepare("UPDATE pr_wakes SET project_id = ?, worker = ? WHERE id = ? AND state = 'pending'").run(projectId, worker, id);
-  }
-
   /** On load: sends a reload cut short are uncertain, never sent again. Their ids. */
   interrupted(): WakeRow[] {
     const rows = (this.db.prepare("SELECT * FROM pr_wakes WHERE state = 'sending' ORDER BY id").all() as Record<string, unknown>[]).map(toWake);
@@ -584,12 +646,12 @@ export class WatchLedger {
 }
 
 const toWatch = (r: Record<string, unknown>): WatchRow => ({
-  url: String(r.url), projectId: String(r.project_id), nodeId: (r.node_id as string | null) ?? null, muted: r.muted === 1,
-  since: Number(r.since), state: parse<WatchState>(r.state), gen: Number(r.gen), updatedAt: Number(r.updated_at),
+  url: String(r.url), projectId: String(r.project_id), nodeId: (r.node_id as string | null) ?? null, watcher: (r.watcher_thread_id as string | null) ?? null, muted: r.muted === 1,
+  state: parse<WatchState>(r.state), gen: Number(r.gen), updatedAt: Number(r.updated_at),
 });
 const toWake = (r: Record<string, unknown>): WakeRow => ({
-  id: Number(r.id), projectId: String(r.project_id), url: String(r.url), worker: (r.worker as string | null) ?? null, head: String(r.head),
-  pr: parse<WakePr>(r.pr) ?? { repo: "", number: 0, title: "" }, changes: parse<Change[]>(r.changes) ?? [], createdAt: Number(r.created_at),
+  id: Number(r.id), projectId: String(r.project_id), url: String(r.url), worker: (r.worker as string | null) ?? null, threadId: (r.thread_id as string | null) ?? null,
+  head: String(r.head), pr: parse<WakePr>(r.pr) ?? { repo: "", number: 0, title: "" }, changes: parse<Change[]>(r.changes) ?? [], createdAt: Number(r.created_at),
   gen: Number(r.gen),
   state: r.state as WakeRow["state"], sentAt: (r.sent_at as number | null) ?? null, routed: (r.routed as string | null) ?? null,
   refusals: Number(r.refusals ?? 0),
@@ -614,36 +676,21 @@ export interface PrWatchDeps {
    * `still` runs in the same serialized step, just before: it throws when the wake no longer applies.
    */
   giveWork(projectId: string, workerRef: string, text: string, still: () => void): Promise<string>;
-  /** A wake was stored or sent, or a mute changed: the dashboards read again. */
+  /** A wake was stored or sent, or a watch changed: the dashboards read again. */
   changed(projectId: string): void;
   warn(message: string): void;
-  /** R2: the open Adventure that owns a PR now and its worker (ownerNow); null for none. */
-  ownerOf(url: string): { projectId: string; worker: string | null } | null;
 }
 
-/**
- * R2: the open Adventure that owns a PR now, and its worker by the queue's own rules (the
- * coordinator's record, else the latest assignment naming it, else the worker whose branch opened
- * it; assignStages and attachWorkers), from the ledger as it is: a move, an unassign or a new record
- * since the pass counts, listed or not. The branch needs the PR listed. Every lookup is by key: it
- * runs for each wake, up to three times a send.
- */
-export function ownerNow(url: string, sources: {
-  recorded(url: string): string | null;
-  cachedPr(url: string): Pick<QueuedPullRequest, "head"> | null;
-  /** The worker the coordinator's PR record names. */
-  recordWorker(projectId: string, url: string): string | null;
-  /** The worker of the latest assignment naming the PR (named, as the queue reads them, not merely mentioned). */
-  assignedWorker(projectId: string, url: string): string | null;
-  /** The W# whose current thread this is. */
-  threadWorker(projectId: string, threadId: string): string | null;
-}): { projectId: string; worker: string | null } | null {
-  const projectId = sources.recorded(url);
-  if (!projectId) return null;
-  const pr = sources.cachedPr(url);
-  const thread = pr ? branchThreadId(pr.head) : null;
-  const worker = sources.recordWorker(projectId, url) ?? sources.assignedWorker(projectId, url) ?? (thread ? sources.threadWorker(projectId, thread) : null);
-  return { projectId, worker };
+/** A read saw checks (some past the first 100 included). */
+const hasChecks = (facts: WatchFacts) => facts.checks.length > 0 || !!facts.more;
+
+/** The repository of a canonical PR URL, lower case. */
+const repoOf = (url: string) => /github\.com\/([^/]+\/[^/]+)\/pull\//.exec(url)?.[1] ?? "";
+
+/** Who a watcher thread is, in its Adventure: a W#, the coordinator, or (no longer either) the thread. */
+export function watcherLabel(store: Pick<Store, "project">, ledger: Pick<WatchLedger, "threadWorker">, projectId: string, threadId: string): string {
+  if (store.project(projectId)?.coordinatorThreadId === threadId) return "the coordinator";
+  return ledger.threadWorker(projectId, threadId) ?? threadId;
 }
 
 /**
@@ -651,8 +698,7 @@ export function ownerNow(url: string, sources: {
  * the work it stops (cancelAssignment), not `userStopped`: the worker stays stopped until its lead
  * gives it new work.
  */
-function unavailable(store: Pick<Store, "latestAssignment" | "openAssignment">, worker: WorkerRecord | null): string | null {
-  if (!worker) return "no worker is linked to it";
+function unavailable(store: Pick<Store, "latestAssignment" | "openAssignment">, worker: WorkerRecord): string | null {
   if (worker.role !== "work") return `${worker.ref} is a reviewer`;
   if (worker.state === "retired") return `${worker.ref} is retired`;
   if (worker.userStopped || [store.latestAssignment(worker.projectId, worker.num), store.openAssignment(worker.projectId, worker.num)].some((a) => a?.cancelRequested))
@@ -678,14 +724,16 @@ class NotNow extends Error {
 /** Who a group of wakes goes to. */
 type Route =
   | { to: "worker"; how: "work" | "message"; worker: WorkerRecord; open: string | null; busy: boolean }
-  | { to: "coordinator"; why: string; resumable: boolean; worker: WorkerRecord | null };
+  /** `why` null: the coordinator watches the PR itself. */
+  | { to: "coordinator"; why: string | null; resumable: boolean; worker: WorkerRecord | null };
 
 /**
- * Watches the PRs of every open Adventure. `check()` runs one pass (or one more after the running
- * one): read each Adventure's queue from the cache, read the PRs whose list moved (and those with
- * a wake waiting to go), diff each read, store states and wakes, then send the pending wakes whose
- * head a read of this pass confirmed. The server runs one every WATCH_TICK_MS and after each list
- * lands; reads never wait for it.
+ * Watches the PRs agents asked to watch. `watch()` starts one from the PR as it is. `check()` runs
+ * one pass (or one more after the running one): read each Adventure's queue from the cache, read
+ * the watched PRs whose list moved (those no list shows, now and then; those with a wake waiting
+ * to go), diff each read, store states and wakes, then send the pending wakes whose head a read
+ * of this pass confirmed. The server runs one every WATCH_TICK_MS and after each list lands;
+ * reads never wait for it.
  */
 export class PrWatcher {
   private running: Promise<void> | null = null;
@@ -693,12 +741,50 @@ export class PrWatcher {
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   /** Failed watch reads, by URL: retried after `retryAt`, in requests of `among` PRs. */
   private failures = new Map<string, { tries: number; among: number; retryAt: number }>();
-  /** PRs gone from the open list but open on GitHub, and when that was read. */
-  private leftChecked = new Map<string, number>();
-  /** Whether each Adventure had an unmuted watch at its last pass; unknown counts as yes. */
+  /** Whether each Adventure listed a watched PR's repository at its last pass; unknown counts as yes. */
   private watching = new Map<string, boolean>();
+  /** The `gh` account's login as a watch read last saw it, for when no list has run. */
+  private viewer: string | null = null;
 
   constructor(private readonly deps: PrWatchDeps, private readonly now: () => number = Date.now) {}
+
+  /**
+   * initiative_pr_watch: `threadId` watches the PR at `url` (canonical) for its Adventure
+   * `projectId`, from the PR as one read finds it now: that baseline wakes nobody, so the caller
+   * acts on what it shows. Refuses a PR merged, closed or gone. The facts read, and the watch it
+   * replaced.
+   */
+  async watch(url: string, projectId: string, threadId: string): Promise<{ facts: WatchFacts; replaced: WatchRow | null }> {
+    const { cache, ledger } = this.deps;
+    const listed = cache.cachedPr(url);
+    const nodeId = listed?.nodeId ?? (await this.nodeId(url));
+    const data = (await cache.watchQuery(watchQuery(1, true), { i0: nodeId })) as Record<string, unknown> | null;
+    this.sawViewer(data);
+    let facts = parseWatch(data?.p0);
+    if (!facts) throw new ProjectError(`GitHub has no readable PR at ${url}.`);
+    if (facts.more?.cursor) facts = await this.morePages(nodeId, facts);
+    if (facts.state !== "OPEN") throw new ProjectError(`${url} is ${facts.state.toLowerCase()}: there is nothing to watch.`);
+    if (hasChecks(facts)) ledger.markCi([repoOf(url)]);
+    const replaced = ledger.watch(url, projectId, threadId, nodeId, baselineState(facts, this.now(), listed ? listFingerprint(listed) : ""));
+    this.failures.delete(url);
+    this.watching.delete(projectId);
+    this.deps.changed(projectId);
+    return { facts, replaced };
+  }
+
+  private sawViewer(data: unknown) {
+    const login = (data as { viewer?: { login?: unknown } } | null)?.viewer?.login;
+    if (typeof login === "string" && login) this.viewer = login;
+  }
+
+  /** A PR's node id from GitHub, for one no list shows. */
+  private async nodeId(url: string): Promise<string> {
+    const [, owner, name, number] = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(url)!;
+    const data = (await this.deps.cache.watchQuery(PR_ID_QUERY, { owner, name, number: Number(number) })) as { repository?: { pullRequest?: { id?: unknown } | null } | null } | null;
+    const id = data?.repository?.pullRequest?.id;
+    if (typeof id !== "string") throw new ProjectError(`GitHub has no PR at ${url} that the gh account can read.`);
+    return id;
+  }
 
   /** One pass, or one more after the running one. */
   check(): Promise<void> {
@@ -748,17 +834,15 @@ export class PrWatcher {
 
   private async pass() {
     const { ledger, cache, store } = this.deps;
-    const since = ledger.since();
-    const rows = ledger.rows();
     const now = this.now();
-    /**
-     * The listed PRs open Adventures own, unmuted, by URL: one a move lands between two
-     * Adventures' list reads is in both, and is read, diffed and woken once, as the later one lists it.
-     */
-    const listed = new Map<string, { projectId: string; pr: QueuedPullRequest; url: string }>();
-    const listedRepos = new Map<string, boolean>();
+    const projects = store.projects();
+    const open = new Set(projects.map((p) => p.id));
+    const active = new Map([...ledger.active()].filter(([, row]) => open.has(row.projectId) && row.nodeId));
+    const watchedRepos = new Set([...active.keys()].map(repoOf));
+    /** The watched PRs a list shows, by URL, whichever Adventure lists them. */
+    const listed = new Map<string, QueuedPullRequest>();
     const withChecks = new Set<string>();
-    for (const project of store.projects()) {
+    for (const project of projects) {
       let queue: MergeQueue;
       try {
         queue = await cache.read(project.id, { watch: this.watches(project.id) });
@@ -766,17 +850,12 @@ export class PrWatcher {
         this.deps.warn(`PR watch could not read ${project.name}'s PRs: ${errorMessage(error)}`);
         continue;
       }
-      for (const pr of queue.pullRequests) if (pr.checks.total > 0) withChecks.add(pr.repo.toLowerCase());
-      for (const r of queue.repos) listedRepos.set(r.repo.toLowerCase(), r.fetchedAt !== null && !r.error && !r.capped);
-      let unmuted = false;
+      this.watching.set(project.id, queue.repos.some((r) => watchedRepos.has(r.repo.toLowerCase())));
       for (const pr of queue.pullRequests) {
+        if (pr.checks.total > 0) withChecks.add(pr.repo.toLowerCase());
         const url = canonicalPrUrl(pr.url);
-        if (pr.unassigned || !url) continue;
-        if (!pr.headOid || !pr.nodeId || rows.get(url)?.muted) continue;
-        unmuted = true;
-        listed.set(url, { projectId: project.id, pr, url });
+        if (url && active.has(url) && pr.headOid) listed.set(url, pr);
       }
-      this.watching.set(project.id, unmuted);
     }
     // A repository keeps its CI evidence once seen: a lone PR pushed without checks is news there.
     const known = ledger.ciRepos();
@@ -784,52 +863,46 @@ export class PrWatcher {
     if (found.length) ledger.markCi(found);
     const ciRepos = new Set([...known, ...found]);
 
-    // Watch reads: PRs whose list calls for one (needsRead), those with a wake waiting for a read
-    // to confirm its head, and watched PRs gone from the list.
+    // Watch reads: PRs whose list or last read calls for one (needsRead), and those with a wake
+    // waiting for a read to confirm its head.
     const confirming = new Set<string>();
     for (const wake of ledger.pending()) if (this.verdict(wake, new Set()) === "read") confirming.add(wake.url);
-    const open = new Set(store.projects().map((p) => p.id));
     const asks: { url: string; nodeId: string; repo: string }[] = [];
-    for (const d of listed.values())
-      if ((confirming.has(d.url) || needsRead(rows.get(d.url)?.state, d.pr, now, ciRepos.has(d.pr.repo.toLowerCase()))) && this.retryDue(d.url, now))
-        asks.push({ url: d.url, nodeId: d.pr.nodeId!, repo: d.pr.repo.toLowerCase() });
-    const left: WatchRow[] = [];
-    for (const row of rows.values()) {
-      if (row.muted || !row.state || row.state.ended || !row.nodeId || !open.has(row.projectId) || cache.cachedPr(row.url)) continue;
-      const repo = /github\.com\/([^/]+\/[^/]+)\/pull\//.exec(row.url)?.[1] ?? "";
-      if (listedRepos.get(repo) !== true || now - (this.leftChecked.get(row.url) ?? -Infinity) < LEFT_RECHECK_MS || !this.retryDue(row.url, now)) continue;
-      left.push(row);
-      asks.push({ url: row.url, nodeId: row.nodeId, repo });
+    for (const row of active.values()) {
+      const repo = repoOf(row.url);
+      if ((confirming.has(row.url) || needsRead(row.state!, listed.get(row.url) ?? null, now, ciRepos.has(repo))) && this.retryDue(row.url, now))
+        asks.push({ url: row.url, nodeId: row.nodeId!, repo });
     }
     const facts = await this.readWatches(asks, now);
+    // A read's checks are CI evidence too, for a repository no Adventure lists.
+    const read = [...new Set(asks.filter((a) => { const f = facts.get(a.url); return f && hasChecks(f); }).map((a) => a.repo))].filter((repo) => !ciRepos.has(repo));
+    if (read.length) {
+      ledger.markCi(read);
+      for (const repo of read) ciRepos.add(repo);
+    }
 
     const writes: WatchWrite[] = [];
-    const login = cache.login;
-    for (const d of listed.values()) {
-      // Not read this pass (nothing moved, or its read failed and waits for its retry), or gone from GitHub (see `left`, once unlisted).
-      const watch = facts.get(d.url);
-      if (!watch) continue;
-      const row = rows.get(d.url);
-      const rowSince = row?.since ?? since;
-      const prev = row?.state?.ended ? null : (row?.state ?? null);
-      const { state, changes, capped } = diffWatch(prev, watch, { now, since: rowSince, login, repoHasChecks: ciRepos.has(d.pr.repo.toLowerCase()), fingerprint: listFingerprint(d.pr) });
+    const login = cache.login ?? this.viewer;
+    for (const { url, repo } of asks) {
+      // null: its read failed and waits for its retry.
+      const watch = facts.get(url);
+      if (watch === null) continue;
+      const row = active.get(url)!;
+      const pr = listed.get(url);
+      // Gone from GitHub: read as closed, which ends the watch.
+      const { state, changes, capped } = watch
+        ? diffWatch(row.state!, watch, { now, login, repoHasChecks: ciRepos.has(repo), fingerprint: pr ? listFingerprint(pr) : "" })
+        : { state: { ...row.state!, readAt: now, ended: "CLOSED" as const }, changes: [], capped: false };
+      const about: WakePr = { repo: pr?.repo ?? repo, number: Number(url.split("/").pop()), title: watch?.title ?? pr?.title ?? "" };
       writes.push({
-        url: d.url, projectId: d.projectId, nodeId: d.pr.nodeId ?? null, since: rowSince, gen: row?.gen ?? 0, existed: !!row, state,
-        wake: changes.length ? { worker: d.pr.worker?.ref ?? null, pr: { repo: d.pr.repo, number: d.pr.number, title: d.pr.title }, changes } : null,
+        url, gen: row.gen, state,
+        wake: changes.length ? { projectId: row.projectId, threadId: row.watcher!, worker: ledger.threadWorker(row.projectId, row.watcher!), pr: about, changes } : null,
       });
       if (capped)
-        store.log(d.projectId, "pr-watch", `PR watch: new comments on ${d.pr.repo}#${d.pr.number} woke nobody after ${COMMENT_WAKE_CAP} comment-only wakes in a row; news about its checks, a conflict or a push wakes again.`, { url: d.url });
-    }
-    for (const row of left) {
-      const watch = facts.get(row.url);
-      if (watch === null) continue;
-      this.leftChecked.set(row.url, now);
-      // Still open (another author, a capped list): nothing to do. Merged, closed, or gone from GitHub (read as closed): its watch ends, waking nobody.
-      if (watch?.state === "OPEN") continue;
-      writes.push({ url: row.url, projectId: row.projectId, nodeId: row.nodeId, since: row.since, gen: row.gen, existed: true, state: { ...row.state!, readAt: now, ended: watch?.state ?? "CLOSED" }, wake: null });
+        store.log(row.projectId, "pr-watch", `PR watch: new comments on ${about.repo}#${about.number} woke nobody after ${COMMENT_WAKE_CAP} comment-only wakes in a row; news about its checks, a conflict or a push wakes again.`, { url });
     }
     const stored = ledger.write(writes);
-    const woken = new Set(writes.filter((w) => w.wake).map((w) => w.projectId));
+    const woken = new Set(writes.flatMap((w) => (w.wake ? [w.wake.projectId] : [])));
     for (const projectId of woken) this.deps.changed(projectId);
     await this.deliver(stored);
   }
@@ -861,6 +934,7 @@ export class PrWatcher {
       try {
         const data = (await this.deps.cache.watchQuery(watchQuery(prs.length), Object.fromEntries(prs.map((pr, i) => [`i${i}`, pr.nodeId])))) as Record<string, unknown> | null;
         if (!data || typeof data !== "object") throw new Error("the watch query returned no data");
+        this.sawViewer(data);
         await Promise.all(prs.map(async (pr, i) => {
           const node = data[`p${i}`];
           let facts = node === null || node === undefined ? undefined : (parseWatch(node) ?? null);
@@ -918,33 +992,23 @@ export class PrWatcher {
    * before routing and again just before each send, since routing waits on BB.
    */
   private verdict(wake: WakeRow, confirmed: ReadonlySet<string>): "send" | "read" | "hold" | NotNow {
-    const { ledger, store, cache } = this.deps;
-    // R2 and the worker as they are now, before anything about the Adventure the wake names.
-    const owner = this.deps.ownerOf(wake.url);
-    if (!owner) return new NotNow("stale", "no Adventure owns it now");
-    if (owner.projectId !== wake.projectId || owner.worker !== wake.worker) {
-      ledger.retarget(wake.id, owner.projectId, owner.worker);
-      wake.projectId = owner.projectId;
-      wake.worker = owner.worker;
-    }
+    const { ledger, store } = this.deps;
+    const watch = ledger.row(wake.url);
+    if (!watch?.watcher) return new NotNow("stale", "unwatched");
+    if (!watch.state || watch.gen !== wake.gen || watch.watcher !== wake.threadId) return new NotNow("stale", "watched again since");
     const project = store.project(wake.projectId);
     if (!project || project.archivedAt !== null) return new NotNow("stale", "the Adventure is archived");
-    const watch = ledger.row(wake.url);
-    if (watch?.muted) return new NotNow("muted", null);
-    if (!watch?.state || watch.gen !== wake.gen) return new NotNow("stale", "its watch restarted (muted and unmuted)");
     if (watch.state.ended) return new NotNow("stale", watch.state.ended.toLowerCase());
     if (this.now() - wake.createdAt >= WAKE_MAX_AGE_MS) return new NotNow("stale", "too old");
     if (watch.state.head !== wake.head) return new NotNow("stale", `head moved to ${short(watch.state.head)}`);
     if (project.paused) return "hold";
-    // Unlisted (a reload's cache is empty): its branch's worker is unknown, and it can't be read.
-    if (!cache.cachedPr(wake.url)) return "hold";
     return confirmed.has(wake.url) ? "send" : "read";
   }
 
   /**
-   * Sends the pending wakes. Each group (one Adventure, one worker) is routed first; then every
-   * group a worker takes gets its message, and each Adventure's coordinator gets one message for
-   * all the groups that went to it.
+   * Sends the pending wakes. Each group (one watcher) is routed first; then every group a worker
+   * takes gets its message, and each Adventure's coordinator gets one message for all the groups
+   * that went to it.
    */
   private async deliver(confirmed: ReadonlySet<string>) {
     const { ledger, store } = this.deps;
@@ -956,7 +1020,7 @@ export class PrWatcher {
         continue;
       }
       if (verdict !== "send") continue;
-      const key = `${wake.projectId}\n${wake.worker ?? ""}`;
+      const key = `${wake.projectId}\n${wake.threadId}`;
       groups.set(key, [...(groups.get(key) ?? []), wake]);
     }
     /** What went to each Adventure's coordinator: each group with why. */
@@ -965,7 +1029,7 @@ export class PrWatcher {
       const project = store.project(wakes[0]!.projectId)!;
       let route: Route;
       try {
-        route = await this.route(project, wakes[0]!.worker);
+        route = await this.route(project, wakes[0]!.threadId!);
       } catch (error) {
         this.deps.warn(`PR watch could not route ${wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ")}: ${errorMessage(error)}`);
         continue;
@@ -976,26 +1040,29 @@ export class PrWatcher {
     for (const [projectId, sections] of toCoordinator) await this.toCoordinator(store.project(projectId)!, sections, confirmed);
   }
 
-  /** Who hears of these wakes (one worker's PRs); never sends. */
-  private async route(project: ProjectRecord, ref: string | null): Promise<Route> {
-    const { store, sdk } = this.deps;
+  /** Who hears of these wakes (one watcher's PRs); never sends. */
+  private async route(project: ProjectRecord, threadId: string): Promise<Route> {
+    const { store, sdk, ledger } = this.deps;
+    if (threadId === project.coordinatorThreadId) return { to: "coordinator", why: null, resumable: false, worker: null };
+    const ref = ledger.threadWorker(project.id, threadId);
     const worker = ref ? store.worker(project.id, Number(ref.slice(1))) : null;
+    if (!worker) return { to: "coordinator", why: `the thread that watches it (${threadId}) is no longer this Adventure's coordinator or one of its workers`, resumable: false, worker: null };
     const why = unavailable(store, worker);
     if (why) return { to: "coordinator", why, resumable: false, worker };
     let thread: ThreadDto;
     try {
-      thread = (await sdk.threads.get({ threadId: worker!.threadId! })) as ThreadDto;
+      thread = (await sdk.threads.get({ threadId: worker.threadId! })) as ThreadDto;
     } catch (error) {
-      return { to: "coordinator", why: `${worker!.ref}'s thread could not be read (${errorMessage(error).slice(0, 200)})`, resumable: false, worker };
+      return { to: "coordinator", why: `${worker.ref}'s thread could not be read (${errorMessage(error).slice(0, 200)})`, resumable: false, worker };
     }
-    if (thread.archivedAt !== null || thread.deletedAt !== null) return { to: "coordinator", why: `${worker!.ref}'s thread is archived`, resumable: false, worker };
+    if (thread.archivedAt !== null || thread.deletedAt !== null) return { to: "coordinator", why: `${worker.ref}'s thread is archived`, resumable: false, worker };
     // A Stop landing: BB refuses a steer now, and the turn it would join is ending.
-    if (thread.status === "stopping") return { to: "coordinator", why: `${worker!.ref}'s thread is stopping`, resumable: true, worker };
-    const open = store.openAssignment(project.id, worker!.num);
-    if (BUSY_STATUSES.has(thread.status)) return { to: "worker", how: "message", worker: worker!, open: open?.ref ?? null, busy: true };
-    const cold = await this.deps.coldCheck(worker!);
+    if (thread.status === "stopping") return { to: "coordinator", why: `${worker.ref}'s thread is stopping`, resumable: true, worker };
+    const open = store.openAssignment(project.id, worker.num);
+    if (BUSY_STATUSES.has(thread.status)) return { to: "worker", how: "message", worker, open: open?.ref ?? null, busy: true };
+    const cold = await this.deps.coldCheck(worker);
     if (cold) return { to: "coordinator", why: cold.replace(/\.$/, ""), resumable: true, worker };
-    return { to: "worker", how: open ? "message" : "work", worker: worker!, open: open?.ref ?? null, busy: false };
+    return { to: "worker", how: open ? "message" : "work", worker, open: open?.ref ?? null, busy: false };
   }
 
   /**
@@ -1003,12 +1070,12 @@ export class PrWatcher {
    * same thread, and the same open assignment: none for more work, the one a message names): run
    * just before a send, after routing's waits on BB.
    */
-  private still(wakes: readonly WakeRow[], confirmed: ReadonlySet<string>, to: { projectId: string; worker: string | null }, route?: Pick<Extract<Route, { to: "worker" }>, "worker" | "open">) {
+  private still(wakes: readonly WakeRow[], confirmed: ReadonlySet<string>, route?: Pick<Extract<Route, { to: "worker" }>, "worker" | "open">) {
     for (const wake of wakes) {
       const verdict = this.verdict(wake, confirmed);
       if (verdict instanceof NotNow) throw new NotNow(verdict.state, verdict.note, [wake.id]);
-      // Held now (a pause), or moved to another Adventure or worker: routed again on a later pass.
-      if (verdict !== "send" || wake.projectId !== to.projectId || wake.worker !== to.worker) throw new NotNow("pending", null);
+      // Held now (a pause): routed again on a later pass.
+      if (verdict !== "send") throw new NotNow("pending", null);
     }
     if (!route) return;
     const { worker } = route;
@@ -1018,11 +1085,11 @@ export class PrWatcher {
       throw new NotNow("pending", null);
   }
 
-  /** The wakes that still apply as routed; each that doesn't is marked on its own (or left pending to route again). */
-  private eligible(wakes: readonly WakeRow[], confirmed: ReadonlySet<string>, to: { projectId: string; worker: string | null }): WakeRow[] {
+  /** The wakes that still apply; each that doesn't is marked on its own (or left pending to route again). */
+  private eligible(wakes: readonly WakeRow[], confirmed: ReadonlySet<string>): WakeRow[] {
     return wakes.filter((wake) => {
       try {
-        this.still([wake], confirmed, to);
+        this.still([wake], confirmed);
         return true;
       } catch (error) {
         if (error instanceof NotNow) this.deps.ledger.mark([wake.id], error.state, error.note);
@@ -1061,49 +1128,42 @@ export class PrWatcher {
   /** Wakes BB refused WAKE_REFUSALS times are not sent again: their coordinator hears of them once, with BB's last answer. */
   private async gaveUp(wakes: readonly WakeRow[], error: string) {
     const last = error.replace(/\s+/gu, " ").slice(0, 300);
-    await this.noteOwners(wakes, (prs, workers) => `gave up on ${prs} (${workers}): BB refused the send ${WAKE_REFUSALS} times, last: ${last}.`, (prs, workers) => ({
-      lead: `BB refused the plugin's wake about ${prs} (${workers}) ${WAKE_REFUSALS} times, so the plugin stopped trying: the PR's owner has not heard of it. BB's last answer: ${last}`,
+    await this.noteCoordinator(wakes, (prs, watchers) => `gave up on ${prs} (${watchers}): BB refused the send ${WAKE_REFUSALS} times, last: ${last}.`, (prs, watchers) => ({
+      lead: `BB refused the plugin's wake about ${prs} (${watchers}) ${WAKE_REFUSALS} times, so the plugin stopped trying: its watcher has not heard of it. BB's last answer: ${last}`,
       next: "If it needs work, give it to a worker; or leave it.",
     }));
   }
 
   /**
-   * A note about wakes already settled (given up, or sent to a worker a Stop reached) to the
-   * coordinator of each Adventure that owns one now: one try each, outside the ledger, so a failed
-   * note never sends a wake again. Each note waits on BB, so the wakes left are judged again before
-   * the next; one that no longer applies (muted, unowned, pushed since, held) is only logged.
+   * A note about wakes already settled (given up, or sent to a worker a Stop reached; one
+   * watcher's, so one Adventure's) to their Adventure's coordinator: one try, outside the ledger,
+   * so a failed note never sends a wake again. The note follows a wait on BB, so each wake is
+   * judged again first; one that no longer applies (unwatched, ended, pushed since, held) is only
+   * logged.
    */
-  private async noteOwners(wakes: readonly WakeRow[], summary: (prs: string, workers: string) => string, note: (prs: string, workers: string, now: { project: ProjectRecord; wakes: readonly WakeRow[] }) => { lead: string; next: string }) {
+  private async noteCoordinator(wakes: readonly WakeRow[], summary: (prs: string, watchers: string) => string, note: (prs: string, watchers: string) => { lead: string; next: string }) {
     const { store, sdk } = this.deps;
     const prsOf = (group: readonly WakeRow[]) => group.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ");
-    const workersOf = (group: readonly WakeRow[]) => [...new Set(group.map((w) => w.worker ?? "no worker"))].join(", ");
-    let rest = [...wakes];
-    while (rest.length) {
-      // As things are now: each copy takes the PR's current owner (the settled row keeps its own).
-      const live: { wake: WakeRow; now: WakeRow }[] = [];
-      for (const wake of rest) {
-        const now = { ...wake };
-        const verdict = this.verdict(now, new Set([wake.url]));
-        if (verdict === "send") live.push({ wake, now });
-        else store.log(wake.projectId, "pr-watch", `PR watch ${summary(prsOf([wake]), workersOf([wake]))} Nobody is told: ${verdict instanceof NotNow ? (verdict.note ?? verdict.state) : "its Adventure holds its wakes"}.`, { url: wake.url });
-      }
-      if (!live.length) return;
-      const projectId = live[0]!.now.projectId;
-      const group = live.filter((l) => l.now.projectId === projectId).map((l) => l.now);
-      rest = live.filter((l) => l.now.projectId !== projectId).map((l) => l.wake);
-      const project = store.project(projectId)!;
-      const [prs, workers] = [prsOf(group), workersOf(group)];
-      store.log(projectId, "pr-watch", `PR watch ${summary(prs, workers)} The coordinator is told.`, { urls: group.map((w) => w.url) });
-      const { lead, next } = note(prs, workers, { project, wakes: group });
-      try {
-        if (!project.coordinatorThreadId) throw new Error("the Adventure has no coordinator thread");
-        await sdk.threads.send({
-          threadId: project.coordinatorThreadId, mode: "queue-if-active",
-          input: textInput(`Adventures · ${project.name} · PR watch\n\n${lead}\n\n${wakeBody(group)}\n\n${NOT_A_MERGE} ${next}`),
-        });
-      } catch (cause) {
-        this.deps.warn(`PR watch could not tell ${project.name}'s coordinator about ${prs}: ${errorMessage(cause)}`);
-      }
+    const watchersOf = (group: readonly WakeRow[]) => [...new Set(group.map((w) => w.worker ?? "the coordinator"))].join(", ");
+    const live = wakes.filter((wake) => {
+      const verdict = this.verdict(wake, new Set([wake.url]));
+      if (verdict === "send") return true;
+      store.log(wake.projectId, "pr-watch", `PR watch ${summary(prsOf([wake]), watchersOf([wake]))} Nobody is told: ${verdict instanceof NotNow ? (verdict.note ?? verdict.state) : "its Adventure holds its wakes"}.`, { url: wake.url });
+      return false;
+    });
+    if (!live.length) return;
+    const project = store.project(live[0]!.projectId)!;
+    const [prs, watchers] = [prsOf(live), watchersOf(live)];
+    store.log(project.id, "pr-watch", `PR watch ${summary(prs, watchers)} The coordinator is told.`, { urls: live.map((w) => w.url) });
+    const { lead, next } = note(prs, watchers);
+    try {
+      if (!project.coordinatorThreadId) throw new Error("the Adventure has no coordinator thread");
+      await sdk.threads.send({
+        threadId: project.coordinatorThreadId, mode: "queue-if-active",
+        input: textInput(`Adventures · ${project.name} · PR watch\n\n${lead}\n\n${wakeBody(live)}\n\n${NOT_A_MERGE} ${next}`),
+      });
+    } catch (cause) {
+      this.deps.warn(`PR watch could not tell ${project.name}'s coordinator about ${prs}: ${errorMessage(cause)}`);
     }
   }
 
@@ -1115,25 +1175,27 @@ export class PrWatcher {
     const { store, sdk } = this.deps;
     const { worker, open } = route;
     // Routing waited on BB: the message names only the wakes that still apply.
-    const wakes = this.eligible(routed, confirmed, { projectId: project.id, worker: worker.ref });
+    const wakes = this.eligible(routed, confirmed);
     if (!wakes.length) return null;
     const body = wakeBody(wakes);
     const prs = wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ");
     const kinds = [...new Set(wakes.flatMap((w) => w.changes.map((c) => c.kind)))].join(", ");
+    const yours = `GitHub news on the PR${wakes.length === 1 ? "" : "s"} you watch`;
     let failure = null as string | null;
     /** Why a worker a Stop reached may not act on the message it was sent; `uncertain`: whether it has it is unknown. */
     let stopped = null as { why: string; resumable: boolean; uncertain?: boolean } | null;
     await this.sending(wakes, async () => {
       if (route.how === "message") {
-        this.still(wakes, confirmed, { projectId: project.id, worker: worker.ref }, route);
+        this.still(wakes, confirmed, route);
         const answer = (await sdk.threads.send({
           threadId: worker.threadId!, mode: "steer-if-active",
-          input: textInput(`Adventures · ${project.name} · PR watch\n\nGitHub news on your PR${wakes.length === 1 ? "" : "s"} (from the plugin, not your lead):\n\n${body}\n\n${NOT_A_MERGE} Handle what needs it (a fix, a reply, or nothing) within ${open ? `your ${open}` : "your current work"}; its report covers it.`),
+          input: textInput(`Adventures · ${project.name} · PR watch\n\n${yours} (from the plugin, not your lead):\n\n${body}\n\n${NOT_A_MERGE} Handle what needs it (a fix, a reply, or nothing) within ${open ? `your ${open}` : "your current work"}; its report covers it.`),
         })) as { delivery?: string; queuedMessage?: { id?: string } } | undefined;
         let how = `${route.busy ? "while it works" : `during ${open}`}${answer?.delivery === "queued" ? ", queued by BB" : ""}`;
         // A Stop that landed as the message went out.
         const after = (await sdk.threads.get({ threadId: worker.threadId! }).catch(() => null)) as ThreadDto | null;
-        const why = after?.status === "stopping" ? `${worker.ref}'s thread was stopping` : unavailable(store, store.worker(worker.projectId, worker.num));
+        const current = store.worker(worker.projectId, worker.num);
+        const why = after?.status === "stopping" ? `${worker.ref}'s thread was stopping` : current ? unavailable(store, current) : `${worker.ref} is gone`;
         const queued = answer?.delivery === "queued" ? answer.queuedMessage?.id : undefined;
         if (why && queued) {
           // BB queued it behind the stop and would start a turn with it once the thread is idle.
@@ -1157,12 +1219,11 @@ export class PrWatcher {
         store.log(project.id, "pr-watch", `PR watch: woke ${worker.ref} about ${prs} (${kinds}) ${how}.`, { urls: wakes.map((w) => w.url) });
         return `${worker.ref}: message (${how})`;
       }
-      const to = { projectId: project.id, worker: worker.ref };
-      this.still(wakes, confirmed, to, route);
+      this.still(wakes, confirmed, route);
       let assignment: string;
       try {
-        assignment = await this.deps.giveWork(project.id, worker.ref, `PR watch (sent by the Adventures plugin, not your lead): GitHub news on your PR${wakes.length === 1 ? "" : "s"}.\n\n${body}\n\n${NOT_A_MERGE} Handle what needs it (a fix, a reply to a comment, or nothing), keep the PR's stage and notes current, then report.`,
-          () => this.still(wakes, confirmed, to, route));
+        assignment = await this.deps.giveWork(project.id, worker.ref, `PR watch (sent by the Adventures plugin, not your lead): ${yours}.\n\n${body}\n\n${NOT_A_MERGE} Handle what needs it (a fix, a reply to a comment, or nothing), keep the PR's stage and notes current, then report.`,
+          () => this.still(wakes, confirmed, route));
       } catch (error) {
         if (error instanceof NotNow) throw error;
         failure = errorMessage(error).slice(0, 200);
@@ -1174,66 +1235,65 @@ export class PrWatcher {
     });
     if (stopped) {
       const { why, resumable, uncertain } = stopped;
-      const lead = `${why[0]!.toUpperCase()}${why.slice(1)}`;
       const check = `Check ${worker.ref}'s thread and its queue for it: if it never arrived, give the work to a worker; or leave it.`;
-      await this.noteOwners(wakes, (prs) => `woke ${worker.ref} about ${prs}, but ${why}.`, (_prs, _workers, now) =>
-        // W# are per Adventure: only the PR's own worker, in its own Adventure, is named as a next step.
-        now.project.id === project.id && now.wakes.every((w) => w.worker === worker.ref)
-          ? { lead: `${lead}:`, next: uncertain ? check : nextStep(worker, resumable) }
-          : { lead: `${lead} (${worker.ref} of the ${project.name} Adventure, which owned the PR then):`, next: uncertain ? check : nextStep(null, false) });
+      await this.noteCoordinator(wakes, (prs) => `woke ${worker.ref} about ${prs}, but ${why}.`, () =>
+        ({ lead: `${why[0]!.toUpperCase()}${why.slice(1)}:`, next: uncertain ? check : nextStep(worker, resumable) }));
     }
     return failure ? { wakes, route: { to: "coordinator", why: `the plugin could not give ${worker.ref} the work (${failure})`, resumable: true, worker } } : null;
   }
 
-  /** One message to an Adventure's coordinator for every group of wakes routed to it, each with why. */
+  /** One message to an Adventure's coordinator for every group of wakes routed to it, each with why (none for its own watches). */
   private async toCoordinator(project: ProjectRecord, sections: { wakes: WakeRow[]; route: Extract<Route, { to: "coordinator" }> }[], confirmed: ReadonlySet<string>) {
     const { store, sdk } = this.deps;
     // Each section as it stands now: a wake that no longer applies leaves its message.
     const live: typeof sections = [];
     for (const section of sections) {
-      const wakes = this.eligible(section.wakes, confirmed, { projectId: project.id, worker: section.wakes[0]!.worker });
+      const wakes = this.eligible(section.wakes, confirmed);
       if (wakes.length) live.push({ wakes, route: section.route });
     }
     if (!live.length) return;
     const all = live.flatMap((s) => s.wakes);
-    const text = live.map(({ wakes, route }) => {
-      return `${route.why[0]!.toUpperCase()}${route.why.slice(1)}:\n\n${wakeBody(wakes)}\n\n${nextStep(route.worker, route.resumable)}`;
-    }).join("\n\n---\n\n");
+    const text = live.map(({ wakes, route }) => route.why === null
+      ? `PRs you watch:\n\n${wakeBody(wakes)}`
+      : `${route.why[0]!.toUpperCase()}${route.why.slice(1)}:\n\n${wakeBody(wakes)}\n\n${nextStep(route.worker, route.resumable)}`).join("\n\n---\n\n");
+    const about = live.every((s) => s.route.why === null) ? "PRs you watch" : "watched PRs whose watchers can't take it themselves, so it comes to you";
     await this.sending(all, async () => {
       if (!project.coordinatorThreadId) throw new Error("the Adventure has no coordinator thread");
       await sdk.threads.send({
         threadId: project.coordinatorThreadId, mode: "queue-if-active",
-        input: textInput(`Adventures · ${project.name} · PR watch\n\nGitHub news on PRs of this Adventure whose workers can't take it themselves, so it comes to you. ${NOT_A_MERGE}\n\n${text}`),
+        input: textInput(`Adventures · ${project.name} · PR watch\n\nGitHub news on ${about}. ${NOT_A_MERGE}\n\n${text}`),
       });
       for (const { wakes, route } of live)
-        store.log(project.id, "pr-watch", `PR watch: ${wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ")} (${[...new Set(wakes.flatMap((w) => w.changes.map((c) => c.kind)))].join(", ")}) went to the coordinator: ${route.why}.`, { urls: wakes.map((w) => w.url) });
-      return `coordinator: ${live.map((s) => s.route.why).join("; ")}`.slice(0, 500);
+        store.log(project.id, "pr-watch", `PR watch: ${wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ")} (${[...new Set(wakes.flatMap((w) => w.changes.map((c) => c.kind)))].join(", ")}) went to the coordinator${route.why === null ? ", which watches it" : `: ${route.why}`}.`, { urls: wakes.map((w) => w.url) });
+      return `coordinator: ${live.map((s) => s.route.why ?? "its own watch").join("; ")}`.slice(0, 500);
     });
   }
 }
 
-/** The PR detail view's watch: whether it is on, muted, and its latest wakes. */
+/** The PR detail view's watch: who watches it, and its latest wakes. */
 export interface PrWatchView {
   url: string;
-  /** Owned by this Adventure and open: watched unless muted. */
-  watched: boolean;
-  muted: boolean;
+  /** Who watches it (a W#, "the coordinator", or a thread no longer either) and in which Adventure; null when nobody does. */
+  watcher: { label: string; projectId: string; adventure: string } | null;
   /** Comment-only wakes in a row; at COMMENT_WAKE_CAP comments stop waking. */
   commentWakes: number;
   commentCap: number;
+  /** Merged or closed while watched: the watch ended. */
   ended: "MERGED" | "CLOSED" | null;
   wakes: { at: number; head: string; changes: string[]; state: WakeRow["state"]; routed: string | null }[];
 }
 
-export function readPrWatch(ledger: WatchLedger, url: string, owned: boolean): PrWatchView {
+export function readPrWatch(store: Pick<Store, "project">, ledger: WatchLedger, url: string): PrWatchView {
   const row = ledger.row(url);
+  const watching = row?.watcher ? row : null;
   return {
     url,
-    watched: owned && !row?.state?.ended,
-    muted: row?.muted ?? false,
-    commentWakes: row?.state?.commentWakes ?? 0,
+    watcher: watching
+      ? { label: watcherLabel(store, ledger, watching.projectId, watching.watcher!), projectId: watching.projectId, adventure: store.project(watching.projectId)?.name ?? watching.projectId }
+      : null,
+    commentWakes: watching?.state?.commentWakes ?? 0,
     commentCap: COMMENT_WAKE_CAP,
-    ended: row?.state?.ended ?? null,
+    ended: watching?.state?.ended ?? null,
     wakes: ledger.wakes(url, 5).map((w) => ({ at: w.createdAt, head: w.head, changes: w.changes.map((c) => changeLine(c, w.head).split("\n")[0]!), state: w.state, routed: w.routed })),
   };
 }

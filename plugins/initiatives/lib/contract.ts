@@ -117,14 +117,14 @@ export const projectsContract = defineRpcContract({
     input: z.object({ projectId: id, url: z.string().min(1).max(300), initiative: id.nullable() }),
     output: z.object({ url: z.string(), initiative: z.string().nullable() }),
   },
-  /** W548: one PR's watch: on or muted, and its latest wakes. Local state only. */
+  /** W548, W554: one PR's watch: who watches it, and its latest wakes. Local state only. */
   prWatch: {
     input: z.object({ projectId: id, url: z.string().min(1).max(300) }),
     output: z.custom<PrWatchView>(),
   },
-  /** W548: mute or unmute one PR's watch; an unmuted watch starts from the PR as it is then. */
-  setPrWatch: {
-    input: z.object({ projectId: id, url: z.string().min(1).max(300), muted: z.boolean() }),
+  /** W554: nobody watches the PR any more (agents watch with initiative_pr_watch). */
+  prUnwatch: {
+    input: z.object({ projectId: id, url: z.string().min(1).max(300) }),
     output: z.custom<PrWatchView>(),
   },
   /** D442: one PR's whole notes log, oldest first (the queue carries only the last few). */
