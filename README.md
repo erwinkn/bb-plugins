@@ -307,6 +307,36 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Inline visuals: four ideas from T3 Code (2026-10-28)
+
+Candidates from W547's comparison with T3 Code's visual replies and MCP Apps
+(T3 #15968, #16196, #16236, #17561); not filed. BB 0.47's `inline-vis` fence
+already ports T3's renderer (`406c009502`), so these assume 0.47 or later.
+
+- **inline-vis full screen with zoom.** A dense diagram can only show in the
+  chat column or move to the side viewer. T3 adds an "Open full screen" dialog
+  with 50–200% zoom on hover (#17561, one PR). Small, low risk.
+  Suggested issue title: `inline-vis: full-screen view with zoom`.
+- **Show plugin tool image results to the user.** A plugin tool that returns
+  `{ type: "image" }` reaches the model only; the thread shows nothing
+  (`apps/server/src/services/plugins/plugin-service.ts:489-512` at 0.45).
+  Example: a `vis_preview` tool screenshots the page it checked, and you never
+  see what the agent saw. Suggested issue title:
+  `Plugin tools: render image results in the thread, not only for the model`.
+- **inline-vis frame → composer messages.** Click a bar in an inline chart
+  and the composer gets a chip naming the element ("drill into this
+  release"). An MCP Apps–style `ui/message` from the frame would carry it.
+  A page script could forge the user's words, so each message needs the
+  user's approval, as in T3. Medium effort, low priority.
+  Suggested issue title: `inline-vis: let a visual post a chip to the composer (with approval)`.
+- **MCP Apps host for tool `_meta.ui` resources.** When an MCP tool ships an
+  interactive `ui://` app, render it in place of the tool row; app-initiated
+  tool calls and messages go through approval. This would show Executor
+  artifacts inline instead of as a link. Needs provider adapters to read
+  `ui://` resources (Codex app-server can; Claude's SDK could not when T3
+  checked), a core app-frame renderer and approval UI: large. Suggested issue
+  title: `Host MCP Apps (ui:// resources) in thread tool rows`.
+
 ### Provider bridges: a `provider.error` delta's bare `category` is dropped (2026-10-28)
 
 Candidate from W545; not filed. The bridge delta schema accepts both
