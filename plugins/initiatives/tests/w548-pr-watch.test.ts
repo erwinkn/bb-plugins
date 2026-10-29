@@ -294,13 +294,14 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
     owners: (pullRequests) => owners.owners(pullRequests),
   }, gh, () => clock.now, () => {}, listed);
   const threads = new Map<string, Thread>(["thr_w1", "thr_w2", "thr_c"].map((id) => [id, { id, status: "idle", archivedAt: null, deletedAt: null }]));
-  const send = vi.fn(async (_args: { threadId: string; mode: string; input: { text: string }[] }) => ({ delivery: "sent" }));
+  const send = vi.fn(async (_args: { threadId: string; mode: string; input: { text: string }[] }): Promise<{ delivery: string; queuedMessage?: { id: string } }> => ({ delivery: "sent" }));
+  const deleteQueued = vi.fn(async (_args: { threadId: string; queuedMessageId: string }) => ({ ok: true }));
   const sdk = { threads: { get: vi.fn(async ({ threadId }: { threadId: string }) => {
     const hook = hooks.onThread;
     hooks.onThread = undefined;
     hook?.();
     return threads.get(threadId);
-  }), send } } as unknown as Sdk;
+  }), send, queuedMessages: { delete: deleteQueued } } } as unknown as Sdk;
   const coldCheck = vi.fn(async (): Promise<string | null> => null);
   const giveWork = vi.fn(async (_projectId: string, _ref: string, _text: string, _still: () => void) => "A7");
   const changed = vi.fn();
@@ -325,7 +326,7 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
   };
   const sent = () => send.mock.calls.map(([args]) => ({ to: args.threadId, mode: args.mode, text: args.input[0]!.text }));
   return {
-    store, db, clock, prs, gh, requests, hooks, peak: () => peak, owners, assigned, sdk, send, sent, threads, coldCheck, giveWork, changed, warn, listed, poll,
+    store, db, clock, prs, gh, requests, hooks, peak: () => peak, owners, assigned, sdk, send, deleteQueued, sent, threads, coldCheck, giveWork, changed, warn, listed, poll,
     get cache() { return live.cache; }, get ledger() { return live.ledger; }, get watcher() { return live.watcher; },
     /** A plugin reload: a new cache and watcher over the same database. */
     reload: () => { live = make(); live.watcher.recover(); },
@@ -1103,10 +1104,13 @@ describe("W549 review r1 regressions", () => {
     t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }, { name: "lint", outcome: "failed" }];
     t.send.mockImplementation(async () => { throw Object.assign(new Error("no such thread"), { status: 404 }); });
     for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
-    expect(t.send).toHaveBeenCalledTimes(2 + WAKE_REFUSALS);
+    // The last refusal tries one notice to the coordinator (refused here too: only a warning then).
+    expect(t.send).toHaveBeenCalledTimes(3 + WAKE_REFUSALS);
+    expect(t.sent().at(-1)!.text).toContain("so the plugin stopped trying");
+    expect(t.warn.mock.calls.at(-1)![0]).toContain("could not tell Equisafe's coordinator about equisafe/market#1");
     expect(wakeRows(t).at(-1)).toMatchObject({ state: "failed", routed: "BB refused the send: no such thread" });
     await t.poll();
-    expect(t.send).toHaveBeenCalledTimes(2 + WAKE_REFUSALS);
+    expect(t.send).toHaveBeenCalledTimes(3 + WAKE_REFUSALS);
     t.prs.get(1)!.checks = [{ name: "e2e", outcome: "failed" }];
     t.send.mockImplementation(async () => { throw new Error("socket hang up"); });
     await t.poll();
@@ -1160,6 +1164,247 @@ describe("W549 review r1 regressions", () => {
     expect(t.requests.slice(before).filter((r) => r.kind === "watch").reduce((sum, r) => sum + r.count, 0)).toBe(1);
     expect(wakeRows(t)).toHaveLength(1);
     expect(t.sent()).toEqual([expect.objectContaining({ to: "thr_c_ui" })]);
+  });
+});
+
+describe("W551 PR watch P3s", () => {
+  it("sends a wake to the coordinator while the worker's thread is stopping, not into the ending turn", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.poll(0);
+    assign(t, 1, "Do it.");
+    t.threads.get("thr_w1")!.status = "stopping";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(t.sent()).toEqual([expect.objectContaining({ to: "thr_c", mode: "queue-if-active" })]);
+    expect(t.sent()[0]!.text).toContain("W1's thread is stopping:");
+    expect(t.sent()[0]!.text).toContain("send it to W1 (initiative_message work:true");
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent", routed: "coordinator: W1's thread is stopping" })]);
+  });
+
+  it("tells the coordinator too when a Stop lands as the steer goes out", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a", branch: "bb/w2-thr_w2" })] });
+    await t.poll(0);
+    assign(t, 1, "Do it.");
+    t.threads.get("thr_w1")!.status = "active";
+    t.threads.get("thr_w2")!.status = "active";
+    for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "failed" }];
+    // W1: BB's Stop lands during the steer. W2: an Adventures Stop (its cancel request) during the steer.
+    t.send.mockImplementation(async ({ threadId }) => {
+      if (threadId === "thr_w1") t.threads.get("thr_w1")!.status = "stopping";
+      if (threadId === "thr_w2") {
+        t.store.updateAssignment("eq", assign(t, 2, "Other.").num, { cancelRequested: true });
+        t.threads.get("thr_w2")!.status = "idle";
+      }
+      return { delivery: "sent" };
+    });
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c", "thr_w2", "thr_c"]);
+    expect(t.sent()[1]!.text).toContain("W1's thread was stopping as the plugin's message reached it, so it may not act on it:");
+    expect(t.sent()[1]!.text).toContain('#1 "PR 1"');
+    expect(t.sent()[1]!.text).toContain("send it to W1 (initiative_message work:true");
+    expect(t.sent()[3]!.text).toContain("W2 was stopped as the plugin's message reached it, so it may not act on it:");
+    expect(t.sent()[3]!.text).toContain('a fresh worker with handoffs:["W2"]');
+    // BB took both messages: the wakes are sent to their workers, never again.
+    expect(wakeRows(t).map((w) => [w.state, w.routed])).toEqual([
+      ["sent", "W1: message (while it works; a Stop landed with it)"],
+      ["sent", "W2: message (while it works; a Stop landed with it)"],
+    ]);
+  });
+
+  it("never sends a wake BB took again when the coordinator's note about the Stop is refused", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.poll(0);
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    t.send.mockImplementation(async ({ threadId }) => {
+      if (threadId === "thr_c") throw Object.assign(new Error("Thread is not writable"), { status: 409 });
+      t.threads.get("thr_w1")!.status = "stopping";
+      return { delivery: "sent" };
+    });
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c"]);
+    expect(t.warn.mock.calls.at(-1)![0]).toContain("could not tell Equisafe's coordinator about equisafe/market#1");
+    // W1 is back and idle: nothing is sent again.
+    t.threads.get("thr_w1")!.status = "idle";
+    await t.poll();
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c"]);
+    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["sent"]);
+  });
+
+  it("takes back a message BB queued behind a Stop, so nothing reached the worker and it is routed afresh", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.poll(0);
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    // The Stop lands between routing and the send: BB queues the message on its stopping wait.
+    t.send.mockImplementationOnce(async () => {
+      t.threads.get("thr_w1")!.status = "stopping";
+      return { delivery: "queued", queuedMessage: { id: "q1" } };
+    });
+    await t.poll();
+    expect(t.deleteQueued).toHaveBeenCalledWith({ threadId: "thr_w1", queuedMessageId: "q1" });
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1"]);
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
+    // Still stopping next pass: the coordinator takes it, once.
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c"]);
+    expect(t.sent()[1]!.text).toContain("W1's thread is stopping:");
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent", routed: "coordinator: W1's thread is stopping" })]);
+
+    // A queued row BB already sent can't be taken back: it reaches the worker, so the wake is sent and nobody else is told.
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }, { name: "lint", outcome: "failed" }];
+    t.send.mockImplementationOnce(async () => {
+      t.threads.get("thr_w1")!.status = "stopping";
+      return { delivery: "queued", queuedMessage: { id: "q2" } };
+    });
+    t.deleteQueued.mockImplementationOnce(async () => { throw Object.assign(new Error("not found"), { status: 404 }); });
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c", "thr_w1"]);
+    expect(wakeRows(t).at(-1)).toMatchObject({ state: "sent", routed: "W1: message (while it works, queued by BB behind a Stop)" });
+
+    // A delete whose answer is lost may have taken it back or not: uncertain, never sent again, and the coordinator checks.
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "e2e", outcome: "failed" }];
+    t.send.mockImplementationOnce(async () => {
+      t.threads.get("thr_w1")!.status = "stopping";
+      return { delivery: "queued", queuedMessage: { id: "q3" } };
+    });
+    t.deleteQueued.mockImplementationOnce(async () => { throw new Error("socket hang up"); });
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c", "thr_w1", "thr_w1", "thr_c"]);
+    expect(t.sent().at(-1)!.text).toContain("The plugin's message to W1, queued behind a Stop, may or may not have been taken back (socket hang up):");
+    expect(t.sent().at(-1)!.text).toContain("Check W1's thread and its queue for it");
+    expect(wakeRows(t).at(-1)).toMatchObject({ state: "uncertain", routed: "queued behind a Stop; taking it back failed: socket hang up" });
+    t.threads.get("thr_w1")!.status = "idle";
+    await t.poll();
+    expect(t.send).toHaveBeenCalledTimes(5);
+    expect(t.giveWork).not.toHaveBeenCalled();
+  });
+
+  it("sends a Stop's note to the PR's Adventure as it is after the read, and none once it is muted", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
+    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
+    await t.poll(0);
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    // The Stop lands with the steer; the PR moves to Equisafe UI while the plugin reads the thread again.
+    t.send.mockImplementationOnce(async () => {
+      t.threads.get("thr_w1")!.status = "stopping";
+      t.hooks.onThread = () => t.owners.move(prUrl(1), "ui", t.clock.now);
+      return { delivery: "sent" };
+    });
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c_ui"]);
+    expect(t.sent()[1]!.text).toContain("Adventures · Equisafe UI · PR watch");
+    // Equisafe's W1 is no worker of Equisafe UI: the note names it with its Adventure, and suggests none.
+    expect(t.sent()[1]!.text).toContain("(W1 of the Equisafe Adventure, which owned the PR then):");
+    expect(t.sent()[1]!.text).toContain("If it needs work, give it to a worker; or leave it.");
+    expect(t.sent()[1]!.text).not.toContain('handoffs:["W1"]');
+    expect(wakeRows(t)[0]).toMatchObject({ state: "sent" });
+
+    // PR 2: muted during that read: the wake stays sent, and nobody else is told.
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(2)!.checks = [{ name: "tests", outcome: "failed" }];
+    t.send.mockImplementationOnce(async () => {
+      t.threads.get("thr_w1")!.status = "stopping";
+      t.hooks.onThread = () => t.ledger.setMuted(prUrl(2), "eq", true);
+      return { delivery: "sent" };
+    });
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_c_ui", "thr_w1"]);
+    expect(wakeRows(t).at(-1)).toMatchObject({ state: "sent" });
+    expect(t.store.activity("eq").some((a) => /woke W1 about equisafe\/market#2, but .* Nobody is told/.test(a.summary))).toBe(true);
+  });
+
+  it("records a steer BB queued instead of sending", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.poll(0);
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    t.send.mockImplementationOnce(async () => ({ delivery: "queued" }));
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1"]);
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent", routed: "W1: message (while it works, queued by BB)" })]);
+  });
+
+  it("tells the coordinator once, with BB's last answer, when it gives up on a wake BB keeps refusing", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.poll(0);
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    t.send.mockImplementation(async ({ threadId }) => {
+      if (threadId === "thr_w1") throw Object.assign(new Error("Thread is not writable"), { status: 409 });
+      return { delivery: "sent" };
+    });
+    for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual([...Array(WAKE_REFUSALS).fill("thr_w1"), "thr_c"]);
+    const notice = t.sent().at(-1)!;
+    expect(notice.mode).toBe("queue-if-active");
+    expect(notice.text).toContain(`BB refused the plugin's wake about equisafe/market#1 (W1) ${WAKE_REFUSALS} times, so the plugin stopped trying`);
+    expect(notice.text).toContain("BB's last answer: Thread is not writable");
+    expect(notice.text).toContain("Checks failed: tests.");
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "failed", routed: "BB refused the send: Thread is not writable" })]);
+    expect(t.store.activity("eq").some((a) => a.kind === "pr-watch" && /gave up on equisafe\/market#1 \(W1\)/.test(a.summary))).toBe(true);
+    // No more tries, and no second notice.
+    await t.poll();
+    expect(t.send).toHaveBeenCalledTimes(WAKE_REFUSALS + 1);
+  });
+
+  it("judges the wakes left again before each coordinator's note: a mute during the first note skips the second", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
+    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
+    await t.poll(0);
+    t.threads.get("thr_w1")!.status = "active";
+    for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "failed" }];
+    let tries = 0;
+    t.send.mockImplementation(async ({ threadId }) => {
+      // Equisafe UI's note is sent first; PR 2 is muted while it waits on BB.
+      if (threadId === "thr_c_ui") t.ledger.setMuted(prUrl(2), "eq", true);
+      if (threadId !== "thr_w1") return { delivery: "sent" };
+      // While the last refused send of both waits on BB, PR 1 moves to Equisafe UI.
+      if (++tries === WAKE_REFUSALS) t.owners.move(prUrl(1), "ui", t.clock.now);
+      throw Object.assign(new Error("Thread is not writable"), { status: 409 });
+    });
+    for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual([...Array(WAKE_REFUSALS).fill("thr_w1"), "thr_c_ui"]);
+    expect(t.sent().at(-1)!.text).toContain("equisafe/market#1");
+    expect(t.sent().at(-1)!.text).not.toContain("equisafe/market#2");
+    expect(t.store.activity("eq").some((a) => /gave up on equisafe\/market#2 \(W1\).*Nobody is told/.test(a.summary))).toBe(true);
+  });
+
+  it("tells the PR's current Adventure when it gives up, and nobody when the PR was muted meanwhile", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })] });
+    t.store.createProject({ id: "ui", name: "Equisafe UI", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c_ui" });
+    await t.poll(0);
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    let tries = 0;
+    t.send.mockImplementation(async ({ threadId }) => {
+      if (threadId !== "thr_w1") return { delivery: "sent" };
+      // While the last refused send waits on BB, the PR moves to Equisafe UI.
+      if (++tries === WAKE_REFUSALS) t.owners.move(prUrl(1), "ui", t.clock.now);
+      throw Object.assign(new Error("Thread is not writable"), { status: 409 });
+    });
+    for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual([...Array(WAKE_REFUSALS).fill("thr_w1"), "thr_c_ui"]);
+    expect(t.sent().at(-1)!.text).toContain("Adventures · Equisafe UI · PR watch");
+    expect(t.sent().at(-1)!.text).toContain("equisafe/market#1 (no worker)");
+
+    // PR 2: muted while its last refused send waits on BB: logged, nobody told.
+    tries = 0;
+    t.send.mockImplementation(async ({ threadId }) => {
+      if (threadId !== "thr_w1") return { delivery: "sent" };
+      if (++tries === WAKE_REFUSALS) t.ledger.setMuted(prUrl(2), "eq", true);
+      throw Object.assign(new Error("Thread is not writable"), { status: 409 });
+    });
+    const before = t.send.mock.calls.length;
+    t.prs.get(2)!.checks = [{ name: "tests", outcome: "failed" }];
+    for (let i = 0; i < WAKE_REFUSALS; i++) await t.poll();
+    expect(t.sent().slice(before).map((m) => m.to)).toEqual(Array(WAKE_REFUSALS).fill("thr_w1"));
+    expect(t.store.activity("eq").some((a) => /gave up on equisafe\/market#2 \(W1\).*Nobody is told/.test(a.summary))).toBe(true);
   });
 });
 

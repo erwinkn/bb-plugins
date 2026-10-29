@@ -40,10 +40,11 @@ An example, in the Equisafe Initiative:
    another provider or model, so it is never switched in turn; if it can't run either, the
    worker reports blocked. The worker runs the fallback command itself only when the reviewer
    command is refused, the plugin's note asks it to, or BB reports a limit failure and no
-   plugin note comes within minutes, and names fallback rounds in its report. Before it
-   stops the reviewer, the plugin steers a first note ("don't start a reviewer for this
-   round yourself"), so a worker woken by BB's "child failed" notice waits; and it starts no
-   fallback when the worker already started one (a worker on an older brief).
+   plugin note comes within minutes, and names fallback rounds in its report. The worker
+   gets one note per switch, once the fallback has started or the plugin gave up (T160): a
+   note before the switch only woke an idle worker for a turn that said "waiting", and the
+   brief already tells a worker woken by BB's "child failed" notice to wait for the plugin's.
+   It starts no fallback when the worker already started one (a worker on an older brief).
 2. W1420 implements, opens its PR and keeps its stage with `initiative_pr`. For each review
    round it starts a fresh reviewer as an ordinary BB child thread (`--parent-self
    --lifecycle-owner-thread`, in its checkout), copies the rules that matter into the
@@ -641,7 +642,7 @@ Unassigned PRs aren't watched.
   lead's `initiative_message work:true` from the coordinator, so it reports
   again. Working, or still on an open assignment: a steer message its open
   report covers. Retired, stopped (Stop cancels its work; the worker counts as
-  stopped until its lead gives it new work), a reviewer, archived, or idle with a cold
+  stopped until its lead gives it new work), its thread stopping, a reviewer, archived, or idle with a cold
   cache over the T142 threshold: the coordinator, which picks
   `resumeCold:true` or a fresh worker with handoffs. Wakes are routed first and
   sent after: each worker gets one message a pass, and each Adventure's
@@ -660,8 +661,21 @@ Unassigned PRs aren't watched.
   recorded (`DelegateInput.ready`). A wake that stopped applying leaves the
   message alone; the others still go. A send BB refuses (a 4xx, say 409 for a
   thread archived meanwhile) goes back to pending and is routed afresh next
-  pass, here to the coordinator; the third refusal fails it. Any other send
-  error fails it at once, since it may have arrived. R2 ownership and the PR's worker are read then,
+  pass, here to the coordinator; the third refusal fails it, and the coordinator
+  of the Adventure that owns the PR then gets one note naming the PR, its worker
+  and BB's last answer (W551).
+  Any other send error fails it at once, since it may have arrived. A Stop that
+  lands while a message goes out (the thread reads stopping after it, or the
+  worker stopped): a message BB queued behind it (BB would start a turn with it
+  once idle) is taken back and the wake routed afresh, nothing having reached
+  the worker; one BB refuses to delete is gone to the worker, so the wake is
+  sent; any other delete error leaves it `uncertain` (never sent again) and the
+  coordinator is asked to check the worker's thread. A
+  steer that joined the stopping turn may never be acted on: the wake stays sent
+  (BB took it) and the coordinator gets one note too. Both kinds of note (this
+  and a give-up) go to the Adventure that owns the PR at the time, skip a PR
+  muted, unowned or pushed since, and are a single try outside the ledger, so a
+  refused note never sends the wake again. R2 ownership and the PR's worker are read then,
   from the ledger, listed or not (a reassignment or a move retargets the wake,
   even after a reload with nothing listed yet). Its head must still be the
   one the PR's latest watch read saw.

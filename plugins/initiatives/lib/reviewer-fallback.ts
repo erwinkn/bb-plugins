@@ -209,8 +209,6 @@ export class ReviewerFallback {
         await runIt("the plugin could not read its prompt, so it did not rerun it.");
         return;
       }
-      // BB's "child failed" notice wakes the worker now; this reaches it before it can act on it.
-      await tell(`${stopped}\n\nThe plugin is rerunning this round on the fallback reviewer (${profileName(fallback)}) and will tell you here when it starts. Don't start a reviewer for this round yourself; end your turn if you are only waiting for it.`);
       // Stop it first: a provider may still wake it (Muse resumes a turn when its background
       // work ends). The archive is what retires a queued retry for good: BB neither sends a
       // queued row nor retries a turn on an archived thread; deleting the rows tidies the card.

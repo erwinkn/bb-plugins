@@ -562,11 +562,12 @@ export class WatchLedger {
   /**
    * Sends BB refused: nothing happened, so each goes back to pending, routed afresh next pass (a
    * thread archived meanwhile routes it to the coordinator), until its WAKE_REFUSALS-th fails it.
+   * The ids this failed.
    */
-  refused(ids: readonly number[], note: string) {
+  refused(ids: readonly number[], note: string): number[] {
     const update = this.db.prepare(`UPDATE pr_wakes SET refusals = refusals + 1, routed = ?,
-      state = CASE WHEN refusals + 1 >= ? THEN 'failed' ELSE 'pending' END WHERE id = ?`);
-    this.db.transaction(() => { for (const id of ids) update.run(note, WAKE_REFUSALS, id); })();
+      state = CASE WHEN refusals + 1 >= ? THEN 'failed' ELSE 'pending' END WHERE id = ? RETURNING state`);
+    return this.db.transaction(() => ids.filter((id) => (update.get(note, WAKE_REFUSALS, id) as { state: string } | undefined)?.state === "failed"))();
   }
 
   /** A pending wake whose PR moved to another Adventure, or to another worker, goes to its owner now. */
@@ -659,6 +660,12 @@ function unavailable(store: Pick<Store, "latestAssignment" | "openAssignment">, 
   if (!worker.threadId) return `${worker.ref} has no thread`;
   return null;
 }
+
+/** What a coordinator may do with news its worker can't take: resume that worker, hand off to a fresh one, or leave it. */
+const nextStep = (worker: WorkerRecord | null, resumable: boolean) =>
+  resumable && worker
+    ? `If it needs work, send it to ${worker.ref} (initiative_message work:true, resumeCold:true) or to a fresh worker with handoffs:["${worker.ref}"]; or leave it.`
+    : worker && worker.role === "work" ? `If it needs work, give it to a fresh worker with handoffs:["${worker.ref}"]; or leave it.` : "If it needs work, give it to a worker; or leave it.";
 
 /** A wake that no longer applies as it was routed: `state` to leave it in (pending: decided again next pass). */
 class NotNow extends Error {
@@ -982,6 +989,8 @@ export class PrWatcher {
       return { to: "coordinator", why: `${worker!.ref}'s thread could not be read (${errorMessage(error).slice(0, 200)})`, resumable: false, worker };
     }
     if (thread.archivedAt !== null || thread.deletedAt !== null) return { to: "coordinator", why: `${worker!.ref}'s thread is archived`, resumable: false, worker };
+    // A Stop landing: BB refuses a steer now, and the turn it would join is ending.
+    if (thread.status === "stopping") return { to: "coordinator", why: `${worker!.ref}'s thread is stopping`, resumable: true, worker };
     const open = store.openAssignment(project.id, worker!.num);
     if (BUSY_STATUSES.has(thread.status)) return { to: "worker", how: "message", worker: worker!, open: open?.ref ?? null, busy: true };
     const cold = await this.deps.coldCheck(worker!);
@@ -1037,16 +1046,71 @@ export class PrWatcher {
         this.deps.ledger.mark(about, error.state, error.note);
         this.deps.ledger.mark(ids.filter((id) => !about.includes(id)), "pending");
       } else {
-        if (isDefiniteRejection(error)) this.deps.ledger.refused(ids, `BB refused the send: ${errorMessage(error)}`.slice(0, 300));
-        else this.deps.ledger.mark(ids, "failed", errorMessage(error).slice(0, 300));
         this.deps.warn(`PR watch could not wake about ${wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ")}: ${errorMessage(error)}`);
+        if (!isDefiniteRejection(error)) this.deps.ledger.mark(ids, "failed", errorMessage(error).slice(0, 300));
+        else {
+          const failed = this.deps.ledger.refused(ids, `BB refused the send: ${errorMessage(error)}`.slice(0, 300));
+          if (failed.length) await this.gaveUp(wakes.filter((w) => failed.includes(w.id)), errorMessage(error));
+        }
       }
     } finally {
       this.deps.changed(wakes[0]!.projectId);
     }
   }
 
-  /** One worker's wakes, as more work or a message. A route to the coordinator instead when giving the work failed. */
+  /** Wakes BB refused WAKE_REFUSALS times are not sent again: their coordinator hears of them once, with BB's last answer. */
+  private async gaveUp(wakes: readonly WakeRow[], error: string) {
+    const last = error.replace(/\s+/gu, " ").slice(0, 300);
+    await this.noteOwners(wakes, (prs, workers) => `gave up on ${prs} (${workers}): BB refused the send ${WAKE_REFUSALS} times, last: ${last}.`, (prs, workers) => ({
+      lead: `BB refused the plugin's wake about ${prs} (${workers}) ${WAKE_REFUSALS} times, so the plugin stopped trying: the PR's owner has not heard of it. BB's last answer: ${last}`,
+      next: "If it needs work, give it to a worker; or leave it.",
+    }));
+  }
+
+  /**
+   * A note about wakes already settled (given up, or sent to a worker a Stop reached) to the
+   * coordinator of each Adventure that owns one now: one try each, outside the ledger, so a failed
+   * note never sends a wake again. Each note waits on BB, so the wakes left are judged again before
+   * the next; one that no longer applies (muted, unowned, pushed since, held) is only logged.
+   */
+  private async noteOwners(wakes: readonly WakeRow[], summary: (prs: string, workers: string) => string, note: (prs: string, workers: string, now: { project: ProjectRecord; wakes: readonly WakeRow[] }) => { lead: string; next: string }) {
+    const { store, sdk } = this.deps;
+    const prsOf = (group: readonly WakeRow[]) => group.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ");
+    const workersOf = (group: readonly WakeRow[]) => [...new Set(group.map((w) => w.worker ?? "no worker"))].join(", ");
+    let rest = [...wakes];
+    while (rest.length) {
+      // As things are now: each copy takes the PR's current owner (the settled row keeps its own).
+      const live: { wake: WakeRow; now: WakeRow }[] = [];
+      for (const wake of rest) {
+        const now = { ...wake };
+        const verdict = this.verdict(now, new Set([wake.url]));
+        if (verdict === "send") live.push({ wake, now });
+        else store.log(wake.projectId, "pr-watch", `PR watch ${summary(prsOf([wake]), workersOf([wake]))} Nobody is told: ${verdict instanceof NotNow ? (verdict.note ?? verdict.state) : "its Adventure holds its wakes"}.`, { url: wake.url });
+      }
+      if (!live.length) return;
+      const projectId = live[0]!.now.projectId;
+      const group = live.filter((l) => l.now.projectId === projectId).map((l) => l.now);
+      rest = live.filter((l) => l.now.projectId !== projectId).map((l) => l.wake);
+      const project = store.project(projectId)!;
+      const [prs, workers] = [prsOf(group), workersOf(group)];
+      store.log(projectId, "pr-watch", `PR watch ${summary(prs, workers)} The coordinator is told.`, { urls: group.map((w) => w.url) });
+      const { lead, next } = note(prs, workers, { project, wakes: group });
+      try {
+        if (!project.coordinatorThreadId) throw new Error("the Adventure has no coordinator thread");
+        await sdk.threads.send({
+          threadId: project.coordinatorThreadId, mode: "queue-if-active",
+          input: textInput(`Adventures · ${project.name} · PR watch\n\n${lead}\n\n${wakeBody(group)}\n\n${NOT_A_MERGE} ${next}`),
+        });
+      } catch (cause) {
+        this.deps.warn(`PR watch could not tell ${project.name}'s coordinator about ${prs}: ${errorMessage(cause)}`);
+      }
+    }
+  }
+
+  /**
+   * One worker's wakes, as more work or a message. A route to the coordinator instead when giving
+   * the work failed; a note to it as well when a Stop landed with the message.
+   */
   private async toWorker(project: ProjectRecord, route: Extract<Route, { to: "worker" }>, routed: WakeRow[], confirmed: ReadonlySet<string>): Promise<{ wakes: WakeRow[]; route: Extract<Route, { to: "coordinator" }> } | null> {
     const { store, sdk } = this.deps;
     const { worker, open } = route;
@@ -1056,15 +1120,40 @@ export class PrWatcher {
     const body = wakeBody(wakes);
     const prs = wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ");
     const kinds = [...new Set(wakes.flatMap((w) => w.changes.map((c) => c.kind)))].join(", ");
-    let failure: string | null = null;
+    let failure = null as string | null;
+    /** Why a worker a Stop reached may not act on the message it was sent; `uncertain`: whether it has it is unknown. */
+    let stopped = null as { why: string; resumable: boolean; uncertain?: boolean } | null;
     await this.sending(wakes, async () => {
       if (route.how === "message") {
         this.still(wakes, confirmed, { projectId: project.id, worker: worker.ref }, route);
-        await sdk.threads.send({
+        const answer = (await sdk.threads.send({
           threadId: worker.threadId!, mode: "steer-if-active",
           input: textInput(`Adventures · ${project.name} · PR watch\n\nGitHub news on your PR${wakes.length === 1 ? "" : "s"} (from the plugin, not your lead):\n\n${body}\n\n${NOT_A_MERGE} Handle what needs it (a fix, a reply, or nothing) within ${open ? `your ${open}` : "your current work"}; its report covers it.`),
-        });
-        const how = route.busy ? "while it works" : `during ${open}`;
+        })) as { delivery?: string; queuedMessage?: { id?: string } } | undefined;
+        let how = `${route.busy ? "while it works" : `during ${open}`}${answer?.delivery === "queued" ? ", queued by BB" : ""}`;
+        // A Stop that landed as the message went out.
+        const after = (await sdk.threads.get({ threadId: worker.threadId! }).catch(() => null)) as ThreadDto | null;
+        const why = after?.status === "stopping" ? `${worker.ref}'s thread was stopping` : unavailable(store, store.worker(worker.projectId, worker.num));
+        const queued = answer?.delivery === "queued" ? answer.queuedMessage?.id : undefined;
+        if (why && queued) {
+          // BB queued it behind the stop and would start a turn with it once the thread is idle.
+          // Taken back, nothing was delivered: routed afresh next pass. A row BB refuses to delete
+          // is gone, sent to the worker as a turn of its own: sent. Any other answer may have
+          // deleted it or not: uncertain, never sent again, and the coordinator checks.
+          const taken = await sdk.threads.queuedMessages.delete({ threadId: worker.threadId!, queuedMessageId: queued })
+            .then(() => "taken" as const, (error: unknown) => (isDefiniteRejection(error) ? "gone" as const : errorMessage(error).slice(0, 200)));
+          if (taken === "taken") throw new NotNow("pending", null);
+          if (taken !== "gone") {
+            stopped = { why: `the plugin's message to ${worker.ref}, queued behind a Stop, may or may not have been taken back (${taken})`, resumable: false, uncertain: true };
+            throw new NotNow("uncertain", `queued behind a Stop; taking it back failed: ${taken}`);
+          }
+          how += " behind a Stop";
+        } else if (why) {
+          // The steer joined a turn being torn down, so the worker may never act on it. BB took it:
+          // the wake is sent, never again, and the coordinator gets a note too.
+          stopped = { why: `${why} as the plugin's message reached it, so it may not act on it`, resumable: after?.status === "stopping" };
+          how += "; a Stop landed with it";
+        }
         store.log(project.id, "pr-watch", `PR watch: woke ${worker.ref} about ${prs} (${kinds}) ${how}.`, { urls: wakes.map((w) => w.url) });
         return `${worker.ref}: message (${how})`;
       }
@@ -1083,6 +1172,16 @@ export class PrWatcher {
       store.log(project.id, "pr-watch", `PR watch: woke ${worker.ref} about ${prs} (${kinds}) with ${assignment}.`, { urls: wakes.map((w) => w.url) });
       return `${worker.ref}: ${assignment}`;
     });
+    if (stopped) {
+      const { why, resumable, uncertain } = stopped;
+      const lead = `${why[0]!.toUpperCase()}${why.slice(1)}`;
+      const check = `Check ${worker.ref}'s thread and its queue for it: if it never arrived, give the work to a worker; or leave it.`;
+      await this.noteOwners(wakes, (prs) => `woke ${worker.ref} about ${prs}, but ${why}.`, (_prs, _workers, now) =>
+        // W# are per Adventure: only the PR's own worker, in its own Adventure, is named as a next step.
+        now.project.id === project.id && now.wakes.every((w) => w.worker === worker.ref)
+          ? { lead: `${lead}:`, next: uncertain ? check : nextStep(worker, resumable) }
+          : { lead: `${lead} (${worker.ref} of the ${project.name} Adventure, which owned the PR then):`, next: uncertain ? check : nextStep(null, false) });
+    }
     return failure ? { wakes, route: { to: "coordinator", why: `the plugin could not give ${worker.ref} the work (${failure})`, resumable: true, worker } } : null;
   }
 
@@ -1098,11 +1197,7 @@ export class PrWatcher {
     if (!live.length) return;
     const all = live.flatMap((s) => s.wakes);
     const text = live.map(({ wakes, route }) => {
-      const { worker } = route;
-      const next = route.resumable
-        ? `If it needs work, send it to ${worker!.ref} (initiative_message work:true, resumeCold:true) or to a fresh worker with handoffs:["${worker!.ref}"]; or leave it.`
-        : worker && worker.role === "work" ? `If it needs work, give it to a fresh worker with handoffs:["${worker.ref}"]; or leave it.` : "If it needs work, give it to a worker; or leave it.";
-      return `${route.why[0]!.toUpperCase()}${route.why.slice(1)}:\n\n${wakeBody(wakes)}\n\n${next}`;
+      return `${route.why[0]!.toUpperCase()}${route.why.slice(1)}:\n\n${wakeBody(wakes)}\n\n${nextStep(route.worker, route.resumable)}`;
     }).join("\n\n---\n\n");
     await this.sending(all, async () => {
       if (!project.coordinatorThreadId) throw new Error("the Adventure has no coordinator thread");

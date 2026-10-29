@@ -134,11 +134,10 @@ describe("W545 the plugin reruns a round its reviewer can't run", () => {
       pluginMetadata: { role: "fallback-reviewer", projectId: project.id, replaces: id },
     });
     const fallbackId = ((await f.spawn.mock.results.at(-1)!.value) as { id: string }).id;
-    // R2 P2: a first note before the stop, so the worker woken by BB's notice doesn't start one too.
-    const [first, note] = notes();
-    expect(notes()).toHaveLength(2);
-    expect(first).toMatchObject({ threadId: w.threadId, mode: "steer-if-active" });
-    expect(first!.input[0]!.text).toContain("The plugin is rerunning this round on the fallback reviewer (claude-opus-5-5 high) and will tell you here when it starts. Don't start a reviewer for this round yourself");
+    // T160: one note per switch, once the fallback has started; no "will tell you" note before it,
+    // which only woke an idle worker to wait (the brief already says to wait for the plugin).
+    const [note] = notes();
+    expect(notes()).toHaveLength(1);
     expect(note).toMatchObject({ threadId: w.threadId, mode: "steer-if-active" });
     const text = note!.input.map((part) => part.text).join("");
     expect(text).toContain("muse-wonder-1.0 xhigh is out of quota (usage limit) → round 2 rerun on claude-opus-5-5 high.");
@@ -262,8 +261,8 @@ describe("W545 review round 1 fixes", () => {
     f.intercept();
     expect(newSpawns()).toHaveLength(0);
     expect(f.store.hasFlag(fallbackFlag(id))).toBe(true);
-    expect(notes()).toHaveLength(2);
-    expect(notes()[1]!.input[0]!.text).toContain("The plugin could not rerun it on the fallback reviewer (claude-opus-5-5 high): archive refused. Run the round again with the fallback reviewer command from your brief");
+    expect(notes()).toHaveLength(1);
+    expect(notes()[0]!.input[0]!.text).toContain("The plugin could not rerun it on the fallback reviewer (claude-opus-5-5 high): archive refused. Run the round again with the fallback reviewer command from your brief");
   });
 
   it("reads only the failed turn's own error, not a retry notice or an earlier turn's", async () => {
