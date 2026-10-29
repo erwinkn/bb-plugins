@@ -9,6 +9,12 @@ and `bb.ops`/`bb.approve` add durable dispatch receipts and remote approvals.
 The token is owner-level — filesystem, terminals and plugin administration are
 all reachable. See [BB MCP](plugins/bb-mcp/README.md).
 
+`mcp-servers` connects any remote MCP server by URL (no auth, a static header,
+or OAuth 2.1 with discovery and dynamic registration) and gives its tools to
+every agent with their own names, descriptions, schemas and the server's
+instructions; Streamable HTTP with 2026-07-28/2025 negotiation, legacy SSE.
+See [MCP servers](plugins/mcp-servers/README.md).
+
 `plans` provides plan review with a per-thread
 review panel, comments, revision history, and feedback to the original agent. See
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
@@ -306,6 +312,24 @@ Record potential BB issues here for later review and filing. Never open
 issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
+
+### Agent tools: change a plugin's tool list without a reload, and reach live sessions (2026-10-29)
+
+Candidate from the MCP servers plugin (W552); not filed. A plugin that
+mirrors tools it learns at runtime (an MCP server's `tools/list`) can add a
+tool after activation, but cannot remove one or change its description or
+instructions; the only way is to reload itself (`bb.sdk.plugins.reload`),
+which drops in-flight calls. And no bridge tells a running session about new
+tools: the Claude bridge's `bb-bridge` server and the ACP relay advertise no
+`listChanged`, Codex and Pi fix tools at construction, so a change waits for
+the session's next build (30 min idle, Stop, restart).
+
+- **Smallest change:** `bb.agents.experimental_replaceTools(records)` (atomic
+  set of the plugin's tools, same validation as `registerTool`), plus
+  `notifications/tools/list_changed` from the Claude and ACP bridges' MCP
+  servers when a turn's resolved tools differ from the session's (the fork
+  already sends them on `turn/start`).
+- **Suggested issue title:** `Agent tools: replace a plugin's tools at runtime and notify live sessions (tools/list_changed)`.
 
 ### Inline visuals: four ideas from T3 Code (2026-10-28)
 

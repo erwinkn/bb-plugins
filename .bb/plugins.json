@@ -8,6 +8,10 @@
       "source": "./plugins/bb-mcp"
     },
     {
+      "name": "mcp-servers",
+      "source": "./plugins/mcp-servers"
+    },
+    {
       "name": "plans",
       "source": "./plugins/plans"
     },
