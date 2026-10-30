@@ -50,9 +50,8 @@ current instructions, the reviewer command and the rules), which replaces anythi
   and then stop, since nothing wakes you and nothing shows on the dashboard. A question for
   your lead goes in the summary, and your lead decides what happens next. If only the user
   can answer something, add `question`, `options`
-  (`[{label, consequences}]`) and `recommendation` (start it with the option's label). The
-  user picks an option, or writes their own, on the Adventure's Inbox; the answer comes back
-  to you or to your lead.
+  (`[{label, consequences}]`) and `recommendation` (start it with the option's label). Your
+  lead asks the user and continues you with their answer.
 - `initiative_message {to:"lead", text}` is for facts your lead needs now while you keep
   working; `to:"W4"` reaches a peer. No progress pings. `to:"coordinator"` also reaches your lead.
 - `initiative_read {view:"rules"}` lists the standing rules; `{refs:["W4"]}` reads a peer

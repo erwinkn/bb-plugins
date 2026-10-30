@@ -77,8 +77,6 @@ describe("v9 Workers tab", () => {
       W1420: { on: { threadId: "thr_r3", title: "Review r3 #2631", running: "active", since: NOW - 6 * 60_000 }, checked: true },
       W1373: { on: null, checked: true, children: 2 },
     };
-    o.blockers = [{ assignment: "A9", role: "work", tasks: [], owner: { worker: "W1406", label: "PDF Worker perf", threadId: "thr_W1406" },
-      question: "Split rendering into pages or move to a queue consumer?", context: "", options: [], recommendation: null, reportedAt: NOW - 3_600_000, answer: null }];
     o.tasks = [{ ref: "T163", title: "Human-steps query double-counts", status: "in_progress", statusReason: "W1420 on A1641", setByHand: false, summary: "", workers: ["W1420", "W1425"], updatedAt: NOW }];
     return o;
   }
@@ -87,15 +85,14 @@ describe("v9 Workers tab", () => {
     const { slot } = mount(fleet());
     fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
     expect(slot.getByRole("tab", { name: /Workers/ }).textContent).toBe("Workers5");
-    expect(slot.getByText("1 working · 1 waiting · 1 needs you · 1 done · 1 stopped · 7.9M tokens")).toBeTruthy();
+    expect(slot.getByText("1 working · 2 waiting · 1 done · 1 stopped · 7.9M tokens")).toBeTruthy();
     const rows = (group: string) => within(slot.getByRole("region", { name: group })).getAllByRole("button", { name: /^W\d+ / }).map((b) => b.getAttribute("aria-label"));
-    expect(rows("Needs you")).toEqual(["W1406 PDF Worker perf"]);
+    // W555: a blocked worker waits on the coordinator, which asks the user itself.
+    expect(slot.queryByRole("region", { name: "Needs you" })).toBeNull();
     expect(rows("Stopped")).toEqual(["W1247 Catalog binding fixes"]);
     expect(rows("Working")).toEqual(["W1425 Slot safety fixes"]);
-    expect(rows("Waiting")).toEqual(["W1420 Human-steps SQL fix"]);
+    expect(rows("Waiting")).toEqual(["W1406 PDF Worker perf", "W1420 Human-steps SQL fix"]);
     expect(rows("Done · PR waiting")).toEqual(["W1373 Enum cleanup"]);
-    const needs = slot.getByRole("region", { name: "Needs you" });
-    expect(within(needs).getByText("Blocked: Split rendering into pages or move to a queue consumer?")).toBeTruthy();
     const stopped = slot.getByRole("region", { name: "Stopped" });
     expect(within(stopped).getByText("Thread failed: provider 529")).toBeTruthy();
     expect(within(stopped).getByText("#2500")).toBeTruthy();
@@ -105,7 +102,8 @@ describe("v9 Workers tab", () => {
     expect(within(working).queryByText(/^from /)).toBeNull();
     const waiting = slot.getByRole("region", { name: "Waiting" });
     expect(within(waiting).getByText("Waiting on “Review r3 #2631” (running 6m)")).toBeTruthy();
-    expect(within(waiting).getByText("Opus 5.5 · high")).toBeTruthy();
+    expect(within(waiting).getByText("Blocked, waiting on the coordinator: Split rendering into pages or move to a queue consumer?")).toBeTruthy();
+    expect(within(waiting).getAllByText("Opus 5.5 · high")).toHaveLength(2);
   });
 
   it("opens each worker's thread and each child's thread from its row; only a waiting worker shows its children open", async () => {

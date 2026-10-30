@@ -1072,9 +1072,11 @@ to wait for their own checks inside the turn. There is
 no plugin inbox, batching or wake layer; routine progress is ledger state the
 coordinator reads when it next acts. Reported work stays in flight while its
 native thread is active, then shows as reported until the coordinator closes its
-task or retires the worker. A blocked report waits in the Inbox until the
-coordinator sends the worker more work, closes the task, or the user answers or
-dismisses it. Stop does not apply to reported work. A
+task or retires the worker. A blocked report goes only to the coordinator (W555):
+when only the user can answer, the coordinator asks them with `initiative_question`,
+passing on the worker's options and recommendation, so the user sees each question
+once. The worker shows as blocked, waiting on the coordinator, on the Workers tab;
+nothing of it reaches the Inbox or Needs you. Stop does not apply to reported work. A
 rejected assignment is closed: a late report from its worker is refused without
 a write, so the rejected report, its task and any successor stay as they are.
 The refusal names the worker's current assignment, or says its next brief is not
@@ -1098,7 +1100,8 @@ awaiting user review continue to permit work. An answer picks one listed option
 with optional detail, or Other with a written answer; the choice and note are
 stored on the decision. When the user answers an open question directly in a
 chat, the current coordinator or a current worker records it with
-`initiative_decision` action `answer` (or the same `bb initiative command`): it
+`initiative_decision` action `answer` (or the same `bb initiative command`); the
+coordinator also has `initiative_question {answered:"D12", text, choice?}` (W555). It
 closes that question as the user's choice, keeps the recording agent as
 provenance and never infers one. Dashboard answers notify the current
 coordinator by default with the D reference, choice and note, using native
@@ -1512,33 +1515,19 @@ keeps receipts 8 days, across plugin reloads. The page uses a key for 7 days; af
 that, sending the same again asks the user to check whether it was saved instead of
 silently running it a second time.
 
-The Inbox's Blocked workers card has two split buttons (T130). **Send to
-coordinator** records the answer as the user's decision and sends it to the
-coordinator, as before; its menu's **Send to W#** delivers it straight to the
-thread that reported the blocker, which continues the same assignment and reports
-again, and then queues the coordinator a short FYI (T132: the worker's receipt is
-`answer.delivery`, the FYI is the decision's ordinary coordinator notice; each is
-retried alone after a failure, never after an unconfirmed send, and an undelivered
-one stays under the Inbox's **Not delivered** once the card is gone). The coordinator is the
-default; the worker is the default only when there is no coordinator. **Dismiss**
-sends nothing; its menu's **Dismiss and tell coordinator…** opens the note field.
-The worker label (W#) in the card's header links the worker's thread. Native navigation, queues and authority guards remain BB's.
-
 **Dismiss all** at the top of the Inbox (W460) is for an Inbox already settled
-elsewhere. Its confirm counts what is shown, for example "Close 2 questions quietly
-and dismiss 1 blocker?", and sends only those items in one user-only
-`inbox-dismiss-all` command (`{questions: [refs], blockers: [{assignment, question,
-context}]}`); anything arriving meanwhile stays. Each item is its own quiet close
-(`question-close`, `blocker-dismiss` with `notify: false`), saved on its own: one
-refusal, such as a question answered meanwhile or a blocker that changed, leaves the
-rest closed and is named with its reason in the result notice. Nothing is sent, and
-a silent dismissal never retries another dismissal's failed coordinator notice. A
-closed question cannot be reopened; a dismissal has its usual Undo in Archive. The
-command is keyed like other appending writes, so a resend after a lost answer replays
-its receipt. Closed questions leave the view at once; dismissed blocker cards leave
-with the read that follows, because a replayed receipt can predate an Undo. Not
-delivered items have no quiet close (each needs a send, a retry or a removal), so
-they stay and the confirm says so.
+elsewhere. Its confirm counts what is shown, for example "Close 2 questions quietly?",
+and sends only those questions in one user-only `inbox-dismiss-all` command
+(`{questions: [refs]}`); anything arriving meanwhile stays. Each is its own quiet close
+(`question-close`), saved on its own: one refusal, such as a question answered
+meanwhile, leaves the rest closed and is named with its reason in the result notice.
+Nothing is sent, and a closed question cannot be reopened. The command is keyed like
+other appending writes, so a resend after a lost answer replays its receipt. Held
+messages under **Not delivered** have no quiet close (each needs a send or a removal),
+so they stay and the confirm says so. W555 removed the worker blocker card and its
+answer, dismissal and undo commands (`blocker-answer`, `blocker-dismiss`,
+`blocker-dismiss-undo`); older blocker answers and dismissals stay in Archive as plain
+decisions.
 
 A command returns after its durable save and any required native receipt, without
 awaiting optional dashboard or Sidebar refreshes. The UI displays that committed

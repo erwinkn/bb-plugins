@@ -6,7 +6,6 @@ import { installTestPluginRuntime, loadPluginApp, renderSlot } from "@get-bb/plu
 import { memoryStore, settledChildPage } from "./helpers";
 import { projectFixture } from "./fake-native";
 import { buildOverview, type Overview, type WorkerChild, type WorkerItem } from "../lib/overview";
-import { needsYouCount } from "../lib/blockers";
 
 // W465: Needs you holds only what waits on the user, ended work goes to Stopped; a retired row
 // leaves at once and hands focus to its neighbour without scrolling; child-thread toggles say
@@ -37,12 +36,6 @@ const worker = (ref: string, over: Partial<WorkerItem> = {}): WorkerItem => ({
 const report = (outcome: "done" | "blocked" | "failed", summary: string, question: string | null = null) => ({
   ref: "A9", outcome, summary, question, reportedAt: NOW - 3_600_000, preSwitch: null,
 });
-type Blocker = Overview["blockers"][number];
-const blocker = (ref: string, question: string, answer: Blocker["answer"] = null): Blocker => ({
-  assignment: `A${ref.slice(1)}`, role: "work", tasks: [], owner: { worker: ref, label: `${ref} label`, threadId: `thr_${ref}` },
-  question, context: "", options: [], recommendation: null, reportedAt: NOW - 3_600_000, answer,
-});
-const answered = { ref: "D1", note: "Pages.", at: NOW, to: "coordinator" as const, delivery: null, notification: null } as unknown as Blocker["answer"];
 const child = (n: number, children: number | null): WorkerChild => ({
   threadId: `c${n}`, title: `Helper ${n}`, status: "idle", archived: false, running: null, providerId: null, updatedAt: NOW - 60_000, children,
 });
@@ -62,56 +55,51 @@ const rows = (slot: ReturnType<typeof renderSlot>, group: string) =>
   within(slot.getByRole("region", { name: group })).getAllByRole("button", { name: /^W\d+ / }).map((b) => b.getAttribute("aria-label"));
 
 describe("W465 Needs you means the user has to act", () => {
-  it("failed threads and cancelled work go to Stopped; only an open, unanswered blocker needs you; an answered or dismissed one, and idle open work with no report, wait", async () => {
+  it("failed threads and cancelled work go to Stopped; a blocked worker (W555: on the coordinator) and idle open work with no report wait", async () => {
     const o = base();
     o.workers.current = [
       worker("W1", { label: "Asking", latestReport: report("blocked", "CPU capped.", "Pages or a queue?") }),
       worker("W2", { label: "Crashed", runtime: "error", stopReason: "claude-code exited with code 0" }),
       worker("W3", { label: "Cancelled", stopReason: "Stopped: Replaced by W12" }),
       worker("W4", { label: "Went quiet", open: { ref: "A4", state: "idle_no_report", tasks: [] } }),
-      worker("W5", { label: "Answered", latestReport: report("blocked", "Unsure.", "Which table?") }),
-      worker("W6", { label: "Dismissed", latestReport: report("blocked", "Unsure.", "Which column?") }),
+      worker("W5", { label: "On its lead", latestReport: report("blocked", "Unsure which table.") }),
       worker("W7", { label: "Gave up", latestReport: report("failed", "Tests never pass.") }),
       worker("W8", { label: "Crashed while asking", runtime: "failed", latestReport: report("blocked", "Stuck.", "Retry?") }),
       worker("W9", { label: "Done then cancelled", stopReason: "Stopped: Superseded", latestReport: report("done", "Shipped.") }),
     ];
-    // W5's blocker is answered and W6's dismissed (the Inbox no longer lists it); W8's is open.
-    o.blockers = [blocker("W1", "Pages or a queue?"), blocker("W5", "Which table?", answered), blocker("W8", "Retry?")];
     const slot = await workersTab(o);
-    expect(rows(slot, "Needs you")).toEqual(["W1 Asking", "W8 Crashed while asking"]);
-    expect(rows(slot, "Needs you").length).toBe(needsYouCount(o));
+    expect(slot.queryByRole("region", { name: "Needs you" })).toBeNull();
     // W498: W4 went idle on open work without a report; it waits, it has not stopped.
-    expect(rows(slot, "Waiting")).toEqual(["W4 Went quiet", "W5 Answered", "W6 Dismissed"]);
-    expect(rows(slot, "Stopped")).toEqual(["W2 Crashed", "W3 Cancelled", "W7 Gave up", "W9 Done then cancelled"]);
-    expect(slot.getByText("3 waiting · 2 need you · 4 stopped")).toBeTruthy();
+    expect(rows(slot, "Waiting")).toEqual(["W1 Asking", "W4 Went quiet", "W5 On its lead"]);
+    expect(rows(slot, "Stopped")).toEqual(["W2 Crashed", "W3 Cancelled", "W7 Gave up", "W8 Crashed while asking", "W9 Done then cancelled"]);
+    expect(slot.getByText("3 waiting · 5 stopped")).toBeTruthy();
     const waiting = within(slot.getByRole("region", { name: "Waiting" }));
-    expect(waiting.getByText("Waiting on the coordinator: Which table? · you answered")).toBeTruthy();
-    expect(waiting.getByText("Waiting on the coordinator: Which column?")).toBeTruthy();
+    expect(waiting.getByText("Blocked, waiting on the coordinator: Pages or a queue?")).toBeTruthy();
+    expect(waiting.getByText("Blocked, waiting on the coordinator: Unsure which table.")).toBeTruthy();
     expect(waiting.getByText("Idle, no report")).toBeTruthy();
     // Nothing runs on a worker waiting on its coordinator: no working glyph.
-    expect(slot.getByRole("button", { name: "W5 Answered" }).closest("li")!.querySelector(".cr-w-status")).toBeNull();
+    expect(slot.getByRole("button", { name: "W1 Asking" }).closest("li")!.querySelector(".cr-w-status")).toBeNull();
     const stopped = within(slot.getByRole("region", { name: "Stopped" }));
     for (const text of ["Thread failed: claude-code exited with code 0", "Stopped: Replaced by W12",
-      "Failed: Tests never pass.", "Stopped: Superseded"])
+      "Failed: Tests never pass.", "Stopped: Superseded", "Thread failed"])
       expect(stopped.getByText(text)).toBeTruthy();
-    expect(within(slot.getByRole("region", { name: "Needs you" })).getByText("Blocked: Retry?")).toBeTruthy();
     expect(stopped.getByRole("button", { name: "Retire all" })).toBeTruthy();
     expect(slot.queryByRole("region", { name: "Idle · nothing open" })).toBeNull();
   });
 });
 
 describe("W465 Stop follows what runs, not the group", () => {
-  it("a worker that needs you keeps Stop while its thread or a child runs", async () => {
+  it("a blocked worker keeps Stop while its thread or a child runs", async () => {
     const o = base();
     o.workers.current = [
       worker("W1", { label: "Busy asker", runtime: "active", latestReport: report("blocked", "Stuck.", "Which?") }),
       worker("W2", { label: "Child asker", latestReport: report("blocked", "Stuck.", "Where?") }),
       worker("W3", { label: "Quiet asker", latestReport: report("blocked", "Stuck.", "When?") }),
     ];
-    o.blockers = [blocker("W1", "Which?"), blocker("W2", "Where?"), blocker("W3", "When?")];
     o.workerWaiting = { W2: { on: { threadId: "thr_r1", title: "Review r1", running: "active", since: NOW - 60_000 }, checked: true, children: 1 } };
     const slot = await workersTab(o);
-    expect(rows(slot, "Needs you")).toEqual(["W1 Busy asker", "W2 Child asker", "W3 Quiet asker"]);
+    expect(rows(slot, "Working")).toEqual(["W1 Busy asker"]);
+    expect(rows(slot, "Waiting")).toEqual(["W2 Child asker", "W3 Quiet asker"]);
     const menuFor = (name: string) => {
       fireEvent.contextMenu(slot.getByRole("button", { name }));
       const list = slot.getAllByRole("menuitem").map((b) => b.textContent);

@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 const NOW = Date.now();
-const facts = (over: Partial<WorkerFacts> = {}): WorkerFacts => ({ asksUser: false, runtime: "idle", waiting: false, open: false, stopReason: false, outcome: null, ...over });
+const facts = (over: Partial<WorkerFacts> = {}): WorkerFacts => ({ runtime: "idle", waiting: false, open: false, stopReason: false, outcome: null, ...over });
 
 describe("the idle, no-report status", () => {
   it("idle with open work and no report waits; it is neither working nor needs you", () => {
@@ -40,8 +40,8 @@ describe("the idle, no-report status", () => {
     expect(workerGroup(facts({ outcome: "blocked" }))).toBe("waiting");
     expect(workerKind(facts({ outcome: "failed" }))).toBe("reported");
     expect(workerGroup(facts({ outcome: "failed" }))).toBe("stopped");
-    // A blocker still open in the Inbox needs the user, whatever the thread does.
-    expect(workerGroup(facts({ outcome: "blocked", asksUser: true }))).toBe("needs");
+    // W555: a blocked worker never waits on the user directly, so a running one is working.
+    expect(workerGroup(facts({ outcome: "blocked", runtime: "active" }))).toBe("working");
   });
   it("open work that cannot wake keeps Stopped: a failed, archived or deleted thread, or stopped work", () => {
     for (const over of [{ runtime: "error" }, { runtime: "archived" }, { runtime: "deleted" }, { stopReason: true }])

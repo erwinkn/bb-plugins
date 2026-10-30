@@ -240,7 +240,7 @@ export const reportSchema = z
       .object({
         question: line(1000),
         context: line(2000),
-        /** W476: what the user can pick in the Inbox, and the worker's pick; stored beside the report (assignments.blocker_options). */
+        /** W476: what the user can pick, which the coordinator asks them (W555), and the worker's pick; stored beside the report (assignments.blocker_options). */
         options: answerOptionsSchema.optional(),
         recommendation: z.string().max(1000).optional(),
       })
@@ -253,7 +253,7 @@ export const reportSchema = z
     /** D417: recorded from the final message of a worker that never filed it; never sent. */
     captured: z.literal(true).optional(),
   })
-  // W492: a blocked report without a blocker waits on its lead; only a blocker reaches the user's Inbox.
+  // W492: a blocked report without a blocker waits on its lead; W555: one with a blocker too, and the lead asks the user.
   .strict();
 export type Report = z.infer<typeof reportSchema>;
 

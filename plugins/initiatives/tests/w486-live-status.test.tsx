@@ -41,15 +41,15 @@ const host = (id: string, over: Partial<PluginSidebarThread> = {}): PluginSideba
   createdAt: 1, updatedAt: 1, lastReadAt: 1, latestAttentionAt: 1, ...over,
 });
 const quiet = { isArchived: false, hasPendingInteraction: false, indicator: "none", activity: {} } satisfies HostThread;
-const facts = (over: Partial<WorkerFacts> = {}): WorkerFacts => ({ asksUser: false, runtime: "idle", waiting: false, open: false, stopReason: false, outcome: null, ...over });
+const facts = (over: Partial<WorkerFacts> = {}): WorkerFacts => ({ runtime: "idle", waiting: false, open: false, stopReason: false, outcome: null, ...over });
 
 describe("worker group derivation", () => {
-  it("orders asks the user, running, waiting, failed, idle with no report, open, stopped, done, on the coordinator, reported, none", () => {
+  it("orders input, running, waiting, failed, idle with no report, open, stopped, done, on the coordinator, reported, none", () => {
     const kinds = [
-      { asksUser: true, runtime: "active" }, { runtime: "active", open: true }, { waiting: true, open: true, outcome: "done" },
+      { runtime: "waiting-for-input", open: true }, { runtime: "active", open: true }, { waiting: true, open: true, outcome: "done" },
       { runtime: "error", outcome: "done" }, { open: true }, { runtime: "archived", open: true }, { stopReason: true, outcome: "done" }, { outcome: "done" }, { outcome: "blocked" }, { outcome: "failed" }, {},
     ].map((over) => workerKind(facts(over)));
-    expect(kinds).toEqual(["asksUser", "running", "waiting", "failed", "idleNoReport", "open", "stopReason", "done", "onCoordinator", "reported", "none"]);
+    expect(kinds).toEqual(["input", "running", "waiting", "failed", "idleNoReport", "open", "stopReason", "done", "onCoordinator", "reported", "none"]);
     expect(workerGroup(facts({ runtime: "failed" }))).toBe("stopped");
   });
 });
@@ -194,7 +194,7 @@ describe("the Threads sidebar and the Workers tab agree", () => {
   ];
   const servers: [string, Partial<WorkerFacts>][] = [
     ["stale active, open work", { runtime: "active", open: true }], ["idle, open work", { open: true }], ["stale active, queued child", { runtime: "active", waiting: true }],
-    ["idle, done report", { outcome: "done" }], ["idle, nothing", {}], ["errored", { runtime: "error" }], ["asking the user", { asksUser: true, runtime: "active" }],
+    ["idle, done report", { outcome: "done" }], ["idle, nothing", {}], ["errored", { runtime: "error" }], ["blocked, still running", { outcome: "blocked", runtime: "active" }],
     ["blocked, on the coordinator", { outcome: "blocked" }],
   ];
   const kids: [string, PluginSidebarThread[]][] = [
@@ -221,6 +221,6 @@ describe("the Threads sidebar and the Workers tab agree", () => {
           const tab = workerGroup({ ...f, runtime: live.workers.current[0]!.runtime, waiting: !!live.workerWaiting?.W1?.on });
           const sidebar = adventureRows(project as never, threads, [], [{ ref: "W1", profile: null, ...variants }], "worker").workers[0]!.group;
           expect(sidebar).toBe(tab);
-          if (patch.indicator === "unread-error" && !f.asksUser && !below.length) expect(tab).not.toBe("working");
+          if (patch.indicator === "unread-error" && !below.length) expect(tab).not.toBe("working");
         });
 });

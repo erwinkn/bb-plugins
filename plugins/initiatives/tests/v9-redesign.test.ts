@@ -82,7 +82,7 @@ describe("v9 §3 the worker owns its review loop", () => {
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("if a standing rule or the user's explicit instruction settles it, answer the worker and let it keep reviewing");
     // W498 (R5): no 4- or 6-round limit is left in either default.
     for (const text of [DEFAULT_WORKER_INSTRUCTIONS, DEFAULT_COORDINATOR_INSTRUCTIONS]) expect(text).not.toMatch(/\b[46] (more )?(review )?rounds|after round \d|At most \d/);
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Otherwise ask the user with initiative_question.");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Otherwise ask the user with initiative_question, with the worker's options and recommendation");
   });
 
   it("a brief ends with the reviewer command of the other family and the rules; every work message with the whole loop", async () => {

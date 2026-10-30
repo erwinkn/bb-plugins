@@ -4,7 +4,6 @@ import type { WorkerGroup } from "./worker-group";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { BUSY_STATUSES, type Running } from "./bb";
 import type { WaitingOn } from "./context";
-import { blockerAnswerItem, blockerKey, dismissalItem, openBlockers, undismissed } from "./blockers";
 import { describeProfile } from "./policy";
 import { buildUsage, unloadedUsage, type InitiativeUsage } from "./usage";
 import type {
@@ -18,7 +17,6 @@ import type {
 import type {
   AssignmentRecord,
   DecisionRecord,
-  Delivery,
   OverviewAssignment,
   Provenance,
   Store,
@@ -102,52 +100,6 @@ export interface AwaitingItem {
   finalMessage: string | null;
   reportedAt: number | null;
   checkpoint?: AssignmentRecord["checkpoint"];
-}
-
-/** D386: a blocked report the coordinator has not acted on; it waits on the user until answered. */
-export interface BlockerItem {
-  assignment: string;
-  role: Role;
-  tasks: TaskLink[];
-  owner: { worker: string; label: string; threadId: string | null };
-  question: string;
-  context: string;
-  /** W476: the report's options and the worker's recommendation; none on older reports. */
-  options: { label: string; consequences: string }[];
-  recommendation: string | null;
-  reportedAt: number | null;
-  /**
-   * The user's answer, kept until the coordinator acts on the report. choice:
-   * the option picked (W476). to: who received it (T130). delivery: the
-   * worker's receipt; notification: the coordinator's notice, or for a worker
-   * answer its FYI (T132). inChat: the user gave it in the coordinator's chat,
-   * and the coordinator recorded it (W488).
-   */
-  answer: { ref: string; choice: string | null; note: string; at: number; to: "coordinator" | "worker"; delivery: Delivery | null; notification: DecisionRecord["notification"]; inChat: boolean } | null;
-}
-
-/** T132: the user's blocker answer as its decision row carries it, so an undelivered one can retry after its card is gone. */
-export interface BlockerAnswerItem {
-  assignment: string;
-  /** The answered worker's W#, when the summary still lists it. */
-  worker: string | null;
-  question: string;
-  context: string;
-  choice: string | null;
-  note: string;
-  to: "coordinator" | "worker";
-  delivery: Delivery | null;
-}
-
-/** T128: a blocker the user dismissed, as its decision row carries it; the assignment and blocker let a failed notice retry. */
-export interface DismissalItem {
-  assignment: string;
-  question: string;
-  context: string;
-  note: string;
-  notify: boolean;
-  at: number;
-  undoneAt: number | null;
 }
 
 export interface RemainingItem {
@@ -345,8 +297,6 @@ export interface Overview {
   updates: { ref: string; summary: string; body: string; createdAt: number }[];
   inFlight: InFlightItem[];
   awaitingAcceptance: AwaitingItem[];
-  /** Unresolved blocked reports, oldest first; unanswered ones count toward Needs you. */
-  blockers: BlockerItem[];
   remaining: RemainingItem[];
   opinionNeeded: OpinionItem[];
   revisit: RevisitItem[];
@@ -369,7 +319,7 @@ export interface Overview {
     live: { status: string; archived: boolean; title: string | null } | null;
     createdAt: number;
   }[];
-  decisions: { acceptEligible?: boolean; ref: string; description: string; madeBy: "user" | "agent"; review: "pending" | "okay" | "not-okay" | null; reviewMessage: string | null; notification: DecisionRecord["notification"]; recordedBy: DecisionRecord["provenance"]; updatedAt: number; dismissal?: DismissalItem; blockerAnswer?: BlockerAnswerItem }[];
+  decisions: { acceptEligible?: boolean; ref: string; description: string; madeBy: "user" | "agent"; review: "pending" | "okay" | "not-okay" | null; reviewMessage: string | null; notification: DecisionRecord["notification"]; recordedBy: DecisionRecord["provenance"]; updatedAt: number }[];
   usage: InitiativeUsage;
   /** Recorded members with native parent facts; separate from tree v1. */
   memberThreads: (InitiativeUsage["threads"][number] & {
@@ -594,34 +544,6 @@ export function buildOverview(
       };
     })
     .sort((a, b) => (a.reportedAt ?? 0) - (b.reportedAt ?? 0));
-
-  const blockerAnswers = new Map(
-    decisions.flatMap((item) => (item.body.blocker && item.body.answer ? [[blockerKey(item.body.blocker.assignment, item.body.blocker), item] as const] : [])),
-  );
-  const dismissedBlockers = new Set(
-    decisions.flatMap((item) => (item.status === "active" && item.body.blocker && item.body.dismissal ? [blockerKey(item.body.blocker.assignment, item.body.blocker)] : [])),
-  );
-  const blockers: BlockerItem[] = undismissed(
-    openBlockers(assignments.map((a) => ({ ...a, outcome: a.report?.outcome ?? null })), closedTask, (num) => workerByNum.get(num)?.state === "retired"),
-    (a) => a.report?.blocker,
-    dismissedBlockers,
-  ).map((assignment) => {
-    const worker = workerByNum.get(assignment.workerNum)!;
-    const blocker = assignment.report?.blocker;
-    const answer = blocker ? blockerAnswers.get(blockerKey(assignment.num, blocker)) : undefined;
-    return {
-      assignment: assignment.ref,
-      role: assignment.role,
-      tasks: (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(link),
-      owner: { worker: worker.ref, label: worker.label, threadId: assignment.threadId },
-      question: blocker?.question ?? assignment.report?.summary ?? "",
-      context: blocker?.context ?? "",
-      options: blocker?.options ?? [],
-      recommendation: blocker?.recommendation ?? null,
-      reportedAt: assignment.reportedAt,
-      answer: answer ? { ref: answer.ref, choice: answer.body.answer?.choice ?? null, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", delivery: answer.body.answer?.delivery ?? null, notification: answer.notification, inChat: answer.provenance.author !== "user" } : null,
-    };
-  });
 
   const openDecisions = decisions.filter(
     (item) => item.status === "active",
@@ -917,7 +839,6 @@ export function buildOverview(
     })),
     inFlight,
     awaitingAcceptance,
-    blockers,
     remaining,
     opinionNeeded,
     revisit,
@@ -988,10 +909,8 @@ export function buildOverview(
     // The summary keeps what the Inbox acts on: unchecked agent decisions and
     // undelivered answer notifications.
     decisions: decisions.filter(item => item.madeBy !== null && item.status !== "removed" &&
-      (history || item.madeBy === "agent" && item.review === "pending" || unresolvedNotification(item) || unresolvedDelivery(item))).map(item => ({
+      (history || item.madeBy === "agent" && item.review === "pending" || unresolvedNotification(item))).map(item => ({
       acceptEligible: isAcceptableAgentDecision(item), ref: item.ref, description: item.description, madeBy: item.madeBy!, review: item.review, reviewMessage: item.reviewMessage, notification: item.notification, recordedBy: item.provenance, updatedAt: item.updatedAt,
-      ...(item.body.dismissal && item.body.blocker ? { dismissal: dismissalItem(item.body.blocker, item.body.dismissal) } : {}),
-      ...(item.body.answer && item.body.blocker ? { blockerAnswer: blockerAnswerItem(item.body.blocker, item.body.answer, workerByNum.get(assignments.find((a) => a.num === item.body.blocker!.assignment)?.workerNum ?? -1)?.ref ?? null) } : {}),
     })),
     usage,
     memberThreads: usage.threads.map((thread) => {
@@ -1023,8 +942,6 @@ export function buildOverview(
 
 const unresolvedNotification = (item: DecisionRecord) =>
   !!item.notification && ["failed", "pending", "uncertain"].includes(item.notification.state);
-const unresolvedDelivery = (item: DecisionRecord) =>
-  ["failed", "pending", "uncertain"].includes(item.body.answer?.delivery?.state ?? "");
 
 /** Threads whose live status the dashboard shows. */
 export function threadsToWatch(store: Store, projectId: string): string[] {
@@ -1053,31 +970,6 @@ export function endedNestedThreads(store: Store, projectId: string): Map<string,
   return new Map(store.nestedProjectThreads(projectId).flatMap((t) => (t.ended ? [[t.threadId, t.ended] as const] : [])));
 }
 
-/** Unanswered open blockers, from the few columns `openBlockers` reads. */
-function summaryBlockers(store: Store, projectId: string, tasks: { num: number; status: string }[]) {
-  const rows = store.db.prepare("SELECT num, worker_num, role, task_nums, review_of, state FROM assignments WHERE project_id=? ORDER BY num").all(projectId) as { num: number; worker_num: number; role: "work" | "review"; task_nums: string; review_of: string | null; state: string }[];
-  // openBlockers keeps a blocked report only while it is a live worker's latest assignment that
-  // did not fail: read those few reports, not the whole history.
-  const retired = new Set(store.retiredWorkerNums(projectId));
-  const latest = new Map<number, number>();
-  for (const row of rows) if (row.state !== "failed") latest.set(row.worker_num, row.num);
-  const candidates = rows.filter((row) => row.state === "reported" && latest.get(row.worker_num) === row.num && !retired.has(row.worker_num)).map((row) => row.num);
-  const reports = new Map((store.db.prepare("SELECT num, CASE WHEN json_valid(report) THEN json_extract(report, '$.outcome') END AS outcome, CASE WHEN json_valid(report) AND blocked_on_lead IS NOT report_seq THEN json_extract(report, '$.blocker.question') END AS question, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.context') END AS context FROM assignments WHERE project_id=? AND num IN (SELECT value FROM json_each(?))").all(projectId, JSON.stringify(candidates)) as { num: number; outcome: string | null; question: string | null; context: string | null }[]).map((r) => [r.num, r]));
-  if (![...reports.values()].some((r) => r.outcome === "blocked")) return 0;
-  const settled = store.db.prepare("SELECT json_extract(body, '$.blocker.assignment') AS assignment, json_extract(body, '$.blocker.question') AS question, json_extract(body, '$.blocker.context') AS context, json_extract(body, '$.dismissal') IS NOT NULL AS dismissal FROM knowledge WHERE project_id=? AND kind='decision' AND status NOT IN ('superseded','removed') AND json_valid(body) AND json_extract(body, '$.blocker') IS NOT NULL AND (json_extract(body, '$.dismissal') IS NULL OR status='active')").all(projectId) as { assignment: number; question: string; context: string; dismissal: number }[];
-  const keys = (dismissal: boolean) => new Set(settled.filter((row) => !!row.dismissal === dismissal).map((row) => blockerKey(row.assignment, row)));
-  const answered = keys(false);
-  const closed = new Set(tasks.filter((t) => ["done", "cancelled"].includes(t.status)).map((t) => t.num));
-  return undismissed(openBlockers(
-    rows.map((row) => {
-      const report = reports.get(row.num);
-      return { num: row.num, workerNum: row.worker_num, role: row.role, taskNums: JSON.parse(row.task_nums) as number[], reviewOf: row.review_of ? (JSON.parse(row.review_of) as number[]) : null, state: row.state, outcome: report?.outcome ?? null, blocker: report?.question == null ? null : { question: report.question, context: report.context ?? "" } };
-    }),
-    (num) => closed.has(num),
-    (num) => retired.has(num),
-  ), (row) => row.blocker, keys(true)).filter((row) => !row.blocker || !answered.has(blockerKey(row.num, row.blocker))).length;
-}
-
 /** Compact list/tree projection, without parsing report bodies or telemetry histories. */
 export function buildSummary(store: Store, projectId: string) {
   const project = store.project(projectId)!;
@@ -1088,11 +980,10 @@ export function buildSummary(store: Store, projectId: string) {
   const tasks = store.tasks(projectId).map((t) => ({ num: t.num, status: t.status }));
   const attention = store.db.prepare("SELECT human_attention,decision_owner,decision_review FROM knowledge WHERE project_id=? AND status='active' AND kind='decision'").all(projectId) as { human_attention: string; decision_owner: string | null; decision_review: string | null }[];
   const opinions = attention.filter(d => d.human_attention === "needs-opinion").length;
-  const blocked = summaryBlockers(store, projectId, tasks);
   return { id: project.id, name: project.name, objective: project.objective, paused: project.paused,
     coordinatorThreadId: project.coordinatorThreadId, memberProjectIds: project.memberProjectIds,
     inFlight: active.length, remaining: tasks.filter(t => !["done", "cancelled"].includes(t.status) && !assigned.has(t.num)).length,
-    opinions, needsYou: opinions + blocked,
+    opinions, needsYou: opinions,
     revisit: attention.filter(d => d.decision_owner === "agent" && d.decision_review === "pending").length,
     appearance: project.appearance };
 }

@@ -156,18 +156,15 @@ function Opinion({
   );
 }
 
-type DismissAllResult = { closed: unknown[]; dismissed: unknown[]; failed: { ref: string; error: string }[] };
-/** W460: what Dismiss all saved, and each item it left open with the reason. */
-function dismissAllNotice({ closed, dismissed, failed }: DismissAllResult) {
+type DismissAllResult = { closed: unknown[]; failed: { ref: string; error: string }[] };
+/** W460: what Dismiss all saved, and each question it left open with the reason. */
+function dismissAllNotice({ closed, failed }: DismissAllResult) {
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-  const done = [
-    closed.length ? `${plural(closed.length, "question")} closed quietly` : null,
-    dismissed.length ? `${plural(dismissed.length, "blocker")} dismissed` : null,
-  ].filter(Boolean).join(" and ");
+  const done = closed.length ? `${plural(closed.length, "question")} closed quietly` : null;
   const open = failed.map((f) => f.error.includes(f.ref) ? f.error : `${f.ref}: ${f.error}`).join(" ");
   return {
     urgent: failed.length > 0,
-    text: `${done ? `Inbox: ${done}; nothing sent.` : "Inbox: nothing closed."}${failed.length ? ` ${plural(failed.length, "item")} left open. ${open}` : ""}`,
+    text: `${done ? `Inbox: ${done}; nothing sent.` : "Inbox: nothing closed."}${failed.length ? ` ${plural(failed.length, "question")} left open. ${open}` : ""}`,
   };
 }
 

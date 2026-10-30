@@ -57,12 +57,7 @@ function fleet() {
   ];
   o.workers.retired = [worker("W0", { label: "Clerk follow-up", state: "retired" })];
   o.workerWaiting = Object.fromEntries(o.workers.current.map((w) => [w.ref, { on: null, checked: true, children: 0 }]));
-  // W1's blocker is open in the Inbox: it needs the user.
-  o.blockers = [blocker("W1", "Pages or a queue?")];
   return o;
-}
-function blocker(ref: string, question: string, answer: Overview["blockers"][number]["answer"] = null): Overview["blockers"][number] {
-  return { assignment: "A9", role: "work", tasks: [], owner: { worker: ref, label: `${ref} label`, threadId: `thr_${ref}` }, question, context: "", options: [], recommendation: null, reportedAt: NOW - 3_600_000, answer };
 }
 function mount(o: Overview, command = vi.fn().mockResolvedValue({}), overview = () => o) {
   const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, { rpc: { inventory: () => [], list: () => [], overview, command,
@@ -80,16 +75,17 @@ const sent = (command: ReturnType<typeof vi.fn>, n = 0) => command.mock.calls[n]
 const items = (slot: ReturnType<typeof renderSlot>) => slot.getAllByRole("menuitem").map((b) => b.textContent);
 
 describe("W462 grouping and rows", () => {
-  it("keeps open blockers in Needs you, ended work in Stopped, and quiet workers with nothing open in Idle", async () => {
+  it("keeps blocked workers in Waiting (W555: on the coordinator), ended work in Stopped, and quiet workers with nothing open in Idle", async () => {
     const { slot } = await workersTab();
-    expect(slot.getByText("1 working · 1 needs you · 1 done · 2 stopped · 1 idle")).toBeTruthy();
+    expect(slot.getByText("1 working · 1 waiting · 1 done · 2 stopped · 1 idle")).toBeTruthy();
     const rows = (group: string) => within(slot.getByRole("region", { name: group })).getAllByRole("button", { name: /^W\d+ / }).map((b) => b.getAttribute("aria-label"));
-    expect(rows("Needs you")).toEqual(["W1 PDF perf"]);
+    expect(slot.queryByRole("region", { name: "Needs you" })).toBeNull();
+    expect(rows("Waiting")).toEqual(["W1 PDF perf"]);
     expect(rows("Stopped")).toEqual(["W2 Stalled fix", "W4 Old fixer"]);
     expect(rows("Idle · nothing open")).toEqual(["W3 #3058 fresh review"]);
-    const needs = within(slot.getByRole("region", { name: "Needs you" }));
-    expect(needs.getByText("Blocked: Pages or a queue?")).toBeTruthy();
-    expect(needs.queryByRole("button", { name: "Retire all" })).toBeNull();
+    const waiting = within(slot.getByRole("region", { name: "Waiting" }));
+    expect(waiting.getByText("Blocked, waiting on the coordinator: Pages or a queue?")).toBeTruthy();
+    expect(waiting.queryByRole("button", { name: "Retire all" })).toBeNull();
     const stopped = within(slot.getByRole("region", { name: "Stopped" }));
     expect(stopped.getByText("Thread failed")).toBeTruthy();
     expect(stopped.getByText("Stopped: Superseded by W9")).toBeTruthy();

@@ -11,8 +11,7 @@ import {
   type TextareaHTMLAttributes,
 } from "react";
 import { Markdown, useRealtime } from "@get-bb/plugin-sdk/app";
-import type { BlockerItem, Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
-import { needsYouCount } from "./lib/blockers";
+import type { Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
 import { BUSY_THREAD, workerKind, KIND_GROUP, type WorkerGroup as LiveGroup } from "./lib/worker-group";
 import { MAX_RULES, RULE_MAX_CHARACTERS } from "./lib/rules";
 import type { Command } from "./lib/commands";
@@ -490,18 +489,12 @@ export function ControlRoom({
   const failed = FAILED_STATUSES.includes(p.coordinatorStatus);
   const active = ["active", "starting", "stopping"].includes(p.coordinatorStatus);
   const cState = `${p.coordinatorStatus}${p.paused ? "; Initiative paused" : ""}`;
-  // Open questions and blocked reports wait on the user: shown before anything else.
-  const needsYou = needsYouCount(o);
-  // A dismissal leaves the Inbox, unless telling the coordinator did not go
-  // through; so does an answered blocker once its card is gone (T132).
-  const undeliveredState = (r: Receipt) => r?.state === "failed" || r?.state === "uncertain";
-  const carded = new Set(o.blockers.flatMap(b => b.answer ? [b.answer.ref] : []));
-  const undelivered = o.decisions.filter(d =>
-    d.dismissal?.notify && !d.dismissal.undoneAt && undeliveredState(d.notification) ||
-    d.blockerAnswer && !carded.has(d.ref) && (undeliveredState(d.notification) || undeliveredState(d.blockerAnswer.delivery)));
+  // Open questions wait on the user: shown before anything else. W555: a worker's blocker
+  // reaches the user only as the coordinator's question, so it is never counted twice.
+  const needsYou = o.opinionNeeded.length;
   // Messages BB is holding for members with nothing running to deliver them (T133).
   const held = o.notDelivered ?? [];
-  const inboxCount = o.opinionNeeded.length + o.blockers.length + undelivered.length + held.length;
+  const inboxCount = o.opinionNeeded.length + held.length;
   const shownTabs = [
     ...(mergeQueue ? mainTabs : mainTabs.filter(([id]) => id !== "prs")),
     ...moreTabs.filter(([id]) => id === tab),
@@ -706,8 +699,8 @@ export function ControlRoom({
         >
           <KeepTab current={tab} id="inbox">
             <div className="cr-inbox">
-              {o.opinionNeeded.length || o.blockers.length
-                ? <DismissAll questions={o.opinionNeeded} blockers={o.blockers} left={undelivered.length + held.length} run={run} />
+              {o.opinionNeeded.length
+                ? <DismissAll questions={o.opinionNeeded} left={held.length} run={run} />
                 : null}
               {o.opinionNeeded.length ? (
                 <section aria-label="Questions" onKeyDown={moveBetweenFolds}>
@@ -729,34 +722,8 @@ export function ControlRoom({
                   ))}
                 </section>
               ) : null}
-              {o.blockers.length ? (
-                <section aria-label="Blocked workers" onKeyDown={moveBetweenFolds}>
-                  <h2 className="cr-section-heading">Blocked workers <span className="cr-count">{o.blockers.length}</span></h2>
-                  {o.blockers.map((item, index) => (
-                    <Fold group={`${prefix}-inbox`}
-                      key={item.assignment}
-                      title={
-                        <>
-                          <span className="cr-kind cr-kind--blocked" aria-hidden="true">!</span>
-                          {item.owner.label} is blocked
-                        </>
-                      }
-                      meta={<span className="cr-inbox-meta">{item.owner.threadId ? (
-                        // A link inside the summary: it opens the worker without toggling the fold.
-                        <a className="cr-worker-link" href="#" title={`Open ${item.owner.worker}'s thread`}
-                          onClick={(event) => { event.preventDefault(); event.stopPropagation(); openThread(item.owner.threadId!); }}
-                          onKeyDown={(event) => { if (event.key === " ") { event.preventDefault(); event.stopPropagation(); openThread(item.owner.threadId!); } }}>{item.owner.worker}</a>
-                      ) : item.owner.worker} · {item.assignment}{item.tasks.length ? ` · ${item.tasks.map(t => t.ref).join(", ")}` : ""} · <Age at={item.reportedAt} />{item.answer ? " · answered" : ""}</span>}
-                      initial={!o.opinionNeeded.length && index === 0}
-                    >
-                      <Blocker item={item} run={run} coordinatorThreadId={p.coordinatorThreadId} />
-                    </Fold>
-                  ))}
-                </section>
-              ) : null}
-              {undelivered.length || held.length ? <section aria-label="Not delivered">
-                <h2 className="cr-section-heading">Not delivered <span className="cr-count">{undelivered.length + held.length}</span></h2>
-                {undelivered.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
+              {held.length ? <section aria-label="Not delivered">
+                <h2 className="cr-section-heading">Not delivered <span className="cr-count">{held.length}</span></h2>
                 {held.map(m => <HeldMessage key={m.id} m={m} run={run} openThread={openThread} />)}
               </section> : null}
               {!inboxCount ? <p className="cr-empty">You’re up to date.</p> : null}
@@ -936,17 +903,15 @@ const childStatus = (status: string) => (status === "active" ? "running" : statu
 const UNCHECKED = " · child threads not checked yet";
 
 /**
- * Needs you holds only what waits on the user: a worker's open blocker they have neither answered
- * nor dismissed, the rule the Inbox and its Needs you count follow (needsYouCount). Waiting holds
- * a worker waiting on a live child, blocked with nothing left for the user to answer (an
- * answered or dismissed blocker, or one the coordinator took back, waits on the coordinator), or
- * idle with open work and no report: its turn ended, say on a question to its lead sent as a
+ * Needs you holds only what waits on the user: a live turn asking for their input. Waiting holds
+ * a worker waiting on a live child, blocked (W555: on the coordinator, which asks the user itself
+ * when only they can answer), or idle with open work and no report: its turn ended, say on a question to its lead sent as a
  * plain message. Stopped holds work that ended without finishing and that nothing has picked up:
  * a failed thread, stopped or cancelled work, open work whose thread is archived or gone, a failed
  * report. Idle holds the quiet rest, nothing open, no report and no stop. Both are usually
  * superseded workers nobody retired, safe to retire in bulk.
  */
-function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: number | null, blocker: BlockerItem | null): WorkerView {
+function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: number | null): WorkerView {
   const report = w.latestReport;
   const live = waiting?.on ?? null;
   const unchecked = waiting && !waiting.checked ? UNCHECKED : "";
@@ -956,11 +921,9 @@ function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: num
   if (w.state === "retired")
     return { ...base, group: "earlier", status: report ? `Retired · ${report.outcome}: ${firstLine(report.summary)}` : "Retired" };
   // The group is the shared derivation's; this only words each case from the recorded text.
-  const kind = workerKind({ asksUser: !!blocker && !blocker.answer, runtime: w.runtime, waiting: !!live, open: !!w.open, stopReason: !!w.stopReason, outcome: report?.outcome ?? null });
+  const kind = workerKind({ runtime: w.runtime, waiting: !!live, open: !!w.open, stopReason: !!w.stopReason, outcome: report?.outcome ?? null });
   const group = KIND_GROUP[kind];
   switch (kind) {
-    case "asksUser":
-      return { ...base, group, tone: "warn", status: `Blocked: ${firstLine(blocker!.question)}` };
     case "input":
       return { ...base, group, tone: "warn", status: "Waiting for your input" };
     case "running":
@@ -977,10 +940,8 @@ function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: num
       return { ...base, group, status: `${stopped}${thread}${unchecked}` };
     case "done":
       return { ...base, group, status: `Done: ${firstLine(report!.summary)}${unchecked}` };
-    case "onCoordinator": {
-      const answered = blocker ? " · you answered" : "";
-      return { ...base, group, status: `Waiting on the coordinator: ${firstLine(report!.question ?? report!.summary)}${answered}${thread}${unchecked}` };
-    }
+    case "onCoordinator":
+      return { ...base, group, status: `Blocked, waiting on the coordinator: ${firstLine(report!.question ?? report!.summary)}${thread}${unchecked}` };
     case "reported": {
       const failed = report!.outcome === "failed";
       return { ...base, group, tone: failed ? "error" : null, status: `${failed ? "Failed" : capital(report!.outcome)}: ${firstLine(report!.question ?? report!.summary)}${thread}${unchecked}` };
@@ -1044,9 +1005,8 @@ function Workers({
 }) {
   const since = new Map<string, number>();
   for (const a of o.inFlight) since.set(a.owner.worker, Math.min(since.get(a.owner.worker) ?? Infinity, a.since));
-  const blockers = new Map(o.blockers.map((b) => [b.owner.worker, b]));
   const views = [...o.workers.current, ...o.workers.retired].map((w) =>
-    workerView(w, o.workerWaiting?.[w.ref] ?? null, since.get(w.ref) ?? null, blockers.get(w.ref) ?? null));
+    workerView(w, o.workerWaiting?.[w.ref] ?? null, since.get(w.ref) ?? null));
   const menus = useRowMenus(run);
   // A worker retired here leaves its group at once; the refresh that follows moves it to Earlier.
   const listed = views.filter((v) => v.group === "earlier" || !menus.retired.has(v.w.ref));
@@ -1859,175 +1819,6 @@ export function AnswerChoices({ name, title, options, recommendation, recommende
   );
 }
 
-/** The Inbox's blocker answer, with the pick only when there is one (older clients and rows have none). */
-const blockerAnswer = (item: { assignment: string; question: string; context: string }, choice: string | null, note: string, to: "coordinator" | "worker"): Command =>
-  ({ action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, ...(choice ? { choice } : {}), note, to });
-
-/**
- * D386: a worker's blocker, answerable here. The answer goes to the
- * coordinator, who continues the worker; the item stays until it does.
- * T130: it can go straight to the worker instead, with an FYI to the
- * coordinator. The coordinator stays the default; the worker is the default
- * only when there is no coordinator to send to.
- */
-function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: Run; coordinatorThreadId: string | null }) {
-  const [revising, setRevising] = useState(false);
-  const [telling, setTelling] = useState(false);
-  const [note, setNote] = useState(item.answer?.note ?? "");
-  const [pick, setPick] = useState<Pick>(null);
-  const [busy, setBusy] = useState<"answer" | "dismiss" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const worker = item.owner.worker;
-  const fallback = !coordinatorThreadId && item.owner.threadId ? "worker" : "coordinator";
-  const other = fallback === "coordinator" && item.owner.threadId ? "worker" : null;
-  const sendTo = (to: "coordinator" | "worker") => to === "worker" ? `Send to ${worker}` : "Send to coordinator";
-  const act = async (kind: "answer" | "dismiss", command: Command) => {
-    if (busy) return;
-    setBusy(kind);
-    setError(null);
-    try {
-      await run(command);
-      if (kind === "answer") setRevising(false);
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const choice = pickedLabel(pick, item.options);
-  const ready = choice !== null || ((pick?.kind === "other" || !item.options.length) && !!note.trim());
-  const answer = (to: "coordinator" | "worker") => {
-    if (ready) void act("answer", blockerAnswer(item, choice, note, to));
-  };
-  const revise = (previous: NonNullable<BlockerItem["answer"]>) => {
-    const kept = item.options.some((option) => option.label === previous.choice);
-    setPick(kept ? { kind: "option", label: previous.choice! } : item.options.length ? { kind: "other" } : null);
-    setNote(previous.note);
-    setRevising(true);
-  };
-  const dismiss = telling ? null : (
-    <SplitButton label="Dismiss" align="end" className="cr-split--quiet"
-      main={<button type="button" disabled={!!busy} title="Leave the coordinator to settle it; nothing is sent. Undo from Archive."
-        onClick={() => void act("dismiss", { action: "blocker-dismiss", assignment: item.assignment, question: item.question, context: item.context, notify: false, note: "" })}>
-        {busy === "dismiss" ? "Saving…" : "Dismiss"}
-      </button>}
-      items={coordinatorThreadId ? [{ label: "Dismiss and tell coordinator…", onSelect: () => setTelling(true) }] : []} />
-  );
-  return (
-    <div className="project-card project-opinion cr-blocker">
-      <Markdown className="project-question" content={item.question} />
-      {item.context ? <Markdown className="project-context" content={item.context} /> : null}
-      {item.tasks.length ? <p className="project-muted">Blocks {item.tasks.map((t) => `${t.ref} ${t.title}`).join(", ")}</p> : null}
-      {item.answer && !revising ? (
-        <>
-          <div className="cr-blocker-answer">
-            <span className="project-meta">{item.answer.inChat ? "Your answer in chat, recorded by the coordinator" : "Your answer"} · {item.answer.ref}{item.answer.to === "worker" ? ` · sent to ${worker}` : ""}</span>
-            {item.answer.choice ? <p className="cr-blocker-choice">{item.answer.choice}</p> : null}
-            {item.answer.note ? <Markdown content={item.answer.note} /> : null}
-          </div>
-          {item.answer.inChat && !item.answer.notification ? <p role="status" className="project-muted">This stays here until the coordinator continues {worker} or settles {item.assignment}.</p> : null}
-          <AnswerReceipts receipts={answerReceipts(item.answer, worker)}
-            settled={item.answer.to === "worker" ? `This stays here until ${worker} reports again.` : `This stays here until it continues ${worker} or settles ${item.assignment}.`} />
-          {error ? <p role="alert" className="project-error">{error}</p> : null}
-          <div className="project-actions cr-blocker-actions">
-            {answerReceipts(item.answer, worker).retry ? (
-              <button type="button" disabled={!!busy} onClick={() => void act("answer", blockerAnswer(item, item.answer!.choice ?? null, item.answer!.note, item.answer!.to))}>
-                {busy === "answer" ? "Sending…" : answerReceipts(item.answer, worker).retry}
-              </button>
-            ) : null}
-            <button type="button" onClick={() => revise(item.answer!)}>Change answer</button>
-            {dismiss}
-          </div>
-        </>
-      ) : (
-        <form onSubmit={(event) => { event.preventDefault(); answer(fallback); }} onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-            event.preventDefault();
-            event.currentTarget.requestSubmit();
-          } else pickByKey(event, item.options, setPick);
-        }}>
-          <AnswerChoices name={`blocker-${item.assignment}`} title={item.question} options={item.options} recommendation={item.recommendation}
-            recommender={worker} pick={pick} setPick={setPick} detail={note} setDetail={setNote} />
-          {error ? <p role="alert" className="project-error">{error}</p> : null}
-          <div className="project-actions cr-blocker-actions">
-            <SplitButton label="Send"
-              main={<button className="project-primary" disabled={!!busy || !ready}
-                title={fallback === "worker" ? `No current coordinator: ${worker} continues ${item.assignment} with your answer.` : `The coordinator continues ${worker} with your answer.`}>
-                {busy === "answer" ? "Sending…" : sendTo(fallback)}
-              </button>}
-              items={other ? [{ label: sendTo(other), disabled: !!busy || !ready, onSelect: () => answer(other) }] : []} />
-            {revising ? <button type="button" onClick={() => setRevising(false)}>Cancel</button> : null}
-            {dismiss}
-          </div>
-        </form>
-      )}
-      {telling ? <DismissNotify item={item} run={run} cancel={() => setTelling(false)} /> : null}
-    </div>
-  );
-}
-
-type Receipt = { state: string; detail?: string } | null;
-/**
- * T132: what an Inbox blocker answer's receipts say, and the one retry they
- * allow. A worker answer has two: its delivery to the worker, then the
- * coordinator FYI; the FYI only goes out once the worker has the answer.
- */
-function answerReceipts(answer: { to: "coordinator" | "worker"; delivery: Receipt; notification: Receipt }, worker: string) {
-  const unsure = (r: Receipt) => r?.state === "pending" || r?.state === "uncertain";
-  const sent = (r: Receipt, to: string) => `${r?.state === "queued" ? "Queued for" : "Sent to"} ${to}`;
-  if (answer.to === "coordinator") {
-    const n = answer.notification;
-    if (!n) return { text: null, alert: false, retry: null, done: false };
-    if (n.state === "failed") return { text: `Sending to the coordinator failed: ${n.detail ?? "Unknown error"}`, alert: true, retry: "Retry sending to the coordinator", done: false };
-    if (unsure(n)) return { text: "Delivery to the coordinator unconfirmed; check its thread before sending again.", alert: n.state === "uncertain", retry: null, done: false };
-    return { text: `${sent(n, "the coordinator")}.`, alert: false, retry: null, done: true };
-  }
-  const d = answer.delivery, fyi = answer.notification;
-  if (d?.state === "failed") return { text: `Sending to ${worker} failed: ${d.detail ?? "Unknown error"}`, alert: true, retry: `Retry sending to ${worker}`, done: false };
-  if (!d || unsure(d)) return { text: `Delivery to ${worker} unconfirmed; check its thread before sending again.`, alert: d?.state === "uncertain", retry: null, done: false };
-  const reached = `${sent(d, worker)}, which continues with it`;
-  if (fyi?.state === "failed") return { text: `${reached}, but the coordinator FYI failed: ${fyi.detail ?? "Unknown error"}`, alert: true, retry: "Retry coordinator FYI", done: false };
-  if (fyi?.state === "uncertain") return { text: `${reached}. The coordinator FYI is unconfirmed; check its thread before sending again.`, alert: true, retry: null, done: false };
-  return { text: `${reached}; the coordinator ${fyi?.state === "pending" || !fyi ? "is being told" : "got an FYI"}.`, alert: false, retry: null, done: fyi?.state === "sent" || fyi?.state === "queued" };
-}
-function AnswerReceipts({ receipts, settled }: { receipts: ReturnType<typeof answerReceipts>; settled?: string }) {
-  if (!receipts.text) return null;
-  return <p role={receipts.alert ? "alert" : "status"} className="project-muted">{receipts.text}{receipts.done && settled ? ` ${settled}` : ""}</p>;
-}
-
-/** T128: dismiss a blocker with one message to the coordinator and an optional note. */
-function DismissNotify({ item, run, cancel }: { item: BlockerItem; run: Run; cancel: () => void }) {
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await run({ action: "blocker-dismiss", assignment: item.assignment, question: item.question, context: item.context, notify: true, note });
-    } catch (e) {
-      setError(message(e));
-      setBusy(false);
-    }
-  };
-  return (
-    <form className="cr-blocker-dismiss" onSubmit={submit}>
-      <label className="project-field">
-        Note for the coordinator (optional)
-        <AutoTextarea rows={2} value={note} maxLength={4000} placeholder={`Why you are not answering, or how ${item.owner.worker} should proceed.`} onChange={(e) => setNote(e.target.value)} />
-      </label>
-      {error ? <p role="alert" className="project-error">{error}</p> : null}
-      <div className="project-actions">
-        <button className="project-primary" disabled={busy}>{busy ? "Sending…" : "Dismiss and send"}</button>
-        <button type="button" onClick={cancel}>Cancel</button>
-      </div>
-    </form>
-  );
-}
-
-
 /** ↑/↓ moves between a list's folds, opening only the focused one. */
 function moveBetweenFolds(event: React.KeyboardEvent<HTMLElement>) {
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -2044,12 +1835,11 @@ function moveBetweenFolds(event: React.KeyboardEvent<HTMLElement>) {
 const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 /**
  * W460: Dismiss all, for an Inbox already settled elsewhere. Every question shown closes
- * quietly and every blocker is dismissed without a message, as their own buttons do. The
- * confirm counts what is on screen and only those items are sent; anything arriving
- * meanwhile stays. Not delivered items have no quiet close (each needs a send, a retry or
- * a removal), so they stay too.
+ * quietly, as its own Close quietly does. The confirm counts what is on screen and only
+ * those questions are sent; anything arriving meanwhile stays. Not delivered messages have
+ * no quiet close (each needs a send or a removal), so they stay too.
  */
-function DismissAll({ questions, blockers, left, run }: { questions: OpinionItem[]; blockers: BlockerItem[]; left: number; run: Run }) {
+function DismissAll({ questions, left, run }: { questions: OpinionItem[]; left: number; run: Run }) {
   const [seen, setSeen] = useState<Extract<Command, { action: "inbox-dismiss-all" }> | null>(null);
   const write = useWrite();
   if (!seen) return (
@@ -2057,21 +1847,15 @@ function DismissAll({ questions, blockers, left, run }: { questions: OpinionItem
       <button type="button" onClick={() => setSeen({
         action: "inbox-dismiss-all",
         questions: questions.map((q) => q.ref),
-        blockers: blockers.map(({ assignment, question, context }) => ({ assignment, question, context })),
       })}>Dismiss all</button>
     </div>
   );
-  const what = [
-    seen.questions.length ? `close ${count(seen.questions.length, "question")} quietly` : null,
-    seen.blockers.length ? `dismiss ${count(seen.blockers.length, "blocker")}` : null,
-  ].filter(Boolean).join(" and ");
   return (
     <div className="project-card cr-dismiss-all" role="group" aria-label="Dismiss all">
-      <p>{what[0]!.toUpperCase() + what.slice(1)}? No answers are recorded and nothing is sent.</p>
+      <p>Close {count(seen.questions.length, "question")} quietly? No answers are recorded and nothing is sent.</p>
       <p className="project-hint">{[
-        seen.questions.length ? "Closed questions cannot be reopened." : null,
-        seen.blockers.length ? "A dismissed blocker comes back with Undo in Archive." : null,
-        left ? `${count(left, "undelivered item")} ${left === 1 ? "stays" : "stay"}: each needs its own send, retry or removal.` : null,
+        "Closed questions cannot be reopened.",
+        left ? `${count(left, "undelivered item")} ${left === 1 ? "stays" : "stay"}: each needs its own send or removal.` : null,
       ].filter(Boolean).join(" ")}</p>
       <div className="project-actions">
         <button type="button" className="project-primary" disabled={write.busy}
@@ -2308,8 +2092,7 @@ function RuleForm({ label, initial, save, close }: {
 
 type DecisionRow = Overview["decisions"][number];
 const owner = (d: DecisionRow) =>
-  // W488: a blocker answer's author is whoever wrote it down; the coordinator only records what the user said in its chat.
-  d.madeBy === "user" ? (d.blockerAnswer && d.recordedBy.author !== "user" ? "Yours, in chat" : "Yours") : d.recordedBy.author === "worker" ? "Worker" : "Coordinator";
+  d.madeBy === "user" ? "Yours" : d.recordedBy.author === "worker" ? "Worker" : "Coordinator";
 
 /** One decision: its text first, then who made it and when, with any delivery that still needs a retry. */
 function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: Overview["answered"][number] }) {
@@ -2335,15 +2118,10 @@ function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: O
           {d.notification.state === "failed" ? <Action run={run} command={{ action: "answer", decision: d.ref, choice: answer.choice, note: answer.note }}>Retry coordinator notification</Action> : null}
         </div>
       ) : null}
-      {d.dismissal ? <Dismissal d={d} dismissal={d.dismissal} run={run} /> : null}
-      {d.blockerAnswer ? <BlockerAnswerStatus d={d} answer={d.blockerAnswer} run={run} /> : null}
       <div className="cr-decision-meta">
         <span className="cr-ref">{d.ref}</span>
         <span className={`cr-owner${d.madeBy === "user" ? " cr-owner--user" : ""}`}>{owner(d)}</span>
         <Age at={d.updatedAt} />
-        {d.dismissal?.undoneAt ? <span className="cr-verdict">Undone</span> : null}
-        {d.dismissal && !d.dismissal.undoneAt ? <Action run={run} command={{ action: "blocker-dismiss-undo", decision: d.ref }}
-          title={`Bring ${d.dismissal.assignment}'s blocker back to the Inbox if it is still open. Nothing is sent.`}>Undo</Action> : null}
         <button className="cr-iconbtn cr-caret" aria-label={`Show all of ${d.ref}`} aria-expanded={full} onClick={() => setFull(!full)}>
           <Glyph name="down" />
         </button>
@@ -2415,42 +2193,6 @@ function TaskEdit({ task, run }: { task: { ref: string; title: string; summary: 
     </div>
   ) : (
     <button className="cr-link" onClick={() => setOpen(true)}>Edit task</button>
-  );
-}
-
-/** T128: how a dismissal reached the coordinator, with a retry when the notice failed. */
-function Dismissal({ d, dismissal, run }: { d: DecisionRow; dismissal: NonNullable<DecisionRow["dismissal"]>; run: Run }) {
-  const notice = d.notification;
-  if (!dismissal.notify || !notice) return null;
-  return (
-    <div>
-      <p role={notice.state === "failed" || notice.state === "uncertain" ? "alert" : "status"} className="project-muted">
-        {notice.state === "failed" ? `Dismissal saved. Coordinator notification failed: ${notice.detail ?? "Unknown error"}`
-          : notice.state === "pending" || notice.state === "uncertain" ? "Dismissal saved. Coordinator notification unconfirmed; check its thread before sending again."
-          : notice.state === "queued" ? "Dismissal queued for the coordinator." : "Coordinator told of your dismissal."}
-      </p>
-      {notice.state === "failed" && !dismissal.undoneAt ? (
-        <Action run={run} command={{ action: "blocker-dismiss", assignment: dismissal.assignment, question: dismissal.question, context: dismissal.context, notify: true, note: dismissal.note }}>
-          Retry coordinator notification
-        </Action>
-      ) : null}
-    </div>
-  );
-}
-
-/** T132: an Inbox blocker answer whose delivery or coordinator notice did not go through, with its retry. */
-function BlockerAnswerStatus({ d, answer, run }: { d: DecisionRow; answer: NonNullable<DecisionRow["blockerAnswer"]>; run: Run }) {
-  const receipts = answerReceipts({ ...answer, notification: d.notification }, answer.worker ?? "the worker");
-  if (receipts.done || !receipts.text) return null;
-  return (
-    <div>
-      <AnswerReceipts receipts={receipts} />
-      {receipts.retry ? (
-        <Action run={run} command={blockerAnswer(answer, answer.choice ?? null, answer.note, answer.to)}>
-          {receipts.retry}
-        </Action>
-      ) : null}
-    </div>
   );
 }
 

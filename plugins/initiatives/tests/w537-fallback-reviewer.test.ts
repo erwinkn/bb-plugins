@@ -88,8 +88,8 @@ describe("W537 fallback reviewer", () => {
   });
 
   it("the worker default from before the fallback is kept as a legacy text and upgrades to the current one", async () => {
-    // W545 keeps W537's text as a legacy one, before it; W548 keeps W545's in front of both, and W554 W548's in front of all.
-    const [, , w537, previous] = PREVIOUS_DEFAULTS.worker as [string, string, string, string];
+    // W545 keeps W537's text as a legacy one, before it; W548 keeps W545's in front of both, W554 W548's in front of all, and W555 W554's.
+    const [, , , w537, previous] = PREVIOUS_DEFAULTS.worker as [string, string, string, string, string];
     expect(w537).toContain("follow the fallback command's note in your brief (no fallback command: report blocked)");
     expect(previous).toContain("Clean means the verdict is correct with no P1 or P2.");
     expect(previous).not.toContain("fallback");

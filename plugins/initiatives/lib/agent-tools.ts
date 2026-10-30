@@ -87,16 +87,17 @@ export const ruleToolSchema = z.object({
   sources: ruleSources.optional().describe("add: where it comes from, e.g. D12."),
 }).strict();
 
-/** v9: a question for the user (the question half of the old initiative_decision); W488: or the answer the user gave to one in chat. */
+/** v9: a question for the user (the question half of the old initiative_decision); W488, W555: or the answer the user gave to one in chat. */
 export const questionToolSchema = z.object({
-  question: text(1000).optional().describe("The question, in plain words. answered: the blocker's question the user answered."),
+  question: text(1000).optional().describe("The question, in plain words."),
   context: text(2000).optional().describe("What the user needs to know to answer."),
   options: answerOptionsSchema.optional(),
   recommendation: z.string().max(1000).optional(),
   withdraw: ref.optional().describe("D# of your own open question to withdraw instead (with reason)."),
   reason: text().optional().describe("withdraw: why the user no longer needs to answer."),
-  answered: ref.optional().describe("A# of a worker's blocked report whose question the user answered in this chat instead of in the Inbox (with text)."),
+  answered: ref.optional().describe("D# of your open question the user answered in this chat instead of in the Inbox (with text)."),
   text: text(4000).optional().describe("answered: what the user said, quoted or faithfully summed up."),
+  choice: text(200).optional().describe("answered: the option the user picked, by its label, if they picked one."),
 }).strict();
 
 export const workerToolSchema = z.object({
@@ -132,8 +133,8 @@ export const updateToolSchema = z.object({
 export const reportToolSchema = z.object({
   outcome: z.enum(["done", "blocked", "failed"]).describe("done: finished (partial work too: say what is left). blocked: you can't go on without an answer. failed: it can't be done."),
   summary: text(4000).describe("What the coordinator reads first, standing on its own: outcome, PR URL and head, merge order, what you need. Its first 300 characters are the dashboard line; a long report reaches the coordinator as its first 1000."),
-  question: text(1000).optional().describe("blocked, when only the user can answer: the question, shown in their Inbox. Without one, your lead decides what happens next."),
-  options: answerOptionsSchema.optional().describe("blocked: the choices, shown to the user as options."),
+  question: text(1000).optional().describe("blocked, when only the user can answer: the question, which your lead asks them. Without one, your lead decides what happens next."),
+  options: answerOptionsSchema.optional().describe("blocked: the choices, for your lead to offer the user."),
   recommendation: z.string().max(1000).optional().describe("blocked: your pick, starting with its label, and why."),
   report: text(FINAL_MESSAGE_MAX).describe(`Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded; the coordinator gets it whole when short, otherwise reads it on demand. Past ${FINAL_MESSAGE_MAX} characters only its start and end are kept.`),
 }).strict();

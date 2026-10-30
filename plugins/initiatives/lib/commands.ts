@@ -294,41 +294,14 @@ export const answerSchema = z
     notify: z.boolean().optional(),
   })
   .strict();
-/** D386: the user's Inbox answer to a blocked report; question and context are the blocker they saw. */
-export const blockerAnswerSchema = z.object({
-  action: z.literal("blocker-answer"), assignment: ref,
-  question: z.string().max(1000),
-  context: z.string().max(2000),
-  /** W476: the picked option's label, when the report gave options; note is then optional detail. */
-  choice: text(200).optional(),
-  note: z.string().trim().max(4000).default(""),
-  /** T130: the coordinator continues the worker (default), or the answer goes straight to the worker with an FYI to the coordinator. */
-  to: z.enum(["coordinator", "worker"]).default("coordinator"),
-}).strict().refine((c) => c.choice !== undefined || c.note, { message: "Pick an option or write an answer.", path: ["note"] });
-/** T128: the user dismisses a blocked report without answering; notify tells the coordinator, with an optional note. */
-export const blockerDismissSchema = z.object({
-  action: z.literal("blocker-dismiss"), assignment: ref,
-  question: z.string().max(1000),
-  context: z.string().max(2000),
-  notify: z.boolean().default(false),
-  note: z.string().trim().max(4000).default(""),
-}).strict();
-/** T128: the user takes a dismissal back; the blocker returns to the Inbox if it is still open. */
-export const blockerDismissUndoSchema = z.object({
-  action: z.literal("blocker-dismiss-undo"), decision: ref,
-}).strict();
 export const closeQuestionSchema = z.object({
   action: z.literal("question-close"), decision: ref,
   note: z.string().trim().max(4000).default(""),
 }).strict();
-/**
- * W460: the Inbox's Dismiss all. Only the items the user saw: each question closed quietly, each
- * blocker dismissed without telling anyone, exactly as their own Close quietly and Dismiss do.
- */
+/** W460: the Inbox's Dismiss all. Only the questions the user saw, each closed quietly, exactly as their own Close quietly does. */
 export const inboxDismissAllSchema = z.object({
   action: z.literal("inbox-dismiss-all"),
   questions: z.array(ref).max(500).default([]),
-  blockers: z.array(blockerDismissSchema.pick({ assignment: true, question: true, context: true })).max(500).default([]),
 }).strict();
 /** D340: the current coordinator withdraws its own open question; never an answer. */
 export const questionWithdrawSchema = z.object({
@@ -368,9 +341,6 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("decision-clear") }).strict().describe("Retired bulk removal: always refuses with refresh/decision-accept-all instructions; never changes data."),
   ...manageCommands,
   answerSchema,
-  blockerAnswerSchema,
-  blockerDismissSchema,
-  blockerDismissUndoSchema,
   closeQuestionSchema,
   inboxDismissAllSchema,
   questionWithdrawSchema,
@@ -543,22 +513,13 @@ export async function runCommand(
         throw new ProjectError("The user answers their own opinion requests.");
       return service.answerOpinion(projectId, c.decision, c);
     }
-    case "blocker-answer":
-      if (author !== "user") throw new ProjectError("Only the user answers a worker's blocker from the Inbox. Agents continue the worker with the answer instead.");
-      return service.answerBlocker(projectId, c.assignment, { question: c.question, context: c.context }, c.note, c.to, c.choice ?? null);
-    case "blocker-dismiss":
-      if (author !== "user") throw new ProjectError("Only the user dismisses a worker's blocker from the Inbox. Agents answer the worker instead.");
-      return service.dismissBlocker(projectId, c.assignment, { question: c.question, context: c.context }, { notify: c.notify, note: c.note });
-    case "blocker-dismiss-undo":
-      if (author !== "user") throw new ProjectError("Only the user undoes their dismissal of a blocker.");
-      return service.undoBlockerDismissal(projectId, c.decision);
     case "question-close": {
       if (author !== "user") throw new ProjectError("Only the user closes a question quietly.");
       return service.closeQuestion(projectId, c.decision, c.note);
     }
     case "inbox-dismiss-all":
       if (author !== "user") throw new ProjectError("Only the user dismisses the Inbox, from the Initiative panel.");
-      return service.dismissInbox(projectId, c);
+      return service.dismissInbox(projectId, c.questions);
     case "question-withdraw":
       return service.withdrawQuestion(projectId, c.decision, c.reason, provenance);
     case "acknowledge": {

@@ -1,10 +1,7 @@
-import type { BlockerAnswerItem, DismissalItem } from "./overview";
-import type { DecisionBody } from "./store";
-
 /**
- * D386: a blocked worker report waits on the user until the coordinator acts
- * on it. One rule, shared by the sidebar tree and the dashboard, so their
- * Needs you counts always agree.
+ * D386: a blocked worker report waits until the coordinator acts on it. W555: it never reaches
+ * the user directly; the coordinator asks them (initiative_question) when the worker needs an
+ * answer only they can give.
  */
 
 /** The assignment facts that decide whether a blocked report is still open. */
@@ -39,44 +36,3 @@ export function openBlockers<T extends BlockerFacts>(assignments: T[], closedTas
     );
   });
 }
-
-/**
- * Identifies the blocker an answer was given to: its question and context. A
- * re-filed identical report keeps its answer; a changed question or context on
- * the same assignment needs a new one.
- */
-export const blockerKey = (assignment: number, blocker: { question: string; context: string }) =>
-  JSON.stringify([assignment, blocker.question, blocker.context]);
-
-/**
- * T128: the open blockers the user has not dismissed. A dismissal is keyed
- * like an answer, so an identical re-file stays dismissed and a changed
- * question or context shows again. Everything that lists or counts blockers
- * for the user (Inbox, dashboard pill, tree, catalog) goes through here.
- * W492: a blocked report without a question waits on its lead, not the user,
- * so it is no blocker of theirs (the worker shows Waiting, on the coordinator).
- */
-export const undismissed = <T extends { num: number }>(
-  open: T[],
-  blockerOf: (a: T) => { question: string; context: string } | null | undefined,
-  dismissed: ReadonlySet<string>,
-) => open.filter((a) => {
-  const blocker = blockerOf(a);
-  return !!blocker && !dismissed.has(blockerKey(a.num, blocker));
-});
-
-/** T128: a dismissal record as the dashboard shows it. */
-export const dismissalItem = (blocker: NonNullable<DecisionBody["blocker"]>, d: NonNullable<DecisionBody["dismissal"]>): DismissalItem => ({
-  assignment: `A${blocker.assignment}`, question: blocker.question, context: blocker.context,
-  note: d.note, notify: d.notify, at: d.at, undoneAt: d.undoneAt ?? null,
-});
-
-/** T132: a blocker answer as the dashboard's decision row carries it. */
-export const blockerAnswerItem = (blocker: NonNullable<DecisionBody["blocker"]>, a: NonNullable<DecisionBody["answer"]>, worker: string | null): BlockerAnswerItem => ({
-  assignment: `A${blocker.assignment}`, worker, question: blocker.question, context: blocker.context,
-  choice: a.choice, note: a.note, to: a.to ?? "coordinator", delivery: a.delivery ?? null,
-});
-
-/** What the Needs you pill shows: open questions plus undismissed blockers the user has not answered yet. */
-export const needsYouCount = (o: { opinionNeeded: readonly unknown[]; blockers: readonly { answer: unknown }[] }) =>
-  o.opinionNeeded.length + o.blockers.filter((b) => !b.answer).length;

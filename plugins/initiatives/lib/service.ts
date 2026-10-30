@@ -20,7 +20,6 @@ import {
   type ThreadDto,
   type ThreadListRow,
 } from "./bb";
-import { blockerKey, openBlockers } from "./blockers";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
@@ -3707,231 +3706,6 @@ export class ProjectsService {
     return this.store.decisionItem(project.id, item.num)!;
   }
 
-  /**
-   * D386: the user answers a worker's blocked report from the Inbox. The answer
-   * is recorded as the user's decision and sent to the coordinator, who
-   * continues, rejects or accepts the report; the Inbox item stays until then.
-   * T130: `to: "worker"` delivers it straight to the thread that reported the
-   * blocker, which continues the same assignment and reports again. T132: its
-   * receipt is `answer.delivery`; once it is delivered, the coordinator gets an
-   * FYI through the shared notice, so `notification` always means the
-   * coordinator's. Repeating the same answer to the same target retries only
-   * what failed: the worker delivery while the blocker is open, then the FYI or
-   * coordinator notice. An unconfirmed receipt never authorizes another send. A
-   * different answer or target supersedes the previous one and is sent again.
-   * `seen` is the blocker the user answered; an answer to an older question or
-   * context is refused. W476: `choice` is the option the user picked, if the
-   * report gave options; the note is then optional detail. W488: `recordedBy` is
-   * the coordinator tab that recorded an answer the user gave in its chat (recordChatBlockerAnswer).
-   */
-  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator", choice: string | null = null, recordedBy?: Provenance, queued = false): Promise<DecisionRecord> {
-    const project = this.requireProject(projectId);
-    const text = note.trim();
-    if (!text && choice === null) throw new ProjectError("Pick an option or write an answer.");
-    const key = blockerKey(this.requireAssignment(project, ref).num, seen);
-    if (recordedBy) this.refuseSettledBlocker(project, ref, seen);
-    const previous = this.store.decisions(project.id).find((item) => item.body.blocker && item.body.answer && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
-    // A chat answer never retries or replaces an earlier answer (refuseSettledBlocker).
-    const same = !recordedBy && previous?.body.answer?.note === text && previous.body.answer.choice === choice && (previous.body.answer.to ?? "coordinator") === to ? previous : null;
-    const failed = (state?: string) => state === "failed";
-    const redeliver = to === "worker" && failed(same?.body.answer?.delivery?.state);
-    // A failed FYI is retried even after the worker reported again; it only informs the coordinator.
-    const renotify = failed(same?.notification?.state) && !redeliver;
-    // Anything else answers the open blocker as the user saw it, or is refused.
-    const { assignment, blocker } = same && to === "worker" && renotify
-      ? { assignment: this.requireAssignment(project, ref), blocker: same.body.blocker! }
-      : this.seenBlocker(project, ref, seen, "answer");
-    if (same && !redeliver && !renotify) return same;
-    if (!same && choice !== null && !assignment.report?.blocker?.options?.some((option) => option.label === choice))
-      throw new ProjectError(`"${choice}" is not one of ${assignment.ref}'s options. Your answer was not saved.`);
-    const said = choice === null ? text : text ? `${choice} · ${text}` : choice;
-    const worker = this.store.worker(project.id, assignment.workerNum)!;
-    // The thread that reported the blocker, which the Inbox card links to.
-    const workerThreadId = assignment.threadId;
-    if (to === "worker" && !workerThreadId) throw new ProjectError(`${worker.ref} has no thread to send to. Send your answer to the coordinator instead.`);
-    // W492: an answer sent to the worker resumes its work, like more work does: it runs in the
-    // write queue, after anything already there (a retire, more work), checked again against the
-    // ledger as it then is, and a retirement waiting for the thread to go quiet no longer applies.
-    // A retried FYI to the lead sends the worker nothing.
-    if (to === "worker" && (!same || redeliver)) {
-      if (!queued) return this.serialize(() => this.answerBlocker(projectId, ref, seen, note, to, choice, recordedBy, true));
-      this.store.clearRetireRequest(project.id, worker.num);
-    }
-    const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
-    const coordinatorThreadId = project.coordinatorThreadId;
-    const deliveryOp = newOpId();
-    const item = same ?? this.store.tx(() => {
-      // An Inbox answer may have landed, or the coordinator been replaced, while the blocker was
-      // checked: the ledger as it is now decides.
-      if (recordedBy) {
-        this.refuseSettledBlocker(project, ref, seen);
-        if (recordedBy.threadId !== this.requireProject(project.id).coordinatorThreadId)
-          throw new ProjectError("The coordinator was replaced while your answer was being saved. Tell the new coordinator what the user said. Your answer was not saved.");
-      }
-      const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref})${to === "worker" ? `, sent to ${worker.ref}` : ""}${recordedBy ? ", given in chat" : ""}: ${said}`;
-      const added = this.store.addDecision({
-        projectId: project.id, title: description.slice(0, 100),
-        topic: previous?.topic ?? `blocker-${assignment.ref.toLowerCase()}`, scope: "project", status: "active",
-        body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context },
-          answer: { choice, note: text, at: this.now(), ...(to === "worker" ? { to, delivery: { op: deliveryOp, state: "pending" as const, threadId: workerThreadId! } } : {}) } },
-        madeBy: "user", humanAttention: "none", blocks: [], deadline: null,
-        // W488: the recorder is the record's author; the previous build's strict answer decoder still reads it.
-        provenance: recordedBy ?? { author: "user", threadId: null, assignment: null }, supersedes: previous?.num ?? null,
-      });
-      this.store.log(project.id, "decision", recordedBy
-        ? `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref}) in chat; the coordinator recorded it: ${said}`
-        : `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref})${to === "worker" ? ` and sent it to ${worker.ref}` : ""}: ${said}`,
-      recordedBy?.threadId ? { threadId: recordedBy.threadId } : undefined);
-      return added;
-    });
-    const about = `${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref}`;
-    const notify = async (saved: string, message: string, mode?: "queue-if-active") => {
-      const op = newOpId();
-      this.store.updateDecision(project.id, item.num, { notification: { op, state: "pending", coordinatorThreadId } });
-      await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, saved, message, { mode });
-    };
-    if (to === "coordinator") {
-      // W488: the coordinator recorded the chat answer and relays it itself; there is nobody to tell.
-      if (recordedBy) return this.store.decisionItem(project.id, item.num)!;
-      await notify("Your answer is saved.",
-        `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\n${answerLines(choice, text)}\n\nContinue ${worker.ref} with this answer (initiative_message work:true). The Inbox item clears when ${worker.ref} reports again.`);
-      return this.store.decisionItem(project.id, item.num)!;
-    }
-    if (!same || redeliver) {
-      // A retry claims the receipt with its own op first; a stale send never settles a newer one.
-      const settle = (receipt: Omit<Delivery, "op" | "threadId">, claim = false) => {
-        const current = this.store.decisionItem(project.id, item.num)!;
-        if (!claim && current.body.answer?.delivery?.op !== deliveryOp) return;
-        this.store.updateDecision(project.id, item.num, { body: { ...current.body, answer: { ...current.body.answer!, delivery: { op: deliveryOp, threadId: workerThreadId!, ...receipt } } } });
-      };
-      if (redeliver) settle({ state: "pending" }, true);
-      settle(await this.deliver(workerThreadId!, deliveryOp,
-        `Initiative · ${project.name} · The user answered your blocker directly (${about})\n\nBlocker: ${blocker.question}\n${answerLines(choice, text)}\n\nContinue ${assignment.ref} with this answer and report again with initiative_report when done. The coordinator has been told.`));
-    }
-    const current = this.store.decisionItem(project.id, item.num)!;
-    const reached = ["sent", "queued"].includes(current.body.answer?.delivery?.state ?? "");
-    // The coordinator's records stay consistent: one FYI once the worker has the answer, retried like any notice.
-    if (reached && (!current.notification || failed(current.notification.state)))
-      await notify(`Your answer reached ${worker.ref}.`,
-        `Initiative · ${project.name} · FYI: the user answered ${worker.ref}'s blocker (${about}) directly to ${worker.ref}\n\nBlocker: ${blocker.question}\n${answerLines(choice, text)}\n\n${worker.ref} continues ${assignment.ref} with it and reports again. Nothing to send; review its next report as usual.`,
-        "queue-if-active");
-    return this.store.decisionItem(project.id, item.num)!;
-  }
-
-  /**
-   * W488: the user answered a worker's blocker in the coordinator's chat, and the
-   * coordinator records it on the Inbox card, as the user's answer to the
-   * coordinator: the card shows it, the worker leaves Needs you, and the card
-   * clears once the coordinator continues the worker (initiative_message
-   * work:true). Only the coordinator records it, and it relays it itself, so
-   * nothing is sent: not to the worker, and no notice to the coordinator. Only an open blocker the user has neither answered nor dismissed takes
-   * one, and only while it still asks `question`, the one the user answered: a
-   * worker that re-filed another question on the same A# gets it refused.
-   */
-  async recordChatBlockerAnswer(projectId: string, ref: string, question: string, note: string, by: Provenance) {
-    const project = this.requireProject(projectId);
-    const assignment = this.requireAssignment(project, ref);
-    if (by.author !== "coordinator" || !by.threadId || by.threadId !== project.coordinatorThreadId)
-      throw new ProjectError("Only this Adventure's coordinator tab records the user's chat answer to a worker's blocker. Your answer was not saved.");
-    if (!note.trim()) throw new ProjectError("Write the user's answer: what they said, quoted or faithfully summed up.");
-    const blocker = assignment.report?.blocker;
-    // Word for word, up to spacing and case. From here on the filing itself must not change (seenBlocker).
-    const words = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
-    if (blocker && words(blocker.question) !== words(question))
-      throw new ProjectError(`${assignment.ref}'s blocker now asks: "${blocker.question}". That is not the question the user answered: ask them this one. Your answer was not saved.`);
-    return this.answerBlocker(projectId, ref, { question: blocker?.question ?? "", context: blocker?.context ?? "" }, note, "coordinator", null, by);
-  }
-
-  /** W488: a chat answer goes only on an open blocker the user has neither answered nor dismissed; it never replaces theirs. */
-  private refuseSettledBlocker(project: ProjectRecord, ref: string, seen: { question: string; context: string }) {
-    const { assignment, blocker } = this.seenBlocker(project, ref, seen, "answer");
-    const key = blockerKey(assignment.num, blocker);
-    // The Needs you count's rule (summaryBlockers): any kept answer, or a dismissal not undone.
-    const settled = this.store.decisions(project.id).find((item) =>
-      item.body.blocker && blockerKey(item.body.blocker.assignment, item.body.blocker) === key &&
-      (item.body.answer ? !["superseded", "removed"].includes(item.status) : !!item.body.dismissal && item.status === "active"));
-    if (settled)
-      throw new ProjectError(`The user already ${settled.body.answer ? "answered" : "dismissed"} ${assignment.ref}'s blocker (${settled.ref}). Your answer was not saved.`);
-  }
-
-  /** The open blocker on `ref`, refused unless it is still exactly the one the user saw. */
-  private seenBlocker(project: ProjectRecord, ref: string, seen: { question: string; context: string }, what: "answer" | "dismissal") {
-    const assignment = this.requireAssignment(project, ref);
-    // W482: retired between render and submit; there is nobody left to answer or wait.
-    if (this.store.worker(project.id, assignment.workerNum)?.state === "retired")
-      throw new ProjectError(`${assignment.ref}'s worker was retired, so its blocker is closed and nobody can receive an answer. Your ${what} was not saved.`);
-    const tasks = this.store.tasks(project.id);
-    // W506: only this report's outcome counts; later work (no reports read) can close it.
-    const later = this.store.assignmentsForOverview(project.id, false).filter((a) => a.num > assignment.num);
-    const open = openBlockers(
-      [{ ...assignment, outcome: assignment.report?.outcome ?? null }, ...later.map((a) => ({ ...a, outcome: null }))],
-      (num) => ["done", "cancelled"].includes(tasks.find((task) => task.num === num)?.status ?? "done"),
-      (num) => this.store.worker(project.id, num)?.state === "retired",
-    ).some((a) => a.num === assignment.num);
-    if (!open) throw new ProjectError(`${assignment.ref} is no longer waiting on a blocker; the coordinator already acted on it. Your ${what} was not saved.`);
-    const blocker = assignment.report!.blocker;
-    if (!blocker || blocker.question !== seen.question || blocker.context !== seen.context)
-      throw new ProjectError(`${assignment.ref}'s blocker changed since you opened it. Read the new question and context; your ${what} was not saved.`);
-    return { assignment, blocker };
-  }
-
-  /**
-   * T128: the user dismisses a worker's blocker without answering it. It
-   * leaves the Inbox and Needs you for as long as the worker re-files the same
-   * question and context. Silent sends nothing; notify sends the coordinator
-   * one message with the note. Dismissing again with notify only retries a failed notice.
-   */
-  async dismissBlocker(projectId: string, ref: string, seen: { question: string; context: string }, input: { notify: boolean; note: string }) {
-    const project = this.requireProject(projectId);
-    const { assignment, blocker } = this.seenBlocker(project, ref, seen, "dismissal");
-    const key = blockerKey(assignment.num, blocker);
-    const previous = this.store.decisions(project.id).find((item) =>
-      item.status === "active" && item.body.blocker && item.body.dismissal && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
-    // Only a dismissal that tells the coordinator retries a failed notice; a silent one (Dismiss all) never sends.
-    if (previous && !(input.notify && previous.body.dismissal!.notify && previous.notification?.state === "failed")) return previous;
-    const worker = this.store.worker(project.id, assignment.workerNum)!;
-    const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
-    const op = newOpId();
-    const coordinatorThreadId = project.coordinatorThreadId;
-    const item = this.store.tx(() => {
-      if (previous) {
-        this.store.updateDecision(project.id, previous.num, { notification: { op, state: "pending", coordinatorThreadId } });
-        return previous;
-      }
-      const note = input.note.trim();
-      const description = `Dismissed ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref}) without answering${input.notify ? "; told the coordinator" : ""}${note ? `: ${note}` : "."}`;
-      const added = this.store.addDecision({
-        projectId: project.id, title: description.slice(0, 100),
-        topic: `blocker-dismissal-${assignment.ref.toLowerCase()}`, scope: "project", status: "active",
-        body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context }, dismissal: { note, notify: input.notify, at: this.now() } },
-        madeBy: "user", humanAttention: "none", blocks: [], deadline: null,
-        provenance: { author: "user", threadId: null, assignment: null }, supersedes: null,
-      });
-      if (input.notify) this.store.updateDecision(project.id, added.num, { notification: { op, state: "pending", coordinatorThreadId } });
-      this.store.log(project.id, "decision", `${added.ref} You dismissed ${worker.ref}'s blocker (${assignment.ref})${input.notify ? " and told the coordinator" : ""}${note ? `: ${note}` : ""}`);
-      return added;
-    });
-    const dismissal = item.body.dismissal!;
-    if (dismissal.notify)
-      await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your dismissal is saved.",
-        `Initiative · ${project.name} · The user dismissed ${worker.ref}'s blocker (${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref}) without answering it\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}${dismissal.note ? `\nNote: ${dismissal.note}` : ""}\n\nDecide how to settle ${assignment.ref} without an answer: continue ${worker.ref} another way, reject or accept the report.`);
-    return this.store.decisionItem(project.id, item.num)!;
-  }
-
-  /** T128: the user takes a dismissal back; the record stays in history, closed, and the blocker counts again while it is open. */
-  undoBlockerDismissal(projectId: string, ref: string) {
-    const project = this.requireProject(projectId);
-    const item = this.requireDecision(project, ref);
-    const dismissal = item.body.dismissal;
-    if (!dismissal) throw new ProjectError(`${item.ref} is not a blocker dismissal.`);
-    if (dismissal.undoneAt) return item;
-    return this.store.tx(() => {
-      const result = this.store.updateDecision(project.id, item.num, { status: "closed", body: { ...item.body, dismissal: { ...dismissal, undoneAt: this.now() } } });
-      this.store.log(project.id, "decision", `You undid ${item.ref}; ${assignmentRef(item.body.blocker!.assignment)}'s blocker is back in the Inbox if it is still open`);
-      return result;
-    });
-  }
-
   closeQuestion(projectId: string, ref: string, note: string) {
     const project = this.requireProject(projectId);
     const item = this.requireDecision(project, ref);
@@ -3948,21 +3722,17 @@ export class ProjectsService {
   }
 
   /**
-   * W460: the Inbox's Dismiss all, in one pass over the items the user saw. Each one is
-   * the item's own quiet close (closeQuestion, a silent dismissBlocker), saved on its own,
-   * so one refusal (already answered, a changed blocker) leaves the others closed and is
-   * reported with its reason. Nothing is sent; a dismissal is undone from Archive as usual.
+   * W460: the Inbox's Dismiss all, in one pass over the questions the user saw. Each one is
+   * the question's own quiet close (closeQuestion), saved on its own, so one refusal (already
+   * answered, say) leaves the others closed and is reported with its reason. Nothing is sent.
    */
-  async dismissInbox(projectId: string, seen: { questions: string[]; blockers: { assignment: string; question: string; context: string }[] }) {
+  dismissInbox(projectId: string, questions: string[]) {
     this.requireProject(projectId);
-    const closed: DecisionRecord[] = [], dismissed: DecisionRecord[] = [], failed: { ref: string; error: string }[] = [];
-    const attempt = async (ref: string, close: () => DecisionRecord | Promise<DecisionRecord>, into: DecisionRecord[]) => {
-      try { into.push(await close()); } catch (e) { failed.push({ ref, error: e instanceof Error ? e.message : String(e) }); }
-    };
-    for (const ref of seen.questions) await attempt(ref, () => this.closeQuestion(projectId, ref, ""), closed);
-    for (const b of seen.blockers)
-      await attempt(b.assignment, () => this.dismissBlocker(projectId, b.assignment, b, { notify: false, note: "" }), dismissed);
-    return { closed, dismissed, failed };
+    const closed: DecisionRecord[] = [], failed: { ref: string; error: string }[] = [];
+    for (const ref of questions) {
+      try { closed.push(this.closeQuestion(projectId, ref, "")); } catch (e) { failed.push({ ref, error: e instanceof Error ? e.message : String(e) }); }
+    }
+    return { closed, failed };
   }
 
   /**
@@ -7111,7 +6881,7 @@ export class ProjectsService {
       outcome: input.outcome === "done" ? "succeeded" : input.outcome,
       summary: line,
       evidence: [],
-      // W492: only a question (or options to pick from) reaches the user's Inbox; without one the lead acts next.
+      // W492: a question (or options to pick from) is for the user, whom the lead asks (W555); without one the lead acts next.
       ...(input.outcome === "blocked" && (input.question || input.options?.length) ? { blocker: {
         question: (input.question ?? input.summary).slice(0, 1000), context: input.summary.slice(0, 2000),
         ...(input.options?.length ? { options: input.options } : {}), ...(input.recommendation?.trim() ? { recommendation: input.recommendation.trim() } : {}),
@@ -7528,7 +7298,8 @@ function reportNotice(workerRef: string, assignmentRef: string, report: Report, 
 function noticeBody(workerRef: string, assignmentRef: string, report: Report) {
   const blocked = report.outcome === "blocked";
   const status = blocked ? `${workerRef} is blocked on ${assignmentRef}` : `${workerRef} reported (${report.outcome === "succeeded" ? "done" : report.outcome}) on ${assignmentRef}`;
-  const line = `${status}: ${blocked ? report.blocker?.question ?? report.summary : report.summary}`;
+  const choices = blocked ? blockerChoices(report) : null;
+  const line = `${status}: ${blocked ? report.blocker?.question ?? report.summary : report.summary}${choices ? `\n\n${choices}` : ""}`;
   const body = report.finalMessage;
   if (!body) return `${line}\n\nDetails: ${fullRecord(assignmentRef)}`;
   if (body.length <= REPORT_NOTICE_WHOLE) return `${line}\n\n${body}`;
@@ -7543,6 +7314,19 @@ function noticeBody(workerRef: string, assignmentRef: string, report: Report) {
     ...(prs.length ? [`PRs in the report: ${prs.join(", ")}`] : []),
     `Full report (${body.length} characters): ${fullRecord(assignmentRef)}`,
   ].join("\n\n");
+}
+
+/**
+ * W555: a blocked report's options and the worker's pick, which the coordinator passes on when
+ * it asks the user (the only way a worker's question reaches them).
+ */
+function blockerChoices(report: Report) {
+  const options = report.blocker?.options ?? [], recommendation = report.blocker?.recommendation;
+  if (!options.length && !recommendation) return null;
+  return [
+    ...(options.length ? ["Options:", ...options.map((o) => `- ${o.label}${o.consequences ? `: ${o.consequences}` : ""}`)] : []),
+    ...(recommendation ? [`Recommendation: ${recommendation}`] : []),
+  ].join("\n");
 }
 
 /** How often the sweep checks for workers that stopped without reporting (D417). */

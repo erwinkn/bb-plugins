@@ -123,12 +123,12 @@ describe("W210 report delivery", () => {
   // W212: a capture is not the worker's filing, so filing the same text still sends it.
 
 
-  it("a blocked report steers the coordinator and waits in the Inbox as before", async () => {
+  it("a blocked report steers the coordinator, the only one it reaches (W555)", async () => {
     const { f, project, w } = await spawned();
     await tool(f, "initiative_report", { outcome: "blocked", summary: "Need the staging key", question: "Which staging key?", report: "Blocked on the key. Everything else is done." }, w.threadId);
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: "coordinator", mode: "steer-if-active" });
     expect(sentTexts(f)).toEqual(["Initiative · Search · W1\n\nW1 is blocked on A1: Which staging key?\n\nBlocked on the key. Everything else is done."]);
-    expect((await f.overview(project.id, "summary")).blockers.map(b => b.question)).toEqual(["Which staging key?"]);
+    expect((await f.overview(project.id, "summary")).opinionNeeded).toEqual([]);
   });
 
 });

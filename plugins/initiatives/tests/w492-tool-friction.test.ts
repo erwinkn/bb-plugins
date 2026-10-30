@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makePluginAgentConfigurationContext } from "@get-bb/plugin-sdk/testing";
 import { projectFixture } from "./fake-native";
-import { needsYouCount } from "../lib/blockers";
 import { FINAL_MESSAGE_MAX, reportSchema } from "../lib/schema";
 import { emptySnapshot, handoverPacket } from "../lib/handover-packet";
 import { blankPrRecord } from "../lib/pr-stages";
@@ -78,7 +77,7 @@ describe("W492 initiative_report reads what it can", () => {
     await expect(tool(f, "initiative_report", { outcome: "partial", summary: "Half.", report: "Half." }, w.threadId)).rejects.toThrow(/outcome/);
   });
 
-  it("a blocked report without a question waits on the lead: no Inbox card, the worker shows Waiting", async () => {
+  it("a blocked report without a question waits on the lead: the worker shows Waiting", async () => {
     const { f, project, w } = await spawned();
     await tool(f, "initiative_report", { outcome: "blocked", summary: "Rebased, not pushed: the pre-push hook wants a rewrite confirmation.", report: "Details." }, w.threadId);
     f.idle(w.threadId);
@@ -86,16 +85,17 @@ describe("W492 initiative_report reads what it can", () => {
     expect(f.store.assignment(project.id, 1)!.report!.blocker).toBeUndefined();
     expect(sentTexts(f).at(-1)).toContain(`${w.worker} is blocked on A1: Rebased, not pushed`);
     const o = await f.overview(project.id, "summary");
-    expect([o.blockers.length, needsYouCount(o), o.workerGroups?.[w.worker]?.group]).toEqual([0, 0, "waiting"]);
+    expect([o.opinionNeeded.length, o.workerGroups?.[w.worker]?.group]).toEqual([0, "waiting"]);
     expect(((await f.harness.callRpc("tree", null)) as any).projects[0].needsYou).toBe(0);
   });
 
-  it("a blocked report with a question still asks the user", async () => {
+  it("a blocked report with a question keeps it for the lead, which asks the user (W555)", async () => {
     const { f, project, w } = await spawned();
     await tool(f, "initiative_report", { outcome: "blocked", summary: "Need a key.", question: "Which staging key?", report: "Blocked." }, w.threadId);
     f.idle(w.threadId);
+    expect(f.store.assignment(project.id, 1)!.report!.blocker).toMatchObject({ question: "Which staging key?" });
     const o = await f.overview(project.id, "summary");
-    expect([o.blockers.length, needsYouCount(o), o.workerGroups?.[w.worker]?.group]).toEqual([1, 1, "needs"]);
+    expect([o.opinionNeeded.length, o.workerGroups?.[w.worker]?.group]).toEqual([0, "waiting"]);
   });
 });
 
@@ -249,29 +249,14 @@ describe("W492 review r1", () => {
 });
 
 describe("W492 review r2", () => {
-  it("lets a later filing by the previous build (a real question) count again", async () => {
+  it("lets a later filing by the previous build (a real question) read back as one", async () => {
     const { f, project, w } = await spawned();
     await tool(f, "initiative_report", { outcome: "blocked", summary: "Need a re-brief.", report: "Details." }, w.threadId);
     // bd5b212 re-files with a question: new JSON and report_seq, blocked_on_lead untouched.
     const report = { ...JSON.parse((f.store.db.prepare("SELECT report FROM assignments WHERE num = 1").get() as { report: string }).report), blocker: { question: "Which key?", context: "Ctx" } };
     f.store.db.prepare("UPDATE assignments SET report = ?, report_seq = report_seq + 1 WHERE num = 1").run(JSON.stringify(report));
     expect(f.store.assignment(project.id, 1)!.report!.blocker).toEqual({ question: "Which key?", context: "Ctx" });
-    f.idle(w.threadId);
-    const o = await f.overview(project.id, "summary");
-    expect([o.blockers.length, needsYouCount(o), ((await f.harness.callRpc("tree", null)) as any).projects[0].needsYou]).toEqual([1, 1, 1]);
-  });
-
-  it("an Inbox answer sent to the worker cancels its waiting retirement", async () => {
-    const { f, project, w } = await spawned();
-    await tool(f, "initiative_report", { outcome: "blocked", summary: "Need a key.", question: "Which key?", report: "Blocked." }, w.threadId);
-    f.threads.set(w.threadId, { ...f.threads.get(w.threadId)!, status: "active" });
-    await tool(f, "initiative_worker", { action: "retire", worker: w.worker });
-    f.idle(w.threadId);
-    const blocker = f.store.assignment(project.id, 1)!.report!.blocker!;
-    await f.service.answerBlocker(project.id, "A1", { question: blocker.question, context: blocker.context }, "Use staging.", "worker");
-    expect(f.store.retireRequests()).toEqual([]);
-    await f.service.finishRetirements();
-    expect(f.archive).not.toHaveBeenCalled();
+    expect(f.store.reports(project.id, [1]).get(1)!.blocker).toEqual({ question: "Which key?", context: "Ctx" });
   });
 
   it("a lead's later retire replaces an earlier one that more work made moot", async () => {
@@ -292,69 +277,7 @@ describe("W492 review r2", () => {
   });
 });
 
-describe("W492 review r3", () => {
-  async function blockedOnUser() {
-    const { f, project, w } = await spawned();
-    await tool(f, "initiative_report", { outcome: "blocked", summary: "Need a key.", question: "Which key?", report: "Blocked." }, w.threadId);
-    const blocker = f.store.assignment(project.id, 1)!.report!.blocker!;
-    return { f, project, w, seen: { question: blocker.question, context: blocker.context } };
-  }
-
-  it("an answer to the worker waits for a retire already running, then cancels the request it stored", async () => {
-    const { f, project, w, seen } = await blockedOnUser();
-    f.threads.set(w.threadId, { ...f.threads.get(w.threadId)!, status: "active" });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    let held = false;
-    f.intercept(async (path, args, call) => {
-      if (path === "threads.get" && args.threadId === w.threadId && !held) {
-        held = true;
-        await gate;
-      }
-      return call();
-    });
-    const retire = f.perform(project.id, { action: "worker-retire", worker: w.worker, reason: "Done." } as never, "coordinator", "coordinator");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const answer = f.service.answerBlocker(project.id, "A1", seen, "Use staging.", "worker");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    release();
-    expect(await retire).toMatchObject({ state: "retiring" });
-    await answer;
-    f.intercept();
-    expect(f.store.retireRequests()).toEqual([]);
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.archive).not.toHaveBeenCalled();
-  });
-
-  it("a retried FYI to the lead leaves a later retirement waiting", async () => {
-    const { f, project, w, seen } = await blockedOnUser();
-    const answered = await f.service.answerBlocker(project.id, "A1", seen, "Use staging.", "worker");
-    // The worker got it; the FYI to its lead failed. Later the lead asks to retire the worker.
-    const notification = JSON.parse((f.store.db.prepare("SELECT decision_notification FROM knowledge WHERE project_id = ? AND num = ?").get(project.id, Number(answered.ref.slice(1))) as { decision_notification: string }).decision_notification);
-    f.store.db.prepare("UPDATE knowledge SET decision_notification = ? WHERE project_id = ? AND num = ?").run(JSON.stringify({ ...notification, state: "failed" }), project.id, Number(answered.ref.slice(1)));
-    f.store.requestRetire(project.id, 1, "Merged.", Date.now());
-    await f.service.answerBlocker(project.id, "A1", seen, "Use staging.", "worker");
-    expect(f.store.retireRequests()).toEqual([expect.objectContaining({ reason: "Merged." })]);
-  });
-});
-
 describe("W492 review r4", () => {
-  it("an answer to the worker runs after a continuation queued before it, against the ledger as it then is", async () => {
-    const { f, project, w } = await spawned();
-    await tool(f, "initiative_report", { outcome: "blocked", summary: "Need a key.", question: "Which key?", report: "Blocked." }, w.threadId);
-    f.idle(w.threadId);
-    const blocker = f.store.assignment(project.id, 1)!.report!.blocker!;
-    let release!: () => void;
-    const held = f.service.serialize(() => new Promise<void>((resolve) => { release = resolve; }));
-    const more = f.perform(project.id, { action: "delegate", route: "continue", role: "work", worker: w.worker, note: "Use staging; carry on." } as never, "coordinator", "coordinator");
-    const answer = f.service.answerBlocker(project.id, "A1", { question: blocker.question, context: blocker.context }, "Use prod.", "worker");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    release();
-    await Promise.all([held, more]);
-    await expect(answer).rejects.toThrow(/no longer waiting on a blocker/);
-    expect(sentTexts(f).some((t) => t.includes("Continue A1"))).toBe(false);
-  });
-
   it("steers more work in only while the thread runs; an idle one takes the usual path and its checks", async () => {
     const { f, project, w } = await spawned();
     f.store.updateAssignment(project.id, 1, { state: "running" });

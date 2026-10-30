@@ -1,5 +1,4 @@
 import type { Overview } from "./overview";
-import { dismissalItem } from "./blockers";
 import type { Command } from "./commands";
 import type { DecisionRecord } from "./store";
 
@@ -7,8 +6,7 @@ import type { DecisionRecord } from "./store";
 export function applyCommitted(o: Overview, command: Command, result: unknown): Overview {
   if (command.action === "inbox-dismiss-all") {
     // W460: closed questions show at once, as Close quietly does; a close is final, so even a
-    // resend's replayed receipt is current. Dismissals are not projected: a replayed receipt can
-    // predate an Undo made since, and nothing tells it apart, so the read after it shows them.
+    // resend's replayed receipt is current.
     let next = o;
     for (const d of (result as { closed: DecisionRecord[] }).closed) next = applyCommitted(next, { action: "question-close", decision: d.ref, note: "" }, d);
     return next;
@@ -35,20 +33,6 @@ export function applyCommitted(o: Overview, command: Command, result: unknown): 
         next.closedQuestions = [{ ref: d.ref, question: q.question, note: d.body.resolution?.note ?? "", closedAt: d.body.resolution?.at ?? d.updatedAt }, ...next.closedQuestions.filter(row => row.ref !== d.ref)];
       }
     }
-  }
-  if (command.action === "blocker-answer") {
-    const d = result as DecisionRecord;
-    if (!d?.ref || !d.body?.answer) return o;
-    const answer = { ref: d.ref, choice: d.body.answer.choice, note: d.body.answer.note, at: d.body.answer.at, to: d.body.answer.to ?? "coordinator" as const, delivery: d.body.answer.delivery ?? null, notification: d.notification, inChat: d.provenance.author !== "user" };
-    next.blockers = next.blockers.map(b => b.assignment === command.assignment ? { ...b, answer } : b);
-  }
-  if (command.action === "blocker-dismiss" || command.action === "blocker-dismiss-undo") {
-    const d = result as DecisionRecord;
-    if (!d?.ref || !d.body?.dismissal || !d.body.blocker) return o;
-    const row = { ref: d.ref, description: d.description, madeBy: "user" as const, acceptEligible: false, review: null, reviewMessage: null, notification: d.notification, recordedBy: d.provenance, updatedAt: d.updatedAt, dismissal: dismissalItem(d.body.blocker, d.body.dismissal) };
-    next.decisions = [...next.decisions.filter(r => r.ref !== d.ref), row];
-    // An undone dismissal brings its blocker back on the next read, if it is still open.
-    if (command.action === "blocker-dismiss") next.blockers = next.blockers.filter(b => b.assignment !== command.assignment);
   }
   next.counts.opinionNeeded = next.opinionNeeded.length;
   next.counts.revisit = next.revisit.length;

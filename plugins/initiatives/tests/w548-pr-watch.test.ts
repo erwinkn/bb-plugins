@@ -1518,7 +1518,7 @@ describe("W548 wiring", () => {
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("After you open or push a PR, watch it with initiative_pr_watch; unwatch it (initiative_pr_unwatch) once you hand it off or stop caring.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Never wait on CI with sleep, loops, `gh pr checks --watch`, Monitor or ScheduleWakeup: the watch wakes you when your PR changes.");
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
-    // W548's text is a legacy default: saved unedited, it upgrades to this one.
-    expect(PREVIOUS_DEFAULTS.worker[0]).toContain("the plugin wakes you when your PR changes.");
+    // W548's text is a legacy default (behind W554's, which W555 keeps): saved unedited, it upgrades to this one.
+    expect(PREVIOUS_DEFAULTS.worker[1]).toContain("the plugin wakes you when your PR changes.");
   });
 });

@@ -177,7 +177,7 @@ export default function plugin(bb: BbPluginApi) {
   ) => {
     const run = () => runCommand(service, id, command, author, threadId);
     if (
-      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "worker-stop", "stop-work"].includes(
+      ["answer", "pause", "assignment-stop", "worker-stop", "stop-work"].includes(
         command.action,
       )
     )
@@ -324,10 +324,9 @@ export default function plugin(bb: BbPluginApi) {
         return children === null ? [] : [[w.ref, { ...cache.waitingOn(w.threadId!), children }]];
       }),
     ]);
-    const asksUser = new Set(result.blockers.filter((b) => !b.answer).map((b) => b.owner.worker));
     result.workerGroups = Object.fromEntries(result.workers.current.map((w) => {
       const facts = {
-        asksUser: asksUser.has(w.ref), runtime: w.runtime, waiting: !!result.workerWaiting?.[w.ref]?.on,
+        runtime: w.runtime, waiting: !!result.workerWaiting?.[w.ref]?.on,
         open: !!w.open, stopReason: !!w.stopReason, outcome: w.latestReport?.outcome ?? null,
       };
       return [w.ref, {
@@ -1232,17 +1231,18 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_question",
     parameters: jsonSchema(questionToolSchema),
-    description: 'Ask the user a real open choice (never inferred from prose): {question,context,options?:[{label,consequences}],recommendation?}. It shows in the Inbox; the answer comes back to this tab. {withdraw:"D12",reason} retracts your own open question. {answered:"A31",question:"<the blocker\'s question, as the user answered it>",text:"<the user\'s words>"} (coordinator tab only) records on its Inbox card the answer the user gave you in chat to the blocker a worker reported on A31, which clears it from Needs you; use it only after the user actually answered that question, never for your own guess. It sends nothing: then continue the worker as usual (initiative_message work:true). Decide routine things yourself.',
+    description: 'Ask the user a real open choice (never inferred from prose): {question,context,options?:[{label,consequences}],recommendation?}. It shows in the Inbox; the answer comes back to this tab. A worker\'s blocked report never reaches the user: ask its question here when only they can answer. {withdraw:"D12",reason} retracts your own open question. {answered:"D12",text:"<the user\'s words>",choice?:"<option label>"} records the answer the user gave you in chat to your open question D12, which clears it from the Inbox; use it only after the user actually answered that question, never for your own guess. It sends nothing: then act on the answer as usual. Decide routine things yourself.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
       const input = parseToolInput(questionToolSchema, raw, "initiative_question");
       const provenance = { author: "coordinator" as const, threadId: threadId!, assignment: null };
       if (input.answered) {
-        if (input.context || input.options || input.recommendation || input.withdraw || input.reason) throw new ToolInputError("answered records an answer; ask or withdraw in a separate call.");
-        if (!input.question) throw new ToolInputError("answered needs question: the blocker's question the user answered, as written on its report.");
+        // W555: a worker's blocker is no Inbox card any more; its question reaches the user as one of yours.
+        if (/^A\d+$/i.test(input.answered)) throw new ToolInputError(`${input.answered} is a worker's report: its question is not in the user's Inbox. Continue the worker with the user's answer (initiative_message work:true); if you also asked it as a question, record the answer on that D#.`);
+        if (!/^D\d+$/i.test(input.answered)) throw new ToolInputError(`answered takes the D# of your open question; got ${input.answered}.`);
+        if (input.question || input.context || input.options || input.recommendation || input.withdraw || input.reason) throw new ToolInputError("answered records an answer; ask or withdraw in a separate call.");
         if (!input.text) throw new ToolInputError("answered needs text: what the user said, quoted or faithfully summed up.");
-        if (!/^A\d+$/i.test(input.answered)) throw new ToolInputError(`answered takes the A# of the blocked report (from "W12 reported (blocked) on A301"); got ${input.answered}.`);
-        const recorded = await service.recordChatBlockerAnswer(p.id, input.answered, input.question, input.text, provenance);
+        const recorded = await service.answerOpinion(p.id, input.answered, { choice: input.choice ?? null, note: input.text }, provenance);
         return receipt({ ref: recorded.ref, status: recorded.status });
       }
       if (input.withdraw) {
@@ -1527,7 +1527,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   registerTool({
     name: "initiative_report",
-    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. The coordinator gets summary (which must stand on its own: outcome, PR URL and head, merge order, what you need) and reads report, your full report, on demand; a short report is sent whole. blocked waits on your lead; when only the user can answer, add question, options [{label,consequences}] and recommendation (starting with its label), and the user picks one in the Inbox.',
+    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. The coordinator gets summary (which must stand on its own: outcome, PR URL and head, merge order, what you need) and reads report, your full report, on demand; a short report is sent whole. blocked waits on your lead; when only the user can answer, add question, options [{label,consequences}] and recommendation (starting with its label): your lead asks the user and continues you with the answer.',
     parameters: jsonSchema(reportToolSchema),
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Report from the worker thread.");

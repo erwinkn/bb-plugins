@@ -12,7 +12,7 @@ type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const needsYou = async (f: Fx) => ((await f.harness.callRpc("tree", null)) as any).projects[0].needsYou as number;
 
 describe("T114 what waits on the user leads the Initiative status", () => {
-  it("counts open questions and blocked reports in the tree, and clears when they are answered, withdrawn or decided", async () => {
+  it("counts open questions in the tree, and clears when they are answered, withdrawn or decided; a blocked report is not counted (W555)", async () => {
     const { f, project } = await projectFixture();
     expect(await needsYou(f)).toBe(0);
     const ask = () => f.service.recordQuestion(project.id, { title: "Kit", humanAttention: "needs-opinion", question: "Which kit?", context: "c" }, coordinator);
@@ -26,7 +26,8 @@ describe("T114 what waits on the user leads the Initiative status", () => {
     const t1 = f.task(project.id);
     const [a] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref] });
     await f.service.report(a.threadId!, { ...report(), outcome: "blocked", blocker: { question: "Which env keys?", context: "Needs Railway access" } } as never);
-    expect(await needsYou(f)).toBe(1);
+    // The coordinator asks the user; until it does, nothing waits on them.
+    expect(await needsYou(f)).toBe(0);
     // The tree keeps opinions for older readers.
     expect(((await f.harness.callRpc("tree", null)) as any).projects[0].opinions).toBe(0);
   });

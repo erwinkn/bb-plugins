@@ -5,8 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { needsYouCount } from "../lib/blockers";
-import { projectFixture, report } from "./fake-native";
+import { projectFixture } from "./fake-native";
 
 await loadPluginApp(() => import("../app"));
 const { Dashboard } = await import("../app");
@@ -14,17 +13,13 @@ const slots: ReturnType<typeof renderSlot>[] = [];
 afterEach(() => { for (const slot of slots.splice(0)) slot.unmount(); cleanup(); });
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
-const question = "Which Railway env keys does Tekk Paris need?";
-const context = "The deploy needs two secrets only Erwin has.";
-const blocked = { ...report(), outcome: "blocked" as const, summary: "Blocked on secrets.", blocker: { question, context } };
+const coordinator = { author: "coordinator" as const, threadId: "coordinator", assignment: null };
 
-async function blockedWorker() {
+/** An Adventure with one open question for the user (W555: the only thing Needs you counts). */
+async function asked() {
   const { f, project } = await projectFixture();
-  const task = f.task(project.id, "Deploy Tekk Paris");
-  const [a] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
-  await f.service.report(a.threadId!, blocked as never);
-  f.idle(a.threadId!);
-  return { f, project };
+  const q = f.service.recordQuestion(project.id, { title: "Keys", humanAttention: "needs-opinion", question: "Which Railway env keys does Tekk Paris need?", context: "The deploy needs two secrets only Erwin has." }, coordinator);
+  return { f, project, q };
 }
 
 /**
@@ -40,7 +35,7 @@ function watch(f: Fx, projectId: string) {
       signals.push({
         payload,
         tree: (f.tree().projects[0] as { needsYou: number }).needsYou,
-        dashboard: f.overview(projectId, "summary").then(needsYouCount),
+        dashboard: f.overview(projectId, "summary").then((o) => o.opinionNeeded.length),
       });
     return publish(channel, payload);
   });
@@ -60,22 +55,6 @@ const command = (f: Fx, projectId: string, command: Record<string, unknown>) =>
   f.harness.callRpc("command", { projectId, command });
 
 describe("T129 Needs you commands announce once, after saving", () => {
-  it("dismiss, undo, dismiss again and answer each update the tree and dashboard counts at their signal", async () => {
-    const { f, project } = await blockedWorker();
-    const w = watch(f, project.id);
-    const once = (needsYou: number) => ({
-      signals: [{ payload: { projectId: project.id }, tree: needsYou, dashboard: needsYou }],
-      bumped: [{ projectId: project.id }],
-    });
-    const blocker = { assignment: "A1", question, context };
-    const d = (await command(f, project.id, { action: "blocker-dismiss", ...blocker, notify: false, note: "" })) as { ref: string };
-    expect(await w.take()).toEqual(once(0));
-    await command(f, project.id, { action: "blocker-dismiss-undo", decision: d.ref });
-    expect(await w.take()).toEqual(once(1));
-    await command(f, project.id, { action: "blocker-answer", ...blocker, note: "Use the staging keys." });
-    expect(await w.take()).toEqual(once(0));
-  });
-
   it("a question's answer clears it from Needs you at its signal", async () => {
     const { f, project } = await projectFixture();
     const w = watch(f, project.id);
@@ -87,21 +66,21 @@ describe("T129 Needs you commands announce once, after saving", () => {
   });
 
   it("a command that saves nothing announces nothing", async () => {
-    const { f, project } = await blockedWorker();
+    const { f, project, q } = await asked();
     const w = watch(f, project.id);
-    await command(f, project.id, { action: "blocker-dismiss", assignment: "A1", question, context, notify: false, note: "" });
+    await command(f, project.id, { action: "question-close", decision: q.ref, note: "" });
     await w.take();
-    // Dismissing again returns the existing dismissal and writes nothing.
-    await command(f, project.id, { action: "blocker-dismiss", assignment: "A1", question, context, notify: false, note: "" });
-    // A stale blocker is refused before anything is saved.
-    await expect(command(f, project.id, { action: "blocker-answer", assignment: "A1", question: "Something else?", context, note: "x" })).rejects.toThrow();
+    // Closing again returns the closed question and writes nothing.
+    await command(f, project.id, { action: "question-close", decision: q.ref, note: "" });
+    // An answer to a closed question is refused before anything is saved.
+    await expect(command(f, project.id, { action: "answer", decision: q.ref, choice: null, note: "x" })).rejects.toThrow();
     // Reads write nothing either.
     await f.harness.callAgentTool("initiative_read", {}, { threadId: "coordinator" });
     expect(await w.take()).toEqual({ signals: [], bumped: [] });
   });
 
-  it("another open dashboard drops and restores its Needs you pill on the signal alone", async () => {
-    const { f, project } = await blockedWorker();
+  it("another open dashboard drops its Needs you pill on the signal alone", async () => {
+    const { f, project, q } = await asked();
     const signals: unknown[] = [];
     const publish = f.bb.realtime.publish.bind(f.bb.realtime);
     vi.spyOn(f.bb.realtime, "publish").mockImplementation((channel, payload) => {
@@ -114,12 +93,9 @@ describe("T129 Needs you commands announce once, after saving", () => {
     slots.push(slot);
     expect(await slot.findByRole("button", { name: "Needs you · 1" })).toBeTruthy();
     const relay = async () => { for (const payload of signals.splice(0)) await slot.behavior.emitRealtime("initiatives-changed", payload); };
-    // The dismissal happens in another view; this one only hears its signal.
-    const d = (await command(f, project.id, { action: "blocker-dismiss", assignment: "A1", question, context, notify: false, note: "" })) as { ref: string };
+    // The answer comes from another view; this one only hears its signal.
+    await command(f, project.id, { action: "answer", decision: q.ref, choice: null, note: "Use the staging keys." });
     await relay();
     await waitFor(() => expect(slot.queryByRole("button", { name: /Needs you/ })).toBeNull());
-    await command(f, project.id, { action: "blocker-dismiss-undo", decision: d.ref });
-    await relay();
-    expect(await slot.findByRole("button", { name: "Needs you · 1" })).toBeTruthy();
   });
 });

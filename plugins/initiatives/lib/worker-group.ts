@@ -11,10 +11,9 @@ export const FAILED_THREAD = new Set(["error", "failed"]);
 export type WorkerGroup = "needs" | "working" | "waiting" | "done" | "stopped" | "idle";
 
 /** Why a worker is in its group: the finer cases the Workers tab words differently. */
-export type WorkerKind = "asksUser" | "input" | "running" | "waiting" | "failed" | "idleNoReport" | "open" | "stopReason" | "done" | "onCoordinator" | "reported" | "none";
+export type WorkerKind = "input" | "running" | "waiting" | "failed" | "idleNoReport" | "open" | "stopReason" | "done" | "onCoordinator" | "reported" | "none";
 
 export const KIND_GROUP: Record<WorkerKind, WorkerGroup> = {
-  asksUser: "needs",
   input: "needs",
   running: "working",
   waiting: "waiting",
@@ -29,11 +28,6 @@ export const KIND_GROUP: Record<WorkerKind, WorkerGroup> = {
 };
 
 export interface WorkerFacts {
-  /**
-   * Its blocker is an open question in the user's Inbox: a blocker card they have neither
-   * answered nor dismissed, the rule the Inbox's Needs you count follows (needsYouCount).
-   */
-  asksUser: boolean;
   /** The thread's status (see `workerRuntime`). */
   runtime: string;
   /** A live descendant it waits on. */
@@ -45,7 +39,6 @@ export interface WorkerFacts {
 }
 
 export function workerKind(f: WorkerFacts): WorkerKind {
-  if (f.asksUser) return "asksUser";
   if (f.runtime === INPUT_THREAD) return "input";
   if (BUSY_THREAD.has(f.runtime)) return "running";
   if (f.waiting) return "waiting";
@@ -55,7 +48,8 @@ export function workerKind(f: WorkerFacts): WorkerKind {
   if (f.open) return f.runtime === "idle" && !f.stopReason ? "idleNoReport" : "open";
   if (f.stopReason) return "stopReason";
   if (f.outcome === "done") return "done";
-  // Blocked, with nothing left for the user to answer: the coordinator acts next.
+  // Blocked: the coordinator acts next. W555: it asks the user itself (initiative_question) when
+  // only they can answer, so the worker never waits on the user directly.
   if (f.outcome === "blocked") return "onCoordinator";
   return f.outcome ? "reported" : "none";
 }
