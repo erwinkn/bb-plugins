@@ -68,10 +68,17 @@ so a 30-day page costs one index range scan.
 
 Names come from BB: thread titles and projects (`threads.get`,
 `projects.list`), and Initiatives and their members from the Initiatives
-plugin's read-only context routes. Thread names are cached for ten minutes,
-Initiative membership for one. A thread BB reports missing (404) is "Deleted
-thread"; one BB could not answer for shows its id for that page and is asked
-again on the next.
+plugin's read-only context routes. Both take seconds (BB answers thread reads
+one at a time, about 4,000 of them for 30 days; Initiative membership is about
+10,000 members), so they are cached in memory and a page only waits for names
+it has never had. Thread names are read again after ten minutes, Initiative
+membership after one, in the background: the page that finds them stale still
+gets the cached ones. A thread BB reports missing (404) is "Deleted thread";
+one BB could not answer for shows its id for that page and is asked again on
+the next. A failed membership read keeps the last one.
+
+The Pooler's three reads (`status.get`, `usage.stats`, `usage.quota`) start
+together.
 
 A page makes one `usage.stats` call when no filter is set, and two otherwise:
 the second, unfiltered, lists what each filter can choose. A project or

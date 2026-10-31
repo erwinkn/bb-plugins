@@ -218,8 +218,33 @@ describe("buildPage", () => {
     expect(await build({ model: "claude-opus-5-5" })).toEqual(["acct-a", "acct-b"]);
   });
 
+  it("asks for the quota history, the status and the stats together", async () => {
+    const pooler = fakePooler(slices);
+    const asked: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow = <A extends unknown[], R>(name: string, read: (...args: A) => Promise<R>) =>
+      async (...args: A) => {
+        asked.push(name);
+        await gate;
+        return read(...args);
+      };
+    const page = buildPage(input(), {
+      pooler: { stats: slow("stats", pooler.stats), quota: slow("quota", pooler.quota), status: slow("status", pooler.status) },
+      directory: directory(),
+      now: () => T0 + DAY,
+    });
+    await Promise.resolve();
+    expect(asked.sort()).toEqual(["quota", "stats", "status"]);
+    release();
+    expect((await ok(page)).totals.requests).toBe(27);
+  });
+
   it("says why when the Account Pooler does not answer", async () => {
-    const page = await buildPage(input(), { pooler: fakePooler([], { status: new Error('Plugin "account-pool-local" is not installed.') }), directory: directory(), now: () => T0 });
+    const pooler = fakePooler([], { status: new Error('Plugin "account-pool-local" is not installed.') });
+    // Without waiting for the stats, which may take until their timeout.
+    const stats = () => new Promise<never>(() => {});
+    const page = await buildPage(input(), { pooler: { ...pooler, stats }, directory: directory(), now: () => T0 });
     expect(page).toEqual({ status: "unavailable", reason: expect.stringContaining("not installed") });
   });
 });

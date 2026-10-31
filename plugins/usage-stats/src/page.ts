@@ -2,7 +2,7 @@ import { bucketEnd, bucketStarts } from "./calendar";
 import type { Directory, Membership, ThreadInfo } from "./directory";
 import type { Label, Metrics, OkPage, Page, PageInput, Row } from "./model";
 import { addMetrics, amount, emptyMetrics, OTHER_ID, type FilterDimension, type Measure } from "./shared";
-import type { Pooler, PoolerDimension, PoolerStatsInput, PoolerStatsRow } from "./pooler";
+import type { Pooler, PoolerDimension, PoolerQuota, PoolerStatsInput, PoolerStatsRow } from "./pooler";
 
 // Builds the Usage page from the Account Pooler's sums and BB's names. Every number comes from
 // one usage.stats call over the filtered slice; a second, unfiltered call lists what the filters
@@ -24,15 +24,6 @@ type LedgerDimension = Extract<FilterDimension, "provider" | "model" | "account"
 const LEDGER_DIMENSIONS: LedgerDimension[] = ["provider", "model", "account", "role"];
 
 export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page> {
-  let status;
-  try {
-    status = await deps.pooler.status();
-  } catch (error) {
-    return {
-      status: "unavailable",
-      reason: `The Account Pooler (account-pool-local) did not answer: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
   const range = { from: input.from, to: input.to };
   // The page's series and the Pooler's buckets share these boundaries.
   const starts = bucketStarts(input);
@@ -51,12 +42,26 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
 
   // What every filter can take in range: the unfiltered slice, the page itself when unfiltered.
   const filtered = Object.keys(input.filter).length > 0;
-  const unfiltered = await deps.pooler.stats({
+  // The reads that need nothing else run together; the quota history is the largest.
+  const history = deps.pooler.quota(range).catch(() => null);
+  const unfilteredRead = deps.pooler.stats({
     ...range,
     bucket: filtered ? null : bucket,
     filter: {},
     groups: filtered ? [["provider"], ["model"], ["account"], ["role"], ["thread"]] : groups,
   });
+  // A page that answers "unavailable" never awaits it.
+  unfilteredRead.catch(() => {});
+  let status;
+  try {
+    status = await deps.pooler.status();
+  } catch (error) {
+    return {
+      status: "unavailable",
+      reason: `The Account Pooler (account-pool-local) did not answer: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const unfiltered = await unfilteredRead;
   const [optionProviders, optionModels, optionAccounts, optionRoles, optionThreads] = filtered
     ? unfiltered.results
     : unfiltered.results.slice(2);
@@ -147,7 +152,7 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
       project: derivedOptions(names.projectOf, "project"),
       initiative: derivedOptions(names.initiativeOf, "initiative"),
     },
-    quota: await quota(input, deps, status.accounts, names),
+    quota: quota(input, await history, deps.now(), status.accounts, names),
   };
 }
 
@@ -193,19 +198,14 @@ function series(
   };
 }
 
-async function quota(
+function quota(
   input: PageInput,
-  deps: PageDeps,
+  history: PoolerQuota | null,
+  now: number,
   accounts: Awaited<ReturnType<Pooler["status"]>>["accounts"],
   names: Namer,
-): Promise<OkPage["quota"]> {
-  let history;
-  try {
-    history = await deps.pooler.quota({ from: input.from, to: input.to });
-  } catch {
-    return [];
-  }
-  const now = deps.now();
+): OkPage["quota"] {
+  if (history === null) return [];
   const byId = new Map(accounts.map((account) => [account.id, account]));
   const result = history.accounts.map(({ accountId, points }) => {
     // Anthropic retired Claude's 5h window; an older Pooler's history may still carry it. Codex keeps its own.

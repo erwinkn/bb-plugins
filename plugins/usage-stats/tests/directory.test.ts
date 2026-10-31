@@ -52,6 +52,112 @@ describe("bbDirectory", () => {
     expect(gets).toEqual(["thr_flaky", "thr_flaky"]);
   });
 
+  it("answers stale names at once, reads them again in the background, once", async () => {
+    let now = 0;
+    let title = "Old title";
+    const pending: Array<() => void> = [];
+    const gets: string[] = [];
+    const bb = {
+      server: { loopbackBaseUrl: "http://bb.test" },
+      sdk: {
+        threads: {
+          get({ threadId }: { threadId: string }) {
+            gets.push(threadId);
+            const answer = { title, titleFallback: null, projectId: "proj_1", deletedAt: null };
+            // Past the first read, BB answers only when the test says so.
+            return gets.length === 1 ? Promise.resolve(answer) : new Promise((resolve) => pending.push(() => resolve(answer)));
+          },
+        },
+      },
+    } as unknown as Parameters<typeof bbDirectory>[0];
+    const directory = bbDirectory(bb, () => now);
+    await directory.threads(["thr_a"]);
+    title = "New title";
+    now = 11 * 60_000;
+    expect((await directory.threads(["thr_a"])).get("thr_a")?.title).toBe("Old title");
+    expect((await directory.threads(["thr_a"])).get("thr_a")?.title).toBe("Old title");
+    expect(gets).toEqual(["thr_a", "thr_a"]);
+    pending.shift()!();
+    await vi.waitFor(async () => expect((await directory.threads(["thr_a"])).get("thr_a")?.title).toBe("New title"));
+  });
+
+  it("does not make a page wait on another page's unrelated reads", async () => {
+    const bb = {
+      server: { loopbackBaseUrl: "http://bb.test" },
+      sdk: {
+        threads: {
+          get({ threadId }: { threadId: string }) {
+            const answer = { title: `Title of ${threadId}`, titleFallback: null, projectId: "proj_1", deletedAt: null };
+            return threadId === "thr_slow" ? new Promise(() => {}) : Promise.resolve(answer);
+          },
+        },
+      },
+    } as unknown as Parameters<typeof bbDirectory>[0];
+    const directory = bbDirectory(bb, () => 0);
+    // The first page's read never ends; the second needs one of its names, not the slow one.
+    void directory.threads(["thr_a", "thr_slow"]);
+    expect((await directory.threads(["thr_a"])).get("thr_a")?.title).toBe("Title of thr_a");
+  });
+
+  it("keeps a requested name the cache evicts while the page waits", async () => {
+    let now = 0;
+    let refreshing = false;
+    const bb = {
+      server: { loopbackBaseUrl: "http://bb.test" },
+      sdk: {
+        threads: {
+          get({ threadId }: { threadId: string }) {
+            const answer = { title: `Title of ${threadId}`, titleFallback: null, projectId: "proj_1", deletedAt: null };
+            // The stale thread's refresh hangs; a new thread answers.
+            return refreshing && threadId === "thr_0" ? new Promise(() => {}) : Promise.resolve(answer);
+          },
+        },
+      },
+    } as unknown as Parameters<typeof bbDirectory>[0];
+    const directory = bbDirectory(bb, () => now);
+    // A full cache: 20,000 threads, thr_0 the oldest.
+    await directory.threads(Array.from({ length: 20_000 }, (_, index) => `thr_${index}`));
+    refreshing = true;
+    now = 11 * 60_000;
+    const names = await directory.threads(["thr_0", "thr_new"]);
+    expect(names.get("thr_0")).toEqual({ title: "Title of thr_0", projectId: "proj_1", deleted: false });
+    expect(names.get("thr_new")?.title).toBe("Title of thr_new");
+  });
+
+  it("answers stale Initiative membership at once, and keeps it when a read fails", async () => {
+    let now = 0;
+    let respond: (url: string) => Promise<Response> = async (url) => {
+      const path = url.replace("http://bb.test/api/v1/plugins/initiatives/http/context/v1", "");
+      const body = path === "/initiatives"
+        ? { initiatives: [{ initiativeId: "prj_1", name: "bb-plugins" }] }
+        : { next: null, members: [{ threadId: "thr_a", kind: "coordinator", worker: null }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    };
+    let fetches = 0;
+    vi.stubGlobal("fetch", (url: string) => {
+      fetches++;
+      return respond(url);
+    });
+    const { bb } = fakeBb(async () => ({ token: "t" }));
+    const directory = bbDirectory(bb, () => now);
+    expect((await directory.memberships()).get("thr_a")?.member).toBe("Coordinator");
+    expect(fetches).toBe(2);
+
+    // Past the TTL the Initiatives plugin hangs: the page still gets its names now.
+    const hung: Array<() => void> = [];
+    respond = () => new Promise((_, reject) => hung.push(() => reject(new Error("timed out"))));
+    now = 61_000;
+    expect((await directory.memberships()).get("thr_a")?.member).toBe("Coordinator");
+    expect((await directory.memberships()).get("thr_a")?.member).toBe("Coordinator");
+    expect(fetches).toBe(3);
+    // The read fails: what was known stays, and is read again on the next call.
+    hung.shift()!();
+    await vi.waitFor(async () => {
+      expect((await directory.memberships()).get("thr_a")?.member).toBe("Coordinator");
+      expect(fetches).toBe(4);
+    });
+  });
+
   it("reads every Initiative's members, page by page, with the Initiatives token", async () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
