@@ -66,6 +66,7 @@ export interface ProviderAdapter {
     headers: Headers,
   ): {
     family: ModelFamily;
+    model: string | null;
     affinityId: string | null;
     parentAffinityId: string | null;
     forAccount: (account: Account) => Uint8Array;

@@ -1,7 +1,8 @@
-// Finds the BB thread behind a Claude Code session no thread is linked to yet: the one running
-// thread whose latest thread/identity event names the session. A lookup runs in the background and
-// never delays a request. It is bounded: one pending lookup per session, at most maxConcurrent at
-// once, each under its own deadline, and a session is looked up again at most every retryMs. Every
+// Finds the BB thread behind a Claude Code or Codex session no thread is linked to yet: the one
+// running thread whose latest thread/identity event names the session. A lookup runs in the
+// background and never delays a request. It is bounded: one pending lookup per session, at most maxConcurrent at
+// once, each under its own deadline, and a session is looked up again at most every retryMs. A
+// session that arrives while maxConcurrent lookups run waits for a free slot, oldest first. Every
 // SDK call gets the lookup's own signal, aborted at the deadline or on dispose, and the lookup stops
 // waiting for a call once that signal aborts.
 //
@@ -33,13 +34,23 @@ export class SessionResolver {
   private readonly pending = new Map<string, AbortController>();
   // When each session was last looked up, oldest first.
   private readonly attempts = new Map<string, number>();
+  // Sessions waiting for a free lookup slot, oldest first.
+  private readonly waiting = new Set<string>();
   private disposed = false;
 
   constructor(private readonly deps: SessionResolverDeps) {}
 
   resolve(sessionId: string): void {
     if (this.disposed || this.pending.has(sessionId)) return;
-    if (this.pending.size >= (this.deps.maxConcurrent ?? MAX_CONCURRENT)) return;
+    if (this.pending.size >= (this.deps.maxConcurrent ?? MAX_CONCURRENT)) {
+      this.waiting.add(sessionId);
+      while (this.waiting.size > MAX_REMEMBERED) {
+        const oldest = this.waiting.values().next();
+        if (!oldest.done) this.waiting.delete(oldest.value);
+      }
+      return;
+    }
+    this.waiting.delete(sessionId);
     const now = this.deps.now();
     const last = this.attempts.get(sessionId);
     if (last !== undefined && now - last < (this.deps.retryMs ?? RETRY_MS)) return;
@@ -61,11 +72,23 @@ export class SessionResolver {
       this.deps.timers.clearTimeout(timer);
       controller.abort(new Error("session lookup finished"));
       if (this.pending.get(sessionId) === controller) this.pending.delete(sessionId);
+      this.startWaiting();
     });
+  }
+
+  private startWaiting(): void {
+    const max = this.deps.maxConcurrent ?? MAX_CONCURRENT;
+    while (!this.disposed && this.pending.size < max) {
+      const next = this.waiting.values().next();
+      if (next.done) return;
+      this.waiting.delete(next.value);
+      this.resolve(next.value);
+    }
   }
 
   dispose(): void {
     this.disposed = true;
+    this.waiting.clear();
     for (const controller of this.pending.values())
       controller.abort(new Error("Account Pooler stopped"));
     this.pending.clear();
@@ -89,7 +112,7 @@ export class SessionResolver {
       if (owners.length === 1) this.deps.link(owners[0]!.id, sessionId);
     } catch (error) {
       this.deps.log(
-        `Account Pooler could not look up the thread of a Claude session: ${error instanceof Error ? error.message : String(error)}`,
+        `Account Pooler could not look up the thread of a session: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

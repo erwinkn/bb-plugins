@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { accountPoolConfigSchema, statusReportSchema } from "./contracts.js";
@@ -96,6 +97,15 @@ function sseResponse(): Response {
   );
 }
 
+// What the ChatGPT Codex backend streams: no content-type, usage in response.completed.
+function codexSseResponse(): Response {
+  const completed = {
+    type: "response.completed",
+    response: { id: "resp", usage: { input_tokens: 1_000, input_tokens_details: { cached_tokens: 800 }, output_tokens: 20 } },
+  };
+  return new Response(`event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`);
+}
+
 interface VendorCall {
   url: string;
   headers: Record<string, string>;
@@ -121,7 +131,10 @@ function vendor() {
       return Response.json({ access_token: "refreshed", expires_in: 3600 });
     }
     const request = new Request(input, init);
-    const body = JSON.parse(await request.text()) as Record<string, unknown>;
+    const bytes = Buffer.from(await request.arrayBuffer());
+    const body = JSON.parse(
+      String(request.headers.get("content-encoding") === "zstd" ? zstdDecompressSync(bytes) : bytes),
+    ) as Record<string, unknown>;
     const call = { url, headers: Object.fromEntries(request.headers), body };
     if (body.max_tokens === 0) {
       keepAlive.push(call);
@@ -140,7 +153,7 @@ function vendor() {
     }
     native.push(call);
     await control.holdNative?.(body);
-    return sseResponse();
+    return url.endsWith("/responses") ? codexSseResponse() : sseResponse();
   };
   return { native, keepAlive, refreshes, keepAliveReplies, fetch, control };
 }
@@ -228,6 +241,8 @@ async function fixture(args: {
   accounts?: number;
   // BB's provider session per thread, as its latest thread/identity event reports it.
   sessions?: Record<string, string>;
+  // Also add one Codex account.
+  codex?: boolean;
 } = {}): Promise<Fixture> {
   const sessions = new Map(Object.entries(args.sessions ?? { thr_coord: SESSION }));
   const rows = new Map<string, Partial<ThreadRow>>();
@@ -329,8 +344,25 @@ async function fixture(args: {
       email: "pool@example.com",
       accountUuid: "11111111-1111-4111-8111-111111111111",
     }),
+    codexUsageUrl: EMPTY_USAGE_URL,
+    codexRefreshUrl: `${UPSTREAM}/oauth/token`,
+    importCodexCredentials: async () => ({
+      accessToken: "codex-access",
+      refreshToken: "codex-refresh",
+      idToken: null,
+      accountId: "chatgpt-account",
+      email: "codex@example.com",
+      expiresAt: start + 24 * 60 * MINUTE,
+    }),
   };
   await createAccountPoolPlugin(options)(host.bb);
+  if (args.codex)
+    await host.harness.behavior.callRpc("account.add", {
+      provider: "codex",
+      source: { kind: "import" },
+      label: "codex account",
+      priority: 100,
+    });
   for (let index = 0; index < (args.accounts ?? 1); index += 1)
     await host.harness.behavior.callRpc("account.add", {
       provider: "claude",
@@ -389,6 +421,29 @@ async function idle(host: Host, threadId = "thr_coord") {
     lastAssistantText: null,
   });
   expect(result.errors).toEqual([]);
+}
+
+// What Codex CLI 0.165 sends: a zstd-compressed /responses body, its thread and model in headers.
+async function codexRequest(host: Host, session: string): Promise<number> {
+  const entries = await host.harness.behavior.resolveProviderEnv("codex", {
+    threadId: "thr_codex",
+    projectId: "project-one",
+    hostId: "host-one",
+  });
+  const token = entries.find((entry) => entry.name === "CODEX_POOL_AUTH_TOKEN")?.value;
+  if (typeof token !== "string") throw new Error("no Codex token");
+  const response = await host.harness.behavior.fetchHttp("POST", "/v1/responses", {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "content-encoding": "zstd",
+      "thread-id": session,
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: session, request_kind: "turn", model: "gpt-6.1-sol" }),
+    },
+    body: zstdCompressSync(JSON.stringify({ model: "gpt-6.1-sol", stream: true, input: [] })),
+  });
+  await response.text();
+  return response.status;
 }
 
 async function env(host: Host, threadId = "thr_coord") {
@@ -475,7 +530,10 @@ describe("cache warming defaults and native environment", () => {
     expect((await warmingStatus(f.host)).totals.nativeObserved).toBe(0);
     await f.clock.advanceTo(60 * MINUTE);
     expect(f.upstream.keepAlive).toHaveLength(0);
-    expect(f.projectReads).toHaveLength(0);
+    // Off still links the session to its thread, whose role the usage ledger labels it with.
+    expect(f.projectReads).toEqual([
+      { url: `${CONTEXT_ROUTE}?threadId=thr_coord`, token: "initiatives-token" },
+    ]);
     expect((await f.host.harness.behavior.runCli(["status"])).stdout).toContain("Cache warming: off");
     expect(await f.host.bb.storage.kv.get("warming-config")).toBeUndefined();
   });
@@ -1186,23 +1244,25 @@ describe("W211 corrections through the hub", () => {
     expect(await nativeRequest(f.host)).toBe(200);
     expect(await nativeRequest(f.host, { turn: "second" })).toBe(200);
     expect(signals).toHaveLength(1);
-    // Two more unknown sessions: only one more lookup fits under the limit of two at once.
+    // Two more unknown sessions: only one more lookup fits under the limit of two at once; the
+    // other waits for a free slot.
     expect(await nativeRequest(f.host, { session: "7f1d3c1e-2222-4222-8222-222222222222" })).toBe(200);
     expect(await nativeRequest(f.host, { session: "8f1d3c1e-3333-4333-8333-333333333333" })).toBe(200);
     expect(signals).toHaveLength(2);
-    // Each lookup has its own signal, aborted at its 5-second deadline.
+    // Each lookup has its own signal, aborted at its 5-second deadline, which frees a slot for the
+    // waiting session.
     await f.clock.advanceTo(5_000);
-    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+    await vi.waitFor(() => expect(signals.map((signal) => signal.aborted)).toEqual([true, true, false]));
     // A session is looked up again only after 30 seconds.
     expect(await nativeRequest(f.host, { turn: "third" })).toBe(200);
-    expect(signals).toHaveLength(2);
+    expect(signals).toHaveLength(3);
     await f.clock.advanceTo(30_000);
     expect(await nativeRequest(f.host, { turn: "fourth" })).toBe(200);
-    expect(signals).toHaveLength(3);
+    expect(signals).toHaveLength(4);
     // Disposal aborts what is still pending.
     await f.stop();
     await f.host.harness.lifecycle.dispose();
-    expect(signals[2]?.aborted).toBe(true);
+    expect(signals[3]?.aborted).toBe(true);
   });
 
   it("1: a failed identity read keeps its lookup open until its siblings settle or the deadline aborts them", async () => {
@@ -1221,7 +1281,9 @@ describe("W211 corrections through the hub", () => {
       // At most two lookups at once, each with two reads still running.
       expect(reads.filter((signal) => !signal.aborted).length).toBeLessThanOrEqual(4);
     }
+    // The last lookups start as slots free, up to 100 s, and end at their deadlines.
     await f.clock.advanceTo(96_000);
+    await f.clock.advanceTo(101_000);
     expect(reads.length).toBeGreaterThan(4);
     expect(reads.every((signal) => signal.aborted)).toBe(true);
     // Nothing is linked from an incomplete answer.
@@ -1456,6 +1518,80 @@ describe("W211 corrections through the hub", () => {
       expect(f.upstream.keepAlive).toHaveLength(0);
       expect(await lastMessage(f.host)).toMatch(/its report reached reportedGraceMinutes/);
     });
+  });
+
+  it("7: a Codex thread's compressed requests are labelled with its model, thread and role", async () => {
+    // Warming stays off: it never touches Codex, and linking does not depend on it.
+    const f = await fixture({ codex: true, sessions: { thr_codex: "codex-thread" }, contexts: { thr_codex: WORKER("active") } });
+    // The first request is held until the thread link is read, as a real turn outlasts the lookup.
+    f.upstream.control.holdNative = () =>
+      vi.waitFor(() => expect(f.projectReads).toHaveLength(1), { interval: 1 });
+    expect(await codexRequest(f.host, "codex-thread")).toBe(200);
+    expect(await codexRequest(f.host, "codex-thread")).toBe(200);
+    // The vendor got the bytes as sent: still compressed, with their encoding.
+    expect(f.upstream.native.map((call) => [call.headers["content-encoding"], call.body.model])).toEqual([
+      ["zstd", "gpt-6.1-sol"],
+      ["zstd", "gpt-6.1-sol"],
+    ]);
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(2));
+    expect(
+      rows(f, "usage_requests").map((row) => [row.provider, row.model, row.thread_id, row.role, row.cache_read_tokens]),
+    ).toEqual([
+      ["codex", "gpt-6.1-sol", "thr_codex", "work", 800],
+      ["codex", "gpt-6.1-sol", "thr_codex", "work", 800],
+    ]);
+    // One lookup links the session for good.
+    expect(f.calls.listRunning).toBe(1);
+  });
+
+  it("7: concurrent new Codex sessions all link: a lookup over the concurrency limit waits", async () => {
+    const threads = { thr_a: "codex-a", thr_b: "codex-b", thr_c: "codex-c" };
+    const f = await fixture({
+      codex: true,
+      sessions: threads,
+      contexts: { thr_a: WORKER("active"), thr_b: WORKER("active"), thr_c: WORKER("active") },
+    });
+    f.upstream.control.holdNative = () =>
+      vi.waitFor(() => expect(f.projectReads).toHaveLength(3), { interval: 1 });
+    const statuses = await Promise.all(Object.values(threads).map((session) => codexRequest(f.host, session)));
+    expect(statuses).toEqual([200, 200, 200]);
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(3));
+    expect(rows(f, "usage_requests").map((row) => [row.session_key, row.thread_id]).sort()).toEqual([
+      ["session:codex-a", "thr_a"],
+      ["session:codex-b", "thr_b"],
+      ["session:codex-c", "thr_c"],
+    ]);
+  });
+
+  it("7: a linked thread whose context read failed is read again for its role, at most every 30 s", async () => {
+    const f = await fixture({ codex: true, sessions: { thr_codex: "codex-thread" }, contexts: { thr_codex: WORKER("active") } });
+    let tokens = 0;
+    f.host.harness.sdk.stub("plugins.token", async ({ pluginId }: { pluginId: string }) => {
+      tokens += 1;
+      if (tokens === 1) throw new Error("Initiatives is restarting");
+      return { token: `${pluginId}-token` };
+    });
+    // The link's context read fails: the rows name the thread without a role.
+    f.upstream.control.holdNative = () => vi.waitFor(() => expect(tokens).toBe(1), { interval: 1 });
+    expect(await codexRequest(f.host, "codex-thread")).toBe(200);
+    f.upstream.control.holdNative = null;
+    expect(await codexRequest(f.host, "codex-thread")).toBe(200);
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(2));
+    expect(tokens).toBe(1);
+    // 30 s later, a row with no role reads the context again; the rows after it have the role.
+    await f.clock.advanceTo(30_000);
+    expect(await codexRequest(f.host, "codex-thread")).toBe(200);
+    await vi.waitFor(() => expect(f.projectReads).toHaveLength(1));
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(3));
+    expect(await codexRequest(f.host, "codex-thread")).toBe(200);
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(4));
+    expect(rows(f, "usage_requests").map((row) => [row.thread_id, row.role])).toEqual([
+      ["thr_codex", null],
+      ["thr_codex", null],
+      ["thr_codex", null],
+      ["thr_codex", "work"],
+    ]);
+    expect(f.projectReads).toHaveLength(1);
   });
 
   it("6: a warmed standalone thread's native and refresh rows say standalone", async () => {

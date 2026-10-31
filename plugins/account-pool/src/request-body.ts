@@ -23,6 +23,8 @@ const SESSION_COMPONENT =
 
 export interface ParsedRequestBody {
   family: ModelFamily;
+  // The model the request names, or null.
+  model: string | null;
   affinityId: string | null;
   parentAffinityId: string | null;
   forAccount: (accountUuid: string | null) => Uint8Array;
@@ -123,6 +125,7 @@ export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
     if (!parsed.success)
       return {
         family: "other",
+        model: null,
         affinityId: null,
         parentAffinityId: null,
         forAccount: () => original,
@@ -135,6 +138,7 @@ export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
     const span: Span | null = userIdSpan;
     return {
       family: modelFamily(request.model ?? null),
+      model: request.model ?? null,
       affinityId:
         user?.sessionId === undefined || user.sessionId === null
           ? null
@@ -166,6 +170,7 @@ export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
   } catch {
     return {
       family: "other",
+      model: null,
       affinityId: null,
       parentAffinityId: null,
       forAccount: () => original,
@@ -173,7 +178,13 @@ export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
   }
 }
 
-const CODEX_FIELDS = new Set(["client_metadata", "prompt_cache_key"]);
+const CODEX_FIELDS = new Set(["client_metadata", "model", "prompt_cache_key"]);
+
+function modelName(value: unknown): string | null {
+  return typeof value === "string" && value.length <= 128 && /^[\x21-\x7e]+$/u.test(value)
+    ? value
+    : null;
+}
 
 function parseMetadata(
   value: string | null,
@@ -216,6 +227,9 @@ export function parseCodexRequestBody(
     affinityIdentifier(client?.session_id) ??
     affinityIdentifier(bodyTurn?.session_id);
   const cacheKey = affinityIdentifier(request?.prompt_cache_key);
+  // Codex CLI zstd-compresses its /responses bodies, which reach the vendor as sent: such a body
+  // reads as nothing here, and the model comes from the turn metadata header sent with it.
+  const model = modelName(request?.model) ?? modelName(headerTurn?.model);
   const parentSessionId =
     sessionId === null
       ? null
@@ -231,6 +245,7 @@ export function parseCodexRequestBody(
           .find((value) => value !== null && value !== sessionId) ?? null);
   return {
     family: "other",
+    model,
     affinityId:
       sessionId !== null
         ? `session:${sessionId}`

@@ -102,6 +102,8 @@ export interface AccountPoolPluginOptions {
 const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
 // Background BB and Initiatives reads made while linking a thread give up after this long.
 const LINK_READ_TIMEOUT_MS = 5_000;
+const LABEL_RETRY_MS = 30_000;
+const MAX_LABEL_READS = 256;
 const MAX_THREAD_SCOPES = 256;
 // The most events BB's thread events route returns in a page.
 const IDENTITY_PAGE = 100;
@@ -231,8 +233,8 @@ export function createAccountPoolPlugin(
         (await bb.sdk.plugins.token({ pluginId: INITIATIVES_PLUGIN_ID })).token,
       now,
     });
-    // A Claude thread's session is the providerThreadId of its latest thread/identity event, which
-    // BB records when the Claude Code session starts, before its first request. (threads.context
+    // A thread's session is the providerThreadId of its latest thread/identity event, which BB
+    // records when the Claude Code or Codex session starts, before its first request. (threads.context
     // names the session only in the snapshot BB takes at the end of a turn, so it cannot link a
     // thread mid-turn, nor a new thread before its first turn ends.)
     const threadIdentity = async (
@@ -277,15 +279,23 @@ export function createAccountPoolPlugin(
       log: (message) => bb.log.debug(message),
     });
     bb.onDispose(() => resolver.dispose());
+    // A thread's Initiative context, read in the background for the ledger's role label: when its
+    // session links, and again at most every LABEL_RETRY_MS while no read has answered.
+    const labelReads = new Map<string, number>();
+    const readLabel = (threadId: string) => {
+      labelReads.delete(threadId);
+      labelReads.set(threadId, now());
+      while (labelReads.size > MAX_LABEL_READS) {
+        const oldest = labelReads.keys().next();
+        if (!oldest.done) labelReads.delete(oldest.value);
+      }
+      void projectsContext
+        .read(threadId, AbortSignal.timeout(LINK_READ_TIMEOUT_MS))
+        .catch(() => undefined);
+    };
     const linkSession = (threadId: string, session: string) => {
       warmer.linkSession(threadId, session);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), LINK_READ_TIMEOUT_MS);
-      timer.unref();
-      void projectsContext
-        .read(threadId, controller.signal)
-        .catch(() => undefined)
-        .finally(() => clearTimeout(timer));
+      readLabel(threadId);
     };
     // What a thread waits on comes from BB's thread list, the one read that carries background
     // activity and pending questions; the list is narrowed to the thread's environment (its
@@ -361,7 +371,11 @@ export function createAccountPoolPlugin(
         ? warmer.threadOf(sessionKey.slice(8))
         : null;
       if (threadId === null) return null;
-      return { threadId, role: threadRoleLabel(projectsContext.peek(threadId)) };
+      const context = projectsContext.peek(threadId);
+      const lastRead = labelReads.get(threadId);
+      if (context === null && (lastRead === undefined || now() - lastRead >= LABEL_RETRY_MS))
+        readLabel(threadId);
+      return { threadId, role: threadRoleLabel(context) };
     };
     // The settings a usage report splits periods by: recorded now, and after every change.
     const recordLedgerSettings = () => {

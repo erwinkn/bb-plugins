@@ -46,7 +46,9 @@ import {
 // id in each request's metadata.user_id, which is the providerThreadId of the thread's latest
 // thread/identity event in BB. The server links a thread to its session from that event on thread
 // lifecycle events, as soon as a request arrives on a session no thread is linked to
-// (resolveSession), and again immediately before every keep-alive.
+// (resolveSession), and again immediately before every keep-alive. The same links label Codex
+// requests in the usage ledger: a Codex session is its thread-id header, which is also the
+// providerThreadId of the thread's thread/identity event.
 //
 // Admission: a completed request takes a lease slot, and keeps its body, only once its session is
 // linked to a thread and that thread's Initiative context gives it a role that may be warmed.
@@ -402,7 +404,7 @@ export class CacheWarmer {
     const session = start.sessionId;
     let sequence = 0;
     if (session !== null) {
-      if (!this.sessionThreads.has(session)) this.deps.resolveSession(session);
+      this.lookUpSession(session);
       this.preempt(
         [session, start.parentSessionId],
         "a native request on the thread took over",
@@ -1536,7 +1538,14 @@ export class CacheWarmer {
     });
   }
 
-  // The BB thread linked to a Claude Code session, if exactly one is.
+  // Asks BB, in the background, which thread runs a session no thread is linked to yet. Called for
+  // every native request's session, Claude or Codex, in any warming mode: the usage ledger labels
+  // requests with the link (threadOf).
+  lookUpSession(sessionId: string): void {
+    if (!this.sessionThreads.has(sessionId)) this.deps.resolveSession(sessionId);
+  }
+
+  // The BB thread linked to a Claude Code or Codex session, if exactly one is.
   threadOf(sessionId: string): string | null {
     return this.linkedThread(sessionId);
   }

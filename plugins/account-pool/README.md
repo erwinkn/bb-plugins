@@ -456,9 +456,10 @@ estimate weighs tokens at API price ratios to uncached input (cache read 0.1×,
 5m write 1.25×, 1h write 2×, output 5×), the closest public proxy for
 subscription quota. Subagents share their main session id, so a subagent on the
 main model can hide a cold start but never invents one. The thread and role
-columns are filled only while warming links sessions (any mode but `off`); since
-T141 a session is linked from its first request, and a linked thread outside any
-Initiative is labelled `standalone`.
+columns come from the thread BB reports for the request's session, Claude Code or
+Codex, in any warming mode (before 31 Oct 2026, only Claude sessions while
+warming was on). A session is linked from its first request, and a linked thread
+outside any Initiative is labelled `standalone`.
 
 `usage relink` links older rows after the fact: a session's rows that name no
 thread get the one thread whose `thread/identity` events report that session,
@@ -476,7 +477,13 @@ first.
 Codex usage comes from the response's `response.completed` event. The ChatGPT
 Codex backend streams it without a `content-type` header, so the tap tells SSE
 from JSON by the body's first byte; before 8 Oct 2026 it took the stream for
-JSON and recorded no Codex tokens.
+JSON and recorded no Codex tokens. Codex CLI zstd-compresses its `/responses`
+bodies (its `enable_request_compression` feature, on by default), which the
+Pooler forwards untouched, so a Codex row's model comes from the body when it is
+plain JSON and otherwise from the `x-codex-turn-metadata` header Codex sends with
+it; before 31 Oct 2026 those rows recorded no model. Codex web searches
+(`/v1/alpha/search`) are rows with a model and no tokens: the vendor's answer
+carries no usage.
 
 ## Usage statistics (Usage stats plugin)
 

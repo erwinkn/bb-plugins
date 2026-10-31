@@ -6,7 +6,6 @@ import {
   type CacheTtl,
   type CacheUsage,
 } from "./cache-usage.js";
-import { topLevelFields } from "./json-scan.js";
 import type { WarmingOutcome } from "./warming.js";
 import {
   waitStates,
@@ -68,7 +67,10 @@ export interface RequestRecord {
   sessionKey: string | null;
   accountId: string;
   family: ModelFamily;
-  // Read once, for the model and the tail breakpoint's TTL; never stored.
+  // The model the hub's request parse read (request-body.ts), or null. The ledger reads only
+  // Codex's: Codex compresses most of its bodies, which the ledger cannot read.
+  model?: string | null;
+  // Claude's is read once, for the model and the tail breakpoint's TTL; never stored.
   body: Uint8Array;
   // Advisor requests only: with no session to find the thread by, the caller names it.
   attribution?: RequestAttribution | null;
@@ -627,8 +629,6 @@ function isBusy(error: unknown): boolean {
   return code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED");
 }
 
-const MODEL_FIELD = new Set(["model"]);
-
 function requestModel(record: RequestRecord): {
   model: string | null;
   ttl: CacheTtl | null;
@@ -637,12 +637,7 @@ function requestModel(record: RequestRecord): {
     const shape = describeClaudeRequest(record.body);
     return { model: shape.model, ttl: shape.tailTtl };
   }
-  try {
-    const model = topLevelFields(record.body, MODEL_FIELD)?.model;
-    return { model: typeof model === "string" ? model : null, ttl: null };
-  } catch {
-    return { model: null, ttl: null };
-  }
+  return { model: record.model ?? null, ttl: null };
 }
 
 // What a quota observation says, without when it was seen or how: utilization and reset times.

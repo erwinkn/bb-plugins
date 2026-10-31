@@ -1,3 +1,4 @@
+import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { parseCodexRequestBody, parseRequestBody } from "./request-body.js";
 
@@ -413,6 +414,49 @@ describe("Codex request parsing", () => {
       expect(parsed.affinityId).toBe("session:child");
       expect(parsed.parentAffinityId).toBe(expected);
       expect(parsed.forAccount(null)).toBe(body);
+    },
+  );
+
+  // Codex CLI 0.165 sends every /responses body zstd-compressed (enable_request_compression),
+  // with the model also in its x-codex-turn-metadata header.
+  it("reads the model of a compressed body from the turn metadata header", () => {
+    const body = new Uint8Array(
+      zstdCompressSync(encode({ model: "gpt-6.1-sol", input: [] })),
+    );
+    const parsed = parseCodexRequestBody(
+      body,
+      new Headers({
+        "content-encoding": "zstd",
+        "thread-id": "codex-thread",
+        "x-codex-turn-metadata": JSON.stringify({
+          thread_id: "codex-thread",
+          request_kind: "turn",
+          model: "gpt-6.1-sol",
+        }),
+      }),
+    );
+    expect(parsed.model).toBe("gpt-6.1-sol");
+    expect(parsed.affinityId).toBe("session:codex-thread");
+    expect(parsed.forAccount(null)).toBe(body);
+  });
+
+  it.each([
+    { body: { model: "gpt-6-luna" }, header: "gpt-6.1-sol", expected: "gpt-6-luna" },
+    { body: { input: [] }, header: "gpt-6.1-sol", expected: "gpt-6.1-sol" },
+    { body: { model: 5 }, header: null, expected: null },
+    { body: { model: "bad model" }, header: "x".repeat(129), expected: null },
+  ])(
+    "takes the body's model before the header's: $expected",
+    ({ body, header, expected }) => {
+      const parsed = parseCodexRequestBody(
+        encode(body),
+        new Headers(
+          header === null
+            ? {}
+            : { "x-codex-turn-metadata": JSON.stringify({ model: header }) },
+        ),
+      );
+      expect(parsed.model).toBe(expected);
     },
   );
 

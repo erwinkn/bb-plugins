@@ -104,9 +104,11 @@ interface HubOptions {
   ledger: LedgerHooks | null;
 }
 
-// The hub's view of the cache warmer: it reports native Claude Messages traffic and nothing else.
+// The hub's view of the cache warmer: it reports native Claude Messages traffic, and the session of
+// every native request, which the warmer links to its BB thread.
 export interface WarmingHooks {
   observe(start: NativeRequestStart): NativeObservation | null;
+  lookUpSession(sessionId: string): void;
 }
 
 // The hub's view of the usage ledger: one record per upstream response. It must not throw.
@@ -363,6 +365,7 @@ export class AccountPoolHub {
           sessionKey: null,
           accountId: selected.id,
           family: parsed.family,
+          model: parsed.model,
           body: upstreamBody,
           attribution: advisorAttribution(request.headers),
         },
@@ -707,6 +710,7 @@ export class AccountPoolHub {
                   sessionKey: parsed.affinityId,
                   accountId: selected.account.id,
                   family,
+                  model: parsed.model,
                   body: upstreamBody,
                 },
             attemptStartedAt,
@@ -899,21 +903,24 @@ export class AccountPoolHub {
   }
 
   // Native Claude Messages requests are reported to the cache warmer; count_tokens and Codex
-  // traffic are not, because they neither read nor write the prompt cache entry it maintains.
+  // traffic are not, because they neither read nor write the prompt cache entry it maintains. The
+  // session of any native request is linked to its thread, which the usage ledger labels it with.
   private observeNative(
     request: Request,
     adapter: ProviderAdapter,
     parsed: ReturnType<ProviderAdapter["parseRequest"]>,
   ): NativeObservation | null {
+    if (this.options.warming === null) return null;
+    const sessionId = sessionIdOf(parsed.affinityId);
+    if (sessionId !== null) this.options.warming.lookUpSession(sessionId);
     if (
-      this.options.warming === null ||
       adapter.provider !== "claude" ||
       !new URL(request.url).pathname.endsWith("/v1/messages")
     )
       return null;
     return this.options.warming.observe({
-      sessionId: claudeSessionId(parsed.affinityId),
-      parentSessionId: claudeSessionId(parsed.parentAffinityId),
+      sessionId,
+      parentSessionId: sessionIdOf(parsed.parentAffinityId),
       family: parsed.family,
     });
   }
@@ -1933,8 +1940,8 @@ function bothTaps(
   };
 }
 
-// The Claude request parser names a metadata.user_id session "session:<id>".
-function claudeSessionId(affinityId: string | null): string | null {
+// The request parsers name a session "session:<id>" (Claude: metadata.user_id; Codex: thread-id).
+function sessionIdOf(affinityId: string | null): string | null {
   return affinityId?.startsWith("session:") ? affinityId.slice(8) : null;
 }
 

@@ -236,7 +236,9 @@ describe("usage ledger request rows", () => {
         provider: "codex",
         family: "other",
         sessionKey: "session:codex-thread",
-        body: new TextEncoder().encode(JSON.stringify({ model: "gpt-6-luna", input: [] })),
+        // Codex compresses its bodies: the model is the one the hub's request parse read.
+        model: "gpt-6-luna",
+        body: new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0x00]),
         usage: { inputTokens: 100, outputTokens: 5, cacheReadTokens: 900, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null },
       }),
     );

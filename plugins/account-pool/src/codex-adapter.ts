@@ -273,6 +273,7 @@ export function createCodexAdapter(options: {
       const parsed = parseCodexRequestBody(body, headers);
       return {
         family: parsed.family,
+        model: parsed.model,
         affinityId: parsed.affinityId,
         parentAffinityId: parsed.parentAffinityId,
         forAccount: () => body,
