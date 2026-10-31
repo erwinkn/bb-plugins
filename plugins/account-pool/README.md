@@ -26,6 +26,24 @@ capacity, OAuth refresh, streaming and retry policies are inherited unchanged.
 Reducing the idle duration takes effect on the next selection and service start.
 Increasing it cannot recover a binding already evicted or pruned.
 
+## Quota windows
+
+Claude accounts are gated on their 7d and per-family weekly windows. The fork
+no longer tracks Claude's 5h window (Anthropic is retiring it); Codex keeps its
+5h and weekly windows.
+
+A 429 with Anthropic's overall verdict
+(`anthropic-ratelimit-unified-status: rejected`), such as one from Claude's 5h
+window while Anthropic still enforces it, takes the whole account out of
+rotation until the later of `anthropic-ratelimit-unified-reset` and
+`Retry-After` (`rejectedUntil` in status): that verdict names no family and may
+come from a window the fork does not track. A later rejection extends it, an
+earlier one never shortens it. Native, advisor and cache-warming responses all
+record it; a native request then moves on to the next eligible account.
+Enabling the account again clears it. A 429 that only a weekly window rejects
+(Claude 7d or per-family, or a Codex window) is held by that window until its
+reset, as before, so a family-only limit still detours only its family.
+
 ## Claude TTL precedence
 
 Claude Code v2.1.242 or later supports the explicit main control. The pool
@@ -394,8 +412,10 @@ whether cache warming saves more quota than it costs:
   latency, input, output, cache read and cache write (5m, 1h) tokens, and the
   idle gap since the session's previous native request on the same model. Codex
   rows carry OpenAI's cached tokens as cache reads.
-- `usage_quota`: a row per account each time its observed 5h, 7d, per-family
-  weekly or Codex window utilization or reset time changes.
+- `usage_quota`: a row per account each time its observed 7d, per-family
+  weekly or Codex window utilization or reset time changes. Rows from before
+  the Pooler dropped Claude's 5h window still hold it in `five_hour_*`; nothing
+  reads it.
 - `usage_settings`: `claudeMainCacheTtl` and the warming settings, recorded at
   startup and after every change, so a report can split periods by setting.
 - `usage_warming`: one row per warming lease that ended and per finished request
@@ -425,7 +445,7 @@ The report shows totals, each settings period and each UTC day: requests by
 kind, Claude cache hit ratio, cache-write tokens by TTL, cold starts after an
 expired TTL (rewrites, and hits kept warm by a refresh), refresh tokens, an
 estimate of the net saving, and each account's utilization burn per observed
-window (Claude 5h, 7d and per-family weekly; Codex windows by length).
+window (Claude 7d and per-family weekly; Codex windows by length).
 Cold starts are judged per session and model, from successful requests only (a
 failed attempt or refresh never counts as cache activity): a native request that
 came more than the previous entry's TTL after the previous one either rewrote the
@@ -476,8 +496,8 @@ other plugin opens this database.
   cost, and the resumes after expiry (cold rewrites, rewrites avoided, savings)
   classified exactly as the report does (`resumeOutcome` in `usage-report.ts`).
 - `usage.quota {from, to}` returns each account's quota observations in range,
-  with the last one before `from`, as windows by name (`5h`, `7d`,
-  `7d <family>`, Codex windows by length).
+  with the last one before `from`, as windows by name (`7d`, `7d <family>`,
+  Codex windows by length such as `5h`).
 
 `usage.stats` reads `usage_hourly`, a rollup with one row per hour, provider,
 kind, account, model, role and thread, plus the newest requests. The ledger

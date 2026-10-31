@@ -127,8 +127,6 @@ export interface UsageRequestRow {
 export interface UsageQuotaRow {
   at: number;
   account_id: string;
-  five_hour_utilization: number | null;
-  five_hour_reset_at: number | null;
   seven_day_utilization: number | null;
   seven_day_reset_at: number | null;
   family_weekly_json: string;
@@ -243,11 +241,11 @@ export class UsageLedger {
     );
     this.insertQuota = deps.db.prepare(
       `INSERT INTO usage_quota (
-        at, account_id, five_hour_utilization, five_hour_reset_at, seven_day_utilization,
-        seven_day_reset_at, family_weekly_json, limit_windows_json
+        at, account_id, seven_day_utilization, seven_day_reset_at, family_weekly_json,
+        limit_windows_json
       ) VALUES (
-        @at, @account_id, @five_hour_utilization, @five_hour_reset_at, @seven_day_utilization,
-        @seven_day_reset_at, @family_weekly_json, @limit_windows_json
+        @at, @account_id, @seven_day_utilization, @seven_day_reset_at, @family_weekly_json,
+        @limit_windows_json
       )`,
     );
     this.insertSettings = deps.db.prepare(
@@ -266,8 +264,8 @@ export class UsageLedger {
     this.guard(() => {
       const latest = deps.db
         .prepare(
-          `SELECT account_id, five_hour_utilization, five_hour_reset_at, seven_day_utilization,
-            seven_day_reset_at, family_weekly_json, limit_windows_json, MAX(at) AS at
+          `SELECT account_id, seven_day_utilization, seven_day_reset_at, family_weekly_json,
+            limit_windows_json, MAX(at) AS at
            FROM usage_quota GROUP BY account_id`,
         )
         .all() as UsageQuotaRow[];
@@ -655,8 +653,6 @@ function quotaSnapshot(quota: AccountQuota): QuotaSnapshot {
   }
   return {
     account_id: quota.accountId,
-    five_hour_utilization: quota.fiveHourUtilization,
-    five_hour_reset_at: quota.fiveHourResetAt,
     seven_day_utilization: quota.sevenDayUtilization,
     seven_day_reset_at: quota.sevenDayResetAt,
     family_weekly_json: JSON.stringify(familyWeekly),
@@ -676,8 +672,6 @@ function snapshotKey(snapshot: QuotaSnapshot): string {
   const minute = (value: number | null) =>
     value === null ? null : Math.round(value / 60_000);
   return JSON.stringify([
-    snapshot.five_hour_utilization,
-    minute(snapshot.five_hour_reset_at),
     snapshot.seven_day_utilization,
     minute(snapshot.seven_day_reset_at),
     roundResets(snapshot.family_weekly_json),

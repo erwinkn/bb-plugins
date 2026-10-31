@@ -261,12 +261,6 @@ function quotaSlots(account: AccountSummary): QuotaSlot[] {
   }
   return [
     {
-      key: "five-hour",
-      label: "5H",
-      utilization: account.fiveHourUtilization,
-      status: account.fiveHourStatus,
-    },
-    {
       key: "seven-day",
       label: "7D",
       utilization: account.sevenDayUtilization,
@@ -1619,15 +1613,6 @@ function AccountDialog({
           )
         ) : (
           <>
-            <QuotaDetail
-              label="5 hour"
-              quota={shared(
-                account.fiveHourUtilization,
-                account.fiveHourResetAt,
-                account.fiveHourStatus,
-              )}
-              threshold={threshold}
-            />
             <QuotaDetail
               label="7 day"
               quota={shared(

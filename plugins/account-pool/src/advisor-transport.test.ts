@@ -13,6 +13,7 @@ import type {
   PoolAffinityStore,
   QuotaStore,
 } from "./store.js";
+import { isQuotaExhausted } from "./quota.js";
 import { dependantsOf } from "./testing/signals.js";
 
 const START = Date.UTC(2026, 9, 4, 12);
@@ -25,9 +26,6 @@ const ON: AdvisorConfigState = {
 function emptyQuota(accountId: string): AccountQuota {
   return {
     accountId,
-    fiveHourUtilization: null,
-    fiveHourResetAt: null,
-    fiveHourStatus: null,
     sevenDayUtilization: null,
     sevenDayResetAt: null,
     sevenDayStatus: null,
@@ -36,6 +34,7 @@ function emptyQuota(accountId: string): AccountQuota {
     limitWindows: [],
     observedAt: null,
     heldUntil: null,
+    rejectedUntil: null,
     error: null,
   };
 }
@@ -80,7 +79,7 @@ const gate = () => {
 };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-type Reply = number | { status: number; headers?: Record<string, string>; body?: string } | "hang" | "fail" | { gate: ReturnType<typeof gate>; status: number };
+type Reply = number | { status: number; headers?: Record<string, string>; body?: string } | "hang" | "fail" | { gate: ReturnType<typeof gate>; status: number; headers?: Record<string, string> };
 type RefreshStep = number | { gate: ReturnType<typeof gate>; status: number };
 
 // The log tags advisor POSTs "adv-": native requests never carry the OAuth beta or bb-advisor.
@@ -359,10 +358,10 @@ describe("advisor isolation (A154/A168)", () => {
 
   it("records quota headers from the advisor response and nothing else", async () => {
     const env = makeHub({
-      script: [{ status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.42", "anthropic-ratelimit-unified-5h-status": "allowed" } }],
+      script: [{ status: 200, headers: { "anthropic-ratelimit-unified-7d-utilization": "0.42", "anthropic-ratelimit-unified-7d-status": "allowed" } }],
     });
     await advise(env);
-    expect(env.quotas.get("A")).toMatchObject({ fiveHourUtilization: 0.42, fiveHourStatus: "allowed", error: null, heldUntil: null });
+    expect(env.quotas.get("A")).toMatchObject({ sevenDayUtilization: 0.42, sevenDayStatus: "allowed", error: null, heldUntil: null });
   });
 
   it("caller cancel in flight: 499, the upstream fetch aborted, no error", async () => {
@@ -401,7 +400,7 @@ describe("advisor isolation (A154/A168)", () => {
         advisor: { ok: true, config: { routes: { claude: true, codex: false }, maxUtilization: reserve } },
         settings: { switchThreshold: threshold },
       });
-      env.quotas.set("A", { ...emptyQuota("A"), fiveHourUtilization: utilization, observedAt: START });
+      env.quotas.set("A", { ...emptyQuota("A"), sevenDayUtilization: utilization, observedAt: START });
       return advise(env);
     };
     expect((await at(0.96, 0.95, 0.98)).status).toBe(429);
@@ -992,5 +991,238 @@ describe("hub lifetime signal", () => {
     expect(response.log).toEqual(["read:held"]);
     expect(getEventListeners(lifetime, "abort")).toEqual([]);
     held.open();
+  });
+});
+
+describe("quota rejections the reported windows do not hold (W556)", () => {
+  const HOUR = 60 * 60_000;
+  // A 429 from Claude's 5h window, which the Pooler no longer tracks.
+  const fiveHourRejection = (resetAt: number, extra: Record<string, string> = {}) => ({
+    status: 429,
+    headers: {
+      "anthropic-ratelimit-unified-status": "rejected",
+      "anthropic-ratelimit-unified-reset": String(resetAt / 1_000),
+      "anthropic-ratelimit-unified-5h-status": "rejected",
+      "anthropic-ratelimit-unified-7d-status": "allowed",
+      ...extra,
+    },
+  });
+  const pair = (script: Reply[], settings?: { switchThreshold?: number }) => {
+    const env = makeHub({
+      accounts: [account("A"), account("B", "claude", "oauth", 1)],
+      secrets: new Map([
+        ["A", oauth("tok-a")],
+        ["B", oauth("tok-b")],
+      ]),
+      script,
+      ...(settings === undefined ? {} : { settings }),
+    });
+    env.quotas.set("A", { ...emptyQuota("A"), observedAt: START });
+    env.quotas.set("B", { ...emptyQuota("B"), observedAt: START });
+    return env;
+  };
+
+  it("an advisor 429 takes the account out of rotation; the next advisor request goes elsewhere", async () => {
+    const env = pair([fiveHourRejection(START + HOUR), 200]);
+    expect((await advise(env)).status).toBe(429);
+    expect(env.quotas.get("A")?.rejectedUntil).toBe(START + HOUR);
+    expect((await advise(env)).log).toEqual(["adv-post:200:tok-b"]);
+  });
+
+  it("a keep-alive 429 takes the account out of rotation", async () => {
+    const env = pair([fiveHourRejection(START + HOUR), 200]);
+    const result = await env.hub.keepAlive(
+      {
+        sessionId: "s",
+        accountId: "A",
+        family: "sonnet",
+        url: "https://u.invalid/a/v1/messages",
+        body: new TextEncoder().encode(claudeBody),
+        headers: new Headers({ "anthropic-version": "2023-06-01" }),
+        reserve: 0.98,
+        timeoutMs: 60_000,
+        confirm: async () => null,
+      },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({ kind: "response", status: 429 });
+    expect(env.quotas.get("A")?.rejectedUntil).toBe(START + HOUR);
+    expect((await advise(env)).log).toEqual(["adv-post:200:tok-b"]);
+  });
+
+  it("a weekly window past the threshold but not rejected does not shorten the cooldown", async () => {
+    // 7d is at 99%, above the 0.98 threshold, and resets in a minute; the 5h rejection lasts an hour.
+    const env = pair([
+      fiveHourRejection(START + HOUR, {
+        "anthropic-ratelimit-unified-7d-utilization": "0.99",
+        "anthropic-ratelimit-unified-7d-reset": String((START + 60_000) / 1_000),
+      }),
+      200,
+    ]);
+    expect((await native(env)).status).toBe(200);
+    expect(env.log).toEqual(["post:429:tok-a", "post:200:tok-b"]);
+    expect(env.quotas.get("A")?.rejectedUntil).toBe(START + HOUR);
+  });
+
+  it("a later rejection extends a shorter cooldown, and a shorter one never cuts it", async () => {
+    const first = gate();
+    const second = gate();
+    const third = gate();
+    const env = pair([
+      { gate: first, ...fiveHourRejection(START + 60_000) },
+      { gate: second, ...fiveHourRejection(START + HOUR) },
+      { gate: third, ...fiveHourRejection(START + 60_000) },
+      200,
+      200,
+      200,
+    ]);
+    // Three requests reach A before any answer comes back.
+    const pending = [native(env), native(env), native(env)];
+    await vi.waitFor(() => expect(env.log.filter((line) => line === "post:held")).toHaveLength(3));
+    first.open();
+    await vi.waitFor(() => expect(env.quotas.get("A")?.rejectedUntil).toBe(START + 60_000));
+    second.open();
+    await vi.waitFor(() => expect(env.quotas.get("A")?.rejectedUntil).toBe(START + HOUR));
+    third.open();
+    expect((await Promise.all(pending)).map((result) => result.status)).toEqual([200, 200, 200]);
+    expect(env.quotas.get("A")?.rejectedUntil).toBe(START + HOUR);
+  });
+
+  it("a family window that says rejected governs a family 429 alone", async () => {
+    const env = pair([
+      {
+        status: 429,
+        headers: {
+          // The overall verdict allows, and its later reset is not this rejection's.
+          "anthropic-ratelimit-unified-status": "allowed",
+          "anthropic-ratelimit-unified-reset": String((START + 72 * HOUR) / 1_000),
+          "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+          "anthropic-ratelimit-unified-7d_oi-reset": String((START + HOUR) / 1_000),
+        },
+      },
+      200,
+    ]);
+    expect((await native(env)).status).toBe(200);
+    expect(env.quotas.get("A")).toMatchObject({
+      rejectedUntil: null,
+      familyWeekly: { sonnet: { status: "rejected", resetAt: START + HOUR } },
+    });
+  });
+
+  it("a family window rejected for less time than the overall rejection does not shorten it", async () => {
+    const env = pair([
+      fiveHourRejection(START + HOUR, {
+        "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+        "anthropic-ratelimit-unified-7d_oi-reset": String((START + 60_000) / 1_000),
+      }),
+      200,
+    ]);
+    expect((await native(env)).status).toBe(200);
+    expect(env.quotas.get("A")?.rejectedUntil).toBe(START + HOUR);
+  });
+
+  it.each([
+    ["a shorter", 60_000],
+    ["a longer", 72 * HOUR],
+  ] as const)("%s family rejection another response recorded does not stand in for a later overall one", async (_label, familyMs) => {
+    const first = gate();
+    const second = gate();
+    const env = pair([
+      {
+        gate: first,
+        status: 429,
+        headers: {
+          "anthropic-ratelimit-unified-status": "allowed",
+          "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+          "anthropic-ratelimit-unified-7d_oi-reset": String((START + familyMs) / 1_000),
+        },
+      },
+      { gate: second, ...fiveHourRejection(START + HOUR) },
+      200,
+      200,
+    ]);
+    const pending = [native(env), native(env)];
+    await vi.waitFor(() => expect(env.log.filter((line) => line === "post:held")).toHaveLength(2));
+    first.open();
+    await vi.waitFor(() => expect(env.quotas.get("A")?.familyWeekly.sonnet?.status).toBe("rejected"));
+    expect(env.quotas.get("A")?.rejectedUntil).toBeNull();
+    second.open();
+    expect((await Promise.all(pending)).map((result) => result.status)).toEqual([200, 200]);
+    // Account-wide: every family sits A out, not only the one its weekly window rejected.
+    expect(env.quotas.get("A")?.rejectedUntil).toBe(START + HOUR);
+  });
+
+  it("a Retry-After that outlasts the rejecting window holds the whole account", async () => {
+    const minute = String((START + 60_000) / 1_000);
+    const env = pair([
+      {
+        status: 429,
+        headers: {
+          "retry-after": "3600",
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-reset": minute,
+          "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+          "anthropic-ratelimit-unified-7d_oi-reset": minute,
+        },
+      },
+      200,
+      200,
+    ]);
+    expect((await native(env)).status).toBe(200);
+    const quota = env.quotas.get("A");
+    if (quota === undefined) throw new Error("Expected a quota.");
+    expect(quota.rejectedUntil).toBe(START + HOUR);
+    // Past the window's reset, Retry-After still holds A for every family.
+    expect(isQuotaExhausted(quota, "sonnet", 0.98, START + 61_000)).toBe(true);
+    expect(isQuotaExhausted(quota, "opus", 0.98, START + 61_000)).toBe(true);
+  });
+
+  it("an overall rejection with a family window resetting at the same time holds every family", async () => {
+    const env = pair([
+      fiveHourRejection(START + HOUR, {
+        "anthropic-ratelimit-unified-representative-claim": "five_hour",
+        "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+        "anthropic-ratelimit-unified-7d_oi-reset": String((START + HOUR) / 1_000),
+      }),
+      200,
+    ]);
+    expect((await native(env)).status).toBe(200);
+    const quota = env.quotas.get("A");
+    if (quota === undefined) throw new Error("Expected a quota.");
+    expect(quota.rejectedUntil).toBe(START + HOUR);
+    expect(isQuotaExhausted(quota, "opus", 0.98, START)).toBe(true);
+  });
+
+  it("leaves a Codex quota 429 to its windows, whatever its Retry-After", async () => {
+    const env = makeHub({
+      accounts: [account("A", "codex"), account("B", "codex", "oauth", 1)],
+      secrets: new Map([
+        ["A", oauth("tok-a")],
+        ["B", oauth("tok-b")],
+      ]),
+      script: [
+        {
+          status: 429,
+          headers: {
+            "retry-after": "3600",
+            "x-codex-primary-used-percent": "100",
+            "x-codex-primary-window-minutes": "300",
+            "x-codex-primary-reset-after-seconds": "60",
+          },
+        },
+        200,
+      ],
+    });
+    env.quotas.set("A", { ...emptyQuota("A"), observedAt: START });
+    env.quotas.set("B", { ...emptyQuota("B"), observedAt: START });
+    expect((await advise(env, advisorRequest("codex"))).status).toBe(429);
+    const quota = env.quotas.get("A");
+    if (quota === undefined) throw new Error("Expected a quota.");
+    expect(quota.rejectedUntil).toBeNull();
+    expect(quota.limitWindows).toMatchObject([
+      { slot: "primary", windowMinutes: 300, status: "rejected", resetAt: START + 60_000 },
+    ]);
+    // It recovers with its window, as before.
+    expect(isQuotaExhausted(quota, "other", 0.98, START + 60_000)).toBe(false);
   });
 });

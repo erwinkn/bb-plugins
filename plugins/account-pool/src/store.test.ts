@@ -7,6 +7,7 @@ import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Account } from "./contracts.js";
+import { accountStatus, isQuotaExhausted, usableAt } from "./quota.js";
 import { AccountStore, QUOTA_MIGRATIONS, QuotaStore } from "./store.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -182,6 +183,69 @@ describe("QuotaStore", () => {
         source: "usage",
       },
     ]);
+    database.close();
+  });
+
+  it("lets no stored Claude 5h value block an account, and keeps a quota rejection", () => {
+    const database = new Database(":memory:");
+    for (const migration of QUOTA_MIGRATIONS.slice(0, 3)) database.exec(migration);
+    const id = "11111111-1111-4111-8111-111111111111";
+    const now = 1_800_000_000_000;
+    // What an older build left: a spent 5h window with a reset still ahead, and none at all.
+    database
+      .prepare(
+        `INSERT INTO account_quota (
+          account_id, five_hour_utilization, five_hour_reset_at, five_hour_status,
+          seven_day_utilization, seven_day_status
+        ) VALUES (?, 1, ?, 'rejected', 0.4, 'allowed')`,
+      )
+      .run(id, now + 60 * 60_000);
+    const quotas = new QuotaStore(database);
+    const account: Account = {
+      id,
+      provider: "claude",
+      kind: "oauth",
+      label: "claude",
+      email: null,
+      accountUuid: null,
+      subscriptionType: null,
+      rateLimitTier: null,
+      enabled: true,
+      priority: 100,
+      createdAt: 1,
+      lastUsedAt: null,
+      lastUsedHostId: null,
+    };
+    const stale = quotas.get(id);
+    expect(stale).not.toHaveProperty("fiveHourStatus");
+    expect(isQuotaExhausted(stale, "opus", 0.95, now)).toBe(false);
+    expect(accountStatus(account, stale, 0.95, now)).toBe("ready");
+    const missing = quotas.get("22222222-2222-4222-8222-222222222222");
+    expect(isQuotaExhausted(missing, "opus", 0.95, now)).toBe(false);
+    expect(accountStatus(account, missing, 0.95, now)).toBe("ready");
+
+    // A write clears the stale 5h columns and keeps a rejection until its reset.
+    const rejectedUntil = now + 2 * 60 * 60_000;
+    quotas.put({ ...stale, rejectedUntil });
+    expect(
+      database
+        .prepare(
+          "SELECT five_hour_utilization, five_hour_status, bucket_exhaustion_json FROM account_quota",
+        )
+        .get(),
+    ).toEqual({
+      five_hour_utilization: null,
+      five_hour_status: null,
+      bucket_exhaustion_json: JSON.stringify({ rejectedUntil }),
+    });
+    const rejected = quotas.get(id);
+    expect(rejected.rejectedUntil).toBe(rejectedUntil);
+    expect(accountStatus(account, rejected, 0.95, now)).toBe("exhausted");
+    expect(isQuotaExhausted(rejected, "sonnet", 0.95, now)).toBe(true);
+    expect(usableAt(rejected, "opus", 0.95, now)).toBe(rejectedUntil);
+    expect(accountStatus(account, rejected, 0.95, rejectedUntil)).toBe("ready");
+    quotas.put({ ...rejected, rejectedUntil: null });
+    expect(quotas.get(id).rejectedUntil).toBeNull();
     database.close();
   });
 });

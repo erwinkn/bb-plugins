@@ -137,9 +137,6 @@ function orderedWindows(
 function withoutClaudeSlots(previous: AccountQuota): AccountQuota {
   return {
     ...previous,
-    fiveHourUtilization: null,
-    fiveHourResetAt: null,
-    fiveHourStatus: null,
     sevenDayUtilization: null,
     sevenDayResetAt: null,
     sevenDayStatus: null,
@@ -301,14 +298,15 @@ export function createCodexAdapter(options: {
     quotaFromHeaders(accountId, headers, previous, _family, now) {
       return codexQuotaFromHeaders(accountId, headers, previous, now);
     },
-    isQuotaRejection(headers) {
-      return ["primary", "secondary"].some((window) => {
+    quotaRejection(headers) {
+      const rejected = ["primary", "secondary"].some((window) => {
         const prefix = `x-codex-${window}`;
         return (
           (numberHeader(headers, `${prefix}-used-percent`) ?? 0) >= 100 ||
           headers.get(`${prefix}-over-limit`)?.toLowerCase() === "true"
         );
       });
+      return rejected ? { tracked: true } : null;
     },
     async refreshSecret(context) {
       const secret = oauthSecretDueForRefresh(context);

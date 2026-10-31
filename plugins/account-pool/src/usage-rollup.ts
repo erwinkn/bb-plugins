@@ -624,7 +624,7 @@ export const usageQuotaSchema = z
         .object({
           accountId: z.string(),
           // Every change observed, in time order. The first may be before from: the state at from.
-          // Windows by name: "5h", "7d", "7d <family>", or a Codex window by length.
+          // Windows by name: "7d", "7d <family>", or a Codex window by length ("5h", "7d").
           points: z.array(
             z
               .object({

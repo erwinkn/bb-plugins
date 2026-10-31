@@ -158,7 +158,7 @@ it("loads handed-off native schemas and credential references through local prov
   const quotas = new QuotaStore(database);
   quotas.put({
     ...quotas.get(account.id),
-    fiveHourUtilization: 0.5,
+    sevenDayUtilization: 0.5,
     observedAt: now,
   });
   database.close();
@@ -246,11 +246,11 @@ it("loads handed-off native schemas and credential references through local prov
     const list = (await localHost.harness.behavior.callRpc(
       "account.list",
       null,
-    )) as Array<{ id: string; fiveHourUtilization: number }>;
+    )) as Array<{ id: string; sevenDayUtilization: number }>;
     expect(list).toHaveLength(2);
     expect(list.find((row) => row.id === account.id)).toMatchObject({
       id: account.id,
-      fiveHourUtilization: 0.5,
+      sevenDayUtilization: 0.5,
     });
     const context = {
       threadId: "fixture-thread",

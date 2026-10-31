@@ -320,15 +320,13 @@ describe("pooled usage", () => {
     updatedAt: 1,
   };
   const quota = {
-    fiveHourUtilization: null,
-    fiveHourResetAt: null,
-    fiveHourStatus: null,
     sevenDayUtilization: null,
     sevenDayResetAt: null,
     sevenDayStatus: null,
     familyWeekly: { fable: null, sonnet: null, opus: null, haiku: null, other: null },
     limitWindows: [],
     heldUntil: null,
+    rejectedUntil: null,
     error: null,
   };
   const account = (overrides: Record<string, unknown>) => ({
@@ -372,10 +370,12 @@ describe("pooled usage", () => {
         routing: { claude: true, codex: false },
         accounts: [
           account({
+            // Cooled down after a 429 from Claude's 5h window; an older Pooler's 5h field is
+            // not shown.
             status: "exhausted",
             availableAt: Date.UTC(2026, 9, 8, 11),
+            rejectedUntil: Date.UTC(2026, 9, 8, 11),
             fiveHourUtilization: 1,
-            fiveHourResetAt: Date.UTC(2026, 9, 8, 11),
             sevenDayUtilization: 0.69,
             sevenDayResetAt: Date.UTC(2026, 9, 10),
             familyWeekly: { ...quota.familyWeekly, fable: { utilization: 0.15, resetAt: Date.UTC(2026, 9, 10), status: "allowed", observedAt: 1, source: "header" } },
@@ -402,7 +402,6 @@ describe("pooled usage", () => {
             availableAt: "2026-10-08T11:00:00.000Z",
             error: null,
             windows: [
-              { label: "5h", usedPercent: 100, resetsAt: "2026-10-08T11:00:00.000Z", cost: null },
               { label: "7d", usedPercent: 69, resetsAt: "2026-10-10T00:00:00.000Z", cost: null },
               { label: "Fable 7d", usedPercent: 15, resetsAt: "2026-10-10T00:00:00.000Z", cost: null },
             ],
@@ -420,6 +419,31 @@ describe("pooled usage", () => {
       },
     ]);
     expect(providerUsageTone({ ...emptyProvider, id: "claude-code" }, result.pools[0]!)).toBeNull();
+  });
+
+  it("keeps a pooled Codex account's 5h window", async () => {
+    const fake = usageHost(async () => ({
+      routing: { claude: false, codex: true },
+      accounts: [
+        account({
+          provider: "codex",
+          subscriptionType: "pro",
+          rateLimitTier: null,
+          limitWindows: [
+            { slot: "primary", windowMinutes: 300, utilization: 0.25, resetAt: Date.UTC(2026, 9, 8, 11), status: null, observedAt: 1, source: "header" },
+            { slot: "secondary", windowMinutes: 10_080, utilization: 0.4, resetAt: null, status: null, observedAt: 1, source: "header" },
+          ],
+        }),
+      ],
+    }));
+    plugin(fake.bb);
+    const result = (await fake.harness.behavior.callRpc("getUsage", { force: false, machineIds: null, maxAgeMs: 0 })) as UsageSnapshot;
+    expect(result.pools.map((pool) => pool.accounts[0]?.windows)).toEqual([
+      [
+        { label: "5h", usedPercent: 25, resetsAt: "2026-10-08T11:00:00.000Z", cost: null },
+        { label: "7d", usedPercent: 40, resetsAt: null, cost: null },
+      ],
+    ]);
   });
 
   it("links to the Usage stats page only while that plugin runs", async () => {

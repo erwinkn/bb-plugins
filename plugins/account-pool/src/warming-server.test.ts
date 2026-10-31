@@ -36,8 +36,8 @@ const NATIVE_KEYS = [
   "switchThreshold",
 ];
 const QUOTA_HEADERS = {
-  "anthropic-ratelimit-unified-5h-utilization": "0.10",
-  "anthropic-ratelimit-unified-5h-status": "allowed",
+  "anthropic-ratelimit-unified-7d-utilization": "0.10",
+  "anthropic-ratelimit-unified-7d-status": "allowed",
 };
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -1010,7 +1010,7 @@ describe("usage ledger through the plugin", () => {
         idle_gap_ms: 7 * MINUTE },
     ]);
     // Every response carried the same quota headers: one history row.
-    expect(rows(f, "usage_quota")).toMatchObject([{ five_hour_utilization: 0.1 }]);
+    expect(rows(f, "usage_quota")).toMatchObject([{ seven_day_utilization: 0.1, five_hour_utilization: null }]);
     // Why the wait was warmed as long as it was, and what the thread waited on.
     await vi.waitFor(() => expect(rows(f, "usage_warming")).toHaveLength(1));
     expect(rows(f, "usage_warming")).toEqual([

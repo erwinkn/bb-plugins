@@ -393,16 +393,8 @@ export class AccountPoolHub {
         await this.discardUpstream(upstream, false);
         signal.throwIfAborted();
       }
-      // The one shared write a vendor response may cause: what its quota headers say.
-      this.options.quotas.put(
-        adapter.quotaFromHeaders(
-          selected.id,
-          upstream.response.headers,
-          this.options.quotas.get(selected.id),
-          parsed.family,
-          this.options.now(),
-        ),
-      );
+      // The one shared write a vendor response may cause: what it says about the quota.
+      this.observeQuota(selected.id, adapter, upstream.response, parsed.family);
       return this.clientResponse(upstream, attempt.tap(upstream.response));
     } catch (error) {
       if (!signal.aborted) throw error;
@@ -751,14 +743,12 @@ export class AccountPoolHub {
             signal.throwIfAborted();
           }
           const { response } = upstream;
-          const observed = adapter.quotaFromHeaders(
+          const { quota: observed, quotaRejected } = this.observeQuota(
             selected.account.id,
-            response.headers,
-            this.options.quotas.get(selected.account.id),
+            adapter,
+            response,
             family,
-            this.options.now(),
           );
-          this.options.quotas.put(observed);
           // A response that is not 2xx carries no usage, and may be retried on another account:
           // its row is written now, whether or not the client sees it.
           if (!response.ok) attempt.finish(response.status, true, null);
@@ -767,7 +757,7 @@ export class AccountPoolHub {
             pacing = null;
           }
           if (response.status === 429) {
-            if (adapter.isQuotaRejection(response.headers)) {
+            if (quotaRejected) {
               await this.discardUpstream(upstream, false);
               break;
             }
@@ -1024,15 +1014,7 @@ export class AccountPoolHub {
           startedAt,
         };
       }
-      this.options.quotas.put(
-        adapter.quotaFromHeaders(
-          account.id,
-          response.headers,
-          this.options.quotas.get(account.id),
-          request.family,
-          this.options.now(),
-        ),
-      );
+      this.observeQuota(account.id, adapter, response, request.family);
       const text = await readBounded(response, MAX_KEEP_ALIVE_RESPONSE_BYTES);
       let payload: unknown = null;
       try {
@@ -1688,6 +1670,44 @@ export class AccountPoolHub {
       "No Account Pooler account is currently eligible.",
       { "retry-after": String(retryAfter) },
     );
+  }
+
+  // Writes what a vendor response says about the account's quota. A quota 429 its own windows do
+  // not hold (Claude's overall verdict, which may come from its untracked 5h window) also takes the
+  // whole account out of rotation until the later of its reset and Retry-After, never sooner than
+  // a rejection already recorded. The windows hold a tracked one, as they always have.
+  private observeQuota(
+    accountId: string,
+    adapter: ProviderAdapter,
+    response: Response,
+    family: ModelFamily,
+  ): { quota: AccountQuota; quotaRejected: boolean } {
+    const now = this.options.now();
+    const observed = adapter.quotaFromHeaders(
+      accountId,
+      response.headers,
+      this.options.quotas.get(accountId),
+      family,
+      now,
+    );
+    const rejection =
+      response.status === 429
+        ? adapter.quotaRejection(response.headers)
+        : null;
+    const quota =
+      rejection === null || rejection.tracked
+        ? observed
+        : {
+            ...observed,
+            rejectedUntil: Math.max(
+              observed.rejectedUntil ?? 0,
+              rejection.resetAt ?? 0,
+              now +
+                retryAfterMilliseconds(response.headers.get("retry-after"), now),
+            ),
+          };
+    this.options.quotas.put(quota);
+    return { quota, quotaRejected: rejection !== null };
   }
 
   private markError(accountId: string, message: string): void {

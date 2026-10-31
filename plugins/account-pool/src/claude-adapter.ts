@@ -13,7 +13,7 @@ import {
 } from "./provider-adapter.js";
 import {
   epochMilliseconds,
-  isQuotaRejection,
+  quotaRejection,
   quotaFromHeaders,
 } from "./quota.js";
 import { parseRequestBody } from "./request-body.js";
@@ -102,7 +102,7 @@ export function createClaudeAdapter(options: {
       return headers;
     },
     quotaFromHeaders,
-    isQuotaRejection,
+    quotaRejection,
     async refreshSecret(context) {
       const secret = oauthSecretDueForRefresh(context);
       if (secret === null) return { secret: context.secret, refreshed: false };

@@ -72,9 +72,9 @@ export interface WindowBurn {
 export interface AccountStats {
   requests: number;
   inputEquivalent: number;
-  // Every window observed for the account, by name: "5h" and "7d" (Claude), "7d opus" and other
-  // per-family weeklies, and Codex limit windows by length ("5h", "7d") or slot. A window never
-  // observed is absent, never a zero.
+  // Every window observed for the account, by name: "7d" (Claude), "7d opus" and other per-family
+  // weeklies, and Codex limit windows by length ("5h", "7d") or slot. A window never observed is
+  // absent, never a zero. Claude's 5h window, which older rows still hold, is no longer read.
   windows: Record<string, WindowBurn>;
 }
 
@@ -436,7 +436,6 @@ export function quotaWindows(row: UsageQuotaRow): Array<[string, WindowState]> {
       { utilization, resetAt: typeof resetAt === "number" ? resetAt : null },
     ]);
   };
-  add("5h", row.five_hour_utilization, row.five_hour_reset_at);
   add("7d", row.seven_day_utilization, row.seven_day_reset_at);
   try {
     const families = JSON.parse(row.family_weekly_json) as Record<string, [unknown, unknown]>;

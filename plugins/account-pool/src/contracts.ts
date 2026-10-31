@@ -170,9 +170,6 @@ export const accountSecretSchema = z.discriminatedUnion("kind", [
 export type AccountSecret = z.infer<typeof accountSecretSchema>;
 
 const quotaFieldsShape = {
-  fiveHourUtilization: z.number().nullable(),
-  fiveHourResetAt: z.number().int().nullable(),
-  fiveHourStatus: z.string().nullable(),
   sevenDayUtilization: z.number().nullable(),
   sevenDayResetAt: z.number().int().nullable(),
   sevenDayStatus: z.string().nullable(),
@@ -181,6 +178,9 @@ const quotaFieldsShape = {
   limitWindows: z.array(limitWindowSchema),
   observedAt: z.number().int().nullable(),
   heldUntil: z.number().int().nullable(),
+  // A quota rejection (a 429) that none of the windows above explained, such as one from a window
+  // the Pooler does not track: the account serves no family until the reset that response named.
+  rejectedUntil: z.number().int().nullable(),
   error: z.string().nullable(),
 };
 

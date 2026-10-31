@@ -13,8 +13,8 @@ usage APIs. It needs no separate sign-in or API key.
 
 When the Account Pooler (`account-pool-local`) routes a provider's traffic,
 that provider's tab shows the pool instead of the machine's own login, which no
-longer serves requests: every pooled account with its 5h, 7d and per-family
-weekly utilization and reset times, its status (ready, held, exhausted, error,
+longer serves requests: every pooled account with its windows' utilization and
+reset times (Claude: 7d and per-family weekly; Codex: 5h and weekly), its status (ready, held, exhausted, error,
 disabled), when an exhausted or held account is usable again, and which
 account is active (where new sessions go). The plan label shows once when all
 accounts share it. The tab's warning dot turns critical when no enabled account

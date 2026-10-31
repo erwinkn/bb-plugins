@@ -50,6 +50,13 @@ export interface ImportedProviderAccount {
   secret: Extract<AccountSecret, { kind: "oauth" }>;
 }
 
+// A 429 that says the account's quota is spent. Tracked: the windows the response reports hold the
+// account (or the request's family), as quotaFromHeaders records them. Otherwise the response names
+// a rejection of the whole account, until resetAt (null when it does not say).
+export type QuotaRejection =
+  | { tracked: true }
+  | { tracked: false; resetAt: number | null };
+
 export interface ProviderAdapter {
   provider: PoolProvider;
   upstreamName: string;
@@ -76,7 +83,8 @@ export interface ProviderAdapter {
     family: ModelFamily,
     now: number,
   ): AccountQuota;
-  isQuotaRejection(headers: Headers): boolean;
+  // null when a 429 is not a quota rejection (a short rate limit, say).
+  quotaRejection(headers: Headers): QuotaRejection | null;
   refreshSecret(
     context: AdapterSecretContext,
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;

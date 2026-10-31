@@ -447,8 +447,8 @@ describe("queryUsageQuota", () => {
         points: [
           {
             at: T0 - 2 * HOUR,
+            // The legacy Claude 5h columns these rows fill are not read.
             windows: {
-              "5h": { utilization: 0.2, resetAt: T0 },
               "7d": { utilization: 0.5, resetAt: T0 + DAY },
               "7d fable": { utilization: 0.2, resetAt: T0 },
             },

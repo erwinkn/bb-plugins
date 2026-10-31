@@ -106,8 +106,8 @@ const upstreamFetch: typeof fetch = async (input) => {
   return new Response(stream, {
     headers: {
       "content-type": "text/event-stream",
-      "anthropic-ratelimit-unified-5h-utilization": "0.10",
-      "anthropic-ratelimit-unified-5h-status": "allowed",
+      "anthropic-ratelimit-unified-7d-utilization": "0.10",
+      "anthropic-ratelimit-unified-7d-status": "allowed",
     },
   });
 };

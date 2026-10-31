@@ -40,10 +40,11 @@ Then:
   cost, savings and net.
 - **Reliability:** failures, 429s, 529s, mean request time, requests without
   token counts.
-- **Quota by account:** 5h, 7d and per-family weekly utilization over the
-  range, one chart per account, with ticks where a window reset. The account
-  and provider filters narrow it; quota is account-wide, so the other filters
-  cannot, and the page says so when one is set.
+- **Quota by account:** utilization of each account's windows over the range
+  (Claude: 7d and per-family weekly; Codex: 5h and weekly), one chart per
+  account, with ticks where a window reset. The account and provider filters
+  narrow it; quota is account-wide, so the other filters cannot, and the page
+  says so when one is set.
 
 **Tokens** (tokens processed) counts every token once: uncached input, cache reads,
 cache writes and output, as a provider's token counter would. Cache reads

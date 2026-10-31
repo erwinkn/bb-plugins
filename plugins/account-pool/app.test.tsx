@@ -62,10 +62,7 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
     lastUsedAt: 2,
     lastUsedHostId: "host-one",
     lastUsedHostName: "bee",
-    fiveHourUtilization: 0.21,
-    fiveHourResetAt: null,
-    fiveHourStatus: null,
-    sevenDayUtilization: null,
+    sevenDayUtilization: 0.21,
     sevenDayResetAt: null,
     sevenDayStatus: null,
     representativeClaim: null,
@@ -79,6 +76,7 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
     limitWindows: [],
     observedAt: 1,
     heldUntil: null,
+    rejectedUntil: null,
     error: null,
     inFlight: 0,
     active: false,
@@ -135,7 +133,7 @@ describe("Account Pool settings", () => {
   it("renders cached accounts as refreshing until live status arrives, then caches it", async () => {
     window.localStorage.setItem(
       STATUS_CACHE_KEY,
-      JSON.stringify(status([account({ fiveHourUtilization: 0.21 })])),
+      JSON.stringify(status([account({ sevenDayUtilization: 0.21 })])),
     );
     const live = deferred<PoolStatus>();
     const slot = render([], { "status.get": () => live.promise });
@@ -145,14 +143,14 @@ describe("Account Pool settings", () => {
     expect(slot.getByText(/· refreshing…$/)).toBeTruthy();
     expect(slot.queryByText("Loading…")).toBeNull();
     expect(slot.queryByText("No accounts in the pool")).toBeNull();
-    live.resolve(status([account({ fiveHourUtilization: 0.6 })]));
+    live.resolve(status([account({ sevenDayUtilization: 0.6 })]));
     expect(await slot.findByText("60%")).toBeTruthy();
     expect(slot.queryByText("refreshing usage…")).toBeNull();
     expect(slot.queryByText(/· refreshing…$/)).toBeNull();
     const cached = JSON.parse(
       window.localStorage.getItem(STATUS_CACHE_KEY) ?? "null",
     ) as PoolStatus;
-    expect(cached.accounts[0]?.fiveHourUtilization).toBe(0.6);
+    expect(cached.accounts[0]?.sevenDayUtilization).toBe(0.6);
   });
 
   it("ignores a malformed status cache and shows the loading state", async () => {
@@ -183,10 +181,10 @@ describe("Account Pool settings", () => {
   it("renders fixed quota slots with missing buckets as em dashes", async () => {
     const slot = render();
     expect(await slot.findByText("person@example.com")).toBeTruthy();
-    expect(slot.getByText("5H")).toBeTruthy();
     expect(slot.getByText("7D")).toBeTruthy();
     expect(slot.getByText("FABLE")).toBeTruthy();
-    expect(slot.getAllByText("—")).toHaveLength(2);
+    expect(slot.queryByText("5H")).toBeNull();
+    expect(slot.getAllByText("—")).toHaveLength(1);
     expect(
       slot.getByText("Hub accepting · 2 in flight · used by bee"),
     ).toBeTruthy();
@@ -194,7 +192,7 @@ describe("Account Pool settings", () => {
 
   it("keeps the quota slots visible at mobile widths", async () => {
     const slot = render();
-    const group = (await slot.findByText("5H")).parentElement?.parentElement;
+    const group = (await slot.findByText("7D")).parentElement?.parentElement;
     expect(group).toBeTruthy();
     expect(group?.className).not.toMatch(/(^|\s)hidden(\s|$)/u);
   });
@@ -208,8 +206,7 @@ describe("Account Pool settings", () => {
         label: "pro@example.com",
         codexAccountId: "chatgpt-account",
         status: "exhausted",
-        fiveHourUtilization: 0.25,
-        fiveHourResetAt: Date.now() + 60 * 60 * 1_000,
+        sevenDayUtilization: null,
         limitWindows: [
           {
             slot: "primary",

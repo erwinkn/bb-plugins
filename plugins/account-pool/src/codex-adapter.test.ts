@@ -8,9 +8,6 @@ const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
 function emptyQuota(): AccountQuota {
   return {
     accountId: ACCOUNT_ID,
-    fiveHourUtilization: null,
-    fiveHourResetAt: null,
-    fiveHourStatus: null,
     sevenDayUtilization: null,
     sevenDayResetAt: null,
     sevenDayStatus: null,
@@ -25,6 +22,7 @@ function emptyQuota(): AccountQuota {
     limitWindows: [],
     observedAt: null,
     heldUntil: null,
+    rejectedUntil: null,
     error: null,
   };
 }
@@ -56,7 +54,6 @@ describe("codexQuotaFromUsage", () => {
       1_000,
     );
     expect(quota).toMatchObject({
-      fiveHourUtilization: null,
       sevenDayUtilization: null,
       familyWeekly: { fable: null, other: null },
       limitWindows: [
@@ -75,8 +72,8 @@ describe("codexQuotaFromUsage", () => {
   it("clears slots a pre-window adapter wrote for a Codex account", () => {
     const stale: AccountQuota = {
       ...emptyQuota(),
-      fiveHourUtilization: 1,
-      fiveHourStatus: "rejected",
+      sevenDayUtilization: 1,
+      sevenDayStatus: "rejected",
       familyWeekly: {
         ...emptyQuota().familyWeekly,
         other: {
@@ -100,8 +97,8 @@ describe("codexQuotaFromUsage", () => {
       2_000,
     );
     expect(refreshed).toMatchObject({
-      fiveHourUtilization: null,
-      fiveHourStatus: null,
+      sevenDayUtilization: null,
+      sevenDayStatus: null,
       familyWeekly: { other: null },
     });
     if (refreshed === null) throw new Error("Expected a quota.");

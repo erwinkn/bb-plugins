@@ -285,6 +285,21 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+// The headers of a 429 from Claude's 5h window, as Anthropic sent them in October 2026. The Pooler
+// no longer tracks that window, only the overall rejection and its reset.
+function claudeFiveHourRejection(resetSeconds: number): Record<string, string> {
+  return {
+    "anthropic-ratelimit-unified-status": "rejected",
+    "anthropic-ratelimit-unified-reset": String(resetSeconds),
+    "anthropic-ratelimit-unified-representative-claim": "five_hour",
+    "anthropic-ratelimit-unified-5h-status": "rejected",
+    "anthropic-ratelimit-unified-5h-utilization": "1.0",
+    "anthropic-ratelimit-unified-5h-reset": String(resetSeconds),
+    "anthropic-ratelimit-unified-7d-status": "allowed",
+    "anthropic-ratelimit-unified-7d-utilization": "0.61",
+  };
+}
+
 function authHeaders(key: string): Record<string, string> {
   return {
     authorization: `Bearer ${key}`,
@@ -753,7 +768,8 @@ describe("Account Pool plugin", () => {
     expect(firstCodex).toMatchObject({
       provider: "codex",
       status: "exhausted",
-      fiveHourUtilization: null,
+      // The spent window explains the rejection: no extra cooldown.
+      rejectedUntil: null,
       sevenDayUtilization: null,
       familyWeekly: { other: null },
       limitWindows: [
@@ -1843,7 +1859,7 @@ describe("Account Pool plugin", () => {
         "content-type": "text/event-stream",
         "anthropic-ratelimit-unified-5h-utilization": "0.25",
         "anthropic-ratelimit-unified-5h-reset": "4102444800",
-        "anthropic-ratelimit-unified-5h-status": "allowed",
+        "anthropic-ratelimit-unified-5h-status": "rejected",
         "anthropic-ratelimit-unified-7d-utilization": "0.5",
         "anthropic-ratelimit-unified-7d-reset": "4102448400",
         "anthropic-ratelimit-unified-7d-status": "allowed",
@@ -1933,10 +1949,10 @@ describe("Account Pool plugin", () => {
     const accounts = z
       .array(accountSummarySchema)
       .parse(await fixture.host.harness.behavior.callRpc("account.list", null));
+    // The 5h headers are still sent but no longer read.
+    expect(accounts[0]).not.toHaveProperty("fiveHourUtilization");
     expect(accounts[0]).toMatchObject({
-      fiveHourUtilization: 0.25,
       sevenDayUtilization: 0.5,
-      fiveHourStatus: "allowed",
       sevenDayStatus: "allowed",
       representativeClaim: "claim-a",
       familyWeekly: {
@@ -1992,9 +2008,9 @@ describe("Account Pool plugin", () => {
       if (requestNumber === 1) {
         response.writeHead(200, {
           "content-type": "application/json",
-          "anthropic-ratelimit-unified-5h-utilization": "0.75",
-          "anthropic-ratelimit-unified-5h-reset": "4102444800",
-          "anthropic-ratelimit-unified-5h-status": "allowed",
+          "anthropic-ratelimit-unified-7d-utilization": "0.75",
+          "anthropic-ratelimit-unified-7d-reset": "4102444800",
+          "anthropic-ratelimit-unified-7d-status": "allowed",
         });
         response.end('{"first":true}');
         return;
@@ -2002,8 +2018,8 @@ describe("Account Pool plugin", () => {
       if (requestNumber === 2) {
         response.writeHead(429, {
           "content-type": "application/json",
-          "anthropic-ratelimit-unified-5h-status": "rejected",
-          "anthropic-ratelimit-unified-5h-reset": "4102444800",
+          "anthropic-ratelimit-unified-7d-status": "rejected",
+          "anthropic-ratelimit-unified-7d-reset": "4102444800",
         });
         response.end('{"rejected":true}');
         return;
@@ -2051,7 +2067,8 @@ describe("Account Pool plugin", () => {
       await fixture.host.harness.behavior.callRpc("status.get", null),
     );
     expect(status.accounts.map((account) => account.active)).toEqual([false, false, true]);
-    // Both earlier accounts are past the 0.7 threshold on the 5h window until its reset.
+    // Both earlier accounts are spent on the 7d window until its reset: one past the 0.7
+    // threshold, one rejected.
     expect(status.accounts.map((account) => [account.status, account.availableAt])).toEqual([
       ["exhausted", 4_102_444_800_000],
       ["exhausted", 4_102_444_800_000],
@@ -2061,13 +2078,13 @@ describe("Account Pool plugin", () => {
 
   it("reports a held account as available when both its hold and its exhausted quota end", async () => {
     const upstream = await startUpstream((_request, response) => {
-      // A plain 429 holds the account for a minute; its 5h window is spent until 2100.
+      // A plain 429 holds the account for a minute; its 7d window is spent until 2100.
       response.writeHead(429, {
         "content-type": "application/json",
         "retry-after": "60",
-        "anthropic-ratelimit-unified-5h-utilization": "0.99",
-        "anthropic-ratelimit-unified-5h-reset": "4102444800",
-        "anthropic-ratelimit-unified-5h-status": "allowed",
+        "anthropic-ratelimit-unified-7d-utilization": "0.99",
+        "anthropic-ratelimit-unified-7d-reset": "4102444800",
+        "anthropic-ratelimit-unified-7d-status": "allowed",
       });
       response.end("{}");
     });
@@ -2087,6 +2104,64 @@ describe("Account Pool plugin", () => {
     ]);
   });
 
+  it.each([
+    ["the reset", false, 4_102_444_800_000],
+    ["a later Retry-After", true, 4_102_444_800_000 + 60_000],
+  ])(
+    "cools a Claude account down after a 5h 429 until %s, and fails over",
+    async (_label, retryAfter, until) => {
+      const now = 4_102_444_800_000 - 60 * 60_000;
+      const keys: string[] = [];
+      const upstream = await startUpstream(async (request, response) => {
+        keys.push(request.headers["x-api-key"]?.toString() ?? "");
+        await readRequestBody(request);
+        if (request.headers["x-api-key"] === "sk-one") {
+          response.writeHead(429, {
+            "content-type": "application/json",
+            ...claudeFiveHourRejection(4_102_444_800),
+            ...(retryAfter
+              ? { "retry-after": String((until - now) / 1_000) }
+              : {}),
+          });
+          response.end('{"type":"error"}');
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+      });
+      cleanups.push(upstream.close);
+      const fixture = await createFixture({
+        upstreamUrl: upstream.url,
+        apiKey: "sk-one",
+        options: { now: () => now },
+      });
+      await addApiAccount(fixture, "sk-two");
+      for (const thread of ["first", "second", "third"]) {
+        const response = await fixture.host.harness.behavior.fetchHttp(
+          "POST",
+          "/v1/messages",
+          {
+            headers: { ...authHeaders(fixture.key), "thread-id": thread },
+            body: "{}",
+          },
+        );
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+      // One rejection, then every request goes to the other account.
+      expect(keys).toEqual(["sk-one", "sk-two", "sk-two", "sk-two"]);
+      const status = statusSchema.parse(
+        await fixture.host.harness.behavior.callRpc("status.get", null),
+      );
+      expect(
+        status.accounts.map((account) => [account.status, account.availableAt]),
+      ).toEqual([
+        ["exhausted", until],
+        ["ready", null],
+      ]);
+    },
+  );
+
   it("routes around a Fable-spent account while retaining it for Opus", async () => {
     const keys: string[] = [];
     const upstream = await startUpstream(async (request, response) => {
@@ -2095,7 +2170,6 @@ describe("Account Pool plugin", () => {
       if (keys.length === 1) {
         response.writeHead(200, {
           "content-type": "application/json",
-          "anthropic-ratelimit-unified-5h-status": "allowed",
           "anthropic-ratelimit-unified-7d-status": "allowed",
           "anthropic-ratelimit-unified-7d_oi-utilization": "0.99",
           "anthropic-ratelimit-unified-7d_oi-reset": "4102452000",
@@ -2141,7 +2215,6 @@ describe("Account Pool plugin", () => {
       if (keys.length === 1) {
         response.writeHead(429, {
           "content-type": "application/json",
-          "anthropic-ratelimit-unified-5h-status": "allowed",
           "anthropic-ratelimit-unified-7d-status": "allowed",
           "anthropic-ratelimit-unified-7d_oi-reset": "4102452000",
           "anthropic-ratelimit-unified-7d_oi-status": "rejected",
@@ -2212,7 +2285,6 @@ describe("Account Pool plugin", () => {
               {
                 status: 429,
                 headers: {
-                  "anthropic-ratelimit-unified-5h-status": "allowed",
                   "anthropic-ratelimit-unified-7d-status": "allowed",
                   "anthropic-ratelimit-unified-7d_oi-reset": "4102452000",
                   "anthropic-ratelimit-unified-7d_oi-status": "rejected",
@@ -3676,12 +3748,7 @@ describe("Account Pool plugin", () => {
                   status: 429,
                   headers:
                     provider === "claude"
-                      ? {
-                          "anthropic-ratelimit-unified-5h-status": "rejected",
-                          "anthropic-ratelimit-unified-5h-reset": String(
-                            now / 1000 + 60,
-                          ),
-                        }
+                      ? claudeFiveHourRejection(now / 1000 + 60)
                       : {
                           "x-codex-primary-over-limit": "true",
                           "x-codex-primary-reset-after-seconds": "60",
@@ -3754,12 +3821,7 @@ describe("Account Pool plugin", () => {
                 status: 429,
                 headers:
                   provider === "claude"
-                    ? {
-                        "anthropic-ratelimit-unified-5h-status": "rejected",
-                        "anthropic-ratelimit-unified-5h-reset": String(
-                          now / 1000 + resetSeconds,
-                        ),
-                      }
+                    ? claudeFiveHourRejection(now / 1000 + resetSeconds)
                     : {
                         "x-codex-primary-used-percent": "100",
                         "x-codex-primary-window-minutes": "300",

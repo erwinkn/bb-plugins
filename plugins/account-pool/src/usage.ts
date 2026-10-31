@@ -43,7 +43,6 @@ const usageLimitSchema = z
 
 const usagePayloadSchema = z
   .object({
-    five_hour: usageBucketSchema.nullish(),
     seven_day: usageBucketSchema.nullish(),
     seven_day_fable: usageBucketSchema.nullish(),
     seven_day_sonnet: usageBucketSchema.nullish(),
@@ -121,7 +120,6 @@ export function quotaFromUsage(
   if (!parsed.success) return null;
   const data = parsed.data;
   if (
-    data.five_hour == null &&
     data.seven_day == null &&
     data.seven_day_fable == null &&
     data.seven_day_sonnet == null &&
@@ -159,16 +157,11 @@ export function quotaFromUsage(
     const normalized = normalizeBucket(bucket, now);
     if (normalized !== null) familyWeekly[family] = normalized;
   }
-  const fiveHour =
-    data.five_hour == null ? null : normalizeBucket(data.five_hour, now);
   const sevenDay =
     data.seven_day == null ? null : normalizeBucket(data.seven_day, now);
   return {
     ...previous,
     accountId,
-    fiveHourUtilization: fiveHour?.utilization ?? previous.fiveHourUtilization,
-    fiveHourResetAt: fiveHour?.resetAt ?? previous.fiveHourResetAt,
-    fiveHourStatus: fiveHour?.status ?? previous.fiveHourStatus,
     sevenDayUtilization: sevenDay?.utilization ?? previous.sevenDayUtilization,
     sevenDayResetAt: sevenDay?.resetAt ?? previous.sevenDayResetAt,
     sevenDayStatus: sevenDay?.status ?? previous.sevenDayStatus,

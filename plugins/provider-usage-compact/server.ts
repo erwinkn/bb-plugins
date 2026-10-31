@@ -62,8 +62,6 @@ const poolerStatusSchema = zod.object({
       active: zod.optional(zod.boolean()),
       availableAt: zod.optional(zod.nullable(zod.number())),
       error: zod.nullable(zod.string()),
-      fiveHourUtilization: zod.nullable(zod.number()),
-      fiveHourResetAt: zod.nullable(zod.number()),
       sevenDayUtilization: zod.nullable(zod.number()),
       sevenDayResetAt: zod.nullable(zod.number()),
       familyWeekly: zod.record(zod.string(), zod.nullable(poolerQuotaSchema)),
@@ -302,7 +300,6 @@ function poolerWindows(account: PoolerAccount): PooledAccount["windows"] {
       cost: null,
     });
   };
-  add("5h", account.fiveHourUtilization, account.fiveHourResetAt);
   add("7d", account.sevenDayUtilization, account.sevenDayResetAt);
   for (const [family, quota] of Object.entries(account.familyWeekly)) {
     if (quota === null) continue;

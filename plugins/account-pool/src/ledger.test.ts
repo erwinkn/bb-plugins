@@ -115,9 +115,6 @@ function requestRows(db: Database.Database): UsageRequestRow[] {
 function quota(overrides: Partial<AccountQuota> = {}): AccountQuota {
   return {
     accountId: ACCOUNT,
-    fiveHourUtilization: 0.1,
-    fiveHourResetAt: T0 + 3 * 60 * MINUTE,
-    fiveHourStatus: "allowed",
     sevenDayUtilization: 0.4,
     sevenDayResetAt: T0 + 3 * DAY,
     sevenDayStatus: "allowed",
@@ -126,6 +123,7 @@ function quota(overrides: Partial<AccountQuota> = {}): AccountQuota {
     limitWindows: [],
     observedAt: T0,
     heldUntil: null,
+    rejectedUntil: null,
     error: null,
     ...overrides,
   };
@@ -408,11 +406,12 @@ describe("usage report", () => {
       `INSERT INTO usage_quota (at, account_id, five_hour_utilization, five_hour_reset_at, seven_day_utilization, seven_day_reset_at,
         family_weekly_json, limit_windows_json) VALUES (?, ?, ?, ?, ?, ?, '{}', '[]')`,
     );
+    // Rows from before the Pooler dropped Claude's 5h window still hold one; reports ignore it.
     const fiveHourReset = T0 + 60 * MINUTE;
     const sevenDayReset = T0 + 3 * DAY;
     quotas.run(T0 - 30 * MINUTE, ACCOUNT, 0.1, fiveHourReset, 0.4, sevenDayReset);
     quotas.run(T0 + 60 * MINUTE - 1, ACCOUNT, 0.2, fiveHourReset, 0.42, sevenDayReset);
-    quotas.run(T0 + 180 * MINUTE, ACCOUNT, 0.05, fiveHourReset + 5 * 60 * MINUTE, 0.45, sevenDayReset);
+    quotas.run(T0 + 180 * MINUTE, ACCOUNT, 0.05, fiveHourReset + 5 * 60 * MINUTE, 0.03, sevenDayReset + 7 * DAY);
     return db;
   }
 
@@ -460,10 +459,10 @@ describe("usage report", () => {
     const result = report();
     const [hour, fiveMinutes] = result.periods.map((period) => period.stats.accounts[ACCOUNT]?.windows);
     expect(hour?.["7d"]?.burn).toBeCloseTo(2);
-    expect(hour?.["5h"]?.burn).toBeCloseTo(10);
     expect(fiveMinutes?.["7d"]?.burn).toBeCloseTo(3);
-    expect(fiveMinutes?.["5h"]?.burn).toBeCloseTo(5);
-    expect(fiveMinutes?.["7d"]?.last).toBeCloseTo(45);
+    expect(fiveMinutes?.["7d"]?.last).toBeCloseTo(3);
+    expect(Object.keys(hour ?? {})).toEqual(["7d"]);
+    expect(Object.keys(fiveMinutes ?? {})).toEqual(["7d"]);
     expect(result.total.accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(5);
     // An account whose quota was never observed has no windows, not a zero burn.
     expect(result.total.accounts[OTHER]).toEqual({ requests: 1, inputEquivalent: 2_000, windows: {} });

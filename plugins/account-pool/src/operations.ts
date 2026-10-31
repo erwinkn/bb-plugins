@@ -169,7 +169,12 @@ export class PoolOperations {
     const account = await this.accounts.setEnabled(id, true);
     if (account === null) return null;
     const quota = this.quotas.get(id);
-    this.quotas.put({ ...quota, error: null, heldUntil: null });
+    this.quotas.put({
+      ...quota,
+      error: null,
+      heldUntil: null,
+      rejectedUntil: null,
+    });
     this.onAccountsChanged();
     await this.onAccountEnabled(account.id);
     return account;

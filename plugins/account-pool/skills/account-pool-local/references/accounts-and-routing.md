@@ -67,7 +67,14 @@ to the next eligible account and wraps at the end. It keeps using that fallback
 even when an earlier account recovers. Existing conversations stay pinned while
 their account remains eligible. Short temporary rate limits wait on the same
 account once; longer holds return Retry-After for pinned conversations while new
-conversations can advance. A model-family limit detours only requests for that
+conversations can advance. Claude accounts are gated on their 7-day and
+per-family weekly windows only: the Pooler no longer tracks Claude's 5-hour
+window, and a missing one never makes an account unknown or ineligible. A 429
+carrying Anthropic's overall rejection (Claude's 5-hour window while Anthropic
+still enforces it, say), on native, advisor or warming traffic, takes the whole
+account out of rotation until the later of the reset Anthropic names and
+Retry-After; native requests and their sessions move to the next eligible
+account. A 429 only a weekly window rejects stays with that window. Codex keeps its 5-hour and weekly windows. A model-family limit detours only requests for that
 family without moving the session's main pin or the provider cursor. The cursor
 and session pins survive hub restarts. Session pins expire after the configured idle period, 60 minutes by default,
 and the pool retains the 4,096 most recently used pins.

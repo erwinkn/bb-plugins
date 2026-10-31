@@ -6,6 +6,7 @@ import type {
   LimitWindow,
   ModelFamily,
 } from "./contracts.js";
+import type { QuotaRejection } from "./provider-adapter.js";
 
 const PREFIX = "anthropic-ratelimit-unified-";
 const SCOPED_HEADER =
@@ -77,11 +78,6 @@ export function quotaFromHeaders(
   family: ModelFamily,
   now: number,
 ): AccountQuota {
-  const fiveHourUtilization = parseNumber(
-    headers.get(`${PREFIX}5h-utilization`),
-  );
-  const fiveHourResetAt = parseReset(headers.get(`${PREFIX}5h-reset`));
-  const fiveHourStatus = headers.get(`${PREFIX}5h-status`);
   const sevenDayUtilization = parseNumber(
     headers.get(`${PREFIX}7d-utilization`),
   );
@@ -104,9 +100,6 @@ export function quotaFromHeaders(
           },
         };
   const observed =
-    fiveHourUtilization !== null ||
-    fiveHourResetAt !== null ||
-    fiveHourStatus !== null ||
     sevenDayUtilization !== null ||
     sevenDayResetAt !== null ||
     sevenDayStatus !== null ||
@@ -114,9 +107,6 @@ export function quotaFromHeaders(
     scoped !== null;
   return {
     accountId,
-    fiveHourUtilization: fiveHourUtilization ?? previous.fiveHourUtilization,
-    fiveHourResetAt: fiveHourResetAt ?? previous.fiveHourResetAt,
-    fiveHourStatus: fiveHourStatus ?? previous.fiveHourStatus,
     sevenDayUtilization: sevenDayUtilization ?? previous.sevenDayUtilization,
     sevenDayResetAt: sevenDayResetAt ?? previous.sevenDayResetAt,
     sevenDayStatus: sevenDayStatus ?? previous.sevenDayStatus,
@@ -125,6 +115,7 @@ export function quotaFromHeaders(
     limitWindows: previous.limitWindows,
     observedAt: observed ? now : previous.observedAt,
     heldUntil: previous.heldUntil,
+    rejectedUntil: previous.rejectedUntil,
     error: previous.error,
   };
 }
@@ -154,13 +145,22 @@ function activeFamilyWindow(
   );
 }
 
+function activeRejection(
+  quota: AccountQuota | AccountSummary,
+  now: number,
+): number | null {
+  return quota.rejectedUntil !== null && quota.rejectedUntil > now
+    ? quota.rejectedUntil
+    : null;
+}
+
 export function blockingResetAt(
   quota: AccountQuota | AccountSummary,
   family: ModelFamily | null,
   threshold: number,
   now: number,
 ): number | null {
-  let latest: number | null = null;
+  let latest = activeRejection(quota, now);
   let unknown = false;
   const include = (
     utilization: number | null,
@@ -171,11 +171,6 @@ export function blockingResetAt(
     if (resetAt === null) unknown = true;
     else latest = Math.max(latest ?? resetAt, resetAt);
   };
-  include(
-    quota.fiveHourUtilization,
-    quota.fiveHourStatus,
-    quota.fiveHourResetAt,
-  );
   include(
     quota.sevenDayUtilization,
     quota.sevenDayStatus,
@@ -215,13 +210,7 @@ export function isSharedQuotaExhausted(
   now: number,
 ): boolean {
   return (
-    activeWindow(
-      quota.fiveHourUtilization,
-      quota.fiveHourStatus,
-      quota.fiveHourResetAt,
-      threshold,
-      now,
-    ) ||
+    activeRejection(quota, now) !== null ||
     activeWindow(
       quota.sevenDayUtilization,
       quota.sevenDayStatus,
@@ -267,18 +256,25 @@ export function isQuotaExhausted(
   );
 }
 
-export function isQuotaRejection(headers: Headers): boolean {
+// A 429 is a quota rejection when Anthropic says so, overall or for one of its weekly windows. The
+// overall verdict may come from a window the Pooler does not track (the 5h one) and names no family,
+// so it holds the whole account until its reset. A weekly verdict alone is its window's, which
+// quotaFromHeaders records from the same response.
+export function quotaRejection(headers: Headers): QuotaRejection | null {
+  if (headers.get(`${PREFIX}status`)?.toLowerCase() === "rejected")
+    return {
+      tracked: false,
+      resetAt: parseReset(headers.get(`${PREFIX}reset`)),
+    };
   for (const [name, value] of headers) {
-    if (value.toLowerCase() !== "rejected") continue;
     const normalized = name.toLowerCase();
     if (
-      normalized === `${PREFIX}5h-status` ||
-      normalized === `${PREFIX}7d-status` ||
-      SCOPED_HEADER.test(normalized)
+      value.toLowerCase() === "rejected" &&
+      (normalized === `${PREFIX}7d-status` || SCOPED_HEADER.test(normalized))
     )
-      return true;
+      return { tracked: true };
   }
-  return false;
+  return null;
 }
 
 export function governingWeeklyResetAt(

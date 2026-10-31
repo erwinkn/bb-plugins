@@ -544,10 +544,16 @@ const quotaRowSchema = z
   })
   .strict();
 
+// rejectedUntil lives in bucket_exhaustion_json, which older builds never read (they wrote '{}',
+// the builtin Pooler a map of bucket resets): a new column would break a rollback, since they
+// parse the row strictly. The five_hour_*
+// columns are no longer read, and a write clears them: the Pooler no longer tracks Claude's 5h
+// window.
+const bucketExhaustionSchema = z.object({
+  rejectedUntil: z.number().int().nullable().default(null),
+});
+
 const EMPTY_QUOTA = {
-  fiveHourUtilization: null,
-  fiveHourResetAt: null,
-  fiveHourStatus: null,
   sevenDayUtilization: null,
   sevenDayResetAt: null,
   sevenDayStatus: null,
@@ -556,6 +562,7 @@ const EMPTY_QUOTA = {
   limitWindows: [],
   observedAt: null,
   heldUntil: null,
+  rejectedUntil: null,
   error: null,
 };
 
@@ -579,9 +586,6 @@ export class QuotaStore {
     }
     return quotaSchema.parse({
       accountId: row.account_id,
-      fiveHourUtilization: row.five_hour_utilization,
-      fiveHourResetAt: row.five_hour_reset_at,
-      fiveHourStatus: row.five_hour_status,
       sevenDayUtilization: row.seven_day_utilization,
       sevenDayResetAt: row.seven_day_reset_at,
       sevenDayStatus: row.seven_day_status,
@@ -590,6 +594,7 @@ export class QuotaStore {
       limitWindows: JSON.parse(row.limit_windows_json),
       observedAt: row.observed_at,
       heldUntil: row.held_until,
+      ...bucketExhaustionSchema.parse(JSON.parse(row.bucket_exhaustion_json)),
       error: row.error,
     });
   }
@@ -599,19 +604,19 @@ export class QuotaStore {
     this.db
       .prepare(
         `INSERT INTO account_quota (
-          account_id, five_hour_utilization, five_hour_reset_at,
-          five_hour_status, seven_day_utilization, seven_day_reset_at,
+          account_id, seven_day_utilization, seven_day_reset_at,
           seven_day_status, representative_claim, bucket_exhaustion_json,
           family_weekly_json, limit_windows_json, observed_at, held_until, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
-          five_hour_utilization = excluded.five_hour_utilization,
-          five_hour_reset_at = excluded.five_hour_reset_at,
-          five_hour_status = excluded.five_hour_status,
+          five_hour_utilization = NULL,
+          five_hour_reset_at = NULL,
+          five_hour_status = NULL,
           seven_day_utilization = excluded.seven_day_utilization,
           seven_day_reset_at = excluded.seven_day_reset_at,
           seven_day_status = excluded.seven_day_status,
           representative_claim = excluded.representative_claim,
+          bucket_exhaustion_json = excluded.bucket_exhaustion_json,
           family_weekly_json = excluded.family_weekly_json,
           limit_windows_json = excluded.limit_windows_json,
           observed_at = excluded.observed_at,
@@ -620,13 +625,15 @@ export class QuotaStore {
       )
       .run(
         value.accountId,
-        value.fiveHourUtilization,
-        value.fiveHourResetAt,
-        value.fiveHourStatus,
         value.sevenDayUtilization,
         value.sevenDayResetAt,
         value.sevenDayStatus,
         value.representativeClaim,
+        JSON.stringify(
+          value.rejectedUntil === null
+            ? {}
+            : { rejectedUntil: value.rejectedUntil },
+        ),
         JSON.stringify(value.familyWeekly),
         JSON.stringify(value.limitWindows),
         value.observedAt,
