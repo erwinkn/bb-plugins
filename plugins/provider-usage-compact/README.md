@@ -26,6 +26,14 @@ does not route (routing off, or no accounts), a missing Pooler, or a failed
 read all fall back to the machine's own usage as before. Pooled usage is the
 same on every machine.
 
+## Claude's 5-hour window
+
+Anthropic retired Claude's 5-hour limit, so the machine's own Claude usage
+drops the window bb's Claude Code provider still reports as `kind:
+"five-hour"` ("Current session"). Codex's 5-hour window stays. The filter reads
+`kind`, which the SDK's window type does not declare but passes through, and
+applies to the `claude-code` provider only.
+
 ## Usage details
 
 While the Usage stats plugin (`usage-stats`) is installed and running, the

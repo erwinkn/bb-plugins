@@ -220,6 +220,56 @@ describe("provider usage backend", () => {
     ]);
   });
 
+  it("hides Claude's retired five-hour window and keeps Codex's", async () => {
+    const reset = "2026-09-02T18:42:00.000Z";
+    const host = createFakePluginHost({
+      pluginId: "provider-usage",
+      sdk: {
+        hosts: { list: async () => [{ id: "host-m4", name: "M4", status: "connected" }] },
+        providers: {
+          list: async () => [
+            { id: "claude-code", displayName: "Claude Code", logoUrl: null },
+            { id: "codex", displayName: "Codex", logoUrl: null },
+          ],
+        },
+        system: {
+          usageLimits: async () => ({
+            "claude-code": {
+              status: "ok",
+              accountEmail: null,
+              planLabel: "Max",
+              windows: [
+                { kind: "five-hour", label: "Current session", usedPercent: 90, resetsAt: reset },
+                { kind: "weekly", label: "Weekly limit", usedPercent: 40, resetsAt: reset },
+              ],
+            },
+            codex: {
+              status: "ok",
+              accountEmail: null,
+              planLabel: "Pro",
+              windows: [
+                { kind: "five-hour", label: "Five-hour limit", usedPercent: 25, resetsAt: reset },
+                { kind: "weekly", label: "Weekly limit", usedPercent: 10, resetsAt: reset },
+              ],
+            },
+          }),
+        },
+      },
+    });
+    plugin(host.bb);
+    const result = (await host.harness.behavior.callRpc("getUsage", {
+      force: false,
+      machineIds: null,
+      maxAgeMs: 30 * 60_000,
+    })) as UsageSnapshot;
+    const labels = (id: string) => {
+      const usage = result.machines[0]?.providers.find((provider) => provider.id === id)?.usage;
+      return usage?.status === "ok" ? usage.windows.map((window) => window.label) : null;
+    };
+    expect(labels("claude-code")).toEqual(["Weekly limit"]);
+    expect(labels("codex")).toEqual(["Five-hour limit", "Weekly limit"]);
+  });
+
   it("marks only the affected machine dirty after thread completion", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-04T12:00:00.000Z"));

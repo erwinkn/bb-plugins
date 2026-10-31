@@ -109,7 +109,21 @@ function normalizedTint(
   return { light: tint.light.trim(), dark: tint.dark.trim() };
 }
 
+/**
+ * Anthropic retired Claude's 5-hour limit. bb's Claude Code provider still emits it, as a
+ * window of kind "five-hour". The SDK types a window loosely and does not declare `kind`, but
+ * the field passes through. Codex's 5-hour window is real and stays.
+ */
+function isRetiredWindow(providerId: string, window: object): boolean {
+  return (
+    providerId === POOLED_PROVIDERS.claude &&
+    "kind" in window &&
+    window.kind === "five-hour"
+  );
+}
+
 function normalizedUsage(
+  providerId: string,
   usage: Awaited<
     ReturnType<BbPluginApi["sdk"]["system"]["usageLimits"]>
   >[string],
@@ -121,12 +135,14 @@ function normalizedUsage(
         status: "ok",
         accountEmail: usage.accountEmail,
         planLabel: usage.planLabel,
-        windows: usage.windows.map((window) => ({
-          label: window.label,
-          usedPercent: window.usedPercent,
-          resetsAt: window.resetsAt,
-          cost: window.cost ?? null,
-        })),
+        windows: usage.windows
+          .filter((window) => !isRetiredWindow(providerId, window))
+          .map((window) => ({
+            label: window.label,
+            usedPercent: window.usedPercent,
+            resetsAt: window.resetsAt,
+            cost: window.cost ?? null,
+          })),
       };
     case "not_installed":
       return { status: "not_installed" };
@@ -202,7 +218,7 @@ function normalizedProvider(
       "Your " +
         provider.displayName +
         " session expired. Sign in again, then reload usage.",
-    usage: normalizedUsage(usage[provider.id]),
+    usage: normalizedUsage(provider.id, usage[provider.id]),
   };
 }
 

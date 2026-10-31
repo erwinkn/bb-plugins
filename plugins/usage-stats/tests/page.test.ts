@@ -132,10 +132,10 @@ describe("buildPage", () => {
         {
           accountId: "acct-a",
           points: [
-            { at: T0 - HOUR, windows: { "5h": { utilization: 0.9, resetAt: T0 + 2 * HOUR }, secondary: { utilization: 0, resetAt: T0 } } },
+            { at: T0 - HOUR, windows: { "7d": { utilization: 0.9, resetAt: T0 + 2 * HOUR }, secondary: { utilization: 0, resetAt: T0 } } },
             // The same window read again, its reset a few seconds off.
-            { at: T0 + HOUR, windows: { "5h": { utilization: 0.95, resetAt: T0 + 2 * HOUR + 4_000 } } },
-            { at: T0 + 3 * HOUR, windows: { "5h": { utilization: 0.1, resetAt: T0 + 7 * HOUR } } },
+            { at: T0 + HOUR, windows: { "7d": { utilization: 0.95, resetAt: T0 + 2 * HOUR + 4_000 } } },
+            { at: T0 + 3 * HOUR, windows: { "7d": { utilization: 0.1, resetAt: T0 + 7 * HOUR } } },
           ],
         },
       ],
@@ -147,11 +147,29 @@ describe("buildPage", () => {
     ]);
     expect(page.quota[0]?.windows).toEqual([
       {
-        name: "5h",
+        name: "7d",
         // The state at the range start is drawn from the start.
         points: [[T0, 0.9], [T0 + HOUR, 0.95], [T0 + 3 * HOUR, 0.1]],
         resets: [T0 + 2 * HOUR + 4_000],
       },
+    ]);
+  });
+
+  it("draws no 5h series for a Claude account and keeps Codex's", async () => {
+    const windows = { "5h": { utilization: 0.5, resetAt: T0 + HOUR }, "7d": { utilization: 0.2, resetAt: T0 + DAY } };
+    const quota: PoolerQuota = {
+      accounts: ["acct-a", "acct-c"].map((accountId) => ({ accountId, points: [{ at: T0, windows }] })),
+    };
+    const status = {
+      accounts: [
+        { id: "acct-a", provider: "claude" as const, label: "Erwin", email: "a@example.com", status: "ready" as const, active: true },
+        { id: "acct-c", provider: "codex" as const, label: "Codex", email: null, status: "ready" as const, active: false },
+      ],
+    };
+    const page = await ok(buildPage(input(), { pooler: fakePooler(slices, { quota, status }), directory: directory(), now: () => T0 + DAY }));
+    expect(page.quota.map((account) => [account.accountId, account.windows.map((window) => window.name)])).toEqual([
+      ["acct-a", ["7d"]],
+      ["acct-c", ["5h", "7d"]],
     ]);
   });
 
@@ -185,7 +203,7 @@ describe("buildPage", () => {
   });
 
   it("scopes quota cards to the account and provider filters", async () => {
-    const window = { "5h": { utilization: 0.5, resetAt: T0 + HOUR } };
+    const window = { "7d": { utilization: 0.5, resetAt: T0 + HOUR } };
     const quota: PoolerQuota = {
       accounts: ["acct-a", "acct-b"].map((accountId) => ({ accountId, points: [{ at: T0, windows: window }] })),
     };

@@ -208,11 +208,13 @@ async function quota(
   const now = deps.now();
   const byId = new Map(accounts.map((account) => [account.id, account]));
   const result = history.accounts.map(({ accountId, points }) => {
+    // Anthropic retired Claude's 5h window; an older Pooler's history may still carry it. Codex keeps its own.
+    const retired = byId.get(accountId)?.provider === "claude" ? "5h" : null;
     const windows = new Map<string, { points: Array<[number, number]>; resets: number[]; resetAt: number | null }>();
     for (const point of points) {
       for (const [name, window] of Object.entries(point.windows)) {
         // A window without a length (a Codex slot) carries no limit.
-        if (!/^\d+[mhd]\b/u.test(name)) continue;
+        if (!/^\d+[mhd]\b/u.test(name) || name === retired) continue;
         let entry = windows.get(name);
         if (entry === undefined) {
           entry = { points: [], resets: [], resetAt: null };
