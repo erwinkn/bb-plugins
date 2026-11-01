@@ -601,13 +601,24 @@ export class WatchLedger {
   }
 
   /**
-   * W563: each thread that watches a PR still open (as its last read saw it), with when the newest
-   * of those watches began. The stuck-worker sweep leaves such a worker alone: a wake will come.
+   * W563: each thread that watches a PR still open (as its last read saw it), with those PRs and
+   * when the newest of those watches began. The stuck-worker sweep leaves such a worker alone: a
+   * wake will come. W564: the Workers tab words its wait from the same rows.
    */
+  openWatches(): Map<string, { urls: string[]; since: number }> {
+    const rows = this.db.prepare(`SELECT watcher_thread_id AS thread, url, since FROM pr_watches
+      WHERE watcher_thread_id IS NOT NULL AND state IS NOT NULL AND json_extract(state, '$.ended') IS NULL ORDER BY url`).all() as { thread: string; url: string; since: number }[];
+    const byThread = new Map<string, { urls: string[]; since: number }>();
+    for (const r of rows) {
+      const watch = byThread.get(r.thread);
+      if (watch) { watch.urls.push(r.url); watch.since = Math.max(watch.since, r.since); } else byThread.set(r.thread, { urls: [r.url], since: r.since });
+    }
+    return byThread;
+  }
+
+  /** The newest watch's start, by thread: what the stuck-worker sweep reads of openWatches. */
   openWatchers(): Map<string, number> {
-    const rows = this.db.prepare(`SELECT watcher_thread_id AS thread, MAX(since) AS since FROM pr_watches
-      WHERE watcher_thread_id IS NOT NULL AND state IS NOT NULL AND json_extract(state, '$.ended') IS NULL GROUP BY watcher_thread_id`).all() as { thread: string; since: number }[];
-    return new Map(rows.map((r) => [r.thread, r.since]));
+    return new Map([...this.openWatches()].map(([thread, watch]) => [thread, watch.since]));
   }
 
   row(url: string): WatchRow | null {

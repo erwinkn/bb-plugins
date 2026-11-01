@@ -212,6 +212,11 @@ export interface WorkerWaiting {
   checked: boolean;
   /** Its own child threads as the cache knows them; null (or absent) before a listing says. */
   children?: number | null;
+  /**
+   * W564: the open PRs its thread watches (initiative_pr_watch) and when that wait began; it is
+   * woken by their next change, so idle with no report is expected until PR_WAIT_MAX_MS pass.
+   */
+  prs?: { urls: string[]; since: number };
 }
 
 /** v9: a task with its shown status and why (computed unless set by hand). */

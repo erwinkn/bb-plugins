@@ -317,8 +317,13 @@ export default function plugin(bb: BbPluginApi) {
     // and offers to only when the cache knows a child there: retired workers (the history tier)
     // are listed too once the cache knows their count.
     const cache = service.runningChildren;
+    const prWaits = service.prWaits();
     result.workerWaiting = Object.fromEntries([
-      ...result.workers.current.flatMap((w) => w.threadId ? [[w.ref, { ...cache.waitingOn(w.threadId), children: cache.childCount(w.threadId) }]] : []),
+      ...result.workers.current.flatMap((w) => {
+        if (!w.threadId) return [];
+        const prs = prWaits.get(w.threadId);
+        return [[w.ref, { ...cache.waitingOn(w.threadId), children: cache.childCount(w.threadId), ...(prs ? { prs } : {}) }]];
+      }),
       ...result.workers.retired.flatMap((w) => {
         const children = w.threadId ? cache.childCount(w.threadId) : null;
         return children === null ? [] : [[w.ref, { ...cache.waitingOn(w.threadId!), children }]];

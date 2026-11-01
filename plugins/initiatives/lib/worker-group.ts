@@ -8,6 +8,13 @@ export const INPUT_THREAD = "waiting-for-input";
 export const BUSY_THREAD = new Set(["active", "starting", "stopping", INPUT_THREAD]);
 export const FAILED_THREAD = new Set(["error", "failed"]);
 
+/**
+ * W563, W564: how long a worker that stopped while watching an open PR may wait, with no new input
+ * (a wake is one) or new watch. Past it the stuck-worker sweep flags the worker, and the Workers
+ * tab stops calling its wait calm. Here, not in the service, because the dashboard reads it too.
+ */
+export const PR_WAIT_MAX_MS = 6 * 60 * 60_000;
+
 export type WorkerGroup = "needs" | "working" | "waiting" | "done" | "stopped" | "idle";
 
 /** Why a worker is in its group: the finer cases the Workers tab words differently. */

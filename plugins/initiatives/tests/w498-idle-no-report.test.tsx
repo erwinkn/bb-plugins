@@ -5,7 +5,7 @@ import { installTestPluginRuntime, loadPluginApp, renderSlot } from "@get-bb/plu
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import { memoryStore } from "./helpers";
 import { buildOverview, type Overview, type WorkerItem } from "../lib/overview";
-import { workerGroup, workerKind, type WorkerFacts } from "../lib/worker-group";
+import { PR_WAIT_MAX_MS, workerGroup, workerKind, type WorkerFacts } from "../lib/worker-group";
 import { adventureRows } from "../../sidebar/lib/adventure-rows";
 import { readFileSync } from "node:fs";
 import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } from "../lib/guidance";
@@ -139,5 +139,68 @@ describe("worker guidance: questions go in a blocked report; reviews follow rule
     f.store.setFlag(GUIDANCE_RESET_FLAG);
     await f.preferences.ready;
     expect(f.preferences.configuration()[key]).toBe(field === "coordinator" ? DEFAULT_COORDINATOR_INSTRUCTIONS : DEFAULT_WORKER_INSTRUCTIONS);
+  });
+});
+
+// W564: a worker whose thread watches an open PR is woken by its next change, so idle with no
+// report is expected: the Workers tab words it "Waiting on PR #N" in neutral, under Waiting. After
+// PR_WAIT_MAX_MS (when the stuck-worker sweep flags it) it is amber again, saying so.
+describe("W564 a worker waiting on a watched PR", () => {
+  const url = (n: number) => `https://github.com/eq/market/pull/${n}`;
+  const mountWith = (waiting: Overview["workerWaiting"] & object, over: Partial<WorkerItem> = {}) => {
+    const o = base();
+    o.workers.current = [worker("W45", { label: "Settlement export", open: { ref: "A63", state: "running", tasks: [] }, ...over })];
+    o.workerWaiting = waiting;
+    const slot = renderSlot(app.navPanels[0], { subPath: "p1" }, {
+      rpc: { inventory: () => [], list: () => [], overview: () => o, command: () => ({}), childPage: () => ({ status: "ready", value: { rows: [], next: null } }) },
+      sidebarThreads: { status: "ready", threads: [host("thr_W45")] },
+    });
+    mounted.push(slot);
+    return slot;
+  };
+  const row = async (slot: ReturnType<typeof mountWith>) => {
+    fireEvent.click(await slot.findByRole("tab", { name: /Workers/ }));
+    return slot.getByRole("button", { name: /^W45 / });
+  };
+  const tone = (slot: ReturnType<typeof mountWith>) => slot.container.querySelector("li[data-worker='W45']")?.getAttribute("data-tone") ?? null;
+  const idle = (prs?: { urls: string[]; since: number }) => ({ W45: { on: null, checked: true, children: 0, ...(prs ? { prs } : {}) } });
+
+  it("one open PR: Waiting on PR #N, neutral, under Waiting", async () => {
+    const slot = mountWith(idle({ urls: [url(5393)], since: NOW - 60_000 }));
+    await row(slot);
+    const waiting = within(slot.getByRole("region", { name: "Waiting" }));
+    expect(waiting.getByText("Waiting on PR #5393")).toBeTruthy();
+    expect(waiting.queryByText(/Idle, no report/)).toBeNull();
+    expect(slot.queryByRole("region", { name: "Needs you" })).toBeNull();
+    // Neutral: the row carries none of the amber tone "Idle, no report" has.
+    expect(tone(slot)).toBeNull();
+  });
+
+  it("several open PRs: Waiting on 2 PRs", async () => {
+    const slot = mountWith(idle({ urls: [url(5393), url(5400)], since: NOW - 60_000 }));
+    await row(slot);
+    expect(slot.getByText("Waiting on 2 PRs")).toBeTruthy();
+  });
+
+  it("past PR_WAIT_MAX_MS it is amber Idle, no report again, saying how long it waited", async () => {
+    const slot = mountWith(idle({ urls: [url(5393)], since: NOW - PR_WAIT_MAX_MS - 60_000 }));
+    await row(slot);
+    expect(slot.getByText("Idle, no report · waiting on PR #5393 for over 6 h")).toBeTruthy();
+    expect(tone(slot)).toBe("warn");
+  });
+
+  it("no watch (a closed PR, an unwatched one): plain Idle, no report", async () => {
+    const slot = mountWith(idle());
+    await row(slot);
+    expect(slot.getByText("Idle, no report")).toBeTruthy();
+    expect(tone(slot)).toBe("warn");
+  });
+
+  it("a report or a stop reason still wins over the wait", async () => {
+    const prs = { urls: [url(5393)], since: NOW - 60_000 };
+    const done = mountWith(idle(prs), { open: null, latestReport: { ref: "A63", outcome: "done", summary: "Shipped", question: null, reportedAt: NOW, preSwitch: null } });
+    await row(done);
+    expect(done.getByText("Done: Shipped")).toBeTruthy();
+    expect(done.queryByText(/Waiting on PR/)).toBeNull();
   });
 });

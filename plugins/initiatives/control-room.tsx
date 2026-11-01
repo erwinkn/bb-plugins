@@ -12,7 +12,7 @@ import {
 } from "react";
 import { Markdown, useRealtime } from "@get-bb/plugin-sdk/app";
 import type { Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
-import { BUSY_THREAD, workerKind, KIND_GROUP, type WorkerGroup as LiveGroup } from "./lib/worker-group";
+import { BUSY_THREAD, PR_WAIT_MAX_MS, workerKind, KIND_GROUP, type WorkerGroup as LiveGroup } from "./lib/worker-group";
 import { MAX_RULES, RULE_MAX_CHARACTERS } from "./lib/rules";
 import type { Command } from "./lib/commands";
 import type { Cached, ChildPage, projectsContract } from "./lib/contract";
@@ -932,8 +932,13 @@ function workerView(w: WorkerItem, waiting: WorkerWaiting | null, openSince: num
       return { ...base, group, status: `Waiting on “${live!.title}” (${childStatus(live!.running)} ${compactAge(live!.since)})` };
     case "failed":
       return { ...base, group, tone: "error", status: `Thread failed${w.stopReason ? `: ${w.stopReason}` : ""}` };
-    case "idleNoReport":
-      return { ...base, group, tone: "warn", status: `Idle, no report${unchecked}` };
+    case "idleNoReport": {
+      // W564: its thread watches open PRs, so their next change wakes it: calm, until the wait runs long.
+      const prs = waiting?.prs;
+      const on = prs ? (prs.urls.length === 1 ? `PR #${prNumber(prs.urls[0]!) ?? "?"}` : `${prs.urls.length} PRs`) : null;
+      if (prs && on && Date.now() - prs.since < PR_WAIT_MAX_MS) return { ...base, group, status: `Waiting on ${on}${unchecked}` };
+      return { ...base, group, tone: "warn", status: `Idle, no report${on ? ` · waiting on ${on} for over ${PR_WAIT_MAX_MS / 3_600_000} h` : ""}${unchecked}` };
+    }
     case "open":
       return { ...base, group, tone: "warn", status: `${stopped ?? "No report"}${thread}${unchecked}` };
     case "stopReason":

@@ -397,6 +397,27 @@ describe("W210 stuck workers", () => {
       }
     });
 
+    // W564: the Workers tab words the wait from prWaits, which answers from the ledger and memory.
+    it("prWaits lists the open PRs a thread watches, counting the wait from its newest watch or the input the sweep saw", async () => {
+      const { f, project, w, inputAt, check } = await stopped();
+      expect(f.service.prWaits().size).toBe(0);
+      watch(f, project.id, w.threadId);
+      const watchedAt = f.store.now();
+      // Before the sweep has read its input, the wait counts from the watch.
+      expect(f.service.prWaits().get(w.threadId)).toEqual({ urls: [url], since: watchedAt });
+      await check();
+      expect(f.service.prWaits().get(w.threadId)).toEqual({ urls: [url], since: Math.max(watchedAt, inputAt) });
+      // A second PR, then a merge of the first: only open ones count.
+      const other = "https://github.com/eq/market/pull/9";
+      f.service.prWatches.watch(other, project.id, w.threadId, "PR_9", f.service.prWatches.row(url)!.state!);
+      expect(f.service.prWaits().get(w.threadId)!.urls).toEqual([url, other]);
+      const row = f.service.prWatches.row(url)!;
+      f.service.prWatches.write([{ url, gen: row.gen, state: { ...row.state!, ended: "MERGED" }, wake: null }]);
+      expect(f.service.prWaits().get(w.threadId)!.urls).toEqual([other]);
+      f.service.prWatches.unwatch(other, w.threadId);
+      expect(f.service.prWaits().has(w.threadId)).toBe(false);
+    });
+
     it("checks the watch again right before the send: one started while the sweep read the coordinator counts", async () => {
       const { f, project, w, check } = await stopped();
       const gate = hold(f, (path, args) => path === "threads.events.list" && args.threadId === "coordinator");

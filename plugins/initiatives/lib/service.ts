@@ -49,6 +49,7 @@ import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHand
 import { canonicalPrUrl } from "./pr-stages";
 import { PrNotes } from "./pr-notes";
 import { WatchLedger } from "./pr-watch";
+import { PR_WAIT_MAX_MS } from "./worker-group";
 import { reportNote } from "./pr-records";
 import { prsNamed } from "./pr-refs";
 import {
@@ -398,6 +399,8 @@ export class ProjectsService {
   readonly prNotes: PrNotes;
   /** W548, W554: the PR watches; the stuck-worker sweep reads who waits on one (W563). */
   readonly prWatches: WatchLedger;
+  /** W564: when the stuck-worker sweep last saw each worker thread's latest input (see prWaits). */
+  private readonly inputSeen = new Map<string, number>();
 
   constructor(
     readonly bb: BbPluginApi,
@@ -6970,6 +6973,7 @@ export class ProjectsService {
       // T150: open work on a failed thread is closeFailedAssignments' to report, once.
       if (row.status === "error" && failing.has(worker.threadId!)) continue;
       const input = await latestInput(this.sdk, worker.threadId!).catch(() => null);
+      if (input) this.inputSeen.set(worker.threadId!, input.at);
       if (!input || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
       if (this.waitingOnPr(worker.threadId!, input.at, watchers)) continue;
       candidates.push({ worker, input, status: row.status });
@@ -6991,6 +6995,7 @@ export class ProjectsService {
       try {
         const turn = await latestTurn(this.sdk, threadId);
         const now = await latestInput(this.sdk, threadId);
+        if (now) this.inputSeen.set(threadId, now.at);
         // Re-validated with no await before the send: still stopped on the same input, still
         // eligible, still unflagged, and the coordinator unchanged.
         const current = this.store.worker(project.id, worker.num);
@@ -7010,6 +7015,16 @@ export class ProjectsService {
         this.store.log(project.id, "report", `Could not check whether ${worker.ref} is stuck: ${errorMessage(error)}`);
       }
     }
+  }
+
+  /**
+   * W564: the open PRs each watching thread waits on, for the Workers tab, with when its wait
+   * began: its newest watch or latest input the sweep has seen, whichever is later. Answers from
+   * the ledger and memory, no native read; before the sweep's first pass the wait counts from the
+   * watch alone.
+   */
+  prWaits(): Map<string, { urls: string[]; since: number }> {
+    return new Map([...this.prWatches.openWatches()].map(([thread, watch]) => [thread, { urls: watch.urls, since: Math.max(watch.since, this.inputSeen.get(thread) ?? 0) }]));
   }
 
   /**
@@ -7359,11 +7374,7 @@ const FAILED_GRACE_MS = 60_000;
 const FAILURE_TEXT_MAX = 600;
 /** How much of a stuck worker's last message the coordinator's notice quotes. */
 const STUCK_EXCERPT = 1500;
-/**
- * W563: how long a worker that stopped while watching an open PR may wait, with no new input
- * (a wake is one) or new watch, before the sweep flags it as stuck anyway.
- */
-export const PR_WAIT_MAX_MS = 6 * 60 * 60_000;
+export { PR_WAIT_MAX_MS };
 /** How archive names a running descendant; a busy status reads "is <status>". */
 const BLOCKER_WORDS: Partial<Record<Running, string>> = {
   "background work": "has background work running",
