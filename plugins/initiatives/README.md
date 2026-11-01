@@ -45,6 +45,24 @@ An example, in the Equisafe Initiative:
    note before the switch only woke an idle worker for a turn that said "waiting", and the
    brief already tells a worker woken by BB's "child failed" notice to wait for the plugin's.
    It starts no fallback when the worker already started one (a worker on an older brief).
+   W560: a switch also marks the reviewer profile out until its quota resets, so rounds stop
+   failing on it one after another (demo#3 round 18 failed on Muse although its error said
+   "resets at 2026-11-02T00:00:00Z"). The reset is the latest blocked window's
+   `resetsAtMs` from `turn.failed`, else the latest time in the error (an ISO time, Claude's
+   `|<epoch seconds>`, "try again in 2 hours"), else an hour; a past time or one over 8 days
+   away counts as none. A window reset is the provider's account state and replaces the mark,
+   also when `thread.failed` claimed the thread first (the worker then gets a correction with
+   the new deadline); a time from text or the default only
+   lengthens it (another reviewer failing without a reset never shortens tomorrow's). The mark is a `plugin_flags` row `reviewer-out:<provider>/<model>`
+   whose time is the reset (no schema change), so it survives a reload. While it holds, a new
+   brief's and every work message's reviewer block puts the fallback command first ("for
+   every round until 2026-11-02 00:00 UTC") and the usual one after it ("from then on"),
+   every note to the worker says until when to start rounds on the fallback, and a reviewer
+   started on the marked profile anyway (an older brief) is switched on `thread.active`,
+   before its turn fails. It expires by itself; a turn that completes on that provider and
+   model (`thread.idle` whose latest request completed, not a stop or an older success) clears
+   it early, unless a newer failure re-marked it during the check. An early switch that finds
+   the reviewer finished a turn by the time it stopped leaves it (R8).
 2. W1420 implements, opens its PR and keeps its stage with `initiative_pr`. For each review
    round it starts a fresh reviewer as an ordinary BB child thread (`--parent-self
    --lifecycle-owner-thread`, in its checkout), copies the rules that matter into the

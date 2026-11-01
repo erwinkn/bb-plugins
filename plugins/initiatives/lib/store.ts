@@ -2147,6 +2147,17 @@ export class Store {
     this.db.prepare("INSERT INTO plugin_flags(key, set_at) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET set_at = excluded.set_at").run(key, at);
   }
 
+  /** W560: clears a flag only while its time is still `at`, so a newer write survives. */
+  clearFlagAt(key: string, at: number) {
+    this.db.prepare("DELETE FROM plugin_flags WHERE key = ? AND set_at = ?").run(key, at);
+  }
+
+  /** W560: the flags starting with `prefix`, with their times. */
+  flagsWithPrefix(prefix: string): { key: string; at: number }[] {
+    return (this.db.prepare("SELECT key, set_at FROM plugin_flags WHERE substr(key, 1, length(?)) = ?").all(prefix, prefix) as { key: string; set_at: number }[])
+      .map((row) => ({ key: row.key, at: Number(row.set_at) }));
+  }
+
   /** Clears every flag starting with `prefix`, but those starting with `keep`. */
   clearFlags(prefix: string, keep: string | null = null) {
     this.db

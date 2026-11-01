@@ -79,8 +79,8 @@ describe("W537 fallback reviewer", () => {
   it("worker guidance, skill and README name the fallback; one reviewer per round stays", () => {
     const worker = flat(DEFAULT_WORKER_INSTRUCTIONS);
     expect(worker).toContain("one fresh reviewer each round");
-    expect(worker).toContain("If it can't run (usage limit, model unavailable), the plugin reruns it on the fallback and tells you (no fallback command in your brief: report blocked); name those rounds in your report.");
-    expect(flat(readFileSync("skills/initiative-worker/SKILL.md", "utf8"))).toContain("the plugin reruns it on the fallback and tells you (no fallback command in your brief: report blocked); name those rounds in your report.");
+    expect(worker).toContain("If it can't run (usage limit, model unavailable), the plugin reruns it on the fallback and tells you until when to use it (no fallback command in your brief: report blocked); name those rounds in your report.");
+    expect(flat(readFileSync("skills/initiative-worker/SKILL.md", "utf8"))).toContain("the plugin reruns it on the fallback and tells you until when to use it (no fallback command in your brief: report blocked); name those rounds in your report.");
     const readme = flat(readFileSync("README.md", "utf8"));
     expect(readme).toContain("deletes the retries queued on it");
     expect(readme).toContain("a review that gave a verdict or findings is never redone on the fallback.");
@@ -88,8 +88,8 @@ describe("W537 fallback reviewer", () => {
   });
 
   it("the worker default from before the fallback is kept as a legacy text and upgrades to the current one", async () => {
-    // W545 keeps W537's text as a legacy one, before it; W548 keeps W545's in front of both, W554 W548's in front of all, and W555 W554's.
-    const [, , , w537, previous] = PREVIOUS_DEFAULTS.worker as [string, string, string, string, string];
+    // W545 keeps W537's text as a legacy one, before it; W548 keeps W545's in front of both, W554 W548's in front of all, W555 W554's and W560 W555's.
+    const [, , , , w537, previous] = PREVIOUS_DEFAULTS.worker as [string, string, string, string, string, string];
     expect(w537).toContain("follow the fallback command's note in your brief (no fallback command: report blocked)");
     expect(previous).toContain("Clean means the verdict is correct with no P1 or P2.");
     expect(previous).not.toContain("fallback");

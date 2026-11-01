@@ -1729,7 +1729,7 @@ export default function plugin(bb: BbPluginApi) {
   );
   // W545: a worker's reviewer that a usage limit or an unavailable model stops is rerun on the
   // fallback reviewer by the plugin. thread.failed carries the error text; turn.failed the
-  // classification of a request refused at the door.
+  // classification of a request refused at the door and its blocked windows' reset times.
   const reviewerFallback = new ReviewerFallback({
     sdk: bb.sdk,
     store,
@@ -1737,8 +1737,14 @@ export default function plugin(bb: BbPluginApi) {
     warn: (message) => bb.log.warn(message),
   });
   bb.events.on("thread.failed", ({ thread, error }) => reviewerFallback.onFailed(thread.id, { error, parentThreadId: thread.parentThreadId }));
-  bb.events.on("turn.failed", ({ threadId, errorInfo, rateLimits }) =>
-    reviewerFallback.onFailed(threadId, { errorInfo, rateLimitBlocked: rateLimits?.status === "blocked" }));
+  bb.events.on("turn.failed", ({ threadId, errorInfo, rateLimits }) => {
+    const resets = rateLimits?.windows.filter((window) => window.status === "blocked" && window.resetsAtMs !== null).map((window) => window.resetsAtMs!) ?? [];
+    return reviewerFallback.onFailed(threadId, { errorInfo, rateLimitBlocked: rateLimits?.status === "blocked", resetsAtMs: resets.length ? Math.max(...resets) : null });
+  });
+  // W560: while a reviewer profile is marked out, a reviewer started on it switches at once,
+  // and a turn that completes on it ends the mark early.
+  bb.events.on("thread.active", ({ thread }) => reviewerFallback.onStarted(thread));
+  bb.events.on("thread.idle", ({ thread }) => reviewerFallback.onIdle(thread));
   bb.events.on(
     "thread.archived",
     event(({ thread }) => runtime.onThreadArchived(thread)),

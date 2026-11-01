@@ -24,6 +24,7 @@ import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
 import { briefAppendix, opMarker, ownBriefText, renderAssignment, renderCoordinatorSeed, reviewerCommand, workLoopBlock } from "./brief";
+import { reviewerOutUntil, reviewerProfileFor } from "./reviewer-fallback";
 import { CUTOVER_FLAG, cutoverInstruction, cutoverProjects, preSwitchBlock, preSwitchLine } from "./cutover";
 import { MAX_RULES, formatRulesFile, parseRulesFile, renderRules } from "./rules";
 import type { HandStatus } from "./task-status";
@@ -3867,10 +3868,11 @@ export class ProjectsService {
    * v9 (§6.1): what a work brief ends with. A fresh brief: the reviewer command (with its
    * fallback, W537) and the full rules (the plugin builds that session with this build's
    * instructions). Every later work message: the whole loop, the worker guidance as a new
-   * session would get it included.
+   * session would get it included. W560: while the reviewer is marked out, the fallback first.
    */
   private workAppendix(projectId: string, policy: Policy, profile: Profile, guidance: string, route: "fresh" | "continue") {
-    const reviewer = reviewerCommand(profileFor(policy, seriesOf(profile) === "gpt" ? "reviewOfGpt" : "reviewOfClaude"), profileFor(policy, "reviewFallback"));
+    const usual = reviewerProfileFor(policy, profile);
+    const reviewer = reviewerCommand(usual, profileFor(policy, "reviewFallback"), reviewerOutUntil(this.store, usual));
     const rules = renderRules(this.store.rules(projectId));
     return route === "fresh" ? briefAppendix(reviewer, rules) : workLoopBlock(guidance, reviewer, rules);
   }

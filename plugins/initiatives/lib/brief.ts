@@ -91,21 +91,32 @@ const LOOP_HEADING = "How you work in this Initiative (current; replaces anythin
  * W545: the plugin runs it itself when a usage limit or an unavailable model stops the reviewer
  * (reviewer-fallback.ts); the worker runs it only when the reviewer command is refused or the
  * plugin leaves the round to it. Shown only for another provider or model: the one the plugin
- * can switch to.
+ * can switch to. W560: while the reviewer is out (reviewer-fallback.ts marks it until its reset),
+ * the fallback comes first and the worker starts every round on it until then.
  */
-export function reviewerCommand(reviewer: Profile, fallback?: Profile): string {
+export function reviewerCommand(reviewer: Profile, fallback?: Profile, outUntil: number | null = null): string {
+  if (!fallbackDiffers(reviewer, fallback)) return [REVIEWER_HEADING, spawnReviewer(reviewer)].join("\n");
+  if (outUntil === null)
+    return [
+      REVIEWER_HEADING,
+      spawnReviewer(reviewer),
+      "",
+      "Fallback reviewer command: when a usage limit or an unavailable model stops a reviewer before its verdict, the plugin archives it, reruns that round on this profile itself (same prompt, under you) and tells you in this thread: wait for that reviewer; don't start another. Run this command yourself, even if it is your own model family, only when the reviewer command is refused, the plugin's message asks you to, or BB reports the reviewer failed on a limit and no plugin message comes within minutes. Name the fallback rounds in your report; if the fallback can't run either, report blocked. A review that gave a verdict or findings is never redone on the fallback.",
+      spawnReviewer(fallback),
+    ].join("\n");
+  const until = utcTime(outUntil);
   return [
     REVIEWER_HEADING,
+    `Fallback reviewer command, for every round until ${until}: ${reviewer.model} ${reviewer.reasoningLevel} is out (usage limit or unavailable model) until then. Run it yourself, even if it is your own model family, and name those rounds as fallback rounds in your report; if the fallback can't run either, report blocked.`,
+    spawnReviewer(fallback),
+    "",
+    `Usual reviewer command, from ${until} on. When a usage limit or an unavailable model stops it before its verdict, the plugin reruns that round on the fallback itself and tells you in this thread: wait for that reviewer; don't start another. A review that gave a verdict or findings is never redone on the fallback.`,
     spawnReviewer(reviewer),
-    ...(fallbackDiffers(reviewer, fallback)
-      ? [
-          "",
-          "Fallback reviewer command: when a usage limit or an unavailable model stops a reviewer before its verdict, the plugin archives it, reruns that round on this profile itself (same prompt, under you) and tells you in this thread: wait for that reviewer; don't start another. Run this command yourself, even if it is your own model family, only when the reviewer command is refused, the plugin's message asks you to, or BB reports the reviewer failed on a limit and no plugin message comes within minutes. Name the fallback rounds in your report; if the fallback can't run either, report blocked. A review that gave a verdict or findings is never redone on the fallback.",
-          spawnReviewer(fallback),
-        ]
-      : []),
   ].join("\n");
 }
+
+/** A time as briefs and notes show it: "2026-11-02 00:00 UTC". */
+export const utcTime = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
 const spawnReviewer = (profile: Profile) =>
   [
