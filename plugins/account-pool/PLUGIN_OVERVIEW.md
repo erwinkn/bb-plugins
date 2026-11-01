@@ -7,6 +7,7 @@ Keep a Claude Code or Codex thread running when one account hits its limit. The 
 - Drag handles set the account order within each provider in settings (keyboard: Space to pick up, arrow keys to move, Space to drop, Escape to cancel), with the same operation available through `bb pool-local account reorder <claude|codex> <id>...`.
 - Live limit windows per account and model family in the plugin's settings page, and the same numbers from `bb pool-local status`.
 - A routing switch per provider and a bypass per thread, so one thread can go straight to its own credentials.
+- A turn that fails because no account is eligible is retried once the next account frees up, up to a maximum wait (6 hours by default, the plugin's "Maximum automatic wait" setting).
 
 ## How it works
 

@@ -44,6 +44,55 @@ Enabling the account again clears it. A 429 that only a weekly window rejects
 (Claude 7d or per-family, or a Codex window) is held by that window until its
 reset, as before, so a family-only limit still detours only its family.
 
+## Automatic retry after a Pooler 429
+
+When no account is eligible, the hub answers 429 with `Retry-After` set to the
+next reset. BB's own provider-retry never retries that turn: Claude Code behind
+the hub runs as an API-key session, so it reports no rate-limit window to BB,
+and Codex spends its own five attempts and ends as `too-many-failed-attempts`.
+The thread used to sit in error until someone retried it by hand.
+
+The Pooler now schedules that retry itself. On `turn.failed` it acts when:
+
+- the error is an HTTP 429 and the failed attempt is earlier than the 5th;
+- the thread runs `claude-code` or `codex`, and the Pooler routes it now
+  (routing on for that provider, the thread not bypassed, an enabled account
+  with a readable secret: the test that decides whether the thread gets the
+  hub's URL and token);
+- the failed turn's model is found among the thread's 20 latest turn requests;
+- the next account that can serve that model family frees up within the
+  maximum automatic wait.
+
+It then calls `bb.sdk.threads.retry` for that turn with
+`sendAt` = the next account's reset + 15 s + up to 30 s of jitter, the same
+buffer as provider-retry, and the reason "Waiting for an Account Pooler
+account". If an account can already serve, it waits 30 s first. When the hub
+answered the thread's own session a 429 in the last 15 minutes and that
+`Retry-After` is later, the retry waits for it instead: a session pinned to an
+account held for 20 minutes keeps that account even while another one is
+ready, so retrying sooner would only use up attempts. (The thread's session is
+its latest `thread/identity`; the hub keeps the last 1,024 sessions' 429s in
+memory.) A 409
+`retry_already_queued` (another retry already waits for the turn) counts as
+done. Every decision, declines included, is logged at debug
+(`bb plugin logs account-pool-local`).
+
+Example: every Claude account is weekly-capped and one is held until 23:39:59.
+A coordinator turn fails at 22:03 on the hub's 429; the Pooler queues its retry
+for 23:40:14–23:40:44, and the thread resumes once that account frees up.
+
+**Maximum automatic wait** is a BB plugin setting (the plugin's Configuration
+panel, or `bb plugin config account-pool-local set autoRetryMaximumWait "24 hours"`):
+`Off`, `1 hour`, `6 hours` (default, as in provider-retry), `24 hours` or
+`No limit`. A reset farther away is not waited for, and the turn fails
+visibly as before, so a thread capped for days does not wake up on stale
+context. The setting lives outside the Pooler's `config` record, which keeps its
+five keys for rollback.
+
+Several threads waiting on the same reset all retry within the same 45 s. The
+first gets the account; if the rest get 429 again, they reschedule on the next
+reset. BB's five-attempt cap bounds that loop, and no queue is kept.
+
 ## Claude TTL precedence
 
 Claude Code v2.1.242 or later supports the explicit main control. The pool

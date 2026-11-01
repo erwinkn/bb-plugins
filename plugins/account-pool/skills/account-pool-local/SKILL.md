@@ -28,6 +28,12 @@ this main TTL. Never assume a request used one hour merely from the setting.
 The builtin pool must stay disabled while the local pool is enabled. Root owns
 the state handoff; see this plugin's README for cutover and rollback.
 
+A turn that fails on the hub's 429 ("No Account Pooler account is currently eligible") is
+retried automatically once the next account frees up, if that is within the plugin setting
+`autoRetryMaximumWait` (default `6 hours`; `bb plugin config account-pool-local`). Its decisions
+are debug lines in `bb plugin logs account-pool-local`; see the README's "Automatic retry after a
+Pooler 429".
+
 Advisor routes and cache warming are opt-in and off by default. Inspect them with
 `bb pool-local advisor`, `bb pool-local warming` and `bb pool-local warming status`;
 change them only when the task asks for it. Warming never changes `claudeMainCacheTtl`,

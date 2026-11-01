@@ -33,6 +33,12 @@ import {
   type LedgerSettings,
 } from "./ledger.js";
 import { PoolOperations } from "./operations.js";
+import {
+  handlePoolerTurnFailed,
+  maximumWaitMs,
+  RETRY_SETTINGS,
+  TURN_REQUEST_PAGE,
+} from "./pooler-retry.js";
 import { accountPoolRpcContract, createRpcHandlers } from "./rpc.js";
 import { threadCacheState } from "./thread-cache.js";
 import { ClaudeOAuthLogin } from "./oauth-login.js";
@@ -623,14 +629,64 @@ export function createAccountPoolPlugin(
               "Credentials are provided by the Account Pooler hub.",
           }
         : null;
+    const retrySettings = bb.settings.define(RETRY_SETTINGS);
+    let retryMaximumWaitMs = maximumWaitMs(
+      (await retrySettings.get()).autoRetryMaximumWait,
+    );
+    retrySettings.onChange((next) => {
+      retryMaximumWaitMs = maximumWaitMs(next.autoRetryMaximumWait);
+    });
+    // Whether the Pooler contributes its URL and token to a thread's provider environment.
+    const routesThread = async (provider: PoolProvider, threadId: string) =>
+      (await operations.isRoutingEnabled(provider)) &&
+      !(await routing.isBypassed(threadId)) &&
+      (await operations.hasUsableEnabledAccount(provider));
+    bb.events.on("turn.failed", (event) =>
+      handlePoolerTurnFailed(
+        {
+          now,
+          random: Math.random,
+          maxWaitMs: () => retryMaximumWaitMs,
+          providerOf: async (threadId) =>
+            (await bb.sdk.threads.get({ threadId, signal: AbortSignal.timeout(LINK_READ_TIMEOUT_MS) }))
+              .providerId,
+          routes: routesThread,
+          turnModel: async (threadId, requestId) => {
+            const events = await bb.sdk.threads.events.list({
+              threadId,
+              types: ["client/turn/requested"],
+              order: "desc",
+              limit: String(TURN_REQUEST_PAGE),
+              signal: AbortSignal.timeout(LINK_READ_TIMEOUT_MS),
+            });
+            for (const event of events)
+              if (event.type === "client/turn/requested" && event.data.requestId === requestId)
+                return event.data.execution.model;
+            return null;
+          },
+          nextEligibleAt: (provider, family) => hub.nextEligibleAt(provider, family),
+          sessionRetryAt: async (provider, threadId) => {
+            try {
+              const session = await threadIdentity(
+                threadId,
+                AbortSignal.timeout(LINK_READ_TIMEOUT_MS),
+              );
+              return session === null ? null : hub.sessionRetryAt(provider, session);
+            } catch (error) {
+              bb.log.debug(
+                `Account Pooler could not read the session of ${threadId}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              return null;
+            }
+          },
+          retry: (args) => bb.sdk.threads.retry(args),
+          log: (message) => bb.log.debug(message),
+        },
+        event,
+      ),
+    );
     bb.providers.experimental_contributeEnv("claude-code", async (context) => {
-      if (
-        !(await operations.isRoutingEnabled("claude")) ||
-        (await routing.isBypassed(context.threadId)) ||
-        !(await operations.hasUsableEnabledAccount("claude"))
-      ) {
-        return [];
-      }
+      if (!(await routesThread("claude", context.threadId))) return [];
       const token = await hubTokens.forHost(context.hostId);
       await routing.recordRouted(context.threadId, context.hostId);
       return [
@@ -664,13 +720,7 @@ export function createAccountPoolPlugin(
       proxiedHealth("claude"),
     );
     bb.providers.experimental_contributeEnv("codex", async (context) => {
-      if (
-        !(await operations.isRoutingEnabled("codex")) ||
-        (await routing.isBypassed(context.threadId)) ||
-        !(await operations.hasUsableEnabledAccount("codex"))
-      ) {
-        return [];
-      }
+      if (!(await routesThread("codex", context.threadId))) return [];
       const token = await hubTokens.forHost(context.hostId);
       return [
         {

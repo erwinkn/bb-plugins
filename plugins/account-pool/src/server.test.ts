@@ -3,7 +3,10 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import {
+  createFakePluginHost,
+  makeTurnFailedEvent,
+} from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   accountSchema,
@@ -187,12 +190,13 @@ async function createFixture(args: {
   apiKey?: string;
   priority?: number;
   beforePlugin?: (host: Fixture["host"]) => void;
+  sdk?: Record<string, unknown>;
 }): Promise<Fixture> {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-"));
   const host = createFakePluginHost({
     pluginId: "account-pool-local",
     dataDir,
-    sdk: sdkStubs(),
+    sdk: { ...sdkStubs(), ...args.sdk },
   });
   await host.bb.storage.kv.set("config", {
     anthropicUpstreamBaseUrl: args.upstreamUrl,
@@ -6295,5 +6299,241 @@ describe("local fork controls", () => {
       "sk-first",
       "sk-second",
     ]);
+  });
+});
+
+describe("automatic retry after a Pooler 429", () => {
+  // Claude's overall 5h verdict resets here; the test clock starts before it.
+  const RESET = 4_102_444_800_000;
+  const HOUR = 60 * 60_000;
+
+  // One Claude account that answers 429 with Anthropic's overall rejection until RESET, so the
+  // Pooler holds it and has no eligible account; the thread's turns ran on `model`.
+  // BB's side of a thread whose turn creq_failed ran on `model`, in Claude Code session `session`.
+  function threadStubs(args: {
+    model?: string;
+    providerId?: string;
+    session?: string;
+    retryError?: unknown;
+  }) {
+    const retries: unknown[] = [];
+    const sdk = {
+      threads: {
+        get: async ({ threadId }: { threadId: string }) => ({
+          id: threadId,
+          providerId: args.providerId ?? "claude-code",
+        }),
+        events: {
+          list: async ({ types }: { types?: string[] }) =>
+            types?.includes("client/turn/requested")
+              ? [
+                  {
+                    type: "client/turn/requested",
+                    data: { requestId: "creq_later", execution: { model: "claude-haiku-5-5" } },
+                  },
+                  {
+                    type: "client/turn/requested",
+                    data: {
+                      requestId: "creq_failed",
+                      execution: { model: args.model ?? "claude-opus-5-5" },
+                    },
+                  },
+                ]
+              : types?.includes("thread/identity") && args.session !== undefined
+                ? [{ type: "thread/identity", data: { providerThreadId: args.session } }]
+                : [],
+        },
+        retry: async (input: unknown) => {
+          if (args.retryError !== undefined) throw args.retryError;
+          retries.push(input);
+          return { ok: true, delivery: "queued" };
+        },
+      },
+    };
+    return { sdk, retries };
+  }
+
+  async function emitFailure(
+    fixture: Fixture,
+    overrides: Parameters<typeof makeTurnFailedEvent>[0] = {},
+  ) {
+    const result = await fixture.host.harness.behavior.emitThreadEvent(
+      "turn.failed",
+      makeTurnFailedEvent({
+        threadId: "thread-one",
+        requestId: "creq_failed",
+        errorInfo: { category: "rate-limit", httpStatusCode: 429, providerCode: null },
+        ...overrides,
+      }),
+    );
+    expect(result.errors).toEqual([]);
+  }
+
+  async function cappedPool(args: {
+    now: number;
+    model?: string;
+    providerId?: string;
+    retryError?: unknown;
+    // What the account answers instead of the overall 429, to a request for this model.
+    answer?: { status: number; headers: Record<string, string>; model: string };
+  }) {
+    const { sdk, retries } = threadStubs(args);
+    const answer = args.answer ?? { status: 429, headers: claudeFiveHourRejection(RESET / 1_000) };
+    const upstream = await startUpstream(async (request, response) => {
+      await readRequestBody(request);
+      response.writeHead(answer.status, { "content-type": "application/json", ...answer.headers });
+      response.end(answer.status === 429 ? '{"type":"error"}' : "{}");
+    });
+    cleanups.push(upstream.close);
+    const fixture = await createFixture({
+      upstreamUrl: upstream.url,
+      options: { now: () => args.now },
+      sdk,
+    });
+    const response = await fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+      headers: authHeaders(fixture.key),
+      body: JSON.stringify({ model: args.answer?.model ?? args.model ?? "claude-opus-5-5" }),
+    });
+    expect(response.status).toBe(answer.status);
+    await response.text();
+    const failed = (overrides: Parameters<typeof makeTurnFailedEvent>[0] = {}) =>
+      emitFailure(fixture, overrides);
+    return { fixture, retries, failed };
+  }
+
+  function sendAtOf(retries: unknown[]): number {
+    expect(retries).toHaveLength(1);
+    return (retries[0] as { sendAt: number }).sendAt;
+  }
+
+  it("schedules one retry 15 to 45 seconds after the capped account resets", async () => {
+    const { retries, failed } = await cappedPool({ now: RESET - HOUR });
+    await failed();
+    expect(retries).toEqual([
+      {
+        threadId: "thread-one",
+        turnRequestId: "creq_failed",
+        sendAt: expect.any(Number),
+        reason: "Waiting for an Account Pooler account",
+      },
+    ]);
+    const sendAt = sendAtOf(retries);
+    expect(sendAt).toBeGreaterThanOrEqual(RESET + 15_000);
+    expect(sendAt).toBeLessThan(RESET + 45_000);
+  });
+
+  it.each([
+    ["holds a Fable turn until its family window resets", "claude-fable-5-1", true],
+    ["retries an Opus turn shortly, since Opus is not capped", "claude-opus-5-5", false],
+  ])("on a Fable-only weekly cap, %s", async (_label, model, held) => {
+    const now = RESET - HOUR;
+    const { retries, failed } = await cappedPool({
+      now,
+      model,
+      answer: {
+        status: 200,
+        model: "claude-fable-5-1",
+        headers: {
+          "anthropic-ratelimit-unified-7d-status": "allowed",
+          "anthropic-ratelimit-unified-7d_oi-utilization": "0.99",
+          "anthropic-ratelimit-unified-7d_oi-reset": String(RESET / 1_000),
+          "anthropic-ratelimit-unified-7d_oi-status": "allowed",
+        },
+      },
+    });
+    await failed();
+    const base = held ? RESET : now + 30_000;
+    expect(sendAtOf(retries)).toBeGreaterThanOrEqual(base + 15_000);
+    expect(sendAtOf(retries)).toBeLessThan(base + 45_000);
+  });
+
+  it("waits for a held pinned account even while another account is ready", async () => {
+    // The session is pinned to the first account, which then answers a 20-minute 429. The hub keeps
+    // the session there and tells it to come back in 20 minutes, though the second account is ready.
+    const now = 1_800_000_000_000;
+    const session = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const keys: Array<string | null> = [];
+    const { sdk, retries } = threadStubs({ session });
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      sdk,
+      options: {
+        now: () => now,
+        fetch: async (_input, init) => {
+          keys.push(new Headers(init?.headers).get("x-api-key"));
+          return keys.length === 2
+            ? Response.json({}, { status: 429, headers: { "retry-after": "1200" } })
+            : Response.json({});
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second", 200);
+    const send = () =>
+      fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+        headers: authHeaders(fixture.key),
+        body: JSON.stringify({
+          model: "claude-opus-5-5",
+          metadata: { user_id: JSON.stringify({ session_id: session }) },
+        }),
+      });
+    const first = await send();
+    expect(first.status).toBe(200);
+    await first.text();
+    const held = await send();
+    expect(held.status).toBe(429);
+    await held.text();
+    expect(keys).toEqual(["sk-first", "sk-first"]);
+    await emitFailure(fixture);
+    expect(sendAtOf(retries)).toBeGreaterThanOrEqual(now + 1_200_000 + 15_000);
+    expect(sendAtOf(retries)).toBeLessThan(now + 1_200_000 + 45_000);
+  });
+
+  it("does not retry a thread the Pooler does not route, a non-429 or a fifth attempt", async () => {
+    const { fixture, retries, failed } = await cappedPool({ now: RESET - HOUR });
+    await failed({ errorInfo: { category: "unknown", httpStatusCode: 500, providerCode: null } });
+    await failed({ errorInfo: null });
+    await failed({ attemptNumber: 5 });
+    await fixture.host.harness.behavior.callRpc("bypass.set", {
+      threadId: "thread-one",
+      bypassed: true,
+    });
+    await failed();
+    expect(retries).toEqual([]);
+    expect(
+      fixture.host.harness.inspection.logEntries.filter(
+        (entry) => entry.level === "debug" && entry.message.includes("does not retry thread-one"),
+      ),
+    ).toHaveLength(4);
+  });
+
+  it("waits at most the maximum automatic wait, 6 hours unless changed", async () => {
+    const { fixture, retries, failed } = await cappedPool({ now: RESET - 7 * HOUR });
+    await failed();
+    expect(retries).toEqual([]);
+    await fixture.host.harness.behavior.setSettings({ autoRetryMaximumWait: "24 hours" });
+    await failed();
+    expect(sendAtOf(retries)).toBeGreaterThanOrEqual(RESET + 15_000);
+    await fixture.host.harness.behavior.setSettings({ autoRetryMaximumWait: "Off" });
+    await failed();
+    expect(retries).toHaveLength(1);
+  });
+
+  it("swallows BB's 409 when the turn already has a retry waiting", async () => {
+    // BB's answer to a second retry of the same turn.
+    const { fixture, failed } = await cappedPool({
+      now: RESET - HOUR,
+      retryError: Object.assign(new Error("HTTP 409: Turn creq_failed already has a retry waiting"), {
+        name: "BbHttpError",
+        status: 409,
+        code: "retry_already_queued",
+      }),
+    });
+    await failed();
+    expect(
+      fixture.host.harness.inspection.logEntries.some((entry) =>
+        entry.message.includes("found a retry already queued for thread-one"),
+      ),
+    ).toBe(true);
   });
 });

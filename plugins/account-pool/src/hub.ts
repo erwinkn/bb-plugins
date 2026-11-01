@@ -57,6 +57,10 @@ import {
 } from "./warming.js";
 
 const ROUTE = "/api/v1/plugins/account-pool-local/http";
+// Sessions whose latest 429 the hub remembers, and for how long: a turn fails within seconds of
+// the 429 (Codex after its own retries, within minutes).
+const MAX_SESSION_REJECTIONS = 1_024;
+const SESSION_REJECTION_TTL_MS = 15 * 60_000;
 const DEFAULT_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
 const DEFAULT_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
@@ -192,6 +196,10 @@ export class AccountPoolHub {
   private readonly usageRefreshes = new Map<string, Promise<void>>();
   private readonly lastUsageRefreshAt = new Map<string, number>();
   private readonly drainWaiters = new Set<() => void>();
+  private readonly sessionRejections = new Map<
+    string,
+    { answeredAt: number; retryAt: number }
+  >();
 
   constructor(private readonly options: HubOptions) {}
 
@@ -583,6 +591,54 @@ export class AccountPoolHub {
     adapter: ProviderAdapter,
     hostId: string,
   ): Promise<Response> {
+    const parsed = adapter.parseRequest(body, request.headers);
+    const response = await this.route(request, adapter, hostId, parsed);
+    const sessionId = sessionIdOf(parsed.affinityId);
+    if (response.status === 429 && sessionId !== null)
+      this.noteSessionRejection(adapter.provider, sessionId, response);
+    return response;
+  }
+
+  // When the hub last told a session to come back after a 429, kept briefly so a retry of the turn
+  // that failed on it waits as long (sessionRetryAt). That time can be later than the next eligible
+  // account: a session pinned to a held account waits for that account.
+  private noteSessionRejection(
+    provider: PoolProvider,
+    sessionId: string,
+    response: Response,
+  ): void {
+    const now = this.options.now();
+    const key = JSON.stringify([provider, sessionId]);
+    this.sessionRejections.delete(key);
+    this.sessionRejections.set(key, {
+      answeredAt: now,
+      retryAt:
+        now + retryAfterMilliseconds(response.headers.get("retry-after"), now),
+    });
+    while (this.sessionRejections.size > MAX_SESSION_REJECTIONS) {
+      const oldest = this.sessionRejections.keys().next();
+      if (!oldest.done) this.sessionRejections.delete(oldest.value);
+    }
+  }
+
+  // The time the hub's latest 429 to this session named, if it answered one in the last
+  // SESSION_REJECTION_TTL_MS; null otherwise.
+  sessionRetryAt(provider: PoolProvider, sessionId: string): number | null {
+    const rejection = this.sessionRejections.get(
+      JSON.stringify([provider, sessionId]),
+    );
+    return rejection !== undefined &&
+      this.options.now() - rejection.answeredAt <= SESSION_REJECTION_TTL_MS
+      ? rejection.retryAt
+      : null;
+  }
+
+  private async route(
+    request: Request,
+    adapter: ProviderAdapter,
+    hostId: string,
+    parsed: ReturnType<ProviderAdapter["parseRequest"]>,
+  ): Promise<Response> {
     const attempted = new Set<string>();
     const waited = new Set<string>();
     const routing: RoutingAttempt = {
@@ -596,7 +652,6 @@ export class AccountPoolHub {
       (account) => account.provider === adapter.provider,
     );
     const candidateIds = new Set(accounts.map((account) => account.id));
-    const parsed = adapter.parseRequest(body, request.headers);
     const family = parsed.family;
     const affinityKey =
       parsed.affinityId === null
@@ -1646,6 +1701,37 @@ export class AccountPoolHub {
     });
   }
 
+  // When an enabled account of the provider can next serve the family: at or before now when one
+  // can already, null when none can and no reset is known (no enabled account, or only accounts in
+  // error or with an exhausted window of unknown reset).
+  async nextEligibleAt(
+    provider: PoolProvider,
+    family: ModelFamily,
+  ): Promise<number | null> {
+    const accounts = (await this.options.accounts.list()).filter(
+      (account) => account.provider === provider,
+    );
+    return this.usableTimes(accounts, family, this.options.now())[0] ?? null;
+  }
+
+  // When each enabled account without an error can serve the family again, earliest first.
+  private usableTimes(
+    accounts: readonly Account[],
+    family: ModelFamily,
+    now: number,
+  ): number[] {
+    const threshold = this.options.getSettings().switchThreshold;
+    return accounts
+      .filter((account) => account.enabled)
+      .flatMap((account) => {
+        const quota = this.options.quotas.get(account.id);
+        if (quota.error !== null) return [];
+        const at = usableAt(quota, family, threshold, now);
+        return at === null ? [] : [at];
+      })
+      .sort((left, right) => left - right);
+  }
+
   private noEligibleResponse(
     accounts: readonly Account[],
     family: ModelFamily,
@@ -1658,16 +1744,8 @@ export class AccountPoolHub {
       );
     }
     const now = this.options.now();
-    const threshold = this.options.getSettings().switchThreshold;
-    const next = accounts
-      .filter((account) => account.enabled)
-      .flatMap((account) => {
-        const quota = this.options.quotas.get(account.id);
-        if (quota.error !== null) return [];
-        const resetAt = futureOrNull(usableAt(quota, family, threshold, now), now);
-        return resetAt === null ? [] : [resetAt];
-      })
-      .sort((left, right) => left - right)[0];
+    // Accounts that could serve now were tried and failed; the client waits for the next reset.
+    const next = this.usableTimes(accounts, family, now).find((at) => at > now);
     const retryAfter = Math.max(
       1,
       Math.ceil(((next ?? now + 1_000) - now) / 1_000),
