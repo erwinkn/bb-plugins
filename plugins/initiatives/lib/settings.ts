@@ -56,7 +56,7 @@ export const settingsDescriptors = {
   coldResumeTokens: {
     type: "number" as const,
     label: "Cold worker context limit (tokens)",
-    description: "More work for an idle worker whose prompt cache has expired and whose context is larger than this is refused to a lead with the rewrite cost, unless the lead resends it with resumeCold:true; otherwise it spawns a fresh worker with handoffs. Your own sends are never refused. Cache state comes from the Account Pooler; without it the work goes ahead. 0 turns the check off.",
+    description: "Confirmed private UniiChat workers bypass this check. More work for an idle legacy worker whose prompt cache has expired and whose context is larger than this is refused to a lead with the rewrite cost, unless the lead resends it with resumeCold:true; otherwise it spawns a fresh worker with handoffs. Your own sends are never refused. Cache state comes from the Account Pooler; without it the work goes ahead. 0 turns the check off.",
     default: COLD_RESUME_DEFAULT_TOKENS,
     experimental_schema: z.number().int().min(0),
   },

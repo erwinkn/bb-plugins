@@ -1606,6 +1606,7 @@ function WorkerDetail({ v, o, run, openThread, readHandoff, loadChildren, close 
           <button type="button" className="cr-iconbtn cr-w-close" aria-label="Close details" onClick={close}><Glyph name="close" /></button>
         </p>
         <h2>{w.label}</h2>
+        {w.memory ? <p className="cr-w-detail-meta">{w.memory}</p> : null}
         <p className="cr-w-detail-meta" title={w.profile ?? undefined}>
           {[modelLabel(w.profile), w.kind, w.role === "review" ? "reviewer" : null, w.tokens ? `${tokenCount(w.tokens)} tokens` : null].filter(Boolean).join(" · ")}
         </p>

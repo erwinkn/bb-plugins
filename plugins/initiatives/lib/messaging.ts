@@ -86,7 +86,7 @@ function nativeAvailable(thread: ThreadDto, m: Membership, who: string, { sender
  * One native send, with caller provenance and no plugin inbox, retry or wake on reads. A worker's
  * "lead" means the coordinator, the "coordinator" target's alias; the coordinator may message any worker.
  */
-export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: string, input: InitiativeMessage, projectId?: string) {
+export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: string, input: InitiativeMessage, projectId?: string, prepareWorker?: (worker: import("./store").WorkerRecord) => Promise<void>) {
   const sender = currentMember(store, caller, false);
   // W492: a worker naming itself means its lead (its own W# is how it signs).
   const self = !!sender.m.worker && input.target.toUpperCase() === sender.m.worker.ref.toUpperCase();
@@ -108,6 +108,7 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
     return { from, to, id, generation: to.m.worker?.generation ?? null };
   };
   const initial = resolve();
+  if (initial.to.m.worker) await prepareWorker?.(initial.to.m.worker);
   const [senderThread, target] = await Promise.all([sdk.threads.get({ threadId: caller }), sdk.threads.get({ threadId: initial.id })]);
   const fresh = resolve();
   if (fresh.id !== initial.id || fresh.generation !== initial.generation || fresh.from.assignment !== initial.from.assignment || fresh.to.assignment !== initial.to.assignment || fresh.from.m.worker?.generation !== initial.from.m.worker?.generation)

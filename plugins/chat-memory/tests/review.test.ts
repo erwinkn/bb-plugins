@@ -203,7 +203,7 @@ describe("W225 builder edges (P2)", () => {
     await b.run(new AbortController().signal);
     expect(calls).toBe(2);
     // Still over the limit: cut to fit, marked (W442).
-    expect(nodes.get(key(0, 0))!.text).toBe(`${"x".repeat(506)} [cut]`);
+    expect(nodes.get(key(0, 0))!.text).toBe(`${"x".repeat(570)} [cut]`);
     expect(b.status.state).toBe("backoff");
     expect(b.status.until).toBeGreaterThan(Date.now() + 20_000);
   });

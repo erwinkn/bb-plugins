@@ -35,8 +35,9 @@ async function reportAgain(f: Fx, threadId: string) {
 type Cache = { lastRequestAt: number; prefixTokens: number; ttl: "5m" | "1h"; coveredUntil: number };
 /** The Account Pooler's threads.cacheState for every asked thread. */
 function pooler(f: Fx, cache: Cache | null | (() => Promise<never>)) {
+  const original = f.pluginRpc.getMockImplementation()!;
   f.pluginRpc.mockImplementation(async (args: { pluginId: string; method: string; input?: unknown }) => {
-    if (args.pluginId !== "account-pool-local") return { ok: true };
+    if (args.pluginId !== "account-pool-local") return original(args);
     expect(args.method).toBe("threads.cacheState");
     if (typeof cache === "function") return cache();
     const { threadIds } = args.input as { threadIds: string[] };
@@ -75,6 +76,19 @@ describe("W213 cold-cache guard on work messages", () => {
     expect(assignments(f, project.id)).toBe(before + 1);
     // A plain message has no work to resume: the option is refused there.
     await expect(tool(f, "initiative_message", { to: "W1", text: "A note.", resumeCold: true })).rejects.toThrow(/resumeCold applies to more work/);
+  });
+
+  it("resumes confirmed private UniiChat without resumeCold or a rewrite warning", async () => {
+    const { f, project, w } = await idleWorker();
+    pooler(f, cold());
+    const original = f.pluginRpc.getMockImplementation()!;
+    f.pluginRpc.mockImplementation(async (args) => args.pluginId === "chat-memory" && args.method === "status"
+      ? { scope: { id: `initiatives:${project.id}:worker:1`, owner: "initiatives" }, mode: "optchat", tree: { ready: true, ingesting: false } }
+      : original(args));
+    const [sent] = await tool(f, "initiative_message", { to: "W1", text: "Fix the findings.", work: true });
+    expect(sent).toMatchObject({ worker: "W1", threadId: w.threadId });
+    expect(sent.warnings ?? []).toEqual([]);
+    expect(poolerCalls(f)).toHaveLength(0);
   });
 
   it("a 1-hour entry is priced at twice its prefix", async () => {

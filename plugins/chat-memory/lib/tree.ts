@@ -2,12 +2,14 @@
  * D431: a chat's memory as Victor Taelin's OptChat tree
  * (https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449), as W216 replayed it.
  *
- * node(0, i) is message i in at most 512 bytes; node(l, i) merges its two children into at most
- * 512 bytes and covers the 2^l messages from i·2^l on, labelled "id+n" (node(3, 5) is 40+8, opened
+ * node(0, i) is message i, requested at 512 bytes and stored at most 576 bytes; node(l, i) merges
+ * its two children under the same target and hard maximum and covers the 2^l messages from i·2^l on, labelled "id+n" (node(3, 5) is 40+8, opened
  * with zoom(40, 8)). A view is a list of nodes covering messages 0..T-1, oldest first, sent as one
  * "id+n|text" line per node. Sizes are UTF-8 bytes. Each node is built once and never rebuilt.
  */
-export const LIMIT = 512;
+/** Requested model target and hard stored-node cap are intentionally distinct. */
+export const TARGET_BYTES = 512;
+export const LIMIT = 576;
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
 
 /** [level, index]. */

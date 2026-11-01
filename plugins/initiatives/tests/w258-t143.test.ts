@@ -64,6 +64,22 @@ describe("A469 retained sessions and the Chat memory plugin", () => {
     ]);
   });
 
+  it("forwards retained zoom continuation and attachment selection without changing string output", async () => {
+    const { f } = await projectFixture();
+    f.pluginRpc.mockClear();
+    f.pluginRpc.mockImplementation(async ({ input }) => {
+      const page = input as { offset?: number; attachment?: number };
+      return page.attachment === 0 ? "Attachment page continued" : "Original semantic message continued";
+    });
+    for (const input of [{ id: 0, n: 1, offset: 24000 }, { id: 0, n: 1, offset: 24000, attachment: 0 }]) {
+      expect(await f.harness.callAgentTool("initiative_zoom", input, { threadId: "coordinator" })).toBe(
+        input.attachment === 0 ? "Attachment page continued" : "Original semantic message continued");
+      expect(f.pluginRpc).toHaveBeenLastCalledWith(expect.objectContaining({ method: "zoom", input: { threadId: "coordinator", ...input } }));
+    }
+    for (const input of [{ id: 0, n: 1, offset: -1 }, { id: 0, n: 1, attachment: 0.5 }])
+      await expect(f.harness.callAgentTool("initiative_zoom", input, { threadId: "coordinator" })).rejects.toThrow();
+  });
+
   it("names the memory a new coordinator joins in its spawn metadata, which Chat memory reads at its first configure", async () => {
     const f = fixture();
     await f.service.createProject({ name: "Search", objective: "Historical search", memberProjectIds: ["proj_a"], coordinator: { kind: "new" } });

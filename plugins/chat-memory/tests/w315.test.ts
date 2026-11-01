@@ -75,8 +75,9 @@ describe("W315 urgent calls go first", () => {
     // The first permit that frees goes to the turn's line, ahead of the backlog's queued calls.
     await release();
     expect(started.slice(2)).toEqual(["turn"]);
-    await release();
-    await release();
+    let answered = false;
+    void turn.then(() => {answered = true;});
+    for (let n = 0; n < 20 && !answered; n++) { if (held.length) await release(); else await ticks(); }
     const answer = (await turn) as { session: string };
     expect(answer.session).toBe("fresh");
     f.memory.dispose();

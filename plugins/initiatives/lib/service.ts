@@ -101,7 +101,7 @@ import type { LiveThread } from "./overview";
 import { RunningChildren } from "./context";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
-import { MEMORY_SCOPE_KEY, attachMemory } from "./memory-scopes";
+import { MEMORY_SCOPE_KEY, attachMemory, createWorkerMemory, workerMemoryKey, workerHasPrivateMemory } from "./memory-scopes";
 import { SLOW_CALL_MS, StepTimer } from "./step-timing";
 
 export const METADATA_VERSION = 1;
@@ -393,8 +393,15 @@ export class ProjectsService {
     }
   }
 
+  /** Exact ledger membership only: native reviewer descendants are never enrolled. */
+  async ensureWorkerMemoryForThread(threadId: string) {
+    const member = this.store.membership(threadId);
+    if (member?.worker && !member.former) await this.workerMemory.ensure(member.worker);
+  }
+
   /** T142: also read by the PR watches (W548), which route a cold worker's wake to the coordinator. */
   readonly coldCache: ColdCacheGuard;
+  readonly workerMemory: ReturnType<typeof createWorkerMemory>;
   /** D442: each PR's notes log; a worker's report lands on the PRs it is about. */
   readonly prNotes: PrNotes;
   /** W548, W554: the PR watches; the stuck-worker sweep reads who waits on one (W563). */
@@ -407,7 +414,9 @@ export class ProjectsService {
     readonly store: Store,
     readonly preferences: PreferencesReader,
   ) {
+    this.workerMemory = createWorkerMemory(bb.sdk);
     this.coldCache = createColdCacheGuard({
+      privateMemory: (worker) => this.workerMemory.ensure(worker),
       sdk: bb.sdk,
       store,
       limit: () => preferences.configuration().coldResumeTokens,
@@ -483,7 +492,7 @@ export class ProjectsService {
   }
 
   message(caller: string, input: InitiativeMessage, projectId?: string) {
-    return sendInitiativeMessage(this.store, this.sdk, caller, input, projectId);
+    return sendInitiativeMessage(this.store, this.sdk, caller, input, projectId, (worker) => this.workerMemory.ensure(worker).then(() => {}));
   }
 
   // Initiatives -------------------------------------------------------------------
@@ -3635,6 +3644,7 @@ export class ProjectsService {
   /** One native delivery and its receipt: a definite rejection fails, anything else unconfirmed is uncertain. */
   private async deliver(threadId: string, op: string, text: string, { mode = "steer-if-active", senderThreadId }: { mode?: "steer-if-active" | "queue-if-active"; senderThreadId?: string | null } = {}) {
     try {
+      await this.ensureWorkerMemoryForThread(threadId);
       const sent = await this.sdk.threads.send({
         threadId, mode,
         ...(senderThreadId ? { senderThreadId } : {}),
@@ -3866,6 +3876,7 @@ export class ProjectsService {
     if (worker.role === "review") return null;
     const cost = await this.coldCache.check(worker);
     if (!cost) return null;
+    if (cost.startsWith("UniiChat private memory not confirmed")) throw new ProjectError(cost);
     if (!input.resumeCold)
       throw new ProjectError(`${cost} To send it anyway, repeat the call with resumeCold:true. Or spawn a fresh worker with handoffs:["${worker.ref}"] (its report is embedded); it takes the PR over but loses what the report leaves out.`);
     return `Sent with resumeCold: ${cost}`;
@@ -3880,7 +3891,8 @@ export class ProjectsService {
   private workAppendix(projectId: string, policy: Policy, profile: Profile, guidance: string, route: "fresh" | "continue") {
     const usual = reviewerProfileFor(policy, profile);
     const reviewer = reviewerCommand(usual, profileFor(policy, "reviewFallback"), reviewerOutUntil(this.store, usual));
-    const rules = renderRules(this.store.rules(projectId));
+    const memory = profile.providerId === "claude-code" ? "UniiChat keeps private history; turns queue during preparation. Use memory_zoom." : null;
+    const rules = [memory, renderRules(this.store.rules(projectId))].filter(Boolean).join("\n\n");
     return route === "fresh" ? briefAppendix(reviewer, rules) : workLoopBlock(guidance, reviewer, rules);
   }
 
@@ -3983,6 +3995,7 @@ export class ProjectsService {
     const missed: string[] = [];
     for (const target of targets)
       try {
+        await this.ensureWorkerMemoryForThread(target.threadId);
         await this.sdk.threads.send({ threadId: target.threadId, mode: "queue-if-active",
           input: textInput(`Initiative · ${project.name} · Standing rules\n\n${text} Follow the current list from now on (initiative_read {view:"rules"}).`) });
         reached.push(target.name);
@@ -4547,6 +4560,7 @@ export class ProjectsService {
     });
     this.store.setBriefText(project.id, assignment.num, text);
     const metadata = {
+      ...(input.role === "work" && profile.providerId === "claude-code" ? { [MEMORY_SCOPE_KEY]: workerMemoryKey(worker) } : {}),
       role: "worker",
       projectId: project.id,
       worker: worker.num,
@@ -4563,6 +4577,7 @@ export class ProjectsService {
     const notes: string[] = [];
     try {
       if (input.route === "continue") {
+        await this.workerMemory.ensure({ ...worker, providerId: profile.providerId });
         // Native queueing: the brief joins the worker's queue and BB dispatches
         // it when the thread is free. The receipt lands on the assignment.
         const sent = await this.sdk.threads.send({
@@ -6905,6 +6920,20 @@ export class ProjectsService {
 
   /** When checkWorkers last read every worker thread; it does so every STUCK_CHECK_MS. */
   private scannedAt = -Infinity;
+  private migratedWorkers = new Set<string>();
+  private migrationCursor = 0;
+
+  /** One live worker per full sweep; start catch-up before a reviewer/question returns. */
+  async migrateWorkerMemory() {
+    const candidates = this.store.projects().filter(p => p.archivedAt === null)
+      .flatMap(p => this.store.workers(p.id)).filter(w => workerHasPrivateMemory(w) && !w.userStopped && !this.migratedWorkers.has(`${w.threadId}:${workerMemoryKey(w)}`));
+    if (!candidates.length) return;
+    const worker = candidates[this.migrationCursor++ % candidates.length]!;
+    try {
+      await this.workerMemory.ensure(worker);
+      this.migratedWorkers.add(`${worker.threadId}:${workerMemoryKey(worker)}`);
+    } catch (error) { this.bb.log.warn(errorMessage(error)); }
+  }
   /**
    * When this process first saw each worker thread failed on its open assignment `num` (T150); a
    * close waits FAILED_GRACE_MS from there. A new failed event replaces it, so a new failure
@@ -6929,7 +6958,10 @@ export class ProjectsService {
    */
   async checkWorkers() {
     const full = this.now() - this.scannedAt >= STUCK_CHECK_MS;
-    if (full) this.scannedAt = this.now();
+    if (full) {
+      this.scannedAt = this.now();
+      await this.migrateWorkerMemory();
+    }
     if (full || this.failedSeen.size) {
       const closable = this.store.failureClosable();
       const failing = new Map(closable.map(a => [a.threadId!, a.num]));

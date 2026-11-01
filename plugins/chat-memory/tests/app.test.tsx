@@ -14,7 +14,7 @@ const status = (patch: Partial<MemoryStatus> = {}): MemoryStatus => ({
   compactTokensOverride: null,
   threads: [{ threadId: "coord", title: "bb-plugins · coordinator", providerId: "claude-code", compactedAt: null, compactError: null }],
   log: { messages: 6120, bytes: 3_051_433 },
-  tree: { summarized: 6120, nodes: 12_189, total: 12_230, fallbacks: 0, failed: 0, viewBytes: 90_000, memoryViewBytes: 24_000, state: "idle", detail: null, until: null },
+  tree: { ready: true, ingesting: false, summarized: 6120, nodes: 12_189, total: 12_230, fallbacks: 0, failed: 0, viewBytes: 90_000, memoryViewBytes: 24_000, state: "idle", detail: null, until: null },
   cost: { calls: 3674, tries: 7225, inputTokens: 53_840_761, cachedTokens: 40_000_000, outputTokens: 900_000, usd: 3.46, callSeconds: 43_870 },
   problems: [],
   ...patch,
@@ -29,9 +29,9 @@ describe("R3 the memory has no switch", () => {
   });
 
   it("shows a coordinator's mode as a fact, with a problem flagged and no radio group or limit editor", async () => {
-    const s = renderSlot({ component: MemoryPanel }, { threadId: "coord", params: null }, { rpc: { status: async () => status({ mode: "optchat", compactTokens: 0, problems: ["OptChat cannot run in \"Talk\" (codex)"] }) } });
-    expect((await s.findByRole("status")).textContent).toContain("OptChat cannot run");
-    expect(s.getByText("OptChat")).toBeTruthy();
+    const s = renderSlot({ component: MemoryPanel }, { threadId: "coord", params: null }, { rpc: { status: async () => status({ mode: "optchat", compactTokens: 0, problems: ["UniiChat cannot run in \"Talk\" (codex)"] }) } });
+    expect((await s.findByRole("status")).textContent).toContain("UniiChat cannot run");
+    expect(s.getByText("UniiChat")).toBeTruthy();
     expect(s.container.textContent).toContain("Every Adventure coordinator uses it");
     expect(s.queryByRole("radiogroup")).toBeNull();
     expect(s.queryByRole("radio")).toBeNull();

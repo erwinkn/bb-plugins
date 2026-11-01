@@ -302,6 +302,10 @@ export default function plugin(bb: BbPluginApi) {
       await coordinatorHome(projectId, live, recent),
       detail,
     );
+    for (const shown of result.workers.current) {
+      const worker = store.worker(projectId, Number(shown.ref.slice(1)));
+      if (worker) shown.memory = service.workerMemory.state(worker);
+    }
     result.project.profileDefaults = profileDefaults;
     result.revision = { epoch: instanceEpoch, version: ledgerVersion() };
     // One workspace-wide queue read, shared by every Initiative's refresh. A
@@ -628,6 +632,7 @@ export default function plugin(bb: BbPluginApi) {
     cache: mergeQueue,
     sdk: bb.sdk,
     coldCheck: (worker) => service.coldCache.check(worker),
+    prepareWorker: (worker) => service.workerMemory.ensure(worker).then(() => {}),
     giveWork: prWatchWork,
     changed: () => bb.realtime.publish("merge-queue-changed", { repo: null }),
     warn: (message) => bb.log.warn(message),
@@ -891,6 +896,34 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_pr_unwatch",
     "initiative_batch",
   ];
+  // Covers native child/reviewer returns, question returns and direct user resumes too.
+  // A failed enrollment holds the original native message durably for a later dispatch.
+  const preparingWorkers = new Set<string>();
+  bb.experimental_hooks.on("message.dispatch", async (ctx) => {
+    const member = store.membership(ctx.thread.id);
+    if (!member?.worker || member.former || ctx.requestedExecution.providerId !== "claude-code") return { action: "proceed" };
+    try {
+      const optchat = await service.workerMemory.ensure({ ...member.worker, providerId: ctx.requestedExecution.providerId });
+      const requiredFailure = optchat && ctx.attempt === "start-turn" ? service.workerMemory.requiredFailure(member.worker) : null;
+      if (requiredFailure !== null) {
+        preparingWorkers.delete(ctx.thread.id);
+        return { action: "reject", message: requiredFailure };
+      }
+      if (optchat && ctx.attempt === "start-turn" && !service.workerMemory.ready(member.worker)) {
+        // Chat memory may have run before this first attachment. One re-pass lets it
+        // observe the scope and subscribe to its readiness transition; never loop per read.
+        if (!preparingWorkers.has(ctx.thread.id)) {
+          preparingWorkers.add(ctx.thread.id);
+          void bb.experimental_hooks.recheck("message.dispatch").catch(error => bb.log.warn(errorMessage(error)));
+        }
+        return { action: "wait", reason: service.workerMemory.state(member.worker) ?? "UniiChat preparing history", sendAt: Date.now() + 60_000 };
+      }
+      preparingWorkers.delete(ctx.thread.id);
+      return { action: "proceed" };
+    } catch (error) {
+      return { action: "wait", reason: errorMessage(error), sendAt: Date.now() + 60_000 };
+    }
+  });
   bb.agents.configure((ctx) => {
     const guidance = () => preferences.configuration();
     const meta = ctx.pluginMetadata;
@@ -986,7 +1019,8 @@ export default function plugin(bb: BbPluginApi) {
     const pending = m?.worker ? null : pendingMember(ctx);
     const worker = m?.worker ?? pending?.worker;
     const projectId = m?.project.id ?? pending?.project.id;
-    if (worker && projectId)
+    if (worker && projectId) {
+      if (m?.worker && !m.former) void service.workerMemory.ensure(worker).catch(error => bb.log.warn(errorMessage(error)));
       return {
         tools: WORKER_TOOLS,
         skills: ["initiative-worker"],
@@ -995,6 +1029,7 @@ export default function plugin(bb: BbPluginApi) {
           workerRulesPointer(store.rulesStamp(projectId)),
         ], guidance().workerInstructions),
       };
+    }
     return { tools: ["initiative_create"], skills: [] };
   });
   // New configurations advertise canonical names only. Retained native sessions
@@ -1057,15 +1092,15 @@ export default function plugin(bb: BbPluginApi) {
   // T145 (A469): sessions built while this plugin owned the memory know initiative_zoom and
   // initiative_read {view:"memory"}. Both stay, read only, over the Chat memory plugin's RPCs;
   // configure never selects initiative_zoom, so new sessions use memory_zoom.
-  const chatMemory = <T>(method: "read" | "zoom", input: { threadId: string; id?: number; n?: number }, outputSchema: z.ZodType<T>) =>
+  const chatMemory = <T>(method: "read" | "zoom", input: { threadId: string; id?: number; n?: number; offset?: number; attachment?: number }, outputSchema: z.ZodType<T>) =>
     bb.sdk.plugins.callRpc({ pluginId: CHAT_MEMORY_PLUGIN_ID, method, input, outputSchema });
   registerTool({
     name: "initiative_zoom",
     description: "Retained-session compatibility only. Use memory_zoom after natural session construction.",
-    parameters: z.object({ id: z.number().int().min(0), n: z.number().int().min(1) }).strict(),
-    execute: async ({ id, n }, { threadId }) => {
+    parameters: z.object({ id: z.number().int().min(0), n: z.number().int().min(1), offset: z.number().int().min(0).optional(), attachment: z.number().int().min(0).optional() }).strict(),
+    execute: async ({ id, n, offset, attachment }, { threadId }) => {
       if (!threadId) throw new ProjectError("Use initiative_zoom from a thread with chat memory.");
-      return chatMemory("zoom", { threadId, id, n }, z.string());
+      return chatMemory("zoom", { threadId, id, n, ...(offset !== undefined ? { offset } : {}), ...(attachment !== undefined ? { attachment } : {}) }, z.string());
     },
   });
   // A cached obsolete publisher must fail visibly; it cannot write legacy rows.
@@ -1454,11 +1489,11 @@ export default function plugin(bb: BbPluginApi) {
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
       if (view === "rules") return JSON.stringify(readRules(m.project.id));
-      // W492: a thread without chat memory (every worker) is told so, not answered with Chat memory's HTTP 500.
+      // A thread without chat memory is told so, not answered with Chat memory's HTTP 500.
       if (view === "memory") return JSON.stringify(await chatMemory("read", { threadId }, z.object({ messages: z.number(), view: z.string(), note: z.string() })).catch((error) => {
         if (!/no chat memory/i.test(errorMessage(error))) throw error;
         return { messages: 0, view: "", note: m.worker
-          ? `Workers have no chat memory: your brief and messages are in this thread. initiative_read {refs:["${m.worker.ref}"],fields:["brief"]} reads your latest brief.`
+          ? `This worker has no attached chat memory yet: your brief and messages are in this thread. initiative_read {refs:["${m.worker.ref}"],fields:["brief"]} reads your latest brief.`
           : "This thread has no chat memory: turn it on in the thread's Memory panel." };
       }));
       if (view === "prs") {
@@ -1740,6 +1775,7 @@ export default function plugin(bb: BbPluginApi) {
     store,
     policy: async (projectId) => withProfileDefaults(store.project(projectId)?.policy ?? { profiles: {} }, await preferences.read()),
     warn: (message) => bb.log.warn(message),
+    prepareWorker: (threadId) => service.ensureWorkerMemoryForThread(threadId),
   });
   bb.events.on("thread.failed", ({ thread, error }) => reviewerFallback.onFailed(thread.id, { error, parentThreadId: thread.parentThreadId }));
   bb.events.on("turn.failed", ({ threadId, errorInfo, rateLimits }) => {

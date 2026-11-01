@@ -96,7 +96,7 @@ describe("W220 tree builder", () => {
     expect(b.views.fed).toBe(900);
   });
 
-  it("retries a line over 512 bytes once in the same conversation, then cuts the shorter reply with [cut] (W442)", async () => {
+  it("retries a line over 576 bytes once in the same conversation, then cuts the shorter reply with [cut] (W442)", async () => {
     const { store, saved } = memoryStore(long(1));
     const requests: SummarizerRequest[] = [];
     const sizes = [700, 600, 650];
@@ -109,7 +109,7 @@ describe("W220 tree builder", () => {
     const retry = requests[1]!.input;
     expect(retry).toHaveLength(3);
     expect(retry[1]).toMatchObject({ role: "assistant" });
-    expect((retry[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is 700 bytes, over the 512-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
+    expect((retry[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is 700 bytes, over the 576-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
     // The first task carries the ruler and the message as kind: text.
     const task = requests[0]!.input.find((m) => m.role === "user")!.content[0]!.text;
     expect(task).toContain("-".repeat(512));

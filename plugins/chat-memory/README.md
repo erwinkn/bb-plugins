@@ -4,7 +4,7 @@ One chat that never ends, for any BB thread: every message is logged, GPT-6 Luna
 summarizes the log into a binary tree of one-line summaries, and the agent reads
 the tree back as a memory view and zooms into any line, down to the message
 itself. It follows Victor Taelin's
-[OptChat gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449)
+[UniiChat gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449)
 (D459). Plugin id `chat-memory` (`memory` is BB's own durable-memory plugin).
 
 It took over the Initiatives plugin's coordinator memory in T145 (D457): the log,
@@ -41,7 +41,7 @@ memory (D487).
 
 **The mode follows the role; nobody chooses it** (Erwin, 2026-10-17, R3). An
 Adventure (Initiative) coordinator's memory, every scope the `initiatives`
-plugin owns, is OptChat. Every other memory is Regular. The scope's mode is read
+plugin owns, is UniiChat. Every other memory is Regular. The scope's mode is read
 from its owner each time, never from the stored `mode` column, which only mirrors
 it for code that still reads it (a rollback). At every start the plugin sets the
 column of every scope to its role's mode, so the scopes that existed before R3
@@ -56,7 +56,7 @@ The tree builds either way. One path per mode (D459):
 | Mode    | A turn                                     | Compaction (idle, past)         |
 | ------- | ------------------------------------------ | ------------------------------- |
 | Regular | the thread's session goes on               | `regularCompactTokens`, 300k    |
-| OptChat | a fresh session over the memory view        | never: a session never grows    |
+| UniiChat | a fresh session over the memory view        | never: a session never grows    |
 
 A Regular scope's own `compactTokens` wins over the setting; 0 is off.
 Compaction runs after an attached thread goes idle with BB's `threads.compact`,
@@ -75,7 +75,7 @@ finer identity, so a local caller who knows the method can still reach it
 (accepted). The thread header has no memory entry any more; the panel shows a
 memory's mode, problems, threads, log, tree and cost read-only.
 
-**OptChat runs on every turn, or the turn fails (D458, D460, A471).** What
+**UniiChat runs on every turn, or the turn fails (D458, D460, A471).** What
 enforces the mode is the turn itself, not a gate in front of some of them. BB
 resolves a thread's tools for every turn it starts, whatever started it: a
 message, a queued one, BB's notice to a parent thread (a child finished), Send
@@ -95,57 +95,79 @@ thread (Codex support is T146).
 
 **The turn gate.** Chat memory also answers BB's `message.dispatch` hook, which
 runs before a message reaches a provider, to refuse early, with the reason, what
-would fail anyway: a new turn of an OptChat thread on another provider. BB
+would fail anyway: a new turn of an UniiChat thread on another provider. BB
 keeps the message. Messages that join a running turn, and every other thread's,
 go on.
 
-## OptChat turns (D431 phase 2, D458)
+## UniiChat turns (D431 phase 2, D458)
 
 BB's Claude Code provider (Erwin's fork) calls the hidden tool
 `claude_code_turn_context` before each new turn whose tools include it
 (protocol 4: `{input, requestId, sessionId}`). The answer is `{}` (the session
-goes on) or `{session: "fresh", sessionId, systemPrompt, input}`. An OptChat
+goes on) or `{session: "fresh", sessionId, systemPrompt, input}`. An UniiChat
 turn:
 
-1. copies the thread's own completed turns (its previous one, and any whose
-   idle BB never delivered, say during a reload), at most 3 failed reads;
-2. views the scope the thread writes to then: the whole log, since it holds
-   completed turns only and this one has not started;
-3. shows the newest messages that have no summary yet whole
-   (`id+1|kind: text`), up to 32 KB (D487), and waits up to 3 s for the
-   summaries of every message before those (W503). One still without its
-   summary then is shown clipped: its first and last 1 KB, marked at the start
-   and where the middle was cut, so it never reads as a summary or as the whole:
+1. catches up stable semantic events using bounded, coalesced reads;
+2. cuts history before the incoming request if it was already accepted;
+3. waits for every needed historical leaf summary, with cancellation and a 90-second final admission deadline;
+4. returns a fresh session with the frozen summary prefix and growing summary tail, followed by the new message. Historical views contain no raw tail or clipped fallback.
 
-   > 1404+1|echo: [clipped, no summary yet: the middle 28,066 of 30,066 bytes
-   > is left out; memory_zoom {id:1404, n:1} gives it whole] <first 1 KB>[…
-   > 28,066 bytes clipped …]<last 1 KB>
+The dispatch hook answers immediately with core's durable `wait` decision while
+history or summaries are preparing. It supplies a 30-second recovery due time and
+calls `experimental_hooks.recheck("message.dispatch")` when a waiting scope becomes
+ready. BB retains queued reviewer returns, question returns, retries and user work.
+The final turn hook remains strict even when a user bypasses a dispatch policy.
+`tree.ready` proves actual leaf completion, a fully built selected historical view
+of at most 128,000 UTF-8 bytes, and no ingestion in flight;
+It can become ready during a merge batch once that bound is met, without waiting
+for unrelated ancestors. `tree.summarized` remains the existing feed count. `tree.requiredFailure` is
+a terminal error for a required failed leaf or an oversized view whose merge
+work has exhausted its runnable paths. While legitimate merges remain in
+flight, preparation continues. Unused failed ancestors do not block a complete
+bounded view. Dispatch returns a visible rejection for required failure,
+preserving core's input/failure handling; transient preparation stays queued. `tree.ingesting` distinguishes
+history preparation from summary preparation. Attach and status never wait for a
+model. A newly attached existing worker begins catch-up immediately, before its
+next message; only attached workers are swept. No retired worker is attached or
+backfilled by this plugin.
 
-   It is never frozen into the system prompt, and later turns show its
-   summary. At most 64 KB is shown clipped: past that (the summarizer far
-   behind, rate-limited or down) the turn waits on until it fits;
-4. answers a fresh session: the system prompt ends with the OptChat prompt and
-   the view's older lines (kept turn after turn, so the prompt and the fork's
-   session seed stay cached; a message shown whole is never among them), and
-   the first message holds the newest lines, the time and the message after
-   "New message:".
+`experimental_thread.events` is debounced by core at most once per second.
+Only stable semantic event types are read, never token deltas or thoughts.
+Log rows carry a stable semantic-entry ordinal and the request ID whose
+acceptance logged that input, while the original sequence remains its canonical
+source. Exact acceptance identity determines the historical cut; a queued input
+with no logged entry cannot remove later replies of the preceding turn.
+Requests are durable pending records until `turn/input/accepted`, so queued work
+is not presented as acted-on history. Pending state, log append and cursor advance
+commit together. Historical providers without acceptance events retain their
+terminal-turn recovery path; failed UniiChat admission requests are excluded.
+Pending requests belong to their original scope and cannot leak after a move.
 
-Steps 1 and 3 share one deadline, 90 s (the fork waits 120 s), and stop as soon
-as BB stops the turn. A turn that waited for summaries logs one line, for
-example `initiatives:prj_1: turn of thr_a waited 3,004 ms for the summaries of 7
-messages; 2 shown clipped` (or `the turn failed: …`). **Any failure throws**:
-the provider fails the turn visibly and keeps its message, never runs it in the
-old session. A line whose summary failed its tries fails the turn at once (see
-the tree, below). For example, with the summarizer rate-limited and more than
-64 KB to clip by the deadline:
+`memory_zoom {id,n:1}` and the read-only zoom RPC retrieve the selected canonical
+semantic message via its original thread/sequence, including text clipped in the
+memory log. Responses carry source, availability, byte range and explicit next
+`offset`, in 24,000-byte UTF-8 pages. A split stored entry identifies its canonical
+semantic message; pages expose that message, not unrelated event fields.
+`attachment` selects an attachment index listed in the result. Tool calls and
+echoes remain distinct; thoughts and nested subagent items are excluded. Inline
+image data is omitted from summary input and returned only as tool image content.
+The RPC remains text-valued, with an image-available notice for compatibility.
 
-> OptChat memory unavailable for this turn: 3 earlier messages have no summary
-> yet: the summarizer is rate-limited (429 …). The message was not sent; send it
-> again.
+### Desired upstream APIs
 
-Two tabs of one memory (a coordinator and a discussion) never wait on each
-other: each turn copies only its own thread, and a turn still running in the
-other tab is not in the log yet, so it is not in the view.
+The SDK hydrates retained output on `threads.events.list`, but core rejects a
+single hydrated event over 8 MiB. A source output range API keyed by
+`threadId/sequence/semantic field` is needed to retrieve every byte beyond that
+limit without loading the entire event. Retention-expired middles cannot be
+reconstructed. Zoom explicitly reports source-read failure or retained-output
+truncation and preserves the saved copy; it does not promise a whole original.
+
+SDK tool results support text and images, with no general file/resource content.
+A resource attachment result and ranged attachment reads would allow arbitrary
+binary files to be returned directly. Current zoom reads project attachment
+images as proper image content and pages text files. Other binaries and remote
+image URLs are reported with their source path/URL and availability limitation.
+No upstream issue has been filed.
 
 ## The log
 
@@ -167,8 +189,8 @@ cursor in the same transaction, so a message is logged once whatever triggers
 it. A thread moved mid-turn has that whole turn logged in the new scope
 (accepted: which memory a turn "used" is not tracked). Turns of different
 threads land in the order they are copied. The requests of a turn that failed
-before any output because OptChat could not get its memory are left out (D502:
-the `provider/error` of the turn says "OptChat memory unavailable for this
+before any output because UniiChat could not get its memory are left out (D502:
+the `provider/error` of the turn says "UniiChat memory unavailable for this
 turn"): the model never saw them, BB keeps the text for the user to send again,
 and the resend is logged. Any other failed turn (a 429, an overloaded provider)
 keeps its requests, so BB's automatic retry finds the question in memory. A
@@ -176,7 +198,7 @@ retry itself is never logged: it re-sends a request that is logged already, or
 says "Please continue." after it.
 
 Copies run when a thread goes idle, fails, or is archived (its final copy,
-D485), before each of its OptChat turns, and from a sweep: at start over every
+D485), before each of its UniiChat turns, and from a sweep: at start over every
 attached thread, then every 5 minutes over those not archived, copying any
 whose last `turn/completed` is past its cursor. BB's announcements are
 fire-and-forget; the cursor makes a duplicate copy nothing and a missed one
@@ -185,23 +207,28 @@ sweep at once, even mid-read: it touches the database no more.
 
 ## The tree
 
-As the gist and W216: message i becomes a line of at most 512 bytes
+As the gist and W216: message i becomes a line requested at 512 bytes and stored at most 576 bytes
 (`id+n|text`), adjacent lines merge in pairs; text that fits is kept with no
-call. The chat view (what an OptChat turn sees) is a 128→64 KB sawtooth merged
+call. The chat view (what an UniiChat turn sees) is a 128→64 KB sawtooth merged
 by due = (T+1)/2^l − i; the memory view (`memory_read`, the context of every
 summarizer call) is it merged further, 32→16 KB. Both are saved, never rebuilt.
 GPT-6 Luna (`summarizerEffort`, high since D484) writes lines with the gist's
-compaction prompt and its 512-dash ruler; a line too long is asked again once,
+compaction prompt and its 512-dash ruler; a reply over the 576-byte hard maximum is asked again once,
 for at most 384 bytes (W315: Luna overshoots its ask, so asking again for 512
 took 3.5 calls a line; asking for 384 fits 3 times in 4). If the shorter reply
-is still over 512 bytes, it is cut at the last word boundary and ends in
-` [cut]`, at most 512 bytes in all, and the log says so. When that boundary is
+is still over 576 bytes, it is cut at the last word boundary and ends in
+` [cut]`, at most 576 bytes in all, and the log says so. When that boundary is
 more than 64 bytes back (a long hash or path), the cut falls on a character
-boundary inside the word instead. No new line is over 512 bytes, and none is
+boundary inside the word instead. No new line is over 576 bytes, and none is
 cut without ` [cut]` (lines saved before this cap keep their length);
 both prompts tell the reader a `[cut]` line's rest is in what it was made from.
+The initial task and ruler remain 512 bytes; the 576 maximum applies to model
+acceptance, exact free leaves, free joins and storage validation. Existing 512-byte
+nodes stay unchanged. There is no runtime sizing setting and no data rewrite.
+The actual historical view still has a 128000-byte upper bound, measured from
+rendered lines. Cutoff-feedback prompts are not used.
 Up to `summarizerConcurrency` (8) calls run at once across every scope,
-round-robin by scope, except that the lines an OptChat turn is waiting for, and
+round-robin by scope, except that the lines an UniiChat turn is waiting for, and
 their merges, take the next free call before any other scope's backlog (W315).
 A call gives up after 30 s, then 60 s, then 120 s for the same line (Luna at
 high answers 95% of calls within 30 s), so a hung call frees its slot; a call a
@@ -211,7 +238,7 @@ that no turn waits for any more gives up at once. A line whose call fails 3 time
 stays unsummarized and failed, never cut to fit (D458), unless every reply was empty
 (a retry gets the same): that line is built at once from its input cut to fit with
 ` [cut]` (its message, or its two lines joined; counted under "fallbacks"). A failed line holds no build slot,
-the panel shows it as a problem, an OptChat turn that needs it fails at once
+the panel shows it as a problem, an UniiChat turn that needs it fails at once
 ("message 1234 could not be summarized (…)"), and it is tried again 30 minutes
 later. Lines built before the cap (some over 512 bytes, fallbacks ending in `…`)
 and lines Initiatives cut before T145 stay as they are: nodes are never rebuilt
@@ -233,7 +260,7 @@ Usage stats attribute the spend.
 
 A thread attached to a scope gets `memory_read` and
 `memory_zoom {id, n}` (loaded upfront, T143) and one line of guidance; in
-OptChat, the hidden hook. Each zoomed line starts with the
+UniiChat, the hidden hook. Each zoomed line starts with the
 UTC time of its first message: `2026-10-08 17:49Z 64+16|…`. Sessions built while
 Initiatives owned memory still call `initiative_zoom` and `initiative_read
 {view:"memory"}`: Initiatives keeps both as read-only aliases over this plugin's

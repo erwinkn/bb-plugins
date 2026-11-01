@@ -152,6 +152,8 @@ export interface AnsweredItem {
 }
 
 export interface WorkerItem {
+  /** Cached attachment evidence only; Chat memory owns history preparation/readiness. */
+  memory?: string | null;
   ref: string;
   /** Client-side only: BB's live list counts work running on the thread though its status reads as an error. */
   liveWork?: boolean;

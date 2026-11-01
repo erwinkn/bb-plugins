@@ -31,6 +31,10 @@ export default function plugin(bb: BbPluginApi) {
   const memory = new ChatMemory({
     store,
     list: sdkEvents(bb.sdk),
+    attachment: async (threadId, path) => {
+      const thread = await bb.sdk.threads.get({threadId});
+      return bb.sdk.projects.attachments.read({projectId: thread.projectId, path});
+    },
     thread: async (threadId): Promise<ThreadFacts | null> => {
       try {
         const t = await bb.sdk.threads.get({ threadId });
@@ -44,6 +48,7 @@ export default function plugin(bb: BbPluginApi) {
     summarizer: poolerSummarizer(bb),
     log: (message) => bb.log.warn(message),
     changed: (scope) => bb.realtime.publish(CHANGED_CHANNEL, { scope }),
+    recheck: () => { void bb.experimental_hooks.recheck("message.dispatch").catch(error => bb.log.warn(`UniiChat queue recheck failed: ${errorMessage(error)}`)); },
   });
   const compaction = createCompaction({
     sdk: bb.sdk,
@@ -65,7 +70,7 @@ export default function plugin(bb: BbPluginApi) {
       return { scope: memory.attach(threadId, `${caller.pluginId}:${key}`)! };
     },
     read: ({ threadId }) => memory.read(memory.scopeOf(threadId).id),
-    zoom: ({ threadId, id, n }) => memory.zoom(memory.scopeOf(threadId).id, id, n),
+    zoom: ({ threadId, id, n, offset, attachment }) => memory.zoomText(memory.scopeOf(threadId).id, id, n, offset, attachment),
     status: async ({ threadId }) => {
       const scope = store.scopeOf(threadId);
       return scope ? memory.status(scope.id) : null;
@@ -108,9 +113,9 @@ export default function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     ...ALWAYS_LOAD,
     name: "memory_zoom",
-    description: "Open line id+n of your memory view into the two lines it was made from; n:1 gives message id whole. Each line starts with the time of its first message.",
+    description: "Open line id+n of your memory view into the two lines it was made from; n:1 retrieves the canonical semantic message in bounded pages, with source reference and next offset. Use offset for continuation and attachment for an attachment index. Each line starts with the time of its first message.",
     parameters: zoomToolSchema,
-    execute: async ({ id, n }, { threadId }) => memory.zoom(memory.scopeOf(threadId).id, id, n),
+    execute: async ({ id, n, offset, attachment }, { threadId }) => memory.evidence(memory.scopeOf(threadId).id, id, n, offset, attachment),
   });
   // Sessions built while Initiatives owned memory still call initiative_zoom and initiative_read
   // {view:"memory"}: Initiatives keeps both as aliases over this plugin's read and zoom RPCs.
@@ -119,7 +124,7 @@ export default function plugin(bb: BbPluginApi) {
   // keeps its input (D458): never a silent fallback to the old session.
   bb.agents.registerTool({
     name: TURN_CONTEXT_TOOL,
-    description: "Internal to BB's Claude Code provider: how the next turn of a thread with chat memory runs (OptChat). Never call it.",
+    description: "Internal to BB's Claude Code provider: how the next turn of a thread with chat memory runs (UniiChat). Never call it.",
     parameters: z.object({}).passthrough(),
     execute: async (args: Record<string, unknown>, { threadId, signal }: { threadId: string; signal: AbortSignal }) => {
       const ask = turnAskSchema.safeParse(args);
@@ -153,6 +158,7 @@ export default function plugin(bb: BbPluginApi) {
     ingest(thread.id);
     compact(thread.id);
   });
+  bb.events.on("experimental_thread.events", ({ thread }) => ingest(thread.id));
   bb.events.on("thread.failed", ({ thread }) => ingest(thread.id));
   bb.events.on("thread.archived", ({ thread }) => ingest(thread.id));
 
@@ -193,7 +199,7 @@ export default function plugin(bb: BbPluginApi) {
     commands: [
       { name: "status", summary: "The memory of a thread's scope: mode, threads, log, tree, cost, problems", usage: `bb ${PLUGIN_ID} status [thread-id]` },
       { name: "read", summary: "The memory view (memory_read): one-line summaries, oldest first", usage: `bb ${PLUGIN_ID} read [thread-id]` },
-      { name: "zoom", summary: "Open line id+n into its two lines; n 1 gives message id whole; each line starts with its time", usage: `bb ${PLUGIN_ID} zoom <id> <n> [thread-id]` },
+      { name: "zoom", summary: "Open line id+n into its two lines; n 1 retrieves original evidence with continuation offsets; each line starts with its time", usage: `bb ${PLUGIN_ID} zoom <id> <n> [thread-id]` },
     ],
     async run(argv, ctx) {
       const args = argv.filter((a) => a !== "--json");
@@ -204,7 +210,7 @@ export default function plugin(bb: BbPluginApi) {
         let result: unknown;
         if (action === "status" && rest.length <= 1) result = await memory.status(scopeOf(rest[0]).id);
         else if (action === "read" && rest.length <= 1) result = memory.read(scopeOf(rest[0]).id);
-        else if (action === "zoom" && rest.length >= 2 && rest.length <= 3) result = memory.zoom(scopeOf(rest[2]).id, Number(rest[0]), Number(rest[1]));
+        else if (action === "zoom" && rest.length >= 2 && rest.length <= 3) result = await memory.zoomText(scopeOf(rest[2]).id, Number(rest[0]), Number(rest[1]));
         else return { exitCode: 2, stderr: usage };
         return { exitCode: 0, stdout: typeof result === "string" ? result : JSON.stringify(result, null, 2) };
       } catch (error) {

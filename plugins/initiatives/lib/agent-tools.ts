@@ -43,7 +43,7 @@ export const messageToolSchema = z.object({
   mode: removedMode,
   tasks: z.array(ref).max(30).optional().describe("A lead only: give this worker more work on these tasks."),
   work: z.boolean().optional().describe("A lead only: this message is more work (the worker reports on it again), even without tasks."),
-  resumeCold: z.boolean().optional().describe("A lead only: send more work even though the worker is idle with a large, cold cache; the refusal without it states the rewrite cost."),
+  resumeCold: z.boolean().optional().describe("Legacy workers without confirmed private UniiChat only. A lead: send more work even though the worker is idle with a large, cold cache; the refusal without it states the rewrite cost."),
 }).strict();
 /** What agents see: messageToolSchema without the older target. */
 export const messageToolAdvertised = messageToolSchema.omit({ target: true, mode: true });

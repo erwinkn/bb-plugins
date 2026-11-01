@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { TreeBuilder, type NodeHow, type TreeStore } from "../lib/builder";
 import { cleanLine, messageText } from "../lib/prompt";
 import type { SummarizerRequest, SummarizerResult } from "../lib/summarizer";
-import { CUT, LIMIT, bytes, capLine, children, emptyViews, key, label, type NodeRef } from "../lib/tree";
+import { CUT, LIMIT, TARGET_BYTES, bytes, capLine, children, emptyViews, key, label, type NodeRef } from "../lib/tree";
 
-// W442: every line is at most 512 bytes. A reply over it is asked again once, shorter; one still
+// W442: every line is at most 576 bytes. A reply over it is asked again once, shorter; one still
 // over is cut at a word boundary and ends in " [cut]". Nothing is ever cut without the marker.
 
 type Message = { kind: "user" | "agent"; text: string };
@@ -41,11 +41,11 @@ const builder = (store: TreeStore, summarize: (r: SummarizerRequest) => Promise<
 const cutFrom = (line: string, source: string) => line.endsWith(CUT) && source.startsWith(line.slice(0, -CUT.length));
 
 describe("W442 capLine", () => {
-  it("leaves a text within 512 bytes as it is, up to exactly 512", () => {
+  it("leaves a text within 576 bytes as it is, up to exactly 576", () => {
     for (const text of ["", "user: hi", "a".repeat(LIMIT), `${"é".repeat(255)}ab`]) expect(capLine(text)).toBe(text);
   });
 
-  it("cuts at the last word boundary before 506 bytes and ends in [cut]", () => {
+  it("cuts at the last word boundary before 570 bytes and ends in [cut]", () => {
     const text = `user: ${"alpha ".repeat(120)}`;
     const line = capLine(text);
     expect(line.endsWith(" alpha [cut]")).toBe(true);
@@ -57,8 +57,8 @@ describe("W442 capLine", () => {
   it("never splits a multi-byte character: 2-, 3- and 4-byte ones across the cut", () => {
     for (const ch of ["é", "日", "😀"]) {
       for (let pad = 0; pad < 4; pad++) {
-        // One word of `ch` across byte 506: no space to back up to within reach, so a character boundary.
-        const text = `${"a".repeat(470 + pad)}${ch.repeat(40)}`;
+        // One word of `ch` across byte 570: no space to back up to within reach, so a character boundary.
+        const text = `${"a".repeat(LIMIT - 42 + pad)}${ch.repeat(40)}`;
         const line = capLine(text);
         expect(line).not.toContain("�");
         expect(bytes(line)).toBeLessThanOrEqual(LIMIT);
@@ -117,8 +117,8 @@ describe("W442 builder", () => {
     await builder(store, async (r) => (requests.push(r), ok(requests.length === 1 ? words("0+1", 700) : retry)), logs).run(new AbortController().signal);
     expect(requests).toHaveLength(2);
     // The first ask states the budget; the retry gives the reply's size and a shorter one.
-    expect(requests[0]!.input.find((m) => m.role === "user")!.content[0]!.text).toContain(`at most ${LIMIT} bytes`);
-    expect(requests[1]!.input.at(-1)!.content[0]!.text).toMatch(/^Too long: your line is \d+ bytes, over the 512-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
+    expect(requests[0]!.input.find((m) => m.role === "user")!.content[0]!.text).toContain(`at most ${TARGET_BYTES} bytes`);
+    expect(requests[1]!.input.at(-1)!.content[0]!.text).toMatch(/^Too long: your line is \d+ bytes, over the 576-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
     expect(nodes.get(key(0, 0))).toEqual({ text: retry, how: "model", tries: 2 });
     expect(logs).toEqual([]);
   });
@@ -137,10 +137,10 @@ describe("W442 builder", () => {
     expect(node.text).not.toContain("�");
     expect(node.text.endsWith(` café${CUT}`)).toBe(true);
     expect(cutFrom(node.text, second)).toBe(true);
-    expect(logs).toEqual([`Memory line 0+1 cut to 512 bytes: its shortest reply in 2 tries was ${bytes(second)} bytes.`]);
+    expect(logs).toEqual([`Memory line 0+1 cut to 576 bytes: its shortest reply in 2 tries was ${bytes(second)} bytes.`]);
   });
 
-  it("leaves no path that saves a line over 512 bytes, or cut without [cut]", async () => {
+  it("leaves no path that saves a line over 576 bytes, or cut without [cut]", async () => {
     // One script per exit of a call: a refused, timed-out or empty retry after a reply over
     // budget, two replies over budget, three empty replies (the fallback, D500), and plain ones.
     const over = (name: string) => ok(words(name, 700, "señal"));

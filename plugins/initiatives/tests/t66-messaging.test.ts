@@ -160,7 +160,7 @@ describe("T66 trusted thin native messaging", () => {
     const config = await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(caller)! }));
     expect(config.tools.map(t => t.name)).toContain("initiative_message"); expect(config.tools.map(t => t.name)).not.toContain("project_message");
     expect(config.instructions).toContain('You are W1 "Historical search" (src), role work.');
-    expect(f.harness.inspection.sdk.calls).toHaveLength(before);
+    expect(f.harness.inspection.sdk.calls.slice(before).every(call => call.path === "plugins.callRpc")).toBe(true);
     await f.preferences.handle.experimental_set({ workerInstructions: "x".repeat(MAX_GUIDANCE_CHARACTERS) });
     const max = await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(caller)! }));
     expect(max.instructions!.length).toBeLessThanOrEqual(4096);

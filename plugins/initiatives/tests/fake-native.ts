@@ -254,7 +254,22 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     { hostId: "host_a", isDefault: true, path: "/code/repo" },
   ];
   // The Threads sidebar's change bump (initiativesChanged) and any other plugin RPC.
-  const pluginRpc = vi.fn(async (_args: { pluginId: string; method: string; input?: unknown }): Promise<unknown> => ({ ok: true }));
+  const memoryScopes = new Map<string, string>();
+  const pluginRpc = vi.fn(async (args: { pluginId: string; method: string; input?: unknown }): Promise<unknown> => {
+    if (args.pluginId === "chat-memory") {
+      const input = args.input as { threadId: string; key?: string };
+      if (args.method === "attach") {
+        const scope = `initiatives:${input.key}`;
+        memoryScopes.set(input.threadId, scope);
+        return { scope };
+      }
+      if (args.method === "status") {
+        const id = memoryScopes.get(input.threadId);
+        return id ? { scope: { id, owner: "initiatives" }, mode: "regular" } : null;
+      }
+    }
+    return { ok: true };
+  });
   const send = vi.fn<(...args: any[]) => Promise<any>>(
     async (args: Record<string, any>) => {
       const previous = execution.get(args.threadId);

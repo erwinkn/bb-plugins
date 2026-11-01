@@ -45,3 +45,9 @@ describe("W256 summarizer calls carry their attribution", () => {
     );
   });
 });
+
+it("attributes private worker summaries to the owning initiative", async () => {
+  const f = fixture();
+  const scope = await f.attach("initiatives", "prj_1:worker:7", f.thread("worker"));
+  expect(f.memory["attribution"](scope)).toMatchObject({initiative: "prj_1", thread: "worker"});
+});

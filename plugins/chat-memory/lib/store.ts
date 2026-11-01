@@ -1,8 +1,8 @@
 import type Database from "better-sqlite3";
 import type { TreeStore } from "./builder";
-import { withSize, type LogEntry, type MemoryKind, type MemoryMessage } from "./log";
+import { withSize, type IngestState, type LogEntry, type MemoryKind, type MemoryMessage } from "./log";
 import type { Usage } from "./summarizer";
-import { emptyViews, type NodeRef, type Views } from "./tree";
+import { LIMIT, bytes, emptyViews, type NodeRef, type Views } from "./tree";
 
 /**
  * Append-only (bb.storage.migrate). A scope is one memory: one log, one tree, one mode (its role's). Its id is
@@ -34,17 +34,20 @@ export const MIGRATIONS = [
      SELECT m.thread_id, CASE WHEN m.state = 'current' OR m.scope NOT LIKE 'chat-memory:%' THEN m.scope END,
        (SELECT MAX(last_seq) FROM members WHERE thread_id = m.thread_id), m.compacted_seq, m.compact_tries, m.compact_tried_at, m.compact_error, m.compacted_at
      FROM members m ORDER BY CASE m.state WHEN 'current' THEN 0 ELSE 1 END, m.joined_at DESC`,
+  `CREATE TABLE ingestion (thread_id TEXT PRIMARY KEY, scope TEXT NOT NULL, state TEXT NOT NULL)`,
+  `ALTER TABLE log ADD COLUMN source_part INTEGER`,
+  `ALTER TABLE log ADD COLUMN request_id TEXT`,
+  `CREATE INDEX log_request ON log (scope, thread_id, request_id)`,
 ];
 
 export const MEMORY_MODES = ["regular", "optchat"] as const;
 export type MemoryMode = (typeof MEMORY_MODES)[number];
 
 /**
- * R3: the plugin whose scopes are Adventure (Initiative) coordinators' memory (workers carry no
- * memoryScope, so every scope it owns is a coordinator's).
+ * R3: the owner of Adventure coordinator and private worker scopes. Personal scopes remain Regular.
  */
 export const COORDINATOR_OWNER = "initiatives";
-/** A scope's mode is its role's, never a choice: a coordinator's memory is OptChat, every other is Regular. */
+/** A scope's mode is its role's, never a choice: an Initiatives-owned memory is UniiChat, every other is Regular. */
 export const modeOf = (owner: string): MemoryMode => (owner === COORDINATOR_OWNER ? "optchat" : "regular");
 
 export interface Scope {
@@ -90,7 +93,9 @@ const message = (row: Row): MemoryMessage => ({
   size: Number(row.size),
   at: Number(row.at),
   threadId: (row.thread_id as string | null) ?? null,
-  seq: row.seq === null ? null : Number(row.seq),
+  seq: row.seq == null ? null : Number(row.seq),
+  sourcePart: row.source_part == null ? null : Number(row.source_part),
+  requestId: (row.request_id as string | null) ?? null,
 });
 const scope = (row: Row): Scope => ({
   id: String(row.id),
@@ -229,17 +234,17 @@ export class MemoryStore {
    * to now, and move its cursor there, in one transaction. What the cursor has passed meanwhile is
    * left out, so a message is logged exactly once. Null, and nothing moves, once it writes to none.
    */
-  append(threadId: string, entries: readonly LogEntry[], through: number): { scope: string; appended: number } | null {
+  append(threadId: string, entries: readonly LogEntry[], through: number, acceptedPending = false): { scope: string; appended: number } | null {
     return this.transaction(() => {
       const t = this.thread(threadId);
       if (!t?.scope) return null;
       let i = this.count(t.scope);
       let size = 0;
-      const insert = this.sql(`INSERT INTO log (scope, i, kind, text, size, at, thread_id, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-      const fresh = entries.filter((e) => (e.seq ?? 0) > t.cursor);
+      const insert = this.sql(`INSERT INTO log (scope, i, kind, text, size, at, thread_id, seq, source_part, request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const fresh = acceptedPending ? entries : entries.filter((e) => (e.seq ?? 0) > t.cursor);
       for (const entry of fresh) {
         const m = withSize(entry, i++);
-        insert.run(t.scope, m.i, m.kind, m.text, m.size, m.at, m.threadId, m.seq);
+        insert.run(t.scope, m.i, m.kind, m.text, m.size, m.at, m.threadId, m.seq, m.sourcePart ?? null, m.requestId ?? null);
         size += m.size;
       }
       if (size) {
@@ -249,6 +254,24 @@ export class MemoryStore {
       this.sql(`UPDATE threads SET cursor = ? WHERE thread_id = ? AND cursor < ?`).run(through, threadId, through);
       return { scope: t.scope, appended: fresh.length };
     });
+  }
+
+  leavesBuilt(scopeId: string) {
+    return Number(this.sql(`SELECT COUNT(*) FROM nodes WHERE scope = ? AND l = 0`).pluck().get(scopeId));
+  }
+  ingestion(threadId: string, scope: string): IngestState {
+    const row = this.sql(`SELECT state FROM ingestion WHERE thread_id = ? AND scope = ?`).pluck().get(threadId, scope) as string | undefined;
+    return row ? JSON.parse(row) : {pending: [], modern: false};
+  }
+  saveIngestion(threadId: string, scope: string, state: IngestState) {
+    this.sql(`INSERT INTO ingestion VALUES (?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET scope = excluded.scope, state = excluded.state`).run(threadId, scope, JSON.stringify(state));
+  }
+  /** First historical message from the incoming request, if acceptance raced admission. */
+  requestCut(scope: string, threadId: string, requestId: string, legacySeq?: number) {
+    const exact = this.sql(`SELECT MIN(i) FROM log WHERE scope = ? AND thread_id = ? AND request_id = ?`).pluck().get(scope, threadId, requestId) as number | null;
+    if (exact !== null || legacySeq === undefined) return exact;
+    // Old rows have no acceptance identity. Only an exact non-retry source event is safe.
+    return this.sql(`SELECT MIN(i) FROM log WHERE scope = ? AND thread_id = ? AND request_id IS NULL AND seq = ?`).pluck().get(scope, threadId, legacySeq) as number | null;
   }
 
   // The tree -------------------------------------------------------------------------
@@ -293,6 +316,7 @@ export class MemoryStore {
       node: (l, i) => this.node(scopeId, l, i),
       built: (l, from, to) => (this.sql(`SELECT i FROM nodes WHERE scope = ? AND l = ? AND i >= ? AND i < ? ORDER BY i`).pluck().all(scopeId, l, from, to) as number[]).map(Number),
       saveNode: (l, i, text, how, tries) => {
+        if (bytes(text) > LIMIT) throw new Error(`Memory node exceeds the ${LIMIT}-byte storage cap`);
         this.transaction(() => {
           const added = this.sql(`INSERT OR IGNORE INTO nodes (scope, l, i, text, how, tries, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(scopeId, l, i, text, how, tries, this.now());
           if (!added.changes) return;

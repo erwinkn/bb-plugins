@@ -50,6 +50,7 @@ export function createColdCacheGuard(deps: {
   store: Store;
   limit: () => number;
   log: (message: string) => void;
+  privateMemory?: (worker: WorkerRecord) => Promise<boolean>;
 }) {
   // Each logged once until the Pooler, or BB, answers again.
   let poolerFailed = false;
@@ -110,6 +111,11 @@ export function createColdCacheGuard(deps: {
   return {
     /** What resuming this worker would rewrite, when it is large and cold; null to go ahead. */
     async check(worker: WorkerRecord): Promise<string | null> {
+      try {
+        if (await deps.privateMemory?.(worker)) return null;
+      } catch (error) {
+        return `${errorMessage(error)}. Resume is held until Chat memory can confirm the private scope.`;
+      }
       const limit = deps.limit();
       if (limit <= 0 || !worker.threadId || worker.state === "retired") return null;
       const threadId = worker.threadId;

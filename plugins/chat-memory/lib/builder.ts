@@ -77,7 +77,7 @@ type Outcome =
  * once fewer than `concurrency` earlier ones are unbuilt, a merge starts once both halves are
  * built, and ready nodes wait in a queue (never found by scanning the tree). Up to `concurrency`
  * calls run at once; a call waits while another is writing the same cached prefix. A line over
- * 512 bytes is asked again once in the same conversation, for 384; if the shorter reply is still
+ * The model is asked for 512 bytes; a reply over 576 bytes is asked again once in the same conversation, for 384; if the shorter reply is still
  * over, it is cut at a word boundary and ends in " [cut]" (logged), never cut silently.
  *
  * run() returns when everything logged so far is built, or when its signal aborts: calls in
@@ -86,7 +86,7 @@ type Outcome =
  * pauses for 10 minutes. A call that does not answer within its bound fails. A line whose call
  * fails 3 times stays unbuilt and failed (never cut to fit: a turn must not read part of a message
  * as its summary), and is tried again 30 minutes later; except one that answered empty 3 times,
- * which a retry would not change (an error or timeout among the tries rules this out): it is built at once as a fallback, its input cut to 512 bytes with " [cut]".
+ * which a retry would not change (an error or timeout among the tries rules this out): it is built at once as a fallback, its input cut to 576 bytes with " [cut]".
  *
  * W315: a turn that waits for its earlier messages' lines (need) makes their calls go before every
  * other scope's for a permit. The build starts them first anyway (oldest first), and no more at

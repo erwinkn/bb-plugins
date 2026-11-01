@@ -37,7 +37,7 @@ describe("W492 a worker is offered only what it can set", () => {
     expect(read.properties.view.enum).not.toContain("memory");
     f.pluginRpc.mockRejectedValueOnce(new Error("HTTP 500: This thread has no chat memory: turn it on in the thread's Memory panel."));
     expect(await tool(f, "initiative_read", { view: "memory", limit: 30 }, w.threadId)).toEqual({ messages: 0, view: "",
-      note: `Workers have no chat memory: your brief and messages are in this thread. initiative_read {refs:["${w.worker}"],fields:["brief"]} reads your latest brief.` });
+      note: `This worker has no attached chat memory yet: your brief and messages are in this thread. initiative_read {refs:["${w.worker}"],fields:["brief"]} reads your latest brief.` });
     // Any other failure of Chat memory still fails the read.
     f.pluginRpc.mockRejectedValueOnce(new Error("HTTP 503: unavailable"));
     await expect(tool(f, "initiative_read", { view: "memory" }, w.threadId)).rejects.toThrow(/503/);

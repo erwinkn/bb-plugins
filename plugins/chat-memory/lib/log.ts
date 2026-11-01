@@ -19,6 +19,10 @@ export interface MemoryMessage {
   at: number;
   threadId: string | null;
   seq: number | null;
+  /** Stable semantic-entry ordinal in the source event, independent of sender labels and splits. */
+  sourcePart?: number | null;
+  /** Request whose acceptance logged this input; seq still names the canonical original. */
+  requestId?: string | null;
 }
 export type LogEntry = Omit<MemoryMessage, "i" | "size">;
 
@@ -46,7 +50,7 @@ export interface EventRow {
   data?: Record<string, any>;
 }
 /** The event types the log reads. */
-export const LOG_EVENT_TYPES = ["client/turn/requested", "item/completed", "provider/error", "provider/unhandled", "turn/completed"] as const;
+export const LOG_EVENT_TYPES = ["client/turn/requested", "item/completed", "provider/error", "provider/unhandled", "turn/completed", "turn/input/accepted", "client/turn/rejected"] as const;
 /** How an OptChat turn that could not get its memory fails (D458); BB records it in the turn's provider/error. */
 export const UNAVAILABLE = "OptChat memory unavailable for this turn";
 /** T143: a stopped turn's mark, after whatever it had said, so later views know its reply was cut off. */
@@ -68,16 +72,28 @@ const timeOf = (row: EventRow) => {
 };
 const inputText = (input: unknown) =>
   Array.isArray(input) ? input.filter((c) => typeof c?.text === "string").map((c) => c.text as string).join("\n") : "";
-const json = (value: unknown) => (typeof value === "string" ? value : value === undefined ? "" : JSON.stringify(value));
+const json = (value: unknown) => {
+  if (value === undefined) return "";
+  if (typeof value === "string") {
+    try { return JSON.stringify(JSON.parse(value), omitBlobs); } catch { return value; }
+  }
+  return JSON.stringify(value, omitBlobs);
+};
+function omitBlobs(this: Record<string, unknown>, key: string, value: unknown) {
+  const image = this.type === "image" || this.type === "image_url";
+  return typeof value === "string" && ((image && ["data", "base64"].includes(key)) || (["url", "image_url"].includes(key) && value.startsWith("data:image/"))) ? "[attachment data; retrieve with memory_zoom]" : value;
+}
 const toolName = (name: unknown) => String(name ?? "tool").replace(/^mcp__bb-bridge__/, "");
 
 /** One BB event of a thread as log entries (a tool call is a tool entry and an echo entry), or none. */
-export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts): LogEntry[] {
+export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts, original = false): LogEntry[] {
+  const output = original ? (s: string) => s : clip;
   const base = { at: timeOf(row), threadId, seq: row.seq };
-  const entry = (kind: MemoryKind, text: string): LogEntry[] => (text.trim() ? [{ ...base, kind, text: text.trim() }] : []);
+  let sourcePart = 0;
+  const entry = (kind: MemoryKind, text: string): LogEntry[] => (text.trim() ? [{ ...base, kind, text: text.trim(), sourcePart: sourcePart++, ...(row.type === "client/turn/requested" ? {requestId: row.data?.requestId ?? null} : {}) }] : []);
   const d = row.data ?? {};
   if (row.type === "client/turn/requested") {
-    const text = inputText(d.input).trim();
+    const text = [inputText(d.input).trim(), ...(Array.isArray(d.input) ? d.input.filter(c => ["localImage","localFile","image"].includes(c.type)).map(c => `[attachment: ${c.path ?? (typeof c.url === "string" && c.url.startsWith("data:") ? "inline image" : c.url) ?? c.type}]`) : [])].filter(Boolean).join("\n");
     // A retry re-submits a request that is logged already, or says "Please continue." after it.
     if (!text || d.retryOfRequestId) return [];
     if (d.initiator === "agent") {
@@ -113,23 +129,23 @@ export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts
     case "toolCall":
       return [
         ...entry("tool", `${toolName(item.tool)} ${json(item.arguments ?? {})}`),
-        ...entry("echo", clip([json(item.result), item.error ? `error: ${json(item.error)}` : ""].filter(Boolean).join("\n"))),
+        ...entry("echo", output([json(item.result), item.error ? `error: ${json(item.error)}` : ""].filter(Boolean).join("\n"))),
       ];
     case "commandExecution":
       return [
         ...entry("tool", `Bash ${String(item.command ?? "")}`),
-        ...entry("echo", clip(`${item.exitCode != null ? `exit ${item.exitCode}\n` : ""}${String(item.aggregatedOutput ?? "")}`)),
+        ...entry("echo", output(`${item.exitCode != null ? `exit ${item.exitCode}\n` : ""}${String(item.aggregatedOutput ?? "")}`)),
       ];
     case "fileChange": {
       const changes = Array.isArray(item.changes) ? item.changes : [];
       return [
         ...entry("tool", `Edit ${changes.map((c: { kind?: string; path?: string }) => `${c.kind ?? "change"} ${c.path ?? "?"}`).join(", ")}`),
-        ...entry("echo", clip(changes.map((c: { diff?: string }) => c.diff ?? "").join("\n"))),
+        ...entry("echo", output(changes.map((c: { diff?: string }) => c.diff ?? "").join("\n"))),
       ];
     }
     default: {
       const { type, id: _id, status: _status, presentation: _p, ...rest } = item;
-      return entry("tool", clip(`${type} ${JSON.stringify(rest)}`));
+      return entry("tool", output(`${type} ${json(rest)}`));
     }
   }
 }
@@ -158,5 +174,55 @@ export function turnEntries(rows: readonly EventRow[], threadId: string, facts: 
     turn = [];
     unavailable = false;
   }
+  return entries.sort((a,b) => (a.seq ?? 0)-(b.seq ?? 0)).flatMap(splitEntry);
+}
+
+/** Requests remain durable but invisible until the provider confirms acceptance. */
+export interface IngestState {
+  pending: EventRow[];
+  buffered?: EventRow[];
+  /** Pre-acceptance failures are recoverable by a later accepted retry, never by legacy completion. */
+  unsent?: EventRow[];
+  modern: boolean;
+}
+export function stableEntries(rows: readonly EventRow[], state: IngestState, threadId: string, facts: ThreadFacts) {
+  const entries: LogEntry[] = [];
+  state.buffered ??= [];
+  for (const row of rows) {
+    if (row.type === "client/turn/requested") { state.pending.push(row); continue; }
+    if (row.type === "turn/input/accepted") {
+      state.modern = true;
+      entries.push(...state.buffered.flatMap(r => eventEntries(r, threadId, facts)));
+      state.buffered = [];
+      const id = row.data?.clientRequestId;
+      const request = state.pending.find(r => r.data?.requestId === id);
+      const originalId = request?.data?.retryOfRequestId;
+      const original = originalId ? [...state.pending, ...(state.unsent ?? [])].find(r => r.data?.requestId === originalId) : null;
+      if (original ?? request) entries.push(...eventEntries((original ?? request)!, threadId, facts).map(e => ({...e, requestId: id})));
+      state.pending = state.pending.filter(r => r.data?.requestId !== id && (!original || r.data?.requestId !== originalId));
+      if (original) state.unsent = state.unsent?.filter(r => r.data?.requestId !== originalId);
+    } else if (row.type === "client/turn/rejected") {
+      const id = row.data?.requestId ?? row.data?.clientRequestId;
+      state.pending = state.pending.filter(r => r.data?.requestId !== id);
+    } else if (row.type === "provider/error" && String(row.data?.detail ?? "").includes(UNAVAILABLE)) {
+      if (!state.modern) state.buffered.push(row);
+    } else if (row.type === "turn/completed") {
+      // Historical providers without acceptance events are recoverable at terminal boundaries.
+      // Modern providers keep queued requests pending across somebody else's completed turn.
+      if (!state.modern) {
+        const unsent = row.data?.status === "failed"
+          && state.buffered.some(r => r.type === "provider/error" && String(r.data?.detail ?? "").includes(UNAVAILABLE))
+          && !state.buffered.some(r => eventEntries(r, threadId, facts).length);
+        if (unsent) (state.unsent ??= []).push(...state.pending);
+        entries.push(...turnEntries([...state.pending, ...state.buffered, row].sort((a,b) => a.seq-b.seq), threadId, facts));
+        state.pending = [];
+        state.buffered = [];
+      }
+      if (state.modern) entries.push(...eventEntries(row, threadId, facts));
+    } else if (!state.modern) state.buffered.push(row);
+    else entries.push(...eventEntries(row, threadId, facts));
+  }
+  // Append in processing/acceptance order. seq is canonical provenance, so a queued input or
+  // retry may point backward; sorting by it would move that input ahead of already acted-on output.
   return entries.flatMap(splitEntry);
 }

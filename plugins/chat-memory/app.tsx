@@ -13,7 +13,7 @@ type Configure = Parameters<Api["call"]>[1] & { threadId: string };
 /** R3: the mode follows the role, so the panel only says which one this memory has. */
 export const MEMORY_MODES_TEXT: Record<MemoryMode, { label: string; line: string }> = {
   regular: { label: "Regular", line: "One long session, compacted once it gets large." },
-  optchat: { label: "OptChat", line: "A fresh session per message over the summary view (Claude Code only). Every Adventure coordinator uses it." },
+  optchat: { label: "UniiChat", line: "A fresh session per message over the summary view (Claude Code only). Every Adventure coordinator uses it." },
 };
 const text = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
@@ -110,6 +110,7 @@ function MemoryDetails({ status: m, configure }: { status: MemoryStatus; configu
         <span>
           {t.nodes.toLocaleString()} of {t.total.toLocaleString()} lines ({t.total ? Math.floor((100 * Math.min(t.nodes, t.total)) / t.total) : 100}%){t.fallbacks ? ` · ${t.fallbacks} cut after failures` : ""} · {treeState(t)}
         </span>
+        {m.mode === "optchat" ? <><span>Readiness</span><span>{t.ready ? "Ready" : t.ingesting ? "Preparing history" : "Preparing summaries"}</span></> : null}
         <span>Views</span>
         <span>chat {kilo(t.viewBytes)}B · memory {kilo(t.memoryViewBytes)}B</span>
         {m.cost.calls ? (
@@ -121,7 +122,7 @@ function MemoryDetails({ status: m, configure }: { status: MemoryStatus; configu
           </>
         ) : null}
         <span>Compaction</span>
-        <span>{m.compactTokens ? `past ${kilo(m.compactTokens)} tokens` : "off"}{m.mode === "optchat" ? " (OptChat sessions never grow)" : m.compactTokensOverride === null ? " · the default" : " · this memory's own limit"}</span>
+        <span>{m.compactTokens ? `past ${kilo(m.compactTokens)} tokens` : "off"}{m.mode === "optchat" ? " (UniiChat sessions never grow)" : m.compactTokensOverride === null ? " · the default" : " · this memory's own limit"}</span>
       </div>
       <div className="cm-actions">
         {m.mode === "regular" ? (

@@ -736,6 +736,7 @@ export interface PrWatchDeps {
   sdk: Sdk;
   /** What resuming this worker would rewrite when its cache is large and cold (cold-cache.ts); null to go ahead. */
   coldCheck(worker: WorkerRecord): Promise<string | null>;
+  prepareWorker?: (worker: WorkerRecord) => Promise<void>;
   /**
    * More work for an idle worker, as a lead's work message (initiative_message work:true); its A#.
    * `still` runs in the same serialized step, just before: it throws when the wake no longer applies.
@@ -1135,7 +1136,7 @@ export class PrWatcher {
     const open = store.openAssignment(project.id, worker.num);
     if (BUSY_STATUSES.has(thread.status)) return { to: "worker", how: "message", worker, open: open?.ref ?? null, busy: true };
     const cold = await this.deps.coldCheck(worker);
-    if (cold) return { to: "coordinator", why: cold.replace(/\.$/, ""), resumable: true, worker };
+    if (cold) return { to: "coordinator", why: cold.replace(/\.$/, ""), resumable: !cold.startsWith("UniiChat private memory not confirmed"), worker };
     return { to: "worker", how: open ? "message" : "work", worker, open: open?.ref ?? null, busy: false };
   }
 
@@ -1260,6 +1261,7 @@ export class PrWatcher {
     let stopped = null as { why: string; resumable: boolean; uncertain?: boolean } | null;
     await this.sending(wakes, async () => {
       if (route.how === "message") {
+        await this.deps.prepareWorker?.(worker);
         this.still(wakes, confirmed, route);
         const answer = (await sdk.threads.send({
           threadId: worker.threadId!, mode: "steer-if-active",

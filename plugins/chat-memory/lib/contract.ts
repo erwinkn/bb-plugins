@@ -25,7 +25,7 @@ export const chatMemoryContract = defineRpcContract({
     output: z.object({ messages: z.number(), view: z.string(), note: z.string() }),
   },
   zoom: {
-    input: z.object({ threadId: id, id: z.number().int().min(0), n: z.number().int().min(1) }).strict(),
+    input: z.object({ threadId: id, id: z.number().int().min(0), n: z.number().int().min(1), offset: z.number().int().min(0).optional(), attachment: z.number().int().min(0).optional() }).strict(),
     output: z.string(),
   },
   /** The memory a thread writes to, or null when it has none. */

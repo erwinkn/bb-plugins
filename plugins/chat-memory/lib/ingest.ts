@@ -49,3 +49,18 @@ export async function readTurns(list: ListEvents, threadId: string, afterSeq: nu
     if (ended && page >= pages) return { rows: rows.slice(0, ended), through, more: true };
   }
 }
+
+/** Stable semantic events only. Core's per-thread signal is already debounced to one second. */
+export async function readStable(list: ListEvents, threadId: string, afterSeq: number, pages: number, stopped: () => boolean) {
+  const rows: EventRow[] = [];
+  let through = afterSeq;
+  for (let page = 0; page < pages; page++) {
+    if (stopped()) return { rows: [], through: afterSeq, more: false };
+    const read = (await list({threadId, types: LOG_EVENT_TYPES, order: "asc", limit: String(PAGE), afterSeq: String(through)}))
+      .filter(r => r.seq > through).sort((a,b) => a.seq-b.seq).slice(0,PAGE);
+    rows.push(...read);
+    through = read.at(-1)?.seq ?? through;
+    if (read.length < PAGE) return {rows, through, more: false};
+  }
+  return { rows, through, more: true };
+}

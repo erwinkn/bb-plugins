@@ -28,7 +28,7 @@ export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overvie
   category: z.string().min(1).max(80).optional(), stage: z.enum(PR_STAGE_IDS).optional(), unassigned: z.boolean().optional() }).strict();
 /**
  * W492: initiative_read as sessions are offered it. "memory" still reads (older sessions), but is
- * not offered: workers have no chat memory, and a lead's is Chat memory's memory_read.
+ * not offered: private worker and coordinator memory is read through Chat memory's memory_read.
  */
 export const agentReadAdvertised = agentReadSchema.extend({ view: z.enum(["overview", "records", "context", "prs", "rules", ...READ_VIEWS]).optional() }).strict();
 export const MAX_READ_BYTES = 65536;

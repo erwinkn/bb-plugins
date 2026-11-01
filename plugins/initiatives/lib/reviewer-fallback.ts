@@ -156,6 +156,7 @@ export class ReviewerFallback {
       /** The Adventure's policy with the global profiles under it. */
       policy: (projectId: string) => Promise<Policy>;
       warn: (message: string) => void;
+      prepareWorker?: (threadId: string) => Promise<void>;
     },
   ) {}
 
@@ -317,8 +318,8 @@ export class ReviewerFallback {
       const membership = thread?.parentThreadId ? store.membership(thread.parentThreadId) : null;
       if (!membership?.worker?.threadId || membership.former) continue;
       store.log(membership.project.id, "worker", `${membership.worker.ref}'s reviewer ${threadId}: the plugin restarted while rerunning it on the fallback; ${membership.worker.ref} was asked to check.`);
-      await sdk.threads
-        .send({ threadId: membership.worker.threadId, mode: "steer-if-active", input: textInput(`Adventures · ${membership.project.name} · Reviewer fallback\n\nThe plugin restarted while rerunning your reviewer ${threadId} (${thread!.title ?? "a review round"}) on the fallback reviewer. If no fallback reviewer for that round is running among your child threads, run the round again with the fallback reviewer command from your brief.`) })
+      await Promise.resolve().then(() => this.deps.prepareWorker?.(membership.worker!.threadId!)).then(() => sdk.threads
+        .send({ threadId: membership.worker!.threadId!, mode: "steer-if-active", input: textInput(`Adventures · ${membership.project.name} · Reviewer fallback\n\nThe plugin restarted while rerunning your reviewer ${threadId} (${thread!.title ?? "a review round"}) on the fallback reviewer. If no fallback reviewer for that round is running among your child threads, run the round again with the fallback reviewer command from your brief.`) }))
         .catch((cause) => this.deps.warn(`Reviewer fallback recovery for ${threadId} could not reach ${membership.worker!.ref}: ${errorMessage(cause)}`));
     }
   }
@@ -338,8 +339,8 @@ export class ReviewerFallback {
     // W560: the worker's brief may still name the reviewer first.
     const keep = `Until ${utcTime(until)}, start each new round with the fallback reviewer command from your brief, not the reviewer command; from then on, with the reviewer command again.`;
     const tell = (text: string) =>
-      sdk.threads
-        .send({ threadId: worker.threadId!, mode: "steer-if-active", input: textInput(`Adventures · ${project.name} · Reviewer fallback\n\n${text}\n\n${keep}`) })
+      Promise.resolve().then(() => this.deps.prepareWorker?.(worker.threadId!)).then(() => sdk.threads
+        .send({ threadId: worker.threadId!, mode: "steer-if-active", input: textInput(`Adventures · ${project.name} · Reviewer fallback\n\n${text}\n\n${keep}`) }))
         .catch((cause) => store.log(project.id, "worker", `${worker.ref} could not be told about its reviewer ${threadId}: ${errorMessage(cause)}`));
     const runIt = (why: string) => {
       store.log(project.id, "worker", `${worker.ref}'s reviewer ${threadId} is ${REASONS[failure.reason]}; ${why}`);
