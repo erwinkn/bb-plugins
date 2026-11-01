@@ -26,7 +26,7 @@ function memoryStore(messages: Message[]) {
 const usage = { input: 1000, cached: 800, output: 50, reasoning: 20 };
 /** The node a task names, as its label. */
 const target = (r: SummarizerRequest) => {
-  const task = (r.input[0]!.content[1] as { text: string }).text;
+  const task = r.input.find((m) => m.role === "user")!.content[0]!.text;
   const compress = /compress message (\d+)/.exec(task);
   if (compress) return `${compress[1]}+1`;
   const merge = /merge lines (\d+)\+(\d+) and/.exec(task)!;
@@ -111,7 +111,7 @@ describe("W220 tree builder", () => {
     expect(retry[1]).toMatchObject({ role: "assistant" });
     expect((retry[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is 700 bytes, over the 512-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
     // The first task carries the ruler and the message as kind: text.
-    const task = (requests[0]!.input[0]!.content[1] as { text: string }).text;
+    const task = requests[0]!.input.find((m) => m.role === "user")!.content[0]!.text;
     expect(task).toContain("-".repeat(512));
     expect(task).toContain("<input>\nuser: message 0");
   });
@@ -128,7 +128,7 @@ describe("W220 tree builder", () => {
   it("gives a merge its context: the memory view up to the node, and the two lines", async () => {
     const { store } = memoryStore(long(4));
     const tasks: string[] = [];
-    const b = builder(store, async (r) => (tasks.push(r.input[0]!.content.map((c) => (c as { text: string }).text).join("")), ok(line(r, 300))));
+    const b = builder(store, async (r) => (tasks.push(r.input.flatMap((m) => m.content.map((c) => c.text)).join("")), ok(line(r, 300))));
     await b.run(new AbortController().signal);
     const merge = tasks.find((t) => t.includes("merge lines 0+2 and 2+2"))!;
     expect(merge).toMatch(/^<chat>\n0\+1\|L0\+1 /);

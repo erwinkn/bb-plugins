@@ -219,7 +219,12 @@ and lines Initiatives cut before T145 stay as they are: nodes are never rebuilt
 unavailable route pauses 10 minutes.
 
 Luna runs through the Account Pooler's isolated plugin route
-(`/advisor/v1/responses`), one `session_id` per scope. Calls carry
+(`/advisor/v1/responses`), one `session_id` per scope. A call's older memory
+view lines, in whole blocks of 4, go in a developer message and the rest of
+`<chat>` and the task in the user message (W565): since 2026-10-16 the Codex
+backend shares a cached prefix between different requests only through
+instructions and developer messages, and calls for nearby lines share their
+older lines but not their tasks. Calls carry
 `x-bb-thread` (the scope's first thread), `x-bb-initiative` (for an
 Initiatives scope) and `x-bb-purpose: memory-tree`, so the Pooler's ledger and
 Usage stats attribute the spend.

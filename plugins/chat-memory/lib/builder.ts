@@ -410,14 +410,10 @@ export class TreeBuilder {
   /** One compaction: the compaction view up to the node as context, then the task; retries in the same conversation. */
   private async compact(node: NodeRef, signal: AbortSignal): Promise<Outcome> {
     const lines = contextLines(node, this.views.compaction, this.nodes);
-    const whole = Math.floor(lines.length / 4);
-    const blocks: string[] = [];
-    for (let b = 0; b * 4 < lines.length; b++) blocks.push((b === 0 ? "<chat>\n" : "") + lines.slice(b * 4, b * 4 + 4).join("\n") + "\n");
     const message = node[0] === 0 ? this.store.message(node[1]) : undefined;
     if (node[0] === 0 && !message) return { kind: "failed", error: `message ${node[1]} is missing from the log` };
-    const taskText = `${blocks.length ? "" : "<chat>\n"}</chat>\n${task(node, this.nodes, message ?? undefined)}`;
     // Calls sharing a cached prefix that is still being written wait for it.
-    const prefix = createHash("md5").update(lines.slice(0, whole * 4).join("\n")).digest("hex");
+    const prefix = createHash("md5").update(lines.slice(0, cachedLines(lines.length)).join("\n")).digest("hex");
     const t0 = this.now();
     await this.writers.get(prefix);
     if (signal.aborted) return { kind: "aborted" };
@@ -429,7 +425,7 @@ export class TreeBuilder {
       if (this.writers.get(prefix) === writing) this.writers.delete(prefix);
     };
     const usage: Usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
-    let input: InputItem[] = [{ role: "user", content: [{ type: "input_text", text: blocks.join("") }, { type: "input_text", text: taskText }] }];
+    let input = compactionInput(lines, task(node, this.nodes, message ?? undefined));
     let best: string | null = null;
     let tries = 0;
     let outcome: Outcome | null = null;
@@ -481,6 +477,25 @@ export class TreeBuilder {
     this.build(node, line, "model", tries);
     return pause ? { kind: "built", pause } : { kind: "built" };
   }
+}
+
+/** The context lines a compaction's developer message holds: whole blocks of 4, so it changes once every 4 new lines. */
+const cachedLines = (n: number) => n - (n % 4);
+
+/**
+ * W565: a compaction's input, <chat> then the task. Since 2026-10-16 (~09:00 UTC) the Codex backend
+ * shares a cached prefix between two different requests only through instructions and developer
+ * (or system) messages: user content is reused only by a request that extends the previous one,
+ * such as a retry. Calls for nearby nodes run side by side with the same older lines and different
+ * tasks, so those lines go in a developer message, in whole blocks of 4, and the rest of <chat> and
+ * the task in the user message. With all of <chat> in the user message, 3 calls in 4 got nothing
+ * cached. The text is unchanged: the two messages together read as the one did.
+ */
+export function compactionInput(lines: readonly string[], taskText: string): InputItem[] {
+  const n = cachedLines(lines.length);
+  const text = (some: readonly string[]) => some.map((line) => `${line}\n`).join("");
+  const user: InputItem = { role: "user", content: [{ type: "input_text", text: `${n ? "" : "<chat>\n"}${text(lines.slice(n))}</chat>\n${taskText}` }] };
+  return n ? [{ role: "developer", content: [{ type: "input_text", text: `<chat>\n${text(lines.slice(0, n))}` }] }, user] : [user];
 }
 
 function addUsage(total: Usage, u: Usage) {

@@ -106,7 +106,7 @@ function heldSummarizer() {
     new Promise<SummarizerResult>((resolve) => {
       r.onStart?.();
       r.signal.addEventListener("abort", () => resolve({ ok: false, reason: "aborted", error: "stopped" }));
-      const task = /compress message (\d+)|merge lines (\d+\+\d+ and \d+\+\d+)/.exec((r.input[0]!.content[1] as { text: string }).text)!.slice(1).find(Boolean)!;
+      const task = /compress message (\d+)|merge lines (\d+\+\d+ and \d+\+\d+)/.exec(r.input.find((m) => m.role === "user")!.content[0]!.text)!.slice(1).find(Boolean)!;
       calls.push({ task, urgent, request: r, go: (text = `summary of ${task}`) => resolve(ok(text)) });
     });
   return { calls, summarize };

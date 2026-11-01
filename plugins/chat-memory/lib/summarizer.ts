@@ -11,7 +11,7 @@ export const POOLER_PLUGIN_ID = "account-pool-local";
 export const LUNA_PRICES = { input: 0.1, cached: 0.01, output: 0.5 } as const;
 
 export type InputItem =
-  | { role: "user"; content: { type: "input_text"; text: string }[] }
+  | { role: "user" | "developer"; content: { type: "input_text"; text: string }[] }
   | { role: "assistant"; content: { type: "output_text"; text: string }[] };
 
 /**

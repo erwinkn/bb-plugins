@@ -10,7 +10,7 @@ import type { Summarizer, SummarizerRequest } from "../lib/summarizer";
 
 /** Luna that answers at once: "summary of <message or pair>". */
 export const fakeLuna: Summarizer = async (r: SummarizerRequest) => {
-  const task = (r.input[0]!.content[1] as { text: string }).text;
+  const task = r.input.find((m) => m.role === "user")!.content[0]!.text;
   const name = /compress message (\d+)/.exec(task)?.[1] ?? /merge lines (\d+\+\d+ and \d+\+\d+)/.exec(task)![1];
   return { ok: true, text: `summary of ${name}`, usage: { input: 2000, cached: 1500, output: 100, reasoning: 50 }, latencyMs: 1 };
 };

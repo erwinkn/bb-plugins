@@ -25,7 +25,7 @@ const usage = { input: 100, cached: 0, output: 10, reasoning: 0 };
 const ok = (text: string): SummarizerResult => ({ ok: true, text, usage, latencyMs: 1 });
 /** The node a task names, as its label. */
 const target = (r: SummarizerRequest) => {
-  const task = (r.input[0]!.content[1] as { text: string }).text;
+  const task = r.input.find((m) => m.role === "user")!.content[0]!.text;
   const compress = /compress message (\d+)/.exec(task);
   if (compress) return `${compress[1]}+1`;
   const merge = /merge lines (\d+)\+(\d+) and/.exec(task)!;
@@ -117,8 +117,8 @@ describe("W442 builder", () => {
     await builder(store, async (r) => (requests.push(r), ok(requests.length === 1 ? words("0+1", 700) : retry)), logs).run(new AbortController().signal);
     expect(requests).toHaveLength(2);
     // The first ask states the budget; the retry gives the reply's size and a shorter one.
-    expect((requests[0]!.input[0]!.content[1] as { text: string }).text).toContain(`at most ${LIMIT} bytes`);
-    expect((requests[1]!.input[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is \d+ bytes, over the 512-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
+    expect(requests[0]!.input.find((m) => m.role === "user")!.content[0]!.text).toContain(`at most ${LIMIT} bytes`);
+    expect(requests[1]!.input.at(-1)!.content[0]!.text).toMatch(/^Too long: your line is \d+ bytes, over the 512-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
     expect(nodes.get(key(0, 0))).toEqual({ text: retry, how: "model", tries: 2 });
     expect(logs).toEqual([]);
   });
