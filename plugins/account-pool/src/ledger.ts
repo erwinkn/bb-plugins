@@ -16,7 +16,7 @@ import {
 } from "./warming-economics.js";
 
 // A durable record of what the Pooler forwarded and what each account's quota did, kept so a
-// later report can tell whether cache warming saves more quota than it costs. Rows hold counts,
+// later report can compare warming activity, weighted tokens and quota advances. Rows hold counts,
 // ids and times only: never a request or response body, never prompt content.
 //
 // Nothing here may stall routing. request() and quota() only queue in memory. A flush on a later
@@ -716,11 +716,16 @@ export function readSeedRows(
   return [...natives, ...refreshes].sort((left, right) => left.at - right.at);
 }
 
-// Quota rows from the last one before since, per account, so the first delta has a baseline.
+// Quota rows with the last pre-range observation per account for charts. Omit since to replay
+// all retained history when accounting needs each window's high-water baseline.
 export function readQuotaRows(
   db: Database.Database,
-  since: number,
+  since?: number,
 ): IterableIterator<UsageQuotaRow> {
+  if (since === undefined)
+    return db
+      .prepare("SELECT * FROM usage_quota ORDER BY at, rowid")
+      .iterate() as IterableIterator<UsageQuotaRow>;
   return db
     .prepare(
       `SELECT * FROM usage_quota WHERE at >= COALESCE(

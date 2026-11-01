@@ -1,7 +1,7 @@
 # Usage stats
 
 `usage-stats` adds a **Usage** page (`/plugins/usage-stats/usage`) with token
-consumption, cost, cache hit rates, warming economics and quota history, from
+consumption, fixed weighted comparisons, cache hit rates, warming economics and quota history, from
 the Account Pooler's request ledger.
 
 ## What the page shows
@@ -12,7 +12,7 @@ One row of controls scopes everything below it:
   hourly or daily, on the browser's calendar: the browser sends its IANA time
   zone, and the server lays out local hours and days (23 or 25 hours across a
   DST change) and asks the Pooler for exactly those buckets.
-- **Measure:** Tokens (the default) or Cost. It sets the headline figure, the
+- **Measure:** Tokens (the default) or Input-equivalent. It sets the headline figure, the
   chart and the breakdowns' main column, and what the breakdowns and the
   chart's top series rank by.
 - **Filters:** provider, model, account, role, project, Initiative. Clicking a
@@ -26,18 +26,18 @@ its dates. "Clear filters" appears while any filter is set.
 
 Then:
 
-- **Totals:** tokens processed or cost (by the measure), requests (with warming
+- **Totals:** tokens processed or input-equivalents (by the measure), requests (with warming
   refreshes), cache hit rate, cold rewrites, warming net savings, errors (429
   and 529 counts).
-- **Tokens or cost over time:** stacked columns per hour or day, by token type, model,
+- **Tokens or input-equivalents over time:** stacked columns per hour or day, by token type, model,
   account, role or provider (top five, the rest as Other), switchable to
   requests. A cache hit-rate line sits under it on the same columns.
 - **Breakdowns:** by model, account, role, project, Initiative, provider, and
   the top 30 threads with their project and Initiative member (W#). Each row
-  has requests, tokens or cost and share, hit rate and cold rewrites.
+  has requests, tokens or input-equivalents and share, hit rate and cold rewrites.
 - **Cache and warming:** resumes after a cache entry expired, split into cold
   rewrites, rewrites a refresh avoided and entries warm without one; refresh
-  cost, savings and net.
+  input-equivalents, savings and net.
 - **Reliability:** failures, 429s, 529s, mean request time, requests without
   token counts.
 - **Quota by account:** utilization of each account's windows over the range
@@ -48,12 +48,14 @@ Then:
 
 **Tokens** (tokens processed) counts every token once: uncached input, cache reads,
 cache writes and output, as a provider's token counter would. Cache reads
-dominate it, so it runs several times larger than cost.
+dominate it, so it runs several times larger than the weighted comparison.
 
-**Cost** is in input-equivalent tokens, the Pooler's weights at API price
-ratios to uncached input: input 1×, cache read 0.1×, 5-minute cache write
-1.25×, 1-hour cache write 2×, output 5×. It is the closest public proxy for
-subscription quota, not a bill. The page states the weights it was given.
+**Input-equivalent** uses the Pooler's fixed, model-agnostic token weights:
+input 1×, cache read 0.1×, 5m cache write 1.25×, 1h cache write 2×,
+output 5×. The weights stay fixed for historical comparisons; they measure
+neither current per-model API prices nor subscription debit. The page states
+the weights it was given. The stored measure identifier remains `cost` for
+compatibility.
 
 **Cache hit rate** is cache reads over all prompt tokens (uncached input, cache
 reads and writes) of native Claude requests; warming refreshes are left out.
@@ -102,7 +104,7 @@ Initiative filter becomes a thread filter, since the ledger has no projects.
   every session, 7 Oct) show as "Not linked to a thread" and "Unattributed".
   `bb pool-local usage relink` links the old sessions BB can attribute.
 - **Codex tokens.** The Pooler recorded Codex requests without token counts
-  before 8 Oct 2026, so those count as requests and add no tokens or cost.
+  before 8 Oct 2026, so those count as requests and add no tokens or input-equivalents.
 - **Start of data.** The ledger starts when the Pooler began logging; a range
   that reaches further back has no data before then, and the footer says so.
 - **Retention.** The ledger keeps 30 days by default

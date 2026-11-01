@@ -811,3 +811,100 @@ describe("usage ledger warming outcomes (T141)", () => {
     expect(plan.map((step) => step.detail).join(" ")).toContain("usage_warming_wait");
   });
 });
+
+describe("quota report high-water accounting", () => {
+  function history() {
+    const r = rig();
+    const add = (at: number, utilization: number, resetAt: number | null = T0 + DAY) => {
+      r.ledger.quota(quota({ observedAt: at, sevenDayUtilization: utilization, sevenDayResetAt: resetAt }));
+      r.ledger.flush();
+    };
+    const report = (since = T0, until = T0 + 3 * DAY) => buildUsageReport(r.db, {
+      since, until,
+      ledger: { ...r.ledger.status(), retentionDays: 30 }, accountLabels: {},
+    });
+    return { ...r, add, report };
+  }
+
+  it("counts advances once while last shows a regression, and reruns leave rows intact", () => {
+    const h = history();
+    [0.98, 0.99, 0.98, 0.99, 1, 0.99].forEach((value, index) => h.add(T0 + index, value));
+    const before = h.db.prepare("SELECT * FROM usage_quota ORDER BY rowid").all();
+    const report = h.report();
+    expect(report.total.accounts[ACCOUNT]?.windows["7d"]).toEqual({ burn: expect.closeTo(2), last: 99 });
+    expect(h.report()).toEqual(report);
+    expect(h.db.prepare("SELECT * FROM usage_quota ORDER BY rowid").all()).toEqual(before);
+  });
+
+  it("uses insertion order for tied observations and excludes the range end", () => {
+    const h = history();
+    h.add(T0, 0.98);
+    h.add(T0, 0.99);
+    h.add(T0, 0.98);
+    h.add(T0 + 1, 0.99);
+    h.add(T0 + 2, 1);
+    expect(h.report(T0, T0 + 2).total.accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(1);
+    expect(h.report(T0 + 1).total.accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(1);
+  });
+
+  it("carries peaks across UTC days, settings periods, and a mid-rebound range start", () => {
+    const h = history();
+    const midnight = Date.UTC(2026, 9, 6);
+    h.db.prepare("INSERT INTO usage_settings (at, settings_json) VALUES (?, ?)").run(
+      midnight, JSON.stringify({ claudeMainCacheTtl: "5m", warming: { mode: "off" } }),
+    );
+    h.add(T0, 0.98);
+    h.add(midnight - 2, 0.99);
+    h.add(midnight - 1, 0.98);
+    h.add(midnight, 0.99);
+    h.add(midnight + 1, 1);
+    const full = h.report();
+    expect(full.total.accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(2);
+    expect(full.days.map(({ stats }) => stats.accounts[ACCOUNT]?.windows["7d"]?.burn)).toEqual([expect.closeTo(1), expect.closeTo(1)]);
+    expect(full.periods.map(({ stats }) => stats.accounts[ACCOUNT]?.windows["7d"]?.burn)).toEqual([expect.closeTo(1), expect.closeTo(1)]);
+    expect(h.report(midnight).total.accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(1);
+  });
+
+  it("ignores reset jitter and stale old-cycle rows without losing post-reset advances", () => {
+    const h = history();
+    const reset = T0 + DAY;
+    h.add(T0, 0.9, reset);
+    h.add(T0 + 1, 0.89, reset - 1_000);
+    h.add(T0 + 2, 0.9, reset + 1_000);
+    h.add(reset + 1, 0.2, reset + 7 * DAY);
+    h.add(reset + 2, 0.99, reset); // delayed observation of the old allowance
+    h.add(reset + 3, 0.19, reset + 7 * DAY - 1_000);
+    h.add(reset + 4, 0.3, reset + 7 * DAY + 1_000);
+    expect(h.report().total.accounts[ACCOUNT]?.windows["7d"]).toEqual({ burn: expect.closeTo(30), last: 30 });
+    expect(h.report(reset).total.accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(30);
+  });
+
+  it("retains reset identity through missing timestamps and counts a new cycle above the old peak", () => {
+    const h = history();
+    h.add(T0, 0.1);
+    h.add(T0 + 1, 0.09, null);
+    h.add(T0 + DAY + 1, 0.4, T0 + 8 * DAY);
+    expect(h.report().total.accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(40);
+  });
+
+  it("accounts independently for weekly, family, primary and secondary windows and accounts", () => {
+    const h = history();
+    [0.1, 0.2, 0.1, 0.2, 0.3].forEach((value, index) => {
+      h.ledger.quota(quota({ observedAt: T0 + index, sevenDayUtilization: value,
+        familyWeekly: { ...quota().familyWeekly, opus: { utilization: value * 2, resetAt: T0 + DAY, status: null, observedAt: T0 + index, source: "header" } },
+      }));
+      h.ledger.quota(quota({ accountId: OTHER, observedAt: T0 + index, sevenDayUtilization: null,
+        limitWindows: [
+          { slot: "primary", windowMinutes: 300, utilization: value, resetAt: T0 + DAY, status: null, observedAt: T0 + index, source: "usage" },
+          { slot: "secondary", windowMinutes: 10080, utilization: value * 2, resetAt: T0 + DAY, status: null, observedAt: T0 + index, source: "usage" },
+        ],
+      }));
+      h.ledger.flush();
+    });
+    const accounts = h.report().total.accounts;
+    expect(accounts[ACCOUNT]?.windows["7d"]?.burn).toBeCloseTo(20);
+    expect(accounts[ACCOUNT]?.windows["7d opus"]?.burn).toBeCloseTo(40);
+    expect(accounts[OTHER]?.windows["5h"]?.burn).toBeCloseTo(20);
+    expect(accounts[OTHER]?.windows["7d"]?.burn).toBeCloseTo(40);
+  });
+});

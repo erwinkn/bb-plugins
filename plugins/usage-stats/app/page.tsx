@@ -1,6 +1,6 @@
 // The Usage page: one row of filters, the headline numbers, usage over time, breakdowns, cache and
 // warming, reliability, and each account's quota. A page-wide measure, raw tokens (the default) or
-// price-weighted cost, drives the headline, the chart and the breakdowns' main column. Every number below the filters comes from one
+// fixed weighted input-equivalents, drives the headline, the chart and the breakdowns' main column. Every number below the filters comes from one
 // `page` call over the same slice, so they always agree.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -40,7 +40,7 @@ const DIMENSION_LABELS: Record<FilterDimension, string> = {
   project: "Project",
   initiative: "Initiative",
 };
-const MEASURE_LABELS: Record<Measure, string> = { tokens: "Tokens", cost: "Cost" };
+const MEASURE_LABELS: Record<Measure, string> = { tokens: "Tokens", cost: "Input-equivalent" };
 const SPLIT_LABELS: Record<Split, string> = {
   type: "Token type",
   model: "Model",
@@ -464,7 +464,7 @@ const CHART_METRICS: readonly ChartMetric[] = ["amount", "requests"];
 function chartSeries(page: OkPage, measure: Measure, metric: ChartMetric, split: Split, colorOf: (dimension: FilterDimension, id: string) => string): BarSeries[] {
   const buckets = page.series.buckets;
   if (split === "type") {
-    // Raw tokens weigh 1 each; cost weighs each type at its price ratio.
+    // Raw tokens weigh 1 each; input-equivalent uses the fixed comparison weights.
     const w = measure === "cost" ? page.weights : { input: 1, output: 1, cacheRead: 1, cacheWrite5m: 1, cacheWrite1h: 1 };
     if (metric === "requests")
       return [
@@ -684,12 +684,12 @@ function Body({
         {measure === "tokens" ? (
           <Stat label="Tokens processed" value={compact(total)} detail={`${share(totals.cacheRead, tokens)} cache reads`} />
         ) : (
-          <Stat label="Cost" value={compact(total)} detail="price-weighted tokens" />
+          <Stat label="Input-equivalent" value={compact(total)} detail="fixed weighted tokens" />
         )}
         <Stat label="Requests" value={compact(totals.requests)} detail={`${integer(totals.refreshes)} warming refreshes`} />
         <Stat label="Cache hit rate" value={percent(hitRate(totals))} detail={`${compact(totals.cacheRead)} read · ${compact(totals.cacheWrite5m + totals.cacheWrite1h)} written`} />
         <Stat label="Cold rewrites" value={integer(totals.coldRewrites)} detail={`${compact(totals.coldRewriteTokens)} tokens rewritten`} />
-        <Stat label="Warming" value={`${warmNet >= 0 ? "+" : "−"}${compact(Math.abs(warmNet))}`} detail={`net cost saved · ${integer(totals.rewritesAvoided)} rewrites avoided`} />
+        <Stat label="Warming" value={`${warmNet >= 0 ? "+" : "−"}${compact(Math.abs(warmNet))}`} detail={`net input-eq saved · ${integer(totals.rewritesAvoided)} rewrites avoided`} />
         <Stat label="Errors" value={integer(totals.errors)} detail={`${integer(totals.rateLimited)} × 429 · ${integer(totals.overloaded)} × 529`} />
       </div>
 
@@ -752,7 +752,7 @@ function Body({
           footer={
             <p className="mt-2 text-xs text-muted-foreground">
               {page.breakdowns.threadCount > page.breakdowns.thread.length ? `The top ${page.breakdowns.thread.length} of ${page.breakdowns.threadCount} threads by ${unit.toLowerCase()}. ` : ""}
-              {unlinked === undefined ? "" : `${share(amount(unlinked.metrics, measure), total)} of the ${measure === "tokens" ? "tokens are" : "cost is"} not linked to a thread. `}
+              {unlinked === undefined ? "" : `${share(amount(unlinked.metrics, measure), total)} of the ${measure === "tokens" ? "tokens are" : "input-equivalent usage is"} not linked to a thread. `}
               Open a thread by clicking it.
             </p>
           }
@@ -767,7 +767,7 @@ function Body({
               ["Cold: the prefix was written again", `${integer(totals.coldRewrites)} · ${compact(totals.coldRewriteTokens)} tokens`],
               ["Kept warm by a refresh", `${integer(totals.rewritesAvoided)} · ${compact(totals.rewriteTokensAvoided)} tokens`],
               ["Warm without a refresh", integer(Math.max(0, totals.afterExpiry - totals.coldRewrites - totals.rewritesAvoided))],
-              ["Warming refreshes", `${integer(totals.refreshes)} · cost ${compact(totals.refreshInputEquivalent)}`],
+              ["Warming refreshes", `${integer(totals.refreshes)} · input-eq ${compact(totals.refreshInputEquivalent)}`],
               ["Rewrites they avoided", `saved ${compact(totals.savedInputEquivalent)}`],
               ["Net", `${warmNet >= 0 ? "+" : "−"}${compact(Math.abs(warmNet))}`],
             ]}
@@ -784,7 +784,7 @@ function Body({
             ]}
           />
           {codexWithoutUsage ? (
-            <p className="mt-3 text-xs text-muted-foreground">Most Codex requests here carry no token counts: the Account Pooler recorded none before 8 Oct 2026. They count as requests but add no tokens or cost.</p>
+            <p className="mt-3 text-xs text-muted-foreground">Most Codex requests here carry no token counts: the Account Pooler recorded none before 8 Oct 2026. They count as requests but add no tokens or input-equivalent usage.</p>
           ) : null}
         </Card>
       </div>
@@ -805,7 +805,7 @@ function Body({
 
       <footer className="space-y-1 text-xs text-muted-foreground">
         <p>
-          Tokens processed counts every token once: uncached input, cache reads, cache writes and output. Cost weighs them in input-equivalents, at API price ratios to uncached input: input {w.input}×, cache read {w.cacheRead}×, 5-minute cache write {w.cacheWrite5m}×, 1-hour cache write {w.cacheWrite1h}×, output {w.output}×. Cost is the closest public proxy for subscription quota, not a bill.
+          Tokens processed counts every token once: uncached input, cache reads, cache writes and output. Input-equivalent uses fixed, model-agnostic comparison weights: input {w.input}×, cache read {w.cacheRead}×, 5-minute cache write {w.cacheWrite5m}×, 1-hour cache write {w.cacheWrite1h}×, output {w.output}×. These weights are retained for historical comparability and measure neither current per-model API prices nor subscription debit.
         </p>
         <p>
           From the Account Pooler's request ledger{page.oldestHour === null ? "" : `, which starts ${dateTime(page.oldestHour)}: nothing before it is counted${page.oldestHour > page.input.from ? ", so this range has no data before then" : ""}`}. The ledger keeps {page.retentionDays} days. Hourly resolution: a range starts at the hour.

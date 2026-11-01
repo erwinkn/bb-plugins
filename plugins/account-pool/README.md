@@ -450,8 +450,8 @@ dollar estimate. `scripts/copy-pool-state.py` does not carry `advisor-config` or
 
 ## Usage ledger
 
-The Pooler keeps a durable record in its SQLite database so a report can tell
-whether cache warming saves more quota than it costs:
+The Pooler keeps a durable record in its SQLite database so reports can compare
+cache-warming activity, fixed weighted token estimates and observed quota advances:
 
 - `usage_requests`: one row per upstream model request (native, warming refresh
   or advisor; Claude `/v1/messages` and Codex POST routes, not `count_tokens` or
@@ -495,16 +495,26 @@ kind, Claude cache hit ratio, cache-write tokens by TTL, cold starts after an
 expired TTL (rewrites, and hits kept warm by a refresh), refresh tokens, an
 estimate of the net saving, and each account's utilization burn per observed
 window (Claude 7d and per-family weekly; Codex windows by length).
+Burn counts only advances above the highest utilization observed in a reset cycle;
+regressions and rebounds add nothing until that peak is exceeded. Reset timestamps
+within 60 seconds of the cycle's anchor are treated as jitter; a later reset
+starts accounting from zero, and a stale older cycle does not rewind the peak.
+The last utilization remains the latest raw observation, even if it regresses.
+Peaks carry across UTC days and settings periods, with each advance attributed to
+its observation's bucket. Reports replay retained quota history before the range
+for their baseline; the first observation without earlier history adds no burn.
+Missing reset timestamps preserve the last known cycle. Without any reset
+identity, a drop alone cannot establish rollover and is treated as a regression.
 Cold starts are judged per session and model, from successful requests only (a
 failed attempt or refresh never counts as cache activity): a native request that
 came more than the previous entry's TTL after the previous one either rewrote the
 prefix or, if a refresh ran in between and it read more than it wrote, counts as
 a rewrite avoided. A report that starts mid-session is seeded from the activity
 just before `--since`. The
-estimate weighs tokens at API price ratios to uncached input (cache read 0.1×,
-5m write 1.25×, 1h write 2×, output 5×), the closest public proxy for
-subscription quota. Subagents share their main session id, so a subagent on the
-main model can hide a cold start but never invents one. The thread and role
+estimate uses fixed, model-agnostic comparison weights (input 1×, cache read 0.1×,
+5m write 1.25×, 1h write 2×, output 5×), retained for historical comparability.
+It measures neither current per-model API prices nor subscription debit.
+Subagents share their main session id, so a subagent on the main model can hide a cold start but never invents one. The thread and role
 columns come from the thread BB reports for the request's session, Claude Code or
 Codex, in any warming mode (before 31 Oct 2026, only Claude sessions while
 warming was on). A session is linked from its first request, and a linked thread
@@ -549,8 +559,8 @@ other plugin opens this database.
   thread. Each row carries requests, errors (429 and 529 among them), latency,
   tokens by type, input-equivalents at the report's weights, the native Claude
   prompt tokens and cache reads behind the hit rate, warming refreshes and their
-  cost, and the resumes after expiry (cold rewrites, rewrites avoided, savings)
-  classified exactly as the report does (`resumeOutcome` in `usage-report.ts`).
+  weighted tokens, and the resumes after expiry (cold rewrites, rewrites avoided,
+  savings) classified exactly as the report does (`resumeOutcome` in `usage-report.ts`).
 - `usage.quota {from, to}` returns each account's quota observations in range,
   with the last one before `from`, as windows by name (`7d`, `7d <family>`,
   Codex windows by length such as `5h`).

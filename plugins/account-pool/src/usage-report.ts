@@ -19,7 +19,7 @@ import {
 // Cold starts are judged per session and model (each model has its own cache entry), from native
 // requests in time order. Only cache activity counts: a native request that returned 2xx with
 // known usage, and a 2xx refresh that read the cache. Failed or canceled attempts stay in the
-// request, error and cost totals but neither move the history nor prove a refresh. A native
+// request, error and weighted token totals but neither move the history nor prove a refresh. A native
 // request that started more than the previous entry's TTL after the previous native request on the
 // same session and model would, without warming, find that entry gone:
 // - it read more than it wrote: if a refresh ran in between, warming avoided that rewrite (the
@@ -28,8 +28,8 @@ import {
 // Claude Code subagents and helpers share their main session id; a subagent on the main model
 // therefore counts as session activity, which can hide a cold start but never invents one.
 //
-// The estimate weighs tokens at Anthropic API price ratios to uncached input, which is the closest
-// public proxy for subscription quota: cache read 0.1x, 5m write 1.25x, 1h write 2x, output 5x.
+// Fixed, model-agnostic comparison weights, retained for historical comparability.
+// These measure neither current API prices nor subscription quota debit.
 export const INPUT_EQUIVALENT_WEIGHTS = {
   input: 1,
   cacheRead: 0.1,
@@ -142,7 +142,7 @@ export class UsageAggregator {
   }>;
   private readonly days = new Map<string, BucketStats>();
   private readonly chains = new ResumeChains();
-  private readonly quotas = new Map<string, Map<string, WindowState>>();
+  private readonly quotas = new Map<string, Map<string, QuotaHighWater>>();
 
   constructor(
     private readonly since: number,
@@ -228,9 +228,9 @@ export class UsageAggregator {
     }
     for (const [name, current] of quotaWindows(row)) {
       const previous = states.get(name);
-      states.set(name, current);
+      const { state, increase } = advanceQuota(previous, current);
+      states.set(name, state);
       if (row.at < this.since) continue;
-      const increase = previous === undefined ? 0 : burn(previous, current);
       for (const bucket of this.buckets(row.at)) {
         const windows = accountStats(bucket, row.account_id).windows;
         const window = windows[name] ?? { burn: 0, last: 0 };
@@ -407,16 +407,37 @@ function addTokens(
   totals.inputEquivalent += tokens.inputEquivalent;
 }
 
-// How much utilization rose between two observations. A later reset time means the window rolled
-// over, so everything now used is new.
-function burn(previous: WindowState, current: WindowState): number {
-  if (
-    previous.resetAt !== null &&
-    current.resetAt !== null &&
-    current.resetAt - previous.resetAt > 60_000
-  )
-    return current.utilization;
-  return Math.max(0, current.utilization - previous.utilization);
+// Accounting state is deliberately separate from WindowState, the latest raw observation.
+interface QuotaHighWater {
+  highWater: number;
+  resetAt: number | null;
+}
+
+// Reset timestamps can jitter between headers and polls. Keep the cycle's anchor rather than
+// letting a stale observation rewind it. A later cycle counts its first observation from zero,
+// even when that utilization already exceeds the previous cycle's peak.
+function advanceQuota(
+  previous: QuotaHighWater | undefined,
+  current: WindowState,
+): { state: QuotaHighWater; increase: number } {
+  if (previous === undefined)
+    return { state: { highWater: current.utilization, resetAt: current.resetAt }, increase: 0 };
+  if (previous.resetAt !== null && current.resetAt !== null) {
+    const resetChange = current.resetAt - previous.resetAt;
+    if (resetChange < -60_000) return { state: previous, increase: 0 };
+    if (resetChange > 60_000)
+      return {
+        state: { highWater: current.utilization, resetAt: current.resetAt },
+        increase: current.utilization,
+      };
+  }
+  return {
+    state: {
+      highWater: Math.max(previous.highWater, current.utilization),
+      resetAt: previous.resetAt ?? current.resetAt,
+    },
+    increase: Math.max(0, current.utilization - previous.highWater),
+  };
 }
 
 function windowName(minutes: number | null, slot: string): string {
@@ -528,7 +549,11 @@ export function buildUsageReport(
   );
   for (const row of readSeedRows(db, input.since)) aggregator.seed(row);
   for (const row of readRequestRows(db, input.since)) aggregator.addRequest(row);
-  for (const row of readQuotaRows(db, input.since)) aggregator.addQuota(row);
+  // A regressed last pre-range observation is not the accounting baseline: replay peaks too.
+  for (const row of readQuotaRows(db)) {
+    if (row.at >= input.until) break;
+    aggregator.addQuota(row);
+  }
   return aggregator.result(input);
 }
 
@@ -606,7 +631,7 @@ function statsLines(
   ];
   if (claude.refresh.requests > 0 || idle.rewritesAvoided > 0)
     lines.push(
-      `warming   refreshes read ${compact(claude.refresh.cacheRead)}, wrote ${compact(claude.refresh.cacheWrite)} · saved ${compact(estimate.savedInputEquivalent)} − cost ${compact(estimate.refreshCostInputEquivalent)} = net ${estimate.netInputEquivalent >= 0 ? "+" : ""}${compact(estimate.netInputEquivalent)} input-eq`,
+      `warming   refreshes read ${compact(claude.refresh.cacheRead)}, wrote ${compact(claude.refresh.cacheWrite)} · saved ${compact(estimate.savedInputEquivalent)} − refresh ${compact(estimate.refreshCostInputEquivalent)} = net ${estimate.netInputEquivalent >= 0 ? "+" : ""}${compact(estimate.netInputEquivalent)} input-eq`,
     );
   for (const [id, account] of Object.entries(stats.accounts)) {
     const windows = Object.entries(account.windows)
@@ -625,7 +650,7 @@ export function formatUsageReport(report: UsageReport): string {
   const ledger = report.ledger;
   const lines = [
     `Usage ${minute(report.since)} → ${minute(report.until)} · retention ${ledger.retentionDays}d · ledger write errors ${ledger.writeErrors}${ledger.dropped > 0 ? `, ${ledger.dropped} rows dropped` : ""} since ${minute(ledger.since)}`,
-    "input-eq weighs tokens at API price ratios: cache read 0.1×, 5m write 1.25×, 1h write 2×, output 5×.",
+    "input-eq is a fixed weighted comparison: input 1×, cache read 0.1×, 5m write 1.25×, 1h write 2×, output 5×. It measures neither current API prices nor subscription debit.",
     "",
     "Total",
     ...statsLines(report.total, report.accountLabels, "  "),

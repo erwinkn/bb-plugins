@@ -17,7 +17,7 @@ export type FilterDimension = (typeof filterDimensions)[number];
 /** The series key that folds the values past the top ones. */
 export const OTHER_ID = "\u0000other";
 
-/** What the page measures usage in: raw tokens, or price-weighted input-equivalents. */
+/** What the page measures usage in: raw tokens, or fixed weighted input-equivalents. */
 export const measures = ["tokens", "cost"] as const;
 export type Measure = (typeof measures)[number];
 

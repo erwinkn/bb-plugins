@@ -396,12 +396,12 @@ export const usageMetricsSchema = z
     cacheRead: count,
     cacheWrite5m: count,
     cacheWrite1h: count,
-    // Tokens weighted at API price ratios to uncached input (weights in the output).
+    // Fixed, model-agnostic weighted comparison (weights in the output), not cost or quota.
     inputEquivalent: amount,
     // Native Claude prompts: cache hit rate = nativeCacheRead / nativePromptTokens.
     nativePromptTokens: count,
     nativeCacheRead: count,
-    // Cache-warming refreshes and their cost.
+    // Cache-warming refreshes and their fixed weighted tokens.
     refreshes: count,
     refreshInputEquivalent: amount,
     // Native Claude requests after their entry's TTL, and what they found (usage-report.ts).

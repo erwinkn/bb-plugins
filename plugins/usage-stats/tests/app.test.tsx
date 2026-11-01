@@ -49,7 +49,7 @@ it("shows the slice's numbers, and narrows every one of them from a breakdown ro
   expect(inputs.at(-1)!.to - inputs.at(-1)!.from).toBe(24 * HOUR);
 });
 
-it("measures in raw tokens by default, switches to price-weighted cost, and remembers the choice", async () => {
+it("measures in raw tokens by default, switches to fixed weighted input-equivalents, and remembers the choice", async () => {
   const now = Date.now();
   const start = now - 2 * HOUR;
   const pooler = fakePooler([
@@ -69,17 +69,17 @@ it("measures in raw tokens by default, switches to price-weighted cost, and reme
   expect(ledger).toContain(`which starts ${new Date(start).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`);
   expect(ledger).toContain("so this range has no data before then");
 
-  fireEvent.click(within(slot.getByRole("radiogroup", { name: "Measure" })).getByRole("radio", { name: "Cost" }));
-  expect((await slot.findByText("price-weighted tokens")).parentElement!.textContent).toBe("Cost24Kprice-weighted tokens");
+  fireEvent.click(within(slot.getByRole("radiogroup", { name: "Measure" })).getByRole("radio", { name: "Input-equivalent" }));
+  expect((await slot.findByText("fixed weighted tokens")).parentElement!.textContent).toBe("Input-equivalent24Kfixed weighted tokens");
   expect(inputs.at(-1)?.measure).toBe("cost");
-  expect(slot.getByRole("heading", { name: "Cost over time" })).toBeTruthy();
-  expect(within(byModel()).getByRole("columnheader", { name: "Cost" })).toBeTruthy();
+  expect(slot.getByRole("heading", { name: "Input-equivalent over time" })).toBeTruthy();
+  expect(within(byModel()).getByRole("columnheader", { name: "Input-equivalent" })).toBeTruthy();
   expect(slot.queryByText("Tokens processed")).toBeNull();
 
   // A later visit opens in the measure last chosen.
   cleanup();
   slot = await page(handler);
-  expect(await slot.findByText("price-weighted tokens")).toBeTruthy();
+  expect(await slot.findByText("fixed weighted tokens")).toBeTruthy();
   expect(inputs.at(-1)?.measure).toBe("cost");
 });
 
@@ -99,28 +99,28 @@ it("keeps the chart in the measure its data came in until the new measure's data
     const card = slot.getByRole("heading", { name: `${measure} over time` }).closest("section")!;
     return within(card).getByText("Opus 5.5").parentElement!.textContent;
   };
-  const headline = () => slot.getByText(/^(\S+ cache reads|price-weighted tokens)$/u).parentElement!.textContent;
+  const headline = () => slot.getByText(/^(\S+ cache reads|fixed weighted tokens)$/u).parentElement!.textContent;
   await slot.findByText("Tokens processed");
   expect(chart("Tokens")).toBe("Opus 5.5100K · 100%");
   const measure = (name: string) => fireEvent.click(within(slot.getByRole("radiogroup", { name: "Measure" })).getByRole("radio", { name }));
 
   // While the cost is on its way, the page still shows tokens throughout.
-  measure("Cost");
+  measure("Input-equivalent");
   await waitFor(() => expect(held).not.toBeNull());
   expect(chart("Tokens")).toBe("Opus 5.5100K · 100%");
   expect(headline()).toBe("Tokens processed100K90% cache reads");
   held!.resolve(await buildPage(held!.input, { pooler, directory: fakeDirectory({}), now: () => now }));
-  await waitFor(() => expect(chart("Cost")).toBe("Opus 5.524K · 100%"));
-  expect(headline()).toBe("Cost24Kprice-weighted tokens");
+  await waitFor(() => expect(chart("Input-equivalent")).toBe("Opus 5.524K · 100%"));
+  expect(headline()).toBe("Input-equivalent24Kfixed weighted tokens");
 
   // A failed request leaves the last page as it was, not relabeled.
   measure("Tokens");
   await waitFor(() => expect(chart("Tokens")).toBe("Opus 5.5100K · 100%"));
   held = null;
-  measure("Cost");
+  measure("Input-equivalent");
   await waitFor(() => expect(held).not.toBeNull());
   held!.reject(new Error("Pooler down"));
-  await waitFor(() => expect(slot.getByRole("radio", { name: "Cost" }).getAttribute("aria-checked")).toBe("true"));
+  await waitFor(() => expect(slot.getByRole("radio", { name: "Input-equivalent" }).getAttribute("aria-checked")).toBe("true"));
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(chart("Tokens")).toBe("Opus 5.5100K · 100%");
   expect(headline()).toBe("Tokens processed100K90% cache reads");
