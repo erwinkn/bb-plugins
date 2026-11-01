@@ -313,6 +313,22 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Turn failures: `turn.failed.rateLimits` is the thread's latest snapshot, not the failed turn's (2026-11-01)
+
+Candidate from W561's Pooler 429 analysis (A764); not filed. Low priority.
+`latestRateLimits` (`apps/server/src/services/threads/turn-failed.ts:222-232`
+at 0.46.1) reads the newest `provider/rateLimits/updated` event on the thread
+with no lower bound. Example: Monday's turn records "blocked until 14:00";
+on Tuesday a turn fails with a rate-limit error that carries no snapshot of
+its own. `turn.failed` reports Monday's snapshot, provider-retry schedules
+for `max(14:00 Monday, now) + 15–45 s`, the retry hits the same limit, and
+five quick attempts are gone.
+
+- **Smallest change:** read the snapshot only from events after the failed
+  request's first sequence, or attach none when the newest one's reset has
+  already passed.
+- **Suggested issue title:** `turn.failed: rateLimits comes from the thread's latest snapshot, which can predate the failed turn`.
+
 ### Agent tools: change a plugin's tool list without a reload, and reach live sessions (2026-10-29)
 
 Candidate from the MCP servers plugin (W552); not filed. A plugin that
