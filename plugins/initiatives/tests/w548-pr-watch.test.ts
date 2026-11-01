@@ -14,7 +14,7 @@ import {
   watchAnswer, type WatchFacts, type WatchState,
 } from "../lib/pr-watch";
 import type { Sdk } from "../lib/bb";
-import { WATCH_RESYNC_MS, CHECKS_PAST_100, CHECKS_PAGE_QUERY, WAKE_REFUSALS } from "../lib/pr-watch";
+import { WATCH_RESYNC_MS, CHECKS_PAST_100, CHECKS_PAGE_QUERY, WAKE_REFUSALS, PLACEHOLDER_SETTLE_MS, needsRead } from "../lib/pr-watch";
 import { DEFAULT_WORKER_INSTRUCTIONS, PREVIOUS_DEFAULTS } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
@@ -192,7 +192,7 @@ interface FakePr {
   updatedAt: number;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   state: "OPEN" | "MERGED" | "CLOSED";
-  checks: { name: string; outcome: "passed" | "failed" | "pending"; required?: boolean }[];
+  checks: { name: string; outcome: "passed" | "failed" | "pending" | "skipped" | "neutral"; required?: boolean }[];
   comments: { url: string; at: number; login: string; bot?: boolean; review?: string }[];
   /** GitHub's review decision, and whether each review thread is resolved: only a watch call reads them. */
   decision?: string;
@@ -208,6 +208,8 @@ const listNode = (pr: FakePr) => withId({
     SUCCESS: pr.checks.filter((c) => c.outcome === "passed").length,
     FAILURE: pr.checks.filter((c) => c.outcome === "failed").length,
     IN_PROGRESS: pr.checks.filter((c) => c.outcome === "pending").length,
+    SKIPPED: pr.checks.filter((c) => c.outcome === "skipped").length,
+    NEUTRAL: pr.checks.filter((c) => c.outcome === "neutral").length,
   }),
 });
 /** 100 checks from `start`, with GitHub's cursor to the next page ("c<index>"). */
@@ -215,7 +217,7 @@ const contextPage = (pr: FakePr, start: number) => ({
   pageInfo: { hasNextPage: pr.checks.length > start + 100, endCursor: `c${start + 100}` },
   nodes: pr.checks.slice(start, start + 100).map((c) => ({
     __typename: "CheckRun", name: c.name, status: c.outcome === "pending" ? "IN_PROGRESS" : "COMPLETED",
-    conclusion: c.outcome === "passed" ? "SUCCESS" : c.outcome === "failed" ? "FAILURE" : null, isRequired: c.required ?? false,
+    conclusion: c.outcome === "pending" ? null : ({ passed: "SUCCESS", failed: "FAILURE", skipped: "SKIPPED", neutral: "NEUTRAL" } as const)[c.outcome], isRequired: c.required ?? false,
   })),
 });
 const watchNode = (pr: FakePr, baseline: boolean) => ({
@@ -1375,13 +1377,15 @@ describe("W554 explicit watches", () => {
     await t.poll();
     await t.poll(WATCH_RESYNC_MS);
     expect(wakeRows(t)).toEqual([]);
-    // A clean PR needs nothing now.
+    // A clean PR: its pass came before the watch, so it says no wake will come for it (W563).
     const clean = watchAnswer(prUrl(1), { ...facts, checks: [{ name: "tests", outcome: "passed", required: false }], mergeable: "mergeable", review: { decision: "approved", unresolved: 0, more: false } }, "W2", "W1");
     expect(clean).toMatchObject({ wakes: "W2", replaced: "W1 watched it before; W2 does now.", now: { checks: "all passed (1 check)", review: "approved", unresolvedThreads: "0" } });
-    expect(clean).not.toHaveProperty("attention");
+    expect(clean.attention).toBe("Its checks already passed. The watch wakes only on later changes: handle these now.");
+    // Pending checks need nothing now.
+    expect(watchAnswer(prUrl(1), { ...facts, checks: [{ name: "tests", outcome: "pending", required: false }], mergeable: "mergeable", review: { decision: null, unresolved: 0, more: false } }, "you", null)).not.toHaveProperty("attention");
     // Past 100 review threads, all resolved as far as read: the rest may not be, so it says to look.
     const many = watchAnswer(prUrl(1), { ...facts, checks: [{ name: "tests", outcome: "passed", required: false }], mergeable: "mergeable", review: { decision: "approved", unresolved: 0, more: true } }, "you", null);
-    expect(many).toMatchObject({ now: { unresolvedThreads: "0+" }, attention: "Only its first 100 review threads were read: check the rest on GitHub. The watch wakes only on later changes: handle these now." });
+    expect(many).toMatchObject({ now: { unresolvedThreads: "0+" }, attention: "Its checks already passed. Only its first 100 review threads were read: check the rest on GitHub. The watch wakes only on later changes: handle these now." });
   });
 
   it("watches a PR no list shows: finds its node id, reads it every UNLISTED_READ_MS, and wakes its watcher", async () => {
@@ -1494,7 +1498,7 @@ describe("W548 wiring", () => {
     expect(call.threadId).toBe(w.threadId);
     expect(call.senderThreadId).toBe("coordinator");
     expect(call.input[0]!.text).toContain("PR watch (sent by the Adventures plugin, not your lead): checks failed.");
-    expect(call.input[0]!.text).toContain("watch it with initiative_pr_watch");
+    expect(call.input[0]!.text).toContain("Watch each PR you open or push to (initiative_pr_watch)");
   });
 
   it("checks a wake once more just before the work is recorded, after the dispatch's reads", async () => {
@@ -1515,10 +1519,148 @@ describe("W548 wiring", () => {
   });
 
   it("tells workers to watch their PRs and never to wait on CI, within the guidance cap", () => {
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("After you open or push a PR, watch it with initiative_pr_watch; unwatch it (initiative_pr_unwatch) once you hand it off or stop caring.");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Never wait on CI with sleep, loops, `gh pr checks --watch`, Monitor or ScheduleWakeup: the watch wakes you when your PR changes.");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Watch each PR you open or push to (initiative_pr_watch): it wakes you on passing or failing checks, comments or conflicts. Unwatch it (initiative_pr_unwatch) once you hand it off.");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Never poll CI (sleep, loops, `gh pr checks --watch`, Monitor, ScheduleWakeup).");
+    // W563: ending a turn while a watched PR is pending is waiting, like on a child.
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child, background job or watched PR is pending, end your turn; it wakes you.");
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
-    // W548's text is a legacy default (behind W554's, W555's and W560's): saved unedited, it upgrades to this one.
-    expect(PREVIOUS_DEFAULTS.worker[2]).toContain("the plugin wakes you when your PR changes.");
+    // W548's text is a legacy default (behind W554's, W555's, W560's and W563's): saved unedited, it upgrades to this one.
+    expect(PREVIOUS_DEFAULTS.worker[3]).toContain("the plugin wakes you when your PR changes.");
+  });
+});
+
+// W563: a pass needs a check that ran; a watch started after the pass says so; a send BB gave up
+// on before anything happened goes again.
+describe("W563 PR watch wake gaps", () => {
+  const skipped = (name: string) => ({ name, outcome: "passed" as const, required: false, skipped: true as const });
+
+  it("reads skipped and neutral runs as passed placeholders", () => {
+    const parsed = parseWatch({
+      id: "PR_1", number: 1, state: "OPEN", headRefOid: "abc",
+      commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+        { __typename: "CheckRun", name: "check", status: "COMPLETED", conclusion: "SKIPPED", isRequired: false },
+        { __typename: "CheckRun", name: "CodeRabbit", status: "COMPLETED", conclusion: "NEUTRAL", isRequired: false },
+        { __typename: "CheckRun", name: "check / Check", status: "COMPLETED", conclusion: "SUCCESS", isRequired: false },
+      ] } } } }] },
+    });
+    expect(parsed!.checks).toEqual([skipped("check"), skipped("CodeRabbit"), { name: "check / Check", outcome: "passed", required: false }]);
+  });
+
+  it("takes skipped and neutral runs alone for no pass yet, so the pass of a check that registers after them wakes", () => {
+    const placeholders = facts({ checks: [skipped("check"), skipped("CodeRabbit")] });
+    const state = base(placeholders);
+    expect(state.passed).toBe(false);
+    const real = facts({ checks: [...placeholders.checks, { name: "check / Check", outcome: "passed", required: false }] });
+    const passed = diffWatch(state, real, ctx());
+    expect(passed.changes).toEqual([{ kind: "checks-passed", checks: ["CodeRabbit", "check", "check / Check"], required: false }]);
+    // After a push, the placeholders alone wake nobody; the real pass does.
+    const pushed = diffWatch(passed.state, { ...placeholders, head: "bbb" }, ctx());
+    expect(pushed.changes).toEqual([]);
+    expect(kinds(diffWatch(pushed.state, { ...real, head: "bbb" }, ctx()))).toEqual(["checks-passed"]);
+    // A required check skipped by its condition passes, as GitHub reads it.
+    expect(base(facts({ checks: [{ ...skipped("check"), required: true }] })).passed).toBe(true);
+  });
+
+  it("passes placeholders that held PLACEHOLDER_SETTLE_MS on one head, which a read is due for", () => {
+    const placeholders = facts({ checks: [skipped("check"), skipped("CodeRabbit")] });
+    const state = base(placeholders);
+    expect(state).toMatchObject({ passed: false, quietSince: T0 });
+    const early = diffWatch(state, placeholders, ctx({ now: T0 + PLACEHOLDER_SETTLE_MS - 1 }));
+    expect(early.changes).toEqual([]);
+    expect(early.state.quietSince).toBe(T0);
+    expect(needsRead(early.state, null, T0 + PLACEHOLDER_SETTLE_MS - 1, true)).toBe(false);
+    expect(needsRead({ ...early.state, readAt: T0 + PLACEHOLDER_SETTLE_MS - 1 }, null, T0 + PLACEHOLDER_SETTLE_MS, true)).toBe(true);
+    const settledRead = diffWatch(early.state, placeholders, ctx({ now: T0 + PLACEHOLDER_SETTLE_MS }));
+    expect(settledRead.changes).toEqual([{ kind: "checks-passed", checks: ["CodeRabbit", "check"], required: false }]);
+    expect(needsRead({ ...settledRead.state, readAt: T0 + PLACEHOLDER_SETTLE_MS }, null, T0 + 2 * PLACEHOLDER_SETTLE_MS, true)).toBe(false);
+    // A workflow registering after that pass is news again once it passes.
+    const pending = diffWatch(settledRead.state, facts({ checks: [...placeholders.checks, { name: "check / Check", outcome: "pending", required: false }] }), ctx({ now: T0 + 6 * MINUTE }));
+    expect(pending.state).toMatchObject({ passed: false, quietSince: null });
+    expect(kinds(diffWatch(pending.state, facts({ checks: [...placeholders.checks, { name: "check / Check", outcome: "passed", required: false }] }), ctx({ now: T0 + 7 * MINUTE })))).toEqual(["checks-passed"]);
+    // A pending check in between restarts the wait.
+    const restarted = diffWatch(diffWatch(state, facts({ checks: [skipped("check"), { name: "lint", outcome: "pending", required: false }] }), ctx({ now: T0 + MINUTE })).state, placeholders, ctx({ now: T0 + 2 * MINUTE }));
+    expect(restarted.state.quietSince).toBe(T0 + 2 * MINUTE);
+  });
+
+  it("keeps a pass stored before W563 on placeholders, and settles a pending one stored then (review r2)", () => {
+    const placeholders = facts({ checks: [skipped("lint")] });
+    // Stored by the previous build: passed on a neutral-only set, no quietSince.
+    const { quietSince: _passedBefore, ...legacyPassed } = { ...base(facts({ checks: [{ name: "lint", outcome: "passed", required: false }] })), passed: true };
+    const unchanged = diffWatch(legacyPassed, placeholders, ctx({ now: T0 + MINUTE }));
+    expect(unchanged.changes).toEqual([]);
+    expect(unchanged.state.passed).toBe(true);
+    expect(needsRead({ ...unchanged.state, readAt: T0 + MINUTE }, null, T0 + MINUTE + PLACEHOLDER_SETTLE_MS, true)).toBe(false);
+    expect(diffWatch(unchanged.state, placeholders, ctx({ now: T0 + MINUTE + PLACEHOLDER_SETTLE_MS })).changes).toEqual([]);
+    // Stored pending (lint running), then lint ends neutral: it settles and wakes once.
+    const { quietSince: _pendingBefore, ...legacyPending } = base(facts({ checks: [{ name: "lint", outcome: "pending", required: false }] }));
+    const ended = diffWatch(legacyPending, placeholders, ctx({ now: T0 + MINUTE }));
+    expect(ended.changes).toEqual([]);
+    const woke = diffWatch(ended.state, placeholders, ctx({ now: T0 + MINUTE + PLACEHOLDER_SETTLE_MS }));
+    expect(kinds(woke)).toEqual(["checks-passed"]);
+    expect(diffWatch(woke.state, placeholders, ctx({ now: T0 + MINUTE + 2 * PLACEHOLDER_SETTLE_MS })).changes).toEqual([]);
+  });
+
+  it("takes the rollup's success for the checks past those read, placeholders or not (review r1)", () => {
+    const many = Array.from({ length: 1000 }, (_, i) => skipped(`job ${i}`));
+    const pending = base(facts({ checks: many, more: { rollup: "PENDING", cursor: null } }));
+    expect(pending.passed).toBe(false);
+    expect(diffWatch(pending, facts({ checks: many, more: { rollup: "SUCCESS", cursor: null } }), ctx()).changes)
+      .toEqual([{ kind: "checks-passed", checks: many.map((c) => c.name).sort(), required: false }]);
+  });
+
+  it("wakes, once settled, for a lone check that runs and ends neutral (review r1)", async () => {
+    const t = setup({ prs: [fakePr(1, { checks: [{ name: "lint", outcome: "pending" }] })] });
+    await t.start();
+    t.prs.get(1)!.checks = [{ name: "lint", outcome: "neutral" }];
+    await t.poll();
+    expect(t.giveWork).not.toHaveBeenCalled();
+    await t.poll(PLACEHOLDER_SETTLE_MS);
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork.mock.calls[0]![2]).toContain("All checks passed (1 check).");
+    await t.poll(WATCH_RESYNC_MS);
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("wakes on the real check's pass after a watch that saw only a push's skipped runs (equisafe-market#5393)", async () => {
+    const t = setup({ prs: [fakePr(1, { checks: [{ name: "check", outcome: "skipped" }, { name: "tests", outcome: "skipped" }] })] });
+    await t.poll(0);
+    const answer = watchAnswer(prUrl(1), (await t.watch(1)).facts, "you", null);
+    expect(answer.now.checks).toBe("only skipped or neutral so far");
+    expect(answer).not.toHaveProperty("attention");
+    t.prs.get(1)!.checks = [{ name: "check", outcome: "skipped" }, { name: "tests", outcome: "skipped" }, { name: "check / Check", outcome: "pending" }];
+    await t.poll();
+    expect(t.giveWork).not.toHaveBeenCalled();
+    // Only the check passing changes: no push, comment or conflict.
+    t.prs.get(1)!.checks = [{ name: "check", outcome: "skipped" }, { name: "tests", outcome: "skipped" }, { name: "check / Check", outcome: "passed" }];
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork.mock.calls[0]![2]).toContain("All checks passed (3 checks).");
+  });
+
+  it("answers a watch started after the checks passed with that pass, and wakes nobody for it later", async () => {
+    const t = setup({ prs: [fakePr(1, { checks: [{ name: "tests", outcome: "passed" }] })] });
+    await t.poll(0);
+    expect(watchAnswer(prUrl(1), (await t.watch(1)).facts, "you", null)).toMatchObject({
+      now: { checks: "all passed (1 check)" },
+      attention: "Its checks already passed. The watch wakes only on later changes: handle these now.",
+    });
+    await t.poll();
+    await t.poll(WATCH_RESYNC_MS);
+    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(t.sent()).toEqual([]);
+  });
+
+  it("sends a wake again after BB's 'changed twice under one dispatch attempt', which sent nothing", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.start();
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "passed" }];
+    t.send.mockImplementationOnce(async () => { throw Object.assign(new Error("Thread thr_w1 changed twice under one dispatch attempt"), { status: 500 }); });
+    await t.poll();
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "pending" })]);
+    await t.poll();
+    expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_w1"]);
+    expect(t.sent()[1]!.text).toContain("All checks passed (1 check).");
+    expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent" })]);
   });
 });

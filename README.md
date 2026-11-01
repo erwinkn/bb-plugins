@@ -313,6 +313,23 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Thread sends: "changed twice under one dispatch attempt" is a 500 though nothing was sent (2026-11-01)
+
+Candidate from W563's PR-watch audit; not filed. Low priority. When a
+thread's status moves twice while a message is dispatched, BB answers
+`500 internal_error` "Thread … changed twice under one dispatch attempt"
+(`reattemptDispatchForThreadChange` in
+`apps/server/src/services/threads/dispatch-attempt.ts`). Every path to it gives
+up before appending anything, so the send had no effect, but a 5xx tells the
+caller it may have. Example: on 2026-11-01 at 03:55 a PR-watch wake to a busy
+worker, whose reviewer thread was being replaced, got this answer. The
+Adventures plugin marked it failed and never sent it again, until W563 matched
+the message text.
+
+- **Smallest change:** answer 409 (`thread_changed`, retryable), or try once
+  more before giving up.
+- **Suggested issue title:** `threads.send: "changed twice under one dispatch attempt" returns 500 although nothing was dispatched`.
+
 ### Turn failures: `turn.failed.rateLimits` is the thread's latest snapshot, not the failed turn's (2026-11-01)
 
 Candidate from W561's Pooler 429 analysis (A764); not filed. Low priority.

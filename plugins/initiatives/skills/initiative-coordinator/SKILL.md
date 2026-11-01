@@ -41,7 +41,8 @@ lead: workers report back to it. This skill only sums up the tools.
   isn't enough. A done report on a code change names its review rounds and last verdict, or
   says review was skipped as trivial; if it names neither, send it back to the same worker to review. A report on work given out before
   the switch to worker-owned reviews says so. A "stopped without reporting" message means the
-  worker is stuck (a worker waiting on its own reviewer isn't): read its thread. Retire the
+  worker is stuck (a worker waiting on its own reviewer, or on a PR it watches, isn't; one
+  whose watched PR hasn't woken it in 6 hours is): read its thread. Retire the
   worker (`initiative_worker` retire) once its PR is merged or dropped; Stop stops it and its
   running children.
 - `initiative_rule` keeps the standing rules you and every worker follow

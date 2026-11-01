@@ -655,8 +655,8 @@ them up again on a rollback.
   review decision and unresolved review threads; a PR no list shows first has
   its node id looked up) and answers with its state: head, checks, mergeability,
   review decision, unresolved threads, and an `attention` line naming what needs
-  action now (failing checks, a conflict, requested changes, unresolved
-  threads). That baseline wakes nobody, so a PR already failing is never silent:
+  action now (checks that already passed, failing checks, a conflict, requested
+  changes, unresolved threads). That baseline wakes nobody, so a PR already failing is never silent:
   the caller sees it in the answer. A head with no check yet counts as pushed at
   the watch, so no check 15 minutes later still wakes. A merged, closed or
   unknown PR is refused.
@@ -664,13 +664,28 @@ them up again on a rollback.
   one), required checks passing (the base branch's, from classic protection
   and rulesets: each must have reported and passed, since a required workflow
   skipped by its path filter blocks the merge; every check, where none is
-  required), new comments and reviews since the last read, a conflict with the
-  base, and no check reported 15 minutes after a push (only in a repository
-  where some PR ever reported checks, listed or read by a watch; kept across
-  reloads). Past 100 checks on
-  a commit, the rest are read 100 a page (up to 1,000); past that, the
-  rollup's overall state stands in for the unread ones. A merge or a close
-  only ends the watch, waking nobody.
+  required; skipped and neutral runs alone only after 5 minutes, below), new comments and reviews since the
+  last read, a conflict with the base, and no check reported 15 minutes after
+  a push (only in a repository where some PR ever reported checks, listed or
+  read by a watch; kept across reloads). Past 100 checks on a commit, the rest
+  are read 100 a page (up to 1,000); past that, the rollup's overall state
+  stands in for the unread ones. A merge or a close only ends the watch,
+  waking nobody.
+- **Placeholder runs settle first (W563).** Where no check is required,
+  checks that all passed as skipped or neutral, with nothing pending, pass
+  only once they have held `PLACEHOLDER_SETTLE_MS` (5 min) on a head; a read
+  is due then. A check that registers meanwhile restarts the wait, and passes
+  of its own. Past the checks read (over 1,000), the rollup's success decides
+  as before. On equisafe-market a
+  push first reports two skipped runs (`check`, `tests`); the workflow that
+  does the work registers seconds later. Example, #5393: pushed 13:47:34,
+  watched 13:47:51, `check / Check` started 13:47:56 and passed 13:48:27. The
+  baseline read "all passed (2 checks)", so the real pass woke nobody. That
+  happened to 6 watching workers on 2026-11-01, and 10 of the 140 checks-passed
+  wakes of 48 hours fired on such placeholders (`["CodeRabbit","check","tests"]`,
+  `["CodeRabbit"]`), after which the real pass could not wake. A lone check
+  that runs and ends neutral still wakes, 5 minutes late. A required check
+  skipped by its condition still passes at once, as GitHub reads it.
 - **Whose comments.** Never the `gh` account's own. Agents and the user share
   it, and nothing in GitHub's data tells them apart: on Equisafe's last 60
   PRs every one of its ~37 comments and reviews was an agent's (proofs,
@@ -709,7 +724,9 @@ them up again on a rollback.
   thread archived meanwhile) goes back to pending and is routed afresh next
   pass, here to the coordinator; the third refusal fails it, and the
   coordinator gets one note naming the PR, its watcher and BB's last answer
-  (W551). Any other send error fails it at once, since it may have arrived. A
+  (W551). So does BB's 500 "Thread … changed twice under one dispatch
+  attempt" (W563): BB gives up on that before appending anything. Any other
+  send error fails it at once, since it may have arrived. A
   Stop that lands while a message goes out (the thread reads stopping after
   it, or the worker stopped): a message BB queued behind it (BB would start a
   turn with it once idle) is taken back and the wake routed afresh, nothing
@@ -1074,10 +1091,24 @@ reaches it as one ordinary BB message from the worker's thread; BB's queue
 delivers it, and a failed send is reported back to the worker. Every 3 minutes
 the sweep looks for workers that stopped without reporting: a worker with open
 or reported work whose thread is idle or failed, with nothing queued or running
-in the background (unknown background counts skip it), and no message to the
-coordinator since its latest input. The coordinator gets one message per worker
-input, "W12 stopped (idle) without reporting since its last input. Its last
-message: …", recorded as a `stuck:<initiative>:<worker>:<input seq>` flag. On a
+in the background (unknown background counts skip it), no live child, no open
+PR it watches (below), and no message to the coordinator since its latest
+input. The coordinator gets one message per worker input, "W12 stopped (idle)
+without reporting since its last input. Its last message: …", recorded as a
+`stuck:<initiative>:<worker>:<input seq>` flag.
+
+A worker that ends its turn while it watches an open PR (`initiative_pr_watch`,
+its thread the watcher, the PR not yet seen merged or closed) is waiting, as
+one with a live child is: the PR's next change wakes it (W563). On 2026-11-01,
+15 of the 30 stuck notices of the past 24 hours were about such workers: 5 got
+a wake 13 s to 3 min after the notice, 4 came 1 to 3 min before their PR
+merged, and 6 waited on a pass that never woke them (skipped runs, below).
+Once a merge or close ends the watch, the sweep flags the worker as before if it
+still hasn't reported. Past `PR_WAIT_MAX_MS` (6 h)
+since its latest input (a wake is one) or its newest watch, whichever is
+later, the worker is flagged anyway, "…since its last input, though it watches
+an open PR: nothing has woken it for 6 h", since a PR can stay quiet for good.
+Both checks run again right before the send. On a
 server without the fork the field is dropped or refused; the plugin logs it once
 and the worker gets ordinary turn notices, so BB may also wake the coordinator
 at its turn ends. Coordinators and threads the user opens keep ordinary notices.

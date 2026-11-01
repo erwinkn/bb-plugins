@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ThreadDto } from "../lib/bb";
 import { fixture, projectFixture, report } from "./fake-native";
 import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } from "../lib/guidance";
+import { baselineState } from "../lib/pr-watch";
+import { PR_WAIT_MAX_MS } from "../lib/service";
 
 // W210 (D417): workers run with "explicit" parent notices (final reports only), so their turn
 // ends never wake the coordinator. initiative_report sends the report once as an ordinary
@@ -330,6 +332,80 @@ describe("W210 stuck workers", () => {
     f.store.updateWorker(project.id, 1, { state: "retired" });
     await check();
     expect(f.send).not.toHaveBeenCalled();
+  });
+
+  // W563: a worker that watches an open PR waits on its wake, as one with a live child waits on it.
+  describe("W563 waiting on a watched PR", () => {
+    const url = "https://github.com/eq/market/pull/7";
+    /** `threadId` watches PR 7, its checks pending, from now (store time). */
+    const watch = (f: Fx, projectId: string, threadId: string) =>
+      f.service.prWatches.watch(url, projectId, threadId, "PR_7", baselineState({
+        state: "OPEN", head: "abc", mergeable: "mergeable", createdAt: 0, checks: [{ name: "tests", outcome: "pending", required: false }], comments: [],
+      }, f.store.now(), ""));
+    /** A sweep at `at` (service time). */
+    const sweepAt = async (f: Fx, at: number) => { vi.spyOn(f.service, "now").mockReturnValue(at); await f.service.checkWorkers(); };
+
+    it("leaves a worker that watches an open PR alone, sweep after sweep", async () => {
+      const { f, project, w, check } = await stopped();
+      watch(f, project.id, w.threadId);
+      await check();
+      await check();
+      expect(stuckSends(f)).toHaveLength(0);
+    });
+
+    it("flags it after PR_WAIT_MAX_MS with no input or new watch, saying it watches a PR, once", async () => {
+      const { f, project, w } = await stopped();
+      watch(f, project.id, w.threadId);
+      const since = f.store.now();
+      await sweepAt(f, since + PR_WAIT_MAX_MS - 4 * 60_000);
+      expect(stuckSends(f)).toHaveLength(0);
+      await sweepAt(f, since + PR_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(f)).toEqual([`Initiative · Search · W1\n\nW1 stopped (idle) without reporting since its last input, though it watches an open PR: nothing has woken it for 6 h. Its last message:\n\nWaiting for CI.\n\nRead its thread (${w.threadId}).`]);
+      await sweepAt(f, since + PR_WAIT_MAX_MS + 10 * 60_000);
+      expect(stuckSends(f)).toHaveLength(1);
+    });
+
+    it("counts the window from its newest watch, or its latest input (a wake), whichever is later", async () => {
+      const { f, project, w } = await stopped();
+      const t0 = f.store.now();
+      watch(f, project.id, w.threadId);
+      // Watched again 5 h later (a push): the window restarts there.
+      vi.spyOn(f.store, "now").mockReturnValue(t0 + 5 * 3_600_000);
+      watch(f, project.id, w.threadId);
+      await sweepAt(f, t0 + PR_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(f)).toHaveLength(0);
+      // A wake 10 h in (a new input), handled, then quiet: the window restarts at the input.
+      const wakeAt = t0 + 10 * 3_600_000;
+      f.history.push({ type: "client/turn/requested", seq: ++seq, threadId: w.threadId, createdAt: wakeAt, data: { requestId: `creq_${seq}`, input: [] } });
+      f.history.push({ type: "turn/started", seq: ++seq, threadId: w.threadId, createdAt: wakeAt });
+      f.history.push({ type: "turn/completed", seq: ++seq, threadId: w.threadId, createdAt: wakeAt + 1, data: { status: "completed" } });
+      await sweepAt(f, t0 + 5 * 3_600_000 + PR_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(f)).toHaveLength(0);
+      await sweepAt(f, wakeAt + PR_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(f)).toHaveLength(1);
+    });
+
+    it("flags as before once the PR merges or closes, or the watch ends; another thread's watch doesn't count", async () => {
+      for (const end of ["MERGED", "CLOSED", "unwatched", "other"] as const) {
+        const { f, project, w, check } = await stopped();
+        watch(f, project.id, end === "other" ? "thr_someone_else" : w.threadId);
+        const row = f.service.prWatches.row(url)!;
+        if (end === "unwatched") f.service.prWatches.unwatch(url, w.threadId);
+        else if (end !== "other") f.service.prWatches.write([{ url, gen: row.gen, state: { ...row.state!, ended: end }, wake: null }]);
+        await check();
+        expect(stuckSends(f), end).toEqual([expect.stringContaining("W1 stopped (idle) without reporting since its last input. Its last message:")]);
+      }
+    });
+
+    it("checks the watch again right before the send: one started while the sweep read the coordinator counts", async () => {
+      const { f, project, w, check } = await stopped();
+      const gate = hold(f, (path, args) => path === "threads.events.list" && args.threadId === "coordinator");
+      const pending = check();
+      await gate.at;
+      watch(f, project.id, w.threadId);
+      gate.release(); await pending;
+      expect(stuckSends(f)).toHaveLength(0);
+    });
   });
 });
 

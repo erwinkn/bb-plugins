@@ -53,6 +53,13 @@ export const WAKE_MAX_AGE_MS = 24 * 60 * 60_000;
 /** Sends of a wake BB may refuse (a 4xx: nothing happened), each routed afresh, before it fails. */
 export const WAKE_REFUSALS = 3;
 
+/**
+ * W563: checks that are all skipped or neutral, with nothing pending, pass only once they have
+ * held this long on a head: a push's placeholder runs report seconds before the workflow that
+ * does the work registers (on equisafe-market, ~16 s).
+ */
+export const PLACEHOLDER_SETTLE_MS = 5 * 60_000;
+
 /** What wakes a PR's watcher. A merge or a close only ends the watch (Erwin, 2026-10-28). */
 export type ChangeKind = "checks-failed" | "checks-passed" | "new-comments" | "conflicting" | "no-checks";
 
@@ -104,6 +111,12 @@ export interface WatchCheck {
   name: string;
   outcome: "passed" | "failed" | "pending";
   required: boolean;
+  /**
+   * W563: passed as skipped or neutral. Alone, such runs may be a push's placeholders (jobs
+   * skipped by their condition, an app's neutral status) reporting before the workflow that does
+   * the work registers: they pass only after PLACEHOLDER_SETTLE_MS.
+   */
+  skipped?: true;
 }
 
 export interface WatchComment {
@@ -209,7 +222,10 @@ export function parseChecks(contexts: unknown): WatchCheck[] {
     if (typeof name !== "string" || !name) continue;
     // A check run's conclusion once completed, a status context's state.
     const value = String(context.__typename === "CheckRun" ? (context.status === "COMPLETED" ? context.conclusion : "") : context.state).toUpperCase();
-    checks.push({ name, outcome: PASSED.has(value) ? "passed" : FAILED.has(value) ? "failed" : "pending", required: context.isRequired === true });
+    checks.push({
+      name, outcome: PASSED.has(value) ? "passed" : FAILED.has(value) ? "failed" : "pending", required: context.isRequired === true,
+      ...(value === "SKIPPED" || value === "NEUTRAL" ? { skipped: true as const } : {}),
+    });
   }
   return checks;
 }
@@ -247,6 +263,11 @@ export interface WatchState {
   ended: "MERGED" | "CLOSED" | null;
   /** When its last watch read ran: one older than WATCH_RESYNC_MS is read again. */
   readAt: number;
+  /**
+   * W563: since when `head`'s checks have been all skipped or neutral with nothing pending
+   * (placeholders); null or absent otherwise (states stored before W563 lack it).
+   */
+  quietSince?: number | null;
 }
 
 export interface Change {
@@ -277,6 +298,8 @@ export const listFingerprint = (pr: Pick<QueuedPullRequest, "headOid" | "updated
 export function needsRead(state: WatchState, pr: (Parameters<typeof listFingerprint>[0] & Pick<QueuedPullRequest, "mergeable">) | null, now: number, repoHasChecks: boolean): boolean {
   if (pr ? state.fingerprint !== listFingerprint(pr) || now - state.readAt >= WATCH_RESYNC_MS : now - state.readAt >= UNLISTED_READ_MS) return true;
   if (pr && pr.mergeable !== "unknown" && pr.mergeable !== state.mergeable) return true;
+  // W563: placeholders that held PLACEHOLDER_SETTLE_MS pass, which a read finds.
+  if (!state.passed && state.quietSince != null && now - state.quietSince >= PLACEHOLDER_SETTLE_MS) return true;
   return repoHasChecks && !state.noChecksDone && state.pushedAt !== null && now - state.pushedAt >= NO_CHECKS_MS;
 }
 
@@ -292,6 +315,9 @@ const failingNames = (watch: WatchFacts) => {
 /**
  * The checks that gate the PR and whether they all passed: every check the base branch requires
  * (or GitHub marks required), each of which must have reported and passed; else every check.
+ * `placeholders` (W563): where none is required, all of them passed as skipped or neutral, all
+ * read; that is no pass yet (`settled` decides), since the workflow that does the work may not
+ * have registered, and its own pass would then wake nobody.
  */
 const gate = (watch: WatchFacts) => {
   const names = new Set([...(watch.required ?? []), ...watch.checks.filter((c) => c.required).map((c) => c.name)]);
@@ -301,11 +327,24 @@ const gate = (watch: WatchFacts) => {
       const runs = watch.checks.filter((c) => c.name === name);
       return runs.length > 0 && runs.every((c) => c.outcome === "passed");
     });
-    return { names: [...names].sort(), required: true, passed: passed && (!watch.more || watch.more.rollup === "SUCCESS" || !!watch.required) };
+    return { names: [...names].sort(), required: true, passed: passed && (!watch.more || watch.more.rollup === "SUCCESS" || !!watch.required), placeholders: false };
   }
   // Past 100 checks, a failing one may be among the unread: only the whole rollup's success says they passed.
-  const passed = watch.checks.length > 0 && watch.checks.every((c) => c.outcome === "passed") && (!watch.more || watch.more.rollup === "SUCCESS");
-  return { names: [...new Set(watch.checks.map((c) => c.name))].sort(), required: false, passed };
+  const done = watch.checks.length > 0 && watch.checks.every((c) => c.outcome === "passed") && (!watch.more || watch.more.rollup === "SUCCESS");
+  // Past the checks read, the rollup's success speaks for the rest.
+  const placeholders = done && !watch.more && watch.checks.every((c) => c.skipped);
+  return { names: [...new Set(watch.checks.map((c) => c.name))].sort(), required: false, passed: done && !placeholders, placeholders };
+};
+
+/**
+ * W563: when `head`'s placeholders began (`prev`'s time when they held through it on the same
+ * head, else now), and whether the checks pass: they passed outright, placeholders held
+ * PLACEHOLDER_SETTLE_MS, or `prev` (the same head) already passed with them. That last keeps a
+ * pass stored before W563 (no `quietSince`) from waking again once the wait restarts (review r2).
+ */
+const settled = (gating: ReturnType<typeof gate>, prev: Pick<WatchState, "quietSince" | "passed"> | null, now: number) => {
+  const quietSince = gating.placeholders ? (prev?.quietSince ?? now) : null;
+  return { quietSince, passed: gating.passed || (quietSince !== null && (prev?.passed === true || now - quietSince >= PLACEHOLDER_SETTLE_MS)) };
 };
 
 /** The comment cursor after seeing `comments`: the newest time, and every URL seen at it. */
@@ -327,7 +366,8 @@ export function baselineState(watch: WatchFacts, now: number, fingerprint: strin
     fingerprint,
     readAt: now,
     failing: failingNames(watch),
-    passed: gate(watch).passed,
+    // A baseline can't tell how long placeholders have held: they settle from the watch.
+    ...settled(gate(watch), null, now),
     mergeable: watch.mergeable,
     ...seen(null, watch.comments),
     pushedAt: unchecked ? now : null,
@@ -358,7 +398,8 @@ export function diffWatch(
   const fresh = failing.filter((name) => !was.includes(name));
   if (fresh.length) changes.push({ kind: "checks-failed", checks: fresh });
   const gating = gate(watch);
-  if (gating.passed && (pushed || !prev.passed)) changes.push({ kind: "checks-passed", checks: gating.names, required: gating.required });
+  const { quietSince, passed } = settled(gating, pushed ? null : prev, now);
+  if (passed && (pushed || !prev.passed)) changes.push({ kind: "checks-passed", checks: gating.names, required: gating.required });
   let cursor = { seenUntil: prev.seenUntil, seenAt: prev.seenAt ?? [] };
   if (context.login) {
     const own = context.login.toLowerCase();
@@ -385,7 +426,7 @@ export function diffWatch(
     } else commentWakes++;
   }
   return {
-    state: { head: watch.head, fingerprint, failing, passed: gating.passed, mergeable, ...cursor, pushedAt, noChecksDone, commentWakes, ended: null, readAt: now },
+    state: { head: watch.head, fingerprint, failing, passed, quietSince, mergeable, ...cursor, pushedAt, noChecksDone, commentWakes, ended: null, readAt: now },
     changes,
     capped,
   };
@@ -440,9 +481,12 @@ export function watchAnswer(url: string, facts: WatchFacts, who: string, replace
   const checks = !facts.checks.length && !facts.more
     ? "none reported yet"
     : gating.passed ? `${gating.required ? "required" : "all"} passed (${plural(gating.names.length, "check")})`
+    : gating.placeholders ? "only skipped or neutral so far"
     : [failing.length ? `failing: ${failing.join(", ")}` : "", pending.length ? `${plural(pending.length, "check")} pending` : "", gating.required ? `required: ${gating.names.join(", ")}` : ""].filter(Boolean).join("; ") || "not all passed";
   const unresolved = facts.review ? `${facts.review.unresolved}${facts.review.more ? "+" : ""}` : null;
   const attention = [
+    // W563: the pass already happened, so no wake will come for it.
+    gating.passed ? `Its ${gating.required ? "required checks" : "checks"} already passed.` : "",
     failing.length ? `Checks failing: ${failing.join(", ")}.` : "",
     facts.mergeable === "conflicting" ? "It conflicts with its base branch." : "",
     facts.review?.decision === "changes_requested" ? "Changes are requested." : "",
@@ -554,6 +598,16 @@ export class WatchLedger {
   active(): Map<string, WatchRow> {
     const rows = (this.db.prepare("SELECT * FROM pr_watches WHERE watcher_thread_id IS NOT NULL AND state IS NOT NULL").all() as Record<string, unknown>[]).map(toWatch);
     return new Map(rows.filter((r) => !r.state!.ended).map((r) => [r.url, r]));
+  }
+
+  /**
+   * W563: each thread that watches a PR still open (as its last read saw it), with when the newest
+   * of those watches began. The stuck-worker sweep leaves such a worker alone: a wake will come.
+   */
+  openWatchers(): Map<string, number> {
+    const rows = this.db.prepare(`SELECT watcher_thread_id AS thread, MAX(since) AS since FROM pr_watches
+      WHERE watcher_thread_id IS NOT NULL AND state IS NOT NULL AND json_extract(state, '$.ended') IS NULL GROUP BY watcher_thread_id`).all() as { thread: string; since: number }[];
+    return new Map(rows.map((r) => [r.thread, r.since]));
   }
 
   row(url: string): WatchRow | null {
@@ -680,6 +734,15 @@ export interface PrWatchDeps {
   changed(projectId: string): void;
   warn(message: string): void;
 }
+
+/**
+ * W563: BB's 500 "Thread … changed twice under one dispatch attempt". The thread's status moved
+ * under the send twice and BB gave up before appending anything (every path to that error in
+ * ~/Code/bb apps/server/src/services/threads/dispatch-attempt.ts, 2026-10-17), so nothing was
+ * sent and the wake goes back to pending like a refused one. 1 of 246 wakes in 48 h
+ * (2026-11-01: a busy worker whose reviewer was being replaced).
+ */
+export const dispatchRaced = (error: unknown) => /changed twice under one dispatch attempt/.test(errorMessage(error));
 
 /** A read saw checks (some past the first 100 included). */
 const hasChecks = (facts: WatchFacts) => facts.checks.length > 0 || !!facts.more;
@@ -1114,7 +1177,7 @@ export class PrWatcher {
         this.deps.ledger.mark(ids.filter((id) => !about.includes(id)), "pending");
       } else {
         this.deps.warn(`PR watch could not wake about ${wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ")}: ${errorMessage(error)}`);
-        if (!isDefiniteRejection(error)) this.deps.ledger.mark(ids, "failed", errorMessage(error).slice(0, 300));
+        if (!isDefiniteRejection(error) && !dispatchRaced(error)) this.deps.ledger.mark(ids, "failed", errorMessage(error).slice(0, 300));
         else {
           const failed = this.deps.ledger.refused(ids, `BB refused the send: ${errorMessage(error)}`.slice(0, 300));
           if (failed.length) await this.gaveUp(wakes.filter((w) => failed.includes(w.id)), errorMessage(error));

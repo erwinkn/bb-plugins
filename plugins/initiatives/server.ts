@@ -66,7 +66,7 @@ import {
 } from "./lib/overview";
 import { Background, FIRST_READ_WAIT_MS, LiveThreads, Recent, liveOf } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
-import { PrWatcher, WATCH_TICK_MS, WatchLedger, readPrWatch, watchAnswer, watcherLabel } from "./lib/pr-watch";
+import { PrWatcher, WATCH_TICK_MS, readPrWatch, watchAnswer, watcherLabel } from "./lib/pr-watch";
 import { canonicalPrUrl, prToolSchema, workerPrToolSchema } from "./lib/pr-stages";
 import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
 import { AssignedPrs, COORDINATOR, initiativeNamed, recordPrs, type PrCaller } from "./lib/pr-records";
@@ -607,7 +607,7 @@ export default function plugin(bb: BbPluginApi) {
   // W548: a landed list is diffed by the PR watches.
   () => prWatcher.poke());
   // W548, W554: a PR an agent watches (initiative_pr_watch) wakes it when it changes on GitHub.
-  const watchLedger = new WatchLedger(store.db, () => store.now());
+  const watchLedger = service.prWatches;
   /** A wake as a lead's more work (initiative_message work:true) from the coordinator, serialized with every other write. */
   const prWatchWork = (projectId: string, workerRef: string, text: string, still: () => void = () => {}) => announcing(() => serialized(async () => {
     // The wake may have stopped applying while earlier writes ran (a mute, a pause, a retire), or
@@ -1362,7 +1362,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_pr_watch",
     parameters: jsonSchema(prWatchToolSchema),
-    description: 'Watch a pull request: the plugin wakes this thread when it changes on GitHub (checks failing, required checks passing, new comments or reviews by others, a conflict, no check 15 min after a push) until it merges or closes, or you unwatch it. Call it after you open or push a PR: {pr:"https://github.com/o/r/pull/12"}. It answers with the PR\'s state now (checks, review decision, conflicts, unresolved threads): only later changes wake, so act on what it shows. One watcher per PR; a new watch replaces the old. A lead may watch for a worker: {pr, worker:"W3"}.',
+    description: 'Watch a pull request: the plugin wakes this thread when it changes on GitHub (checks failing, required checks passing, new comments or reviews by others, a conflict, no check 15 min after a push) until it merges or closes, or you unwatch it. Call it after you open or push a PR: {pr:"https://github.com/o/r/pull/12"}; then end your turn if you have nothing else to do: a change wakes you. It answers with the PR\'s state now (checks, review decision, conflicts, unresolved threads): only later changes wake, so act on what it shows. One watcher per PR; a new watch replaces the old. A lead may watch for a worker: {pr, worker:"W3"}.',
     async execute(raw, { threadId }) {
       const input = parseToolInput(prWatchToolSchema, raw, "initiative_pr_watch");
       const caller = await watchCaller(threadId, input.worker);

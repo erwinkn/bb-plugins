@@ -48,6 +48,7 @@ import type { PlacementRecord } from "./schema";
 import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
 import { canonicalPrUrl } from "./pr-stages";
 import { PrNotes } from "./pr-notes";
+import { WatchLedger } from "./pr-watch";
 import { reportNote } from "./pr-records";
 import { prsNamed } from "./pr-refs";
 import {
@@ -395,6 +396,8 @@ export class ProjectsService {
   readonly coldCache: ColdCacheGuard;
   /** D442: each PR's notes log; a worker's report lands on the PRs it is about. */
   readonly prNotes: PrNotes;
+  /** W548, W554: the PR watches; the stuck-worker sweep reads who waits on one (W563). */
+  readonly prWatches: WatchLedger;
 
   constructor(
     readonly bb: BbPluginApi,
@@ -408,6 +411,7 @@ export class ProjectsService {
       log: (message) => bb.log.warn(message),
     });
     this.prNotes = new PrNotes(store.db);
+    this.prWatches = new WatchLedger(store.db, () => store.now());
   }
 
   get sdk(): Sdk {
@@ -6951,14 +6955,15 @@ export class ProjectsService {
    * coordinator is told once per worker input when all of these hold: the worker's thread is idle
    * or failed with nothing queued or running in the background (unknown counts skip it), no
    * descendant of it is live (v9: it is waiting on a child, not stuck; a walk that fails or runs
-   * out of budget claims nothing either way), and it has neither messaged its lead nor filed a
-   * report since its latest input. Everything is checked again right before each send; the
-   * coordinator's inputs are read once.
+   * out of budget claims nothing either way), it watches no open PR (W563: waitingOnPr), and it
+   * has neither messaged its lead nor filed a report since its latest input. Everything is
+   * checked again right before each send; the coordinator's inputs are read once.
    */
   private async flagStuckWorkers(project: ProjectRecord, workers: WorkerRecord[], rows: Map<string, ThreadListRow>, failing: Map<string, number>) {
     const lead = project.coordinatorThreadId;
     if (!lead) return;
     const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[] = [];
+    const watchers = this.prWatches.openWatchers();
     for (const worker of workers) {
       const row = rows.get(worker.threadId!);
       if (!row || row.archivedAt !== null || ProjectsService.rowQuiescence(row) !== "ended") continue;
@@ -6966,6 +6971,7 @@ export class ProjectsService {
       if (row.status === "error" && failing.has(worker.threadId!)) continue;
       const input = await latestInput(this.sdk, worker.threadId!).catch(() => null);
       if (!input || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
+      if (this.waitingOnPr(worker.threadId!, input.at, watchers)) continue;
       candidates.push({ worker, input, status: row.status });
     }
     if (candidates.length) await this.flagStuckFor(project, lead, candidates);
@@ -6989,18 +6995,32 @@ export class ProjectsService {
         // eligible, still unflagged, and the coordinator unchanged.
         const current = this.store.worker(project.id, worker.num);
         const fresh = this.store.project(project.id);
+        const watchers = this.prWatches.openWatchers();
         if (!turn || turn.status === "running" || now?.seq !== input.seq || !current || current.threadId !== threadId ||
             !this.mayBeStuck(project.id, current, input.at) || !fresh || fresh.coordinatorThreadId !== lead ||
-            this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
+            this.waitingOnPr(threadId, input.at, watchers) || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
         const text = turn.final?.text ?? "(none)";
         const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
+        // W563: past PR_WAIT_MAX_MS, a worker waiting on a PR is flagged after all, saying so.
+        const waited = watchers.has(threadId) ? `, though it watches an open PR: nothing has woken it for ${PR_WAIT_MAX_MS / 3_600_000} h` : "";
         await this.sdk.threads.send({ threadId: lead, mode: "queue-if-active", input: textInput(
-          `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input. Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
+          `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input${waited}. Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
         this.store.setFlag(stuckKey(project.id, worker.num, input.seq));
       } catch (error) {
         this.store.log(project.id, "report", `Could not check whether ${worker.ref} is stuck: ${errorMessage(error)}`);
       }
     }
+  }
+
+  /**
+   * W563: a worker that watches an open PR (initiative_pr_watch) waits on GitHub, as one with a
+   * live child waits on it: the PR's next change wakes it. Unless PR_WAIT_MAX_MS have passed
+   * since its latest input or its newest watch, whichever is later: a PR can stay quiet for good
+   * (its checks passed before the watch, nobody comments), and then the worker is stuck after all.
+   */
+  private waitingOnPr(threadId: string, inputAt: number, watchers: ReadonlyMap<string, number>) {
+    const since = watchers.get(threadId);
+    return since !== undefined && this.now() - Math.max(since, inputAt) < PR_WAIT_MAX_MS;
   }
 
   /** A live worker with delivered work that has filed no report of its own since `since`. */
@@ -7339,6 +7359,11 @@ const FAILED_GRACE_MS = 60_000;
 const FAILURE_TEXT_MAX = 600;
 /** How much of a stuck worker's last message the coordinator's notice quotes. */
 const STUCK_EXCERPT = 1500;
+/**
+ * W563: how long a worker that stopped while watching an open PR may wait, with no new input
+ * (a wake is one) or new watch, before the sweep flags it as stuck anyway.
+ */
+export const PR_WAIT_MAX_MS = 6 * 60 * 60_000;
 /** How archive names a running descendant; a busy status reads "is <status>". */
 const BLOCKER_WORDS: Partial<Record<Running, string>> = {
   "background work": "has background work running",
