@@ -10,6 +10,7 @@ export type ListEvents = (args: {
   order: "asc" | "desc";
   limit: string;
   afterSeq?: string;
+  beforeSeq?: string;
 }) => Promise<EventRow[]>;
 export const sdkEvents = (sdk: Sdk): ListEvents => (args) => sdk.threads.events.list(args as never) as Promise<EventRow[]>;
 

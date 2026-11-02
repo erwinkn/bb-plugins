@@ -696,9 +696,21 @@ export class ChatMemory {
       // A move meanwhile (D491): the view is that of the scope it writes to now.
       const scope = this.store.scopeOf(threadId);
       if (scope?.mode !== "optchat") return {};
-      let requests: EventRow[] = [];
-      await this.attempts(async () => { requests = await this.deps.list({threadId, types: ["client/turn/requested"], order: "desc", limit: "1000"}); }, deadline, fail, signal, "the incoming request could not be read");
-      const request = requests.find(r => r.data?.requestId === ask.requestId);
+      let request: EventRow | undefined;
+      let before: number | undefined;
+      // The SDK caps each page at 100. beforeSeq is exclusive; inspect at most 1000 requests.
+      for (let page = 0; page < 10; page++) {
+        let requests: EventRow[] = [];
+        await this.attempts(async () => {
+          if (signal?.aborted) throw fail("the turn stopped");
+          if (this.store.now() >= deadline) throw fail("the incoming request could not be read in time");
+          requests = await this.deps.list({threadId, types: ["client/turn/requested"], order: "desc", limit: "100", ...(before === undefined ? {} : {beforeSeq: String(before)})});
+        }, deadline, fail, signal, "the incoming request could not be read");
+        if (before !== undefined && requests.some(r => before !== undefined && r.seq >= before)) throw fail("the incoming request pages made no progress");
+        request = requests.find(r => r.data?.requestId === ask.requestId);
+        if (request || requests.length < 100) break;
+        before = requests.at(-1)!.seq;
+      }
       if (!request) throw fail("the incoming request could not be located in the latest 1000 requests");
       const cut = this.store.requestCut(scope.id, threadId, ask.requestId, request.data?.retryOfRequestId ? undefined : request.seq) ?? this.store.count(scope.id);
       await this.waitSummarized(scope.id, cut, deadline, fail, signal, wait);

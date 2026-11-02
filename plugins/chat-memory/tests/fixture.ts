@@ -32,7 +32,8 @@ type Row = EventRow & { threadId: string };
 /**
  * The plugin on BB's fake host, with BB's thread events and threads faked: `history` holds the
  * events every thread recorded, served the way an older BB's events.list serves them (`limit` per
- * type; readTurns takes the first `limit` rows either way). A thread not in `threads` is a 404.
+ * type; readTurns takes the first `limit` rows either way), with the current SDK's 100-row
+ * request cap and exclusive sequence cursors. A thread not in `threads` is a 404.
  */
 export function fixture() {
   const dataDir = mkdtempSync(join(tmpdir(), "chat-memory-"));
@@ -40,7 +41,7 @@ export function fixture() {
   const threads = new Map<string, Thread>();
   const compacts: string[] = [];
   /** Every events.list call, in order. */
-  const reads: Array<{ threadId: string; types: string[]; afterSeq?: string }> = [];
+  const reads: Array<{ threadId: string; types: string[]; afterSeq?: string; beforeSeq?: string }> = [];
   let failReads = false;
   let seq = 100;
   let at = Date.UTC(2026, 9, 8, 12, 0);
@@ -51,11 +52,12 @@ export function fixture() {
     sdk: {
       threads: {
         events: {
-          list: async (args: { threadId: string; types: string[]; order: "asc" | "desc"; limit: string; afterSeq?: string }) => {
+          list: async (args: { threadId: string; types: string[]; order: "asc" | "desc"; limit: string; afterSeq?: string; beforeSeq?: string }) => {
             reads.push(args);
+            if (Number(args.limit) > 100) throw new Error("Thread event limit cannot exceed 100");
             if (failReads) throw new Error("events unavailable");
             if (!threads.has(args.threadId)) throw Object.assign(new Error("not found"), { status: 404 });
-            const rows = history.filter((r) => r.threadId === args.threadId && args.types.includes(r.type) && (args.afterSeq === undefined || r.seq > Number(args.afterSeq)));
+            const rows = history.filter((r) => r.threadId === args.threadId && args.types.includes(r.type) && (args.afterSeq === undefined || r.seq > Number(args.afterSeq)) && (args.beforeSeq === undefined || r.seq < Number(args.beforeSeq)));
             const order = (a: Row, b: Row) => (args.order === "asc" ? a.seq - b.seq : b.seq - a.seq);
             return args.types.flatMap((type) => rows.filter((r) => r.type === type).sort(order).slice(0, Number(args.limit))).sort(order);
           },
