@@ -325,3 +325,11 @@ be logged a second time (there is no backward migration).
 
 `scripts/memory-replay.ts` builds a tree for a slice of a real thread, read
 only, to measure Luna's lines and cost.
+
+`scripts/summarizer-bench.ts` (W572) compares summarizers and prompts on the
+same real compactions: it samples leaves and merges from the live database
+(read only), runs each arm through the builder's own request and retry, and has
+Claude Opus 5.5 rank the lines blind. The compaction prompt's "Mistakes to
+avoid" examples come from real failures in the live tree: the agent's own
+messages and plugin notices credited to the user, a merge direction flipped
+into a merged PR, and a user's question cut from a merge.

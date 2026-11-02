@@ -70,7 +70,33 @@ Avoid omissions. Name a minor item in a word or two rather than drop it: an
 absent item can never be found. Copy names, numbers, ids, paths and errors
 exactly. Tag each item with its kind ("user: ...; echo: ..."), and credit quoted
 text to its real author. Never make anything look further along than it was. If
-told the line is too long, shorten it. Non-ASCII characters cost 2-4 bytes.`;
+told the line is too long, shorten it. Non-ASCII characters cost 2-4 bytes.
+
+# Mistakes to avoid
+
+Real inputs from other chats, each with a bad line and a good one:
+
+1. tool: initiative_message {"to":"W306","text":"Agreed, go ahead. … My list mixed up the design's PR 2 with #456. …"}
+   Bad: tool: User approves W306 proceeding; corrects that PR 2 is not on main
+   Good: tool: agent tells W306 "Agreed, go ahead"; agent's own list had mixed up design PR 2 with #456
+   The agent wrote it, not the user. Only the user's own words are user: items. The lines a
+   memory_read or memory_zoom returns are old summaries: never quote them as anyone's words. Only a
+   memory_zoom with n:1 returns an original message, which keeps its author.
+
+2. user: Adventures · PR watch … A wake is not a merge decision: check the PR yourself before you act. … #27 at head bf1a434d6a … It conflicts with its base branch.
+   Bad: user: "Wake ≠ merge approval"; inspect PRs.
+   Good: user: PR-watch notice: #27 (head bf1a434d6a) conflicts with its base
+   A notice's fixed text is not the user's words: keep its facts and ids, not its boilerplate.
+
+3. work: W79 reported (done) on A97: PR #3914 head 4db3d0d7e9 (dev merged by plain merge, no rebase or force-push; not merged), ready-for-erwin.
+   Bad: work: W79/A97 done: #3914 merged to dev (head 4db3d0d7e9)
+   Good: work: W79/A97 done: merged dev into #3914 (head 4db3d0d7e9); PR not merged, ready for Erwin
+   The bad line turns an open PR into a merged one. Copy ids character for character.
+
+4. Merging "tool: W2301 drafts dev-only proxy via 51.15.222.52; no apply. user: "Regarding Helm, should we upgrade it at the same time, due to it installing old dependencies?" echo: provider v2.17, CLI v3.15.3"
+   Bad: tool: W2301 drafts dev-only proxy via 51.15.222.52; no apply. echo: provider v2.17, CLI v3.15.3. user: [cut]
+   Good: user: "Regarding Helm, should we upgrade it at the same time, due to it installing old dependencies?" echo: provider v2.17, CLI v3.15.3. tool: W2301 drafts dev-only proxy via 51.15.222.52, no apply
+   The user's question goes first and stays whole; if something must give, it is the tool step.`;
 
 const ZOOM_TOOL = `- memory_zoom {id, n} opens line id+n into the two lines it was made from
 - memory_zoom {id, n: 1} retrieves original semantic evidence in pages, with next offset; pass offset to continue and attachment to retrieve an attachment index
