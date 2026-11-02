@@ -118,6 +118,11 @@ export class TreeBuilder {
   private needs = new Set<{ count: number; deadline: number; mode: "turn" | "priority-only" }>();
   /** Calls past their bound, told when a turn lets go (their extension may end). */
   private releases = new Set<() => void>();
+  /** W570: when its needs last changed but by a new one joining others (see waitingSince). */
+  private waitStart = -Infinity;
+  /** W570: bumped whenever the views may have merged; with fed, the key of boundMerges' memo. */
+  private settled = 0;
+  private bound: { fed: number; settled: number; merges: Set<string> } | null = null;
   /** Its scope closed or the service stopped: listeners hear it once more. */
   closed = false;
   readonly nodes: NodeCache;
@@ -205,6 +210,17 @@ export class TreeBuilder {
     const byEnd = (a: NodeRef, b: NodeRef) => end(a) - end(b) || a[0] - b[0];
     const below = this.urgentBelow();
     if (!below) return byEnd;
+    const merges = this.boundMerges();
+    const later = ([l, i]: NodeRef) => (l === 0 ? i < below : merges.has(key(l, i))) ? 0 : 1;
+    return (a, b) => later(a) - later(b) || byEnd(a, b);
+  }
+  /**
+   * The merges a view over its bound waits for: two neighbours in it whose parent is unbuilt.
+   * Kept until a message is fed or a node lands: rendering a view reads every node in it, and the
+   * permits ask each urgent scope's `left` again whenever one frees.
+   */
+  private boundMerges() {
+    if (this.bound?.fed === this.views.fed && this.bound.settled === this.settled) return this.bound.merges;
     const merges = new Set<string>();
     const over = (view: readonly NodeRef[], bound: number) => {
       if (viewBytes(view, this.nodes) <= bound) return;
@@ -216,8 +232,8 @@ export class TreeBuilder {
     };
     over(this.views.compaction, VIEW_BYTES.compaction[0]);
     if (this.views.merging) over(this.views.chat, VIEW_BYTES.chat[1]);
-    const later = ([l, i]: NodeRef) => (l === 0 ? i < below : merges.has(key(l, i))) ? 0 : 1;
-    return (a, b) => later(a) - later(b) || byEnd(a, b);
+    this.bound = { fed: this.views.fed, settled: this.settled, merges };
+    return merges;
   }
   /** How much longer the turns its node is urgent for wait; 0 or less if none does. */
   private waitedMs(n: NodeRef) {
@@ -229,6 +245,21 @@ export class TreeBuilder {
   get waited() {
     return this.needs.size > 0;
   }
+  /**
+   * W570: how many calls its waiting turns still need at least (the permits serve the fewest first):
+   * a line per message they lack one for, and the merges a view over its bound waits for now.
+   */
+  get left() {
+    const below = this.urgentBelow();
+    return below ? this.unsummarized(Math.min(below, this.store.messageCount())) + this.boundMerges().size : 0;
+  }
+  /**
+   * W570: since when its calls have been urgent without a break, as far as the permits age a scope:
+   * from its first need, again from each release (one may leave fewer, or none, of its calls urgent).
+   */
+  get waitingSince() {
+    return this.waitStart;
+  }
   /** Call listener whenever a need is released; returns its unsubscribe. */
   onRelease(listener: () => void) {
     this.releases.add(listener);
@@ -237,9 +268,12 @@ export class TreeBuilder {
   /** Prioritize messages 0..count-1; only a running turn may extend their call timeouts. */
   need(count: number, deadline: number, mode: "turn" | "priority-only" = "turn") {
     const need = { count, deadline, mode };
+    if (!this.needs.size) this.waitStart = this.now();
     this.needs.add(need);
     return () => {
-      if (this.needs.delete(need)) for (const listener of this.releases) listener();
+      if (!this.needs.delete(need)) return;
+      this.waitStart = this.now();
+      for (const listener of this.releases) listener();
     };
   }
 
@@ -262,6 +296,7 @@ export class TreeBuilder {
   }
   /** Go on with any merge the built nodes allow, and save the views if they changed. */
   private saveSettled() {
+    this.settled++;
     const merging = this.views.merging;
     const merges = settleViews(this.views, this.nodes);
     if (merges.chat || merges.compaction || merging !== this.views.merging) this.store.saveViews(this.views);

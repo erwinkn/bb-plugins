@@ -5,7 +5,7 @@ import { TreeBuilder, type BuilderStatus } from "./builder";
 import { readStable, type ListEvents } from "./ingest";
 import { UNAVAILABLE, stableEntries, type EventRow } from "./log";
 import { COMPACTION_PROMPT, messageText, stamp, turnMessage, turnSystem } from "./prompt";
-import { FairPermits } from "./permits";
+import { FairPermits, NO_DEMAND } from "./permits";
 import type { Settings } from "./settings";
 import { MemoryStore, type MemoryMode, type Scope } from "./store";
 import type { Summarizer } from "./summarizer";
@@ -209,7 +209,14 @@ export class ChatMemory {
     },
   ) {
     this.store = deps.store;
-    this.permits = new FairPermits(() => deps.settings().summarizerConcurrency, (scopeId) => this.priority(scopeId));
+    this.permits = new FairPermits(
+      () => deps.settings().summarizerConcurrency,
+      (scopeId) => this.priority(scopeId),
+      (scopeId) => {
+        const builder = this.builders.get(scopeId);
+        return builder ? { left: builder.left, since: builder.waitingSince } : NO_DEMAND;
+      },
+    );
   }
 
   /** Test seam: the summarizer later calls use. */
