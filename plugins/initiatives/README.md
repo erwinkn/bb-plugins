@@ -284,13 +284,11 @@ Details:
   whose thread has been quiet for at least `--idle` hours (24 by default; BB's
   last change to the thread), longest idle first. One condition decides who may
   go: no open or unconfirmed work, no open PR held or watched (a PR whose state
-  is not known yet counts as open), a context rule R11 lets go, and no activity
-  within `--idle`. Under R11 a worker keeps its context until its PR is merged
-  or dropped: a worker with PRs may go once every one is merged or closed, a
-  reviewer (no PR of its own, fresh each round, D449) once it is quiet, and any
-  other worker without a PR (an analysis, an investigation) is kept, listed as
-  `no PR, kept` and counted apart (`noPrKept`). That last choice is one line,
-  `retirePolicy` in `lib/service.ts`. The scan applies it, and each retire applies it
+  is not known yet counts as open), and no activity within `--idle`. Under rule
+  R11 a worker keeps its context until its PR is merged or dropped: a worker
+  with PRs may go once every one is merged or closed, and one that never opened
+  a PR (a reviewer, an analysis, an investigation; D557) once it is idle. The
+  scan applies the condition, and each retire applies it
   again on fresh evidence: through the usual retire, in its own slot of the
   write queue, which also refuses a busy thread or native child (a busy one is
   kept, never left to retire later), it reads the thread once more after BB's

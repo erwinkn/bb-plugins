@@ -5,7 +5,7 @@ import { projectFixture, report } from "./fake-native";
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const DAY = 86_400_000;
 
-/** A worker whose work is reported and closed, its thread quiet since `idleMs` ago; its PR merged unless `pr` is false (R11: no PR, its context is kept). */
+/** A worker whose work is reported and closed, its thread quiet since `idleMs` ago; its PR merged unless `pr` is false (it never opened one). */
 async function finished(f: Fx, projectId: string, idleMs: number, pr = true) {
   const task = f.task(projectId);
   const [d] = await f.service.delegate(projectId, { route: "fresh", tasks: [task.ref] });
@@ -40,7 +40,7 @@ async function scene() {
   const watcher = await finished(f, project.id, 3 * DAY);
   const watched = "https://github.com/o/r/pull/13";
   f.store.db.prepare("INSERT INTO pr_watches (url, project_id, since, state, gen, updated_at, watcher_thread_id) VALUES (?, ?, 1, '{}', 1, 1, ?)").run(watched, project.id, watcher.threadId);
-  // R11: an analysis without a PR keeps its context; a reviewer (D449: fresh each round) may go.
+  // R11: a worker that never opened a PR may go once idle, an analysis (D557) as a reviewer (D449).
   const analysis = await finished(f, project.id, 3 * DAY, false);
   const [review] = await f.service.delegate(project.id, { route: "fresh", role: "review", reviewOf: [idle.task] });
   await f.service.report(review.threadId!, report());
@@ -60,9 +60,9 @@ describe("W568 retire-idle", () => {
     const s = await scene();
     const archived = s.f.archive.mock.calls.length;
     const out = await retireIdle(s.f, "--dry-run");
-    expect(out.totals).toEqual({ wouldRetire: 3, skipped: 6, noPrKept: 1 });
+    expect(out.totals).toEqual({ wouldRetire: 4, skipped: 5 });
     const byId = Object.fromEntries(out.adventures.map((a: { id: string }) => [a.id, a]));
-    expect(byId[s.project.id].wouldRetire).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.idle.ref, idle: "3 d" }]);
+    expect(byId[s.project.id].wouldRetire).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.idle.ref, idle: "3 d" }, { worker: s.analysis.ref, idle: "3 d" }]);
     expect(byId[s.other.id].wouldRetire).toEqual([{ worker: s.elsewhere.ref, idle: "5 d" }]);
     expect(Object.fromEntries(byId[s.project.id].skipped.map((k: { worker: string; reason: string }) => [k.worker, k.reason]))).toEqual({
       [s.fresh.ref]: "active 2 h ago",
@@ -70,7 +70,6 @@ describe("W568 retire-idle", () => {
       [s.holder.ref]: `holds or watches open PR ${s.url}`,
       [s.watcher.ref]: `holds or watches open PR ${s.watched}`,
       [s.working]: expect.stringMatching(/^A\d+ is open \(/),
-      [s.analysis.ref]: "no PR, kept",
     });
     expect(s.f.archive.mock.calls.length).toBe(archived);
     expect(s.f.store.workers(s.project.id).filter((w) => w.state === "retired")).toEqual([]);
@@ -81,18 +80,19 @@ describe("W568 retire-idle", () => {
     const sends = s.f.send.mock.calls.length;
     const first = await retireIdle(s.f, "--limit=1");
     // The busy one is refused, not counted against the limit, and then listed as kept.
-    expect(first.totals).toEqual({ retired: 1, failed: 0, skipped: 5, noPrKept: 1, left: 3 });
-    expect(first.note).toMatch(/3 more idle workers are left/);
+    expect(first.totals).toEqual({ retired: 1, failed: 0, skipped: 4, left: 4 });
+    expect(first.note).toMatch(/4 more idle workers are left/);
     expect(s.f.store.worker(s.other.id, s.elsewhere.num)!.state).toBe("retired");
     const second = await retireIdle(s.f);
-    expect(second.totals).toEqual({ retired: 2, failed: 0, skipped: 6, noPrKept: 1, left: 0 });
+    expect(second.totals).toEqual({ retired: 3, failed: 0, skipped: 5, left: 0 });
     const mine = second.adventures.find((a: { id: string }) => a.id === s.project.id);
-    expect(mine.retired).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.idle.ref, idle: "3 d" }]);
+    expect(mine.retired).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.idle.ref, idle: "3 d" }, { worker: s.analysis.ref, idle: "3 d" }]);
     expect(mine.skipped).toContainEqual({ worker: s.busy.ref, reason: expect.stringMatching(/still running/) });
     expect(s.f.store.worker(s.project.id, s.idle.num)!.state).toBe("retired");
     expect(s.f.threads.get(s.idle.threadId)!.archivedAt).not.toBeNull();
     expect(s.f.store.activity(s.project.id, -1).map((a) => a.summary)).toContain(`${s.idle.ref} retired: idle for 3 d (retire-idle by the user)`);
-    for (const kept of [s.fresh, s.busy, s.holder, s.watcher, s.analysis]) expect(s.f.store.worker(s.project.id, kept.num)!.state).not.toBe("retired");
+    expect(s.f.store.worker(s.project.id, s.analysis.num)!.state).toBe("retired");
+    for (const kept of [s.fresh, s.busy, s.holder, s.watcher]) expect(s.f.store.worker(s.project.id, kept.num)!.state).not.toBe("retired");
     // Nothing was sent to any thread.
     expect(s.f.send.mock.calls.length).toBe(sends);
     await s.f.service.settleBackgroundStops();
@@ -106,9 +106,8 @@ describe("W568 retire-idle", () => {
     holds(s.f, s.project.id, s.idle.ref, unknown, null);
     const out = await retireIdle(s.f, "--idle=48");
     const mine = out.adventures.find((a: { id: string }) => a.id === s.project.id);
-    expect(mine.retired).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.holder.ref, idle: "3 d" }]);
+    expect(mine.retired).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.holder.ref, idle: "3 d" }, { worker: s.analysis.ref, idle: "3 d" }]);
     expect(mine.skipped).toContainEqual({ worker: s.idle.ref, reason: `holds or watches open PR ${unknown}` });
-    expect(mine.skipped).toContainEqual({ worker: s.analysis.ref, reason: "no PR, kept" });
     expect(s.f.store.worker(s.project.id, s.holder.num)!.state).toBe("retired");
     expect(s.f.store.worker(s.project.id, s.idle.num)!.state).not.toBe("retired");
     await s.f.service.settleBackgroundStops();
@@ -150,8 +149,8 @@ describe("W568 retire-idle", () => {
       return answer;
     });
     const out = await retireIdle(s.f);
-    // Only the reviewer, which the races leave alone, retires.
-    expect(out.totals).toMatchObject({ retired: 1, failed: 0 });
+    // Only the reviewer and the analysis, which the races leave alone, retire.
+    expect(out.totals).toMatchObject({ retired: 2, failed: 0 });
     const byId = Object.fromEntries(out.adventures.map((a: { id: string }) => [a.id, a]));
     expect(byId[s.project.id].skipped).toContainEqual({ worker: s.idle.ref, reason: `holds or watches open PR ${url}, since the scan` });
     expect(byId[s.other.id].skipped).toContainEqual({ worker: s.elsewhere.ref, reason: "active 0 min ago, since the scan" });
@@ -175,13 +174,13 @@ describe("W568 retire-idle", () => {
       return answer;
     });
     const out = await retireIdle(s.f);
-    // Only the reviewer, which the races leave alone, retires.
-    expect(out.totals).toMatchObject({ retired: 1, failed: 0 });
+    // Only the reviewer and the analysis, which the races leave alone, retire.
+    expect(out.totals).toMatchObject({ retired: 2, failed: 0 });
     const byId = Object.fromEntries(out.adventures.map((a: { id: string }) => [a.id, a]));
     expect(byId[s.other.id].skipped).toContainEqual({ worker: s.elsewhere.ref, reason: `holds or watches open PR ${watched}, since the scan` });
     expect(byId[s.project.id].skipped).toContainEqual({ worker: s.idle.ref, reason: `holds or watches open PR ${owned}, since the scan` });
     for (const w of [s.idle, s.elsewhere]) expect(s.f.archive).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: w.threadId }));
-    expect(s.f.archive.mock.calls.length).toBe(archived + 1);
+    expect(s.f.archive.mock.calls.length).toBe(archived + 2);
   });
 
   it("keeps a worker that took a PR since the scan even when BB already archived its thread", async () => {
@@ -274,9 +273,9 @@ describe("W568 retire-idle", () => {
     });
     const out = await retireIdle(s.f, "--dry-run");
     const mine = out.adventures.find((a: { id: string }) => a.id === s.project.id);
-    expect(mine.wouldRetire).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }]);
+    expect(mine.wouldRetire).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.analysis.ref, idle: "3 d" }]);
     expect(mine.skipped).toContainEqual({ worker: s.idle.ref, reason: `holds or watches open PR ${url}, since the scan` });
-    expect(out.totals.wouldRetire).toBe(2);
+    expect(out.totals.wouldRetire).toBe(3);
   });
 
   it("gives on a dry run the refusal retiring would meet, such as a native child still running", async () => {
@@ -285,7 +284,7 @@ describe("W568 retire-idle", () => {
     s.f.threads.set(child, { ...s.f.threads.get(s.idle.threadId)!, id: child, parentThreadId: s.idle.threadId, status: "active", updatedAt: Date.now() });
     const out = await retireIdle(s.f, "--dry-run");
     const mine = out.adventures.find((a: { id: string }) => a.id === s.project.id);
-    expect(mine.wouldRetire).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }]);
+    expect(mine.wouldRetire).toEqual([{ worker: s.reviewer.ref, idle: "4 d" }, { worker: s.analysis.ref, idle: "3 d" }]);
     expect(mine.skipped).toContainEqual({ worker: s.idle.ref, reason: expect.stringMatching(/native descendants/) });
     expect(s.f.archive).not.toHaveBeenCalledWith(expect.objectContaining({ threadId: s.idle.threadId }));
   });

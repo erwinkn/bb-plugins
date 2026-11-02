@@ -1639,7 +1639,7 @@ export default function plugin(bb: BbPluginApi) {
       },
       {
         name: "retire-idle",
-        summary: "Retire, across every Adventure, the workers idle longer than --idle hours (default 24); open or unconfirmed work and busy threads are refused, and a worker's context is kept (rule R11) while it holds or watches an open PR, or, unless it is a reviewer, has no PR at all. --dry-run lists them by Adventure; at most --limit (default 25) retire per call. Nobody is woken",
+        summary: "Retire, across every Adventure, the workers idle longer than --idle hours (default 24); open or unconfirmed work and busy threads are refused, and a worker's context is kept (rule R11) while it holds or watches an open PR. --dry-run lists them by Adventure; at most --limit (default 25) retire per call. Nobody is woken",
         usage: "bb initiative retire-idle [--idle=<hours>] [--dry-run] [--limit=<n>]",
       },
     ],

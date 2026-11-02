@@ -200,17 +200,6 @@ class ThreadBusy extends ProjectError {}
 /** W568: a retire's own condition on the worker (as in the write queue) and its thread (as just read, null without one); refuses by throwing. */
 type RetireCheck = (worker: WorkerRecord, thread: ThreadDto | null) => void;
 
-/** W568: why retire-idle keeps a worker that has no PR (counted apart in its answer). */
-const NO_PR_KEPT = "no PR, kept";
-/**
- * W568, rule R11: whose context retire-idle may let go, given the PRs it holds (none open: the
- * caller refuses those first). A worker's context stays until its PRs are merged or closed, so one
- * whose PRs all are may go. A reviewer has no PR of its own and is fresh each round (D449): it may go.
- * Any other worker without a PR (an analysis, an investigation) is kept, pending Erwin's call: this
- * line is the policy. Returns why it is kept, or null.
- */
-export const retirePolicy = (worker: WorkerRecord, prs: { url: string; open: boolean }[]): string | null =>
-  prs.length || worker.role === "review" ? null : NO_PR_KEPT;
 /** W568: "5 h", "3 d" or "12 min", for retire-idle's lists. */
 const duration = (ms: number) =>
   ms >= 48 * 3_600_000 ? `${Math.floor(ms / 86_400_000)} d` : ms >= 3_600_000 ? `${Math.floor(ms / 3_600_000)} h` : `${Math.max(0, Math.floor(ms / 60_000))} min`;
@@ -6140,9 +6129,9 @@ export class ProjectsService {
    * W568: retires, across every live Adventure, the workers whose thread has been quiet for at
    * least `idleMs` (since BB's last change to it, `updatedAt`; a worker without a thread, since its
    * own record's), longest idle first. One condition decides who may go (`ineligible`: unconfirmed
-   * or open work, an open PR held or watched, a context `retirePolicy` keeps, activity within
-   * `idleMs`): the scan
-   * applies it to each worker, and again, on fresh evidence, each retire and each dry-run proof. A
+   * or open work, an open PR held or watched, activity within `idleMs`). Rule R11: a worker keeps
+   * its context while a PR it holds is open; once all are merged or closed, or if it never opened
+   * one (D557), it may go when idle. The scan applies it to each worker, and again, on fresh evidence, each retire and each dry-run proof. A
    * retire goes through retireWorker in a write-queue slot of its own, which refuses a busy thread
    * (never left to retire later) and runs the condition after its last await, just before the archive
    * call. `dryRun` only lists, giving each the refusal retiring it would meet. At most `limit` retire
@@ -6155,11 +6144,9 @@ export class ProjectsService {
       if (this.store.assignmentsIn(projectId, [], UNSETTLED_OPS).some((a) => a.workerNum === worker.num)) return "an operation is unconfirmed";
       const open = this.store.openAssignment(projectId, worker.num);
       if (open) return `${open.ref} is open (${open.state})`;
-      const held = this.store.prsHeld(projectId).get(worker.ref) ?? [];
-      const prs = [...new Set([...held.filter((pr) => pr.open).map((pr) => pr.url), ...((worker.threadId && this.prWatches.openWatches().get(worker.threadId)?.urls) || [])])];
+      const held = (this.store.prsHeld(projectId).get(worker.ref) ?? []).filter((pr) => pr.open).map((pr) => pr.url);
+      const prs = [...new Set([...held, ...((worker.threadId && this.prWatches.openWatches().get(worker.threadId)?.urls) || [])])];
       if (prs.length) return `holds or watches open PR ${prs.join(", ")}`;
-      const kept = retirePolicy(worker, held);
-      if (kept) return kept;
       const idleMs = idleFor(worker, thread);
       return idleMs < options.idleMs ? `active ${duration(idleMs)} ago` : null;
     };
@@ -6236,14 +6223,12 @@ export class ProjectsService {
     });
     const retired = [...outcomes.values()].filter((o) => "retired" in o).length;
     const skipped = plans.reduce((n, p) => n + p.skipped.length, 0);
-    const noPrKept = plans.reduce((n, p) => n + p.skipped.filter((k) => k.reason === NO_PR_KEPT).length, 0);
     return {
       dryRun: options.dryRun,
       idle: duration(options.idleMs),
-      // Of the skipped, the workers kept only because they have no PR (retirePolicy).
       totals: options.dryRun
-        ? { wouldRetire: idle.length, skipped, noPrKept }
-        : { retired, failed: outcomes.size - retired, skipped, noPrKept, left: left.length },
+        ? { wouldRetire: idle.length, skipped }
+        : { retired, failed: outcomes.size - retired, skipped, left: left.length },
       ...(left.length ? { note: `${left.length} more idle workers are left: run it again (at most ${options.limit} retire or fail per call).` } : {}),
       adventures,
     };
