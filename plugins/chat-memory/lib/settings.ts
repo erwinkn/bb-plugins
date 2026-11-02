@@ -22,9 +22,9 @@ export const settingsDescriptors = {
   summarizerConcurrency: {
     type: "number" as const,
     label: "Summarizer calls at once",
-    description: "How many Luna calls the memory trees run in parallel, shared by every scope and let in by turns (8 in the OptChat design).",
+    description: "Maximum memory-tree summarizer calls running in parallel globally, shared fairly across all scopes.",
     default: 8,
-    experimental_schema: z.number().int().min(1).max(16),
+    experimental_schema: z.number().int().min(1),
   },
 };
 export interface Settings {
