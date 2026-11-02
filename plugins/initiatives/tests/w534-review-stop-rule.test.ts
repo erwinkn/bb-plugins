@@ -17,7 +17,7 @@ describe("W534 review stop rule", () => {
     expect(worker).toContain("Once only P3s remain, fix the cheap ones, list the rest in your PR notes (initiative_pr) and report done: no re-review to confirm P3 fixes.");
     expect(worker).toContain("no round cap");
     expect(worker).toContain("whack-a-mole (P1s, or P2s reappearing in the same area round after round) or scope creep");
-    expect(worker).toContain("If your brief asks for a second reviewer (Fable 5.1), consult it once, after the first has passed the head. Done when the last verdict is clean.");
+    expect(worker).toContain("If your brief asks for an expert second reviewer (Fable 5.1, or Muse Wonder Full: muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Done when the last verdict is clean.");
   });
 
   it("coordinator: done means verdict correct with no P1 or P2; a second reviewer (Fable 5.1) only for high-risk changes, once, in sequence", () => {
@@ -25,7 +25,7 @@ describe("W534 review stop rule", () => {
     expect(coordinator).toContain("done (clean review: verdict correct, no P1 or P2)");
     expect(coordinator).toContain("Each review round uses one reviewer.");
     expect(coordinator).toContain("high-risk change (auth, locking, migrations, crypto, concurrency)");
-    expect(coordinator).toContain("Fable 5.1, asked once, after the first reviewer has passed the head");
+    expect(coordinator).toContain("Fable 5.1 or Muse Wonder Full, asked once, after the first reviewer has passed the head");
     expect(coordinator).toContain("Never require both clean on the same head.");
   });
 
@@ -33,7 +33,7 @@ describe("W534 review stop rule", () => {
     const worker = skill("initiative-worker");
     expect(worker).toContain("A review is clean when the verdict is correct with no P1 or P2.");
     expect(worker).toContain("list the rest in your PR notes and report done; don't re-review to confirm P3 fixes.");
-    expect(worker).toContain("If your brief asks for a second reviewer (Fable 5.1), consult it once, after the first has passed the head.");
+    expect(worker).toContain("If your brief asks for an expert second reviewer (Fable 5.1, or Muse Wonder Full: muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head.");
     const coordinator = skill("initiative-coordinator");
     expect(coordinator).toContain("one fresh reviewer from the other model family per round");
     expect(coordinator).toContain("Never require both clean on the same head.");
