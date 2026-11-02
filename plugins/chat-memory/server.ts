@@ -130,7 +130,8 @@ export default function plugin(bb: BbPluginApi) {
   // {view:"memory"}: Initiatives keeps both as aliases over this plugin's read and zoom RPCs.
   // D431 phase 2: not shown to the model. BB's Claude Code provider calls it before each new turn
   // (TurnAsk); "{}" lets the session go on. A failure throws, so the provider fails the turn and
-  // keeps its input (D458): never a silent fallback to the old session.
+  // keeps its input (D458): never a silent fallback to the old session. A reload mid-wait fails
+  // it with TURN_CONTEXT_RESTARTING, which the provider may ask again after (W570).
   bb.agents.registerTool({
     name: TURN_CONTEXT_TOOL,
     description: "Internal to BB's Claude Code provider: how the next turn of a thread with chat memory runs (UniiChat). Never call it.",

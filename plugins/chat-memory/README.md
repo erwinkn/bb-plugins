@@ -103,7 +103,7 @@ go on.
 
 BB's Claude Code provider (Erwin's fork) calls the hidden tool
 `claude_code_turn_context` before each new turn whose tools include it
-(protocol 4: `{input, requestId, sessionId}`). The answer is `{}` (the session
+(protocol 4: `{input, requestId, sessionId, elapsedMs?}`). The answer is `{}` (the session
 goes on) or `{session: "fresh", sessionId, systemPrompt, input}`. An UniiChat
 turn:
 
@@ -111,6 +111,16 @@ turn:
 2. cuts history before the incoming request if it was already accepted;
 3. waits for every needed historical leaf summary, with cancellation and a 90-second final admission deadline;
 4. returns a fresh session with the frozen summary prefix and growing summary tail, followed by the new message. Historical views contain no raw tail or clipped fallback.
+
+**A reload during the wait (W570).** BB aborts the old plugin instance's tool
+calls with the reason `plugin-disposed` before it disposes it. The turn then
+fails with the fixed `TURN_CONTEXT_RESTARTING` error ("…chat-memory is
+restarting…"), not "the turn stopped". A provider that sees it may ask the new
+instance again with `elapsedMs`, the time since its first ask: the 90-second
+wait still ends 90 seconds after that first ask. Asking again needs a change in
+the fork (it asks once today); without it, the turn fails visibly with that
+error, as before. Both errors start with "OptChat memory unavailable", so the
+unsent message stays out of memory (D502).
 
 The dispatch hook answers immediately with core's durable `wait` decision while
 history or summaries are preparing. It supplies a 30-second recovery due time and

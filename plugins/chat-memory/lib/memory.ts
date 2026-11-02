@@ -46,6 +46,11 @@ export const turnAskSchema = z.object({
   requestId: z.string().min(1),
   /** The provider session the thread runs in now. */
   sessionId: z.string().min(1).nullable(),
+  /**
+   * W570: how long ago the provider first asked for this turn's context, when it asks again after
+   * TURN_CONTEXT_RESTARTING. The wait ends TURN_WAIT_MS after that first ask, not after this one.
+   */
+  elapsedMs: z.number().int().nonnegative().optional(),
 });
 export type TurnAsk = z.infer<typeof turnAskSchema>;
 /** A fresh session for the turn, or none: the thread's session goes on. */
@@ -58,6 +63,15 @@ export type TurnAnswer =
  * view needs) before it fails. The fork's hook gives an answer 120 s.
  */
 export const TURN_WAIT_MS = 90_000;
+/**
+ * W570: the fixed failure of a turn whose wait a reload of this plugin cut short (BB aborts the old
+ * instance's tool calls with PLUGIN_DISPOSED). The fork's provider asks the new instance again, with
+ * elapsedMs, while TURN_WAIT_MS since its first ask has not passed; otherwise this is the turn's
+ * visible failure, and UNAVAILABLE in it leaves the unsent message out of memory (D502).
+ */
+export const TURN_CONTEXT_RESTARTING = `${UNAVAILABLE}: chat-memory is restarting. The message was not sent; send it again.`;
+/** The reason BB aborts a plugin's tool calls with when it disposes the plugin (a reload, a disable). */
+export const PLUGIN_DISPOSED = "plugin-disposed";
 /** Kept for callers configuring older wait settings; summary admission now uses the turn deadline. */
 export const SUMMARY_WAIT_MS = 3_000;
 /** Failed reads of the thread's last turn a turn tries before it fails. */
@@ -861,11 +875,13 @@ export class ChatMemory {
    * leaf summaries. Failure and cancellation are visible; no resident-session or raw fallback.
    */
   async turnContext(threadId: string, ask: TurnAsk, signal?: AbortSignal): Promise<TurnAnswer> {
-    const deadline = this.store.now() + this.waits.turn;
+    // A provider that asks again after a restart counts the wait from its first ask (W570).
+    const deadline = this.store.now() + this.waits.turn - (ask.elapsedMs ?? 0);
     const fail = (why: string) => new MemoryError(`${UNAVAILABLE}: ${why}. The message was not sent; send it again.`);
     if (this.store.scopeOf(threadId)?.mode !== "optchat") return {};
     const wait: Wait = { scopeId: "", messages: null, since: null };
     try {
+      if (deadline <= this.store.now()) throw fail("its wait ran out while chat-memory restarted");
       await this.attempts(() => this.caughtUp(threadId, fail), deadline, fail, signal, "its last turn could not be read");
       // A move meanwhile (D491): the view is that of the scope it writes to now.
       const scope = this.store.scopeOf(threadId);
@@ -899,8 +915,10 @@ export class ChatMemory {
       this.logWait(threadId, wait, "all historical messages summarized");
       return { session: "fresh", sessionId: randomUUID(), systemPrompt: turnSystem(view.frozenLines), input: turnMessage(this.store.now(), ask.input, view.tailLines) };
     } catch (error) {
-      const failure = error instanceof MemoryError ? error : fail(errorMessage(error));
-      this.logWait(threadId, wait, `the turn failed: ${failure.message}`);
+      // A reload stopped it (W570), whatever it was doing then: the provider asks the new instance.
+      const restarting = this.disposed || signal?.reason === PLUGIN_DISPOSED;
+      const failure = restarting ? new MemoryError(TURN_CONTEXT_RESTARTING) : error instanceof MemoryError ? error : fail(errorMessage(error));
+      this.logWait(threadId, wait, restarting ? "chat-memory is restarting; the provider asks again" : `the turn failed: ${failure.message}`);
       throw failure;
     }
   }

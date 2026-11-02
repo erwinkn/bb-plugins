@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { onTestFinished } from "vitest";
 import { createFakePluginHost, makeMessageDispatchHookContext, makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import plugin from "../server";
 import { TURN_CONTEXT_TOOL, type TurnAnswer } from "../lib/memory";
 import type { EventRow } from "../lib/log";
@@ -45,39 +46,41 @@ export function fixture() {
   let failReads = false;
   let seq = 100;
   let at = Date.UTC(2026, 9, 8, 12, 0);
-  const { bb, harness } = createFakePluginHost({
-    pluginId: "chat-memory",
-    dataDir,
-    agentSkillIds: ["chat-memory"],
-    sdk: {
-      threads: {
-        events: {
-          list: async (args: { threadId: string; types: string[]; order: "asc" | "desc"; limit: string; afterSeq?: string; beforeSeq?: string }) => {
-            reads.push(args);
-            if (Number(args.limit) > 100) throw new Error("Thread event limit cannot exceed 100");
-            if (failReads) throw new Error("events unavailable");
-            if (!threads.has(args.threadId)) throw Object.assign(new Error("not found"), { status: 404 });
-            const rows = history.filter((r) => r.threadId === args.threadId && args.types.includes(r.type) && (args.afterSeq === undefined || r.seq > Number(args.afterSeq)) && (args.beforeSeq === undefined || r.seq < Number(args.beforeSeq)));
-            const order = (a: Row, b: Row) => (args.order === "asc" ? a.seq - b.seq : b.seq - a.seq);
-            return args.types.flatMap((type) => rows.filter((r) => r.type === type).sort(order).slice(0, Number(args.limit))).sort(order);
-          },
-        },
-        get: async ({ threadId }: { threadId: string }) => {
-          const t = threads.get(threadId);
-          if (!t) throw Object.assign(new Error("not found"), { status: 404 });
-          return makeThreadResponse({ id: threadId, providerId: t.providerId, title: t.title, originPluginId: t.originPluginId, parentThreadId: t.parentThreadId, status: t.status as never, archivedAt: t.archived ? at : null });
-        },
-        compact: async ({ threadId }: { threadId: string }) => {
-          compacts.push(threadId);
-          return {};
+  const sdk = {
+    threads: {
+      events: {
+        list: async (args: { threadId: string; types: string[]; order: "asc" | "desc"; limit: string; afterSeq?: string; beforeSeq?: string }) => {
+          reads.push(args);
+          if (Number(args.limit) > 100) throw new Error("Thread event limit cannot exceed 100");
+          if (failReads) throw new Error("events unavailable");
+          if (!threads.has(args.threadId)) throw Object.assign(new Error("not found"), { status: 404 });
+          const rows = history.filter((r) => r.threadId === args.threadId && args.types.includes(r.type) && (args.afterSeq === undefined || r.seq > Number(args.afterSeq)) && (args.beforeSeq === undefined || r.seq < Number(args.beforeSeq)));
+          const order = (a: Row, b: Row) => (args.order === "asc" ? a.seq - b.seq : b.seq - a.seq);
+          return args.types.flatMap((type) => rows.filter((r) => r.type === type).sort(order).slice(0, Number(args.limit))).sort(order);
         },
       },
-    } as never,
-  });
-  const exposed = plugin(bb);
-  const { memory, store } = exposed;
-  memory.useSummarizer(fakeLuna);
-  memory.waits = { turn: 1_500, summaries: 1_000 };
+      get: async ({ threadId }: { threadId: string }) => {
+        const t = threads.get(threadId);
+        if (!t) throw Object.assign(new Error("not found"), { status: 404 });
+        return makeThreadResponse({ id: threadId, providerId: t.providerId, title: t.title, originPluginId: t.originPluginId, parentThreadId: t.parentThreadId, status: t.status as never, archivedAt: t.archived ? at : null });
+      },
+      compact: async ({ threadId }: { threadId: string }) => {
+        compacts.push(threadId);
+        return {};
+      },
+    },
+  } as never;
+  /** The plugin, loaded on a host: the first one, or the one a reload makes (same storage). */
+  const load = (bb: BbPluginApi) => {
+    const { memory, store } = plugin(bb);
+    memory.useSummarizer(fakeLuna);
+    memory.waits = { turn: 1_500, summaries: 1_000 };
+    return { memory, store };
+  };
+  let { bb, harness } = createFakePluginHost({ pluginId: "chat-memory", dataDir, agentSkillIds: ["chat-memory"], sdk });
+  let { memory, store } = load(bb);
+  /** The ask calls in flight on the loaded instance, as BB's tool-call registry tracks them. */
+  const calls = new Set<AbortController>();
   // Nothing outlives its test, and its database goes with it.
   onTestFinished(() => {
     memory.dispose();
@@ -145,8 +148,33 @@ export function fixture() {
     configure: (threadId: string, patch: Record<string, unknown>) => harness.behavior.callRpc("configure", { threadId, ...patch }),
     /** BB's Claude Code bridge asks how the thread's next turn runs. */
     async ask(threadId: string, requestId: string, input: string, extra: Record<string, unknown> = {}) {
-      const answer = await harness.behavior.callAgentTool(TURN_CONTEXT_TOOL, { protocol: 4, input, requestId, sessionId: `s-${threadId}`, ...extra }, { threadId });
-      return JSON.parse(answer as string) as TurnAnswer;
+      const call = new AbortController();
+      calls.add(call);
+      try {
+        const answer = await harness.behavior.callAgentTool(TURN_CONTEXT_TOOL, { protocol: 4, input, requestId, sessionId: `s-${threadId}`, ...extra }, { threadId, signal: call.signal });
+        return JSON.parse(answer as string) as TurnAnswer;
+      } finally {
+        calls.delete(call);
+      }
+    },
+    /**
+     * BB reloads the plugin: it aborts the instance's tool calls in flight with "plugin-disposed",
+     * stops its service, and loads a new instance on the same data. Returns the new memory.
+     */
+    async reload() {
+      for (const call of calls) call.abort("plugin-disposed");
+      calls.clear();
+      // BB awaits other cleanup before it stops the service: the aborted calls answer first.
+      await new Promise((resolve) => setImmediate(resolve));
+      memory.dispose();
+      let loaded!: ReturnType<typeof load>;
+      // The fake host's reload (untyped in the SDK's declarations) keeps its storage, as BB's does.
+      const behavior = harness.behavior as unknown as { reload(factory: (next: BbPluginApi) => void): Promise<{ bb: BbPluginApi; harness: typeof harness }> };
+      ({ bb, harness } = await behavior.reload((next) => void (loaded = load(next))));
+      ({ memory, store } = loaded);
+      Object.assign(f, { bb, harness, memory, store });
+      onTestFinished(() => memory.dispose());
+      return memory;
     },
     /** A thread's turn ended: BB says so; the memory copies its completed turns and builds. */
     async idle(threadId: string) {
