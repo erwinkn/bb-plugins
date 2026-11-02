@@ -313,6 +313,27 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Parent system notices bypass message admission (2026-11-02)
+
+W566 confirmed that core child-completed notices start turns without running
+`message.dispatch`. In `apps/server/src/services/threads/parent-system-messages.ts`,
+`queueParentSystemMessage` calls `deliverParentSystemMessage`, whose idle path
+prepares and submits a turn directly. The queue drain also bypasses admission:
+`sendClaimedSystemNotice` in `queued-messages.ts` explicitly skips the checkpoint
+and consumes the queued row after delivery. Chat memory cannot hold input on a
+hook core never calls. On 2026-11-02, five such notices were accepted, waited
+about 90 seconds for memory, and failed. Their rendered text remains in the
+parent thread's `client/turn/requested` event, under `data.input`; the full
+review result can be read from the originating child thread.
+
+Proposed core change: route direct and queued system notices through the common
+message admission checkpoint, preserving system initiator, notice kind/subject,
+input, and claim identity. A plugin wait must retain the queued row and avoid
+appending a turn request or submitting a host command until recheck proceeds.
+Keep active-turn steering semantics. Cover idle direct delivery and queue drains
+with wait/recheck tests, including exactly-once delivery and taxonomy retention.
+No fork edits or external issue filed; authorization for a core fix is pending.
+
 ### Thread sends: "changed twice under one dispatch attempt" is a 500 though nothing was sent (2026-11-01)
 
 Candidate from W563's PR-watch audit; not filed. Low priority. When a
