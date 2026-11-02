@@ -129,11 +129,12 @@ describe("W315 a turn's lines go first, in batches", () => {
     count = 4;
     const release = builder.need(3, Date.now() + 90_000);
     expect(calls.map((c) => c.urgent())).toEqual([true, true]);
-    // Lines of 300 bytes: their merge needs a call too, urgent as well (it is before message 2).
+    // Lines of 300 bytes: their merge needs a call too, urgent as well (it is before message 2),
+    // but it starts after line 2, which the turn needs (W570).
     for (const c of calls.splice(0)) c.go("m".repeat(300));
     await ticks();
-    expect(calls.map((c) => [c.task, c.urgent()])).toEqual([["0+1 and 1+1", true], ["2", true]]);
-    calls.splice(0)[1]!.go("m".repeat(300));
+    expect(calls.map((c) => [c.task, c.urgent()])).toEqual([["2", true], ["0+1 and 1+1", true]]);
+    calls.splice(0)[0]!.go("m".repeat(300));
     await ticks();
     expect(calls.map((c) => [c.task, c.urgent()])).toEqual([["3", false]]);
     expect(builder.summarized(3)).toBe(true);

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { MemoryMessage } from "./log";
 import { cleanLine, messageText, task, tooLong } from "./prompt";
 import { usageCost, type Attribution, type InputItem, type ReplyShape, type SummarizerRequest, type SummarizerResult, type Usage } from "./summarizer";
-import { LIMIT, NodeCache, bytes, capLine, children, contextLines, end, feed, key, label, settleViews, type NodeRef, type Views } from "./tree";
+import { LIMIT, NodeCache, VIEW_BYTES, bytes, capLine, children, contextLines, end, feed, key, label, settleViews, viewBytes, type NodeRef, type Views } from "./tree";
 
 /** What the builder reads and writes; the plugin backs it with its database, tests with memory. */
 export interface TreeStore {
@@ -89,9 +89,10 @@ type Outcome =
  * which a retry would not change (an error or timeout among the tries rules this out): it is built at once as a fallback, its input cut to 576 bytes with " [cut]".
  *
  * W315: a turn that waits for its earlier messages' lines (need) makes their calls go before every
- * other scope's for a permit. The build starts them first anyway (oldest first), and no more at
- * once than its limit, the permits' own: a backlog of thousands still goes in batches. A turn only
- * ever waits for message lines: a view merges two lines only once their parent is built.
+ * other scope's for a permit. The build starts those lines first (W570: before any merge, oldest
+ * first), and no more at once than its limit, the permits' own: a backlog of thousands still goes
+ * in batches. A turn only ever waits for message lines: a view merges two lines only once their
+ * parent is built.
  *
  * Only the nodes in use are held: texts are read from the store through a bounded cache, and
  * the first run after a load finds the ready nodes from which nodes exist, in slices.
@@ -189,6 +190,34 @@ export class TreeBuilder {
    */
   private urgent(n: NodeRef) {
     return end(n) < this.urgentBelow();
+  }
+  /**
+   * W570: the order calls start in. While a turn waits, what its wait needs goes first: its lines,
+   * and the merges a view over its bound is waiting for (two neighbours in it whose parent is
+   * unbuilt): the compaction view past 32 KB, which bounds every call's context, and the chat view
+   * while it merges, which bounds the turn's. Then every other node by the last message it covers
+   * (a merge before a later line). Ordered by end alone, the merges of the earlier lines went before
+   * the last lines, and turns failed at 90 s with 1 to 6 lines unbuilt: W144 on 2026-11-02 spent 39
+   * of its 59 calls on merges, and its last line started after its deadline. Merges stay urgent
+   * (they take a permit as soon as they start), so no merge already started holds a line back.
+   */
+  private order(): (a: NodeRef, b: NodeRef) => number {
+    const byEnd = (a: NodeRef, b: NodeRef) => end(a) - end(b) || a[0] - b[0];
+    const below = this.urgentBelow();
+    if (!below) return byEnd;
+    const merges = new Set<string>();
+    const over = (view: readonly NodeRef[], bound: number) => {
+      if (viewBytes(view, this.nodes) <= bound) return;
+      for (let p = 0; p + 1 < view.length; p++) {
+        const [l, i] = view[p]!;
+        const [l2, i2] = view[p + 1]!;
+        if (l === l2 && i % 2 === 0 && i2 === i + 1) merges.add(key(l + 1, i / 2));
+      }
+    };
+    over(this.views.compaction, VIEW_BYTES.compaction[0]);
+    if (this.views.merging) over(this.views.chat, VIEW_BYTES.chat[1]);
+    const later = ([l, i]: NodeRef) => (l === 0 ? i < below : merges.has(key(l, i))) ? 0 : 1;
+    return (a, b) => later(a) - later(b) || byEnd(a, b);
   }
   /** How much longer the turns its node is urgent for wait; 0 or less if none does. */
   private waitedMs(n: NodeRef) {
@@ -341,7 +370,7 @@ export class TreeBuilder {
         }
         if (fed) this.store.saveViews(this.views);
         this.buildFree();
-        this.ready.sort((a, b) => end(a) - end(b) || a[0] - b[0]);
+        this.ready.sort(this.order());
         const now = this.now();
         if (now >= this.pauseUntil) {
           if (this.status.state !== "building" && (running.size || this.ready.length)) this.status = { state: "building", detail: null, until: null };
