@@ -14,8 +14,8 @@ import type { MemoryMessage } from "./log";
 const KINDS = `Each message has a kind:
 - user: the user's words
 - agent: the agent's replies (older lines tag them coord)
-- tool: the agent's tool calls
-- echo: tool results
+- tool: one tool use, its call, then "→" and its result
+- echo: a tool's result, logged apart from its call in older history
 - work: a message from another thread or agent, starting "[name]", or a BB notice, starting "[bb]"
 - note: memories from before this chat: briefs, handovers and compaction summaries`;
 
@@ -63,7 +63,8 @@ Use the space up to the limit, and give it by value:
 
 3. Then findings, open questions and the agent's replies.
 
-4. Least of all, tool steps: what was done to what, and the outcome.
+4. Least of all, tool steps: what was run on what, and its outcome (ids, SHAs,
+   counts, pass or fail).
 
 Avoid omissions. Name a minor item in a word or two rather than drop it: an
 absent item can never be found. Copy names, numbers, ids, paths and errors

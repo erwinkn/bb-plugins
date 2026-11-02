@@ -1,12 +1,12 @@
 import {expect,it} from "vitest";
 import {fixture} from "./fixture";
 import {eventEntries} from "../lib/log";
-it("recovers the missing middle of a clipped echo, pages every UTF-8 byte, and selects neither arguments nor reasoning",async()=>{
+it("recovers the missing middle of a clipped result, pages every UTF-8 byte, and selects neither other events nor reasoning",async()=>{
  const f=fixture();const s=await f.attach("initiatives","p",f.thread("w"));
  const original="é".repeat(40_000)+"MIDDLE-EVIDENCE"+"€".repeat(40_000);
  const row={threadId:"w",seq:1000,type:"item/completed",data:{item:{type:"toolCall",tool:"read",arguments:{path:"unrelated-input"},result:original},thoughts:"private-thought"}};
  f.history.push(row); f.history.push({threadId:"w",seq:1001,type:"turn/completed",data:{status:"completed"}});
- await f.memory.ingest("w"); const id=f.store.messages(s).find(m=>m.kind==="echo")!.i;
+ await f.memory.ingest("w"); const id=f.store.messages(s).find(m=>m.kind==="tool")!.i;
  expect(f.store.message(s,id)!.text).not.toContain("MIDDLE-EVIDENCE");
  let offset=0, recovered="";
  do { const result=await f.memory.evidence(s,id,1,offset); if(typeof result==="string")throw Error("expected content");
@@ -14,7 +14,7 @@ it("recovers the missing middle of a clipped echo, pages every UTF-8 byte, and s
  const [header,...body]=text.text.split("\n");recovered+=body.join("\n");
  expect(header).toContain("source w:1000"); const match=/next offset (\d+)/.exec(header!); if(!match)break;offset=Number(match[1]);
  }while(true);
- expect(recovered).toBe(original);expect(recovered).not.toContain("private-thought");
+ expect(recovered).toBe(`read {"path":"unrelated-input"}\n→ ${original}`);expect(recovered).not.toContain("private-thought");
 });
 it("returns tool images as image content, excludes opaque data from summaries, and preserves RPC text aliases",async()=>{
  const f=fixture();const s=await f.attach("initiatives","p",f.thread("w"));

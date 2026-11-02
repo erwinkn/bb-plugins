@@ -3,7 +3,7 @@ import { addAbortListener } from "node:events";
 import { z } from "zod";
 import { TreeBuilder, type BuilderStatus } from "./builder";
 import { readStable, type ListEvents } from "./ingest";
-import { UNAVAILABLE, stableEntries, type EventRow } from "./log";
+import { UNAVAILABLE, stableEntries, type EventRow, type MemoryMessage } from "./log";
 import { COMPACTION_PROMPT, messageText, stamp, turnMessage, turnSystem } from "./prompt";
 import { FairPermits, NO_DEMAND } from "./permits";
 import type { Settings } from "./settings";
@@ -856,7 +856,17 @@ export class ChatMemory {
     if (n !== 1) return { content: [{type: "text" as const, text: this.zoom(scopeId, id, n)}] };
     const m = this.store.message(scopeId, id);
     if (!m) throw new MemoryError(`No message ${id}.`);
-    return originalEvidence(this.deps, m, offset, attachment);
+    return originalEvidence(this.deps, m, offset, attachment, this.loggedSplit(scopeId, m));
+  }
+  /** W571: whether a tool row was logged apart from its result: the rows of its event go on with an echo. */
+  private loggedSplit(scopeId: string, m: MemoryMessage) {
+    if (m.kind === "echo") return true;
+    if (m.kind !== "tool" || m.seq === null) return false;
+    for (let i = m.i + 1; ; i++) {
+      const next = this.store.message(scopeId, i);
+      if (!next || next.threadId !== m.threadId || next.seq !== m.seq) return false;
+      if (next.kind === "echo") return true;
+    }
   }
   async zoomText(scopeId: string, id: number, n: number, offset = 0, attachment?: number) {
     const result = await this.evidence(scopeId, id, n, offset, attachment);

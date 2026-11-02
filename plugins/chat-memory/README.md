@@ -158,8 +158,10 @@ semantic message via its original thread/sequence, including text clipped in the
 memory log. Responses carry source, availability, byte range and explicit next
 `offset`, in 24,000-byte UTF-8 pages. A split stored entry identifies its canonical
 semantic message; pages expose that message, not unrelated event fields.
-`attachment` selects an attachment index listed in the result. Tool calls and
-echoes remain distinct; thoughts and nested subagent items are excluded. Inline
+`attachment` selects an attachment index listed in the result. A tool use is
+one message, its call and result; a call or an echo logged apart before W571
+zooms to that part alone. The log, not the text, tells them apart: a row logged
+that way is an echo, or a tool row its event's echo row follows. Thoughts and nested subagent items are excluded. Inline
 image data is omitted from summary input and returned only as tool image content.
 The RPC remains text-valued, with an image-available notice for compatibility.
 
@@ -185,8 +187,10 @@ Append-only, one row per message, across all of a scope's threads, read from
 BB's own thread events (`client/turn/requested`, `item/completed`,
 `turn/completed`, and Claude Code's compaction summary), the same for every
 provider. Kinds: `user`, `agent` (replies; lines written before T145 say
-`coord`), `tool`, `echo` (results, head and tail within 30,000 characters),
-`work` (`[name] …` from another thread, by its title; `[bb] …` from BB,
+`coord`), `tool` (one tool use: the call, then `→` and its result, the result's
+head and tail within 30,000 characters, as in `Bash git status` / `→ exit 0` /
+`clean`), `echo` (a result logged apart from its call, before W571), `work`
+(`[name] …` from another thread, by its title; `[bb] …` from BB,
 including `[bb] (stopped) …` after a stopped turn), `note` (a plugin's brief or
 handover, compaction summaries). Thoughts are never logged.
 

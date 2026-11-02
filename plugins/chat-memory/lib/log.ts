@@ -85,12 +85,32 @@ function omitBlobs(this: Record<string, unknown>, key: string, value: unknown) {
 }
 const toolName = (name: unknown) => String(name ?? "tool").replace(/^mcp__bb-bridge__/, "");
 
-/** One BB event of a thread as log entries (a tool call is a tool entry and an echo entry), or none. */
-export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts, original = false): LogEntry[] {
+/** Between a tool call and its result in one tool entry: "Bash git status\n→ exit 0\nclean". */
+export const RESULT = "\n→ ";
+/** The item types logged as a call and its result. */
+export const TOOL_USES: ReadonlySet<string> = new Set(["toolCall", "commandExecution", "fileChange"]);
+
+export interface EntryOptions {
+  /** The source text unclipped, as zoom returns it. */
+  original?: boolean;
+  /**
+   * W571: the entries as logged before, a tool entry for the call and an echo entry for its
+   * result. Only zoom asks for them, to select a row logged that way.
+   */
+  legacy?: boolean;
+}
+
+/** One BB event of a thread as log entries (a tool use is one tool entry: its call and result), or none. */
+export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts, { original = false, legacy = false }: EntryOptions = {}): LogEntry[] {
   const output = original ? (s: string) => s : clip;
   const base = { at: timeOf(row), threadId, seq: row.seq };
   let sourcePart = 0;
   const entry = (kind: MemoryKind, text: string): LogEntry[] => (text.trim() ? [{ ...base, kind, text: text.trim(), sourcePart: sourcePart++, ...(row.type === "client/turn/requested" ? {requestId: row.data?.requestId ?? null} : {}) }] : []);
+  // The result keeps its head and tail (clip); the call stays whole.
+  const use = (call: string, result: string): LogEntry[] => {
+    const out = output(result).trim();
+    return legacy ? [...entry("tool", call), ...entry("echo", out)] : entry("tool", out ? `${call.trim()}${RESULT}${out}` : call);
+  };
   const d = row.data ?? {};
   if (row.type === "client/turn/requested") {
     const text = [inputText(d.input).trim(), ...(Array.isArray(d.input) ? d.input.filter(c => ["localImage","localFile","image"].includes(c.type)).map(c => `[attachment: ${c.path ?? (typeof c.url === "string" && c.url.startsWith("data:") ? "inline image" : c.url) ?? c.type}]`) : [])].filter(Boolean).join("\n");
@@ -127,21 +147,15 @@ export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts
     case "contextCompaction":
       return entry("note", "Context compacted: the agent's earlier context was replaced by a summary.");
     case "toolCall":
-      return [
-        ...entry("tool", `${toolName(item.tool)} ${json(item.arguments ?? {})}`),
-        ...entry("echo", output([json(item.result), item.error ? `error: ${json(item.error)}` : ""].filter(Boolean).join("\n"))),
-      ];
+      return use(`${toolName(item.tool)} ${json(item.arguments ?? {})}`, [json(item.result), item.error ? `error: ${json(item.error)}` : ""].filter(Boolean).join("\n"));
     case "commandExecution":
-      return [
-        ...entry("tool", `Bash ${String(item.command ?? "")}`),
-        ...entry("echo", output(`${item.exitCode != null ? `exit ${item.exitCode}\n` : ""}${String(item.aggregatedOutput ?? "")}`)),
-      ];
+      return use(`Bash ${String(item.command ?? "")}`, `${item.exitCode != null ? `exit ${item.exitCode}\n` : ""}${String(item.aggregatedOutput ?? "")}`);
     case "fileChange": {
       const changes = Array.isArray(item.changes) ? item.changes : [];
-      return [
-        ...entry("tool", `Edit ${changes.map((c: { kind?: string; path?: string }) => `${c.kind ?? "change"} ${c.path ?? "?"}`).join(", ")}`),
-        ...entry("echo", output(changes.map((c: { diff?: string }) => c.diff ?? "").join("\n"))),
-      ];
+      return use(
+        `Edit ${changes.map((c: { kind?: string; path?: string }) => `${c.kind ?? "change"} ${c.path ?? "?"}`).join(", ")}`,
+        changes.map((c: { diff?: string }) => c.diff ?? "").join("\n"),
+      );
     }
     default: {
       const { type, id: _id, status: _status, presentation: _p, ...rest } = item;

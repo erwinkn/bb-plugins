@@ -1,5 +1,5 @@
 import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
-import { eventEntries, splitEntry, type MemoryMessage } from "./log";
+import { TOOL_USES, eventEntries, splitEntry, type MemoryMessage } from "./log";
 import { senderParts } from "./sender-parts";
 import type { ListEvents } from "./ingest";
 
@@ -18,7 +18,12 @@ export function evidencePage(text: string, offset: number) {
 }
 
 /** Recover only the selected semantic entry, never a whole event envelope or reasoning. */
-export async function originalEvidence(deps: EvidenceDeps, m: MemoryMessage, offset = 0, attachment?: number): Promise<PluginAgentToolResult> {
+/**
+ * `split`: the message was logged before W571, when a tool use was a tool row for its call and an
+ * echo row for its result. The caller reads that from the log (an echo row, or a tool row whose
+ * event goes on with an echo row), never from the text, which source retention can change.
+ */
+export async function originalEvidence(deps: EvidenceDeps, m: MemoryMessage, offset = 0, attachment?: number, split = false): Promise<PluginAgentToolResult> {
   const source = `${m.threadId ?? "import"}:${m.seq ?? "unknown"}`;
   let text = m.text;
   let availability = "saved copy only; canonical source unavailable";
@@ -28,7 +33,12 @@ export async function originalEvidence(deps: EvidenceDeps, m: MemoryMessage, off
       const [row] = await deps.list({threadId: m.threadId, types: ["client/turn/requested","item/completed","turn/completed","provider/unhandled"], order: "asc", afterSeq: String(m.seq-1), limit: "1"});
       if (row?.seq === m.seq) {
         const facts = {spawnedByPlugin: m.kind === "note", sender: () => "thread"};
-        const entries = eventEntries(row, m.threadId, facts);
+        const item = row.data?.item;
+        const toolUse = row.type === "item/completed" && TOOL_USES.has(item?.type);
+        // W571: a tool use is one tool entry, its call and result; a row logged before selects
+        // among the call and the echo, as they were logged then.
+        const legacy = toolUse && (split || m.kind === "echo");
+        const entries = eventEntries(row, m.threadId, facts, {legacy});
         // New logs select by durable source ordinal. Legacy rows compare normalized unsplit
         // content so a mutable sender label cannot shift the 30,000-character chunk boundary.
         const sameKind = entries.filter(e => e.kind === m.kind);
@@ -39,16 +49,17 @@ export async function originalEvidence(deps: EvidenceDeps, m: MemoryMessage, off
           : matches.length === 1 ? matches[0] : sameKind.length === 1 ? sameKind[0] : undefined;
         if (selected) {
           const index = entries.indexOf(selected);
-          text = eventEntries(row, m.threadId, facts, true)[index]!.text;
+          text = eventEntries(row, m.threadId, facts, {legacy, original: true})[index]!.text;
           availability = "canonical semantic message";
-          const item = row.data?.item;
-          if (item?.truncation && m.kind === "echo") availability = "canonical retained output; source retention may have removed the middle (see truncation marker)";
+          // The selected entry holds the tool's result: a combined tool entry, or a legacy echo.
+          const withResult = toolUse && (m.kind === "echo" || !legacy);
+          if (item?.truncation && withResult) availability = "canonical retained output; source retention may have removed the middle (see truncation marker)";
           if (row.type === "client/turn/requested") {
             const parts = senderParts(row.data);
             const input = m.kind === "work" && parts.length > 1 ? parts[index]?.input : row.data?.input;
             attachments = (input ?? []).filter((c: {type: string}) => ["localImage","localFile","image"].includes(c.type));
           }
-          if (m.kind === "echo" && item?.type === "toolCall") {
+          if (withResult && item?.type === "toolCall") {
             let result = item.result;
             if (typeof result === "string") { try {result = JSON.parse(result);} catch { /* plain text output */ } }
             attachments = (result?.content ?? []).filter((c: {type: string}) => c.type === "image");

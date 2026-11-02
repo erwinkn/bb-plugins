@@ -372,12 +372,12 @@ describe("W220 log entries from BB events", () => {
     expect(entries(turn(native.seededGroup))[0]).toMatch(/^work: \[thr_j2ir7ujpru\] \[bb message from thread:thr_parent; DO NOT deploy\]\n\nFork context\n/);
   });
 
-  it("maps items: replies, tool calls with their echo, commands; never thoughts", () => {
+  it("maps items: replies, tool calls with their results, commands; never thoughts", () => {
     expect(entries(item({ type: "agentMessage", text: "Done." }))).toEqual(["agent: Done."]);
     expect(entries(item({ type: "reasoning", content: ["secret"] }))).toEqual([]);
-    expect(entries(item({ type: "toolCall", tool: "initiative_read", arguments: { view: "workers" }, result: "{\"items\":[]}" }))).toEqual(['tool: initiative_read {"view":"workers"}', 'echo: {"items":[]}']);
+    expect(entries(item({ type: "toolCall", tool: "initiative_read", arguments: { view: "workers" }, result: "{\"items\":[]}" }))).toEqual(['tool: initiative_read {"view":"workers"}\n→ {"items":[]}']);
     expect(entries(item({ type: "toolCall", tool: "ToolSearch", arguments: {}, result: "x", presentation: { suppress: true } }))).toEqual([]);
-    expect(entries(item({ type: "commandExecution", command: "git status", exitCode: 0, aggregatedOutput: "clean" }))).toEqual(["tool: Bash git status", "echo: exit 0\nclean"]);
+    expect(entries(item({ type: "commandExecution", command: "git status", exitCode: 0, aggregatedOutput: "clean" }))).toEqual(["tool: Bash git status\n→ exit 0\nclean"]);
     expect(entries(item({ type: "toolCall", tool: "x", parentToolCallId: "p", arguments: {} }))).toEqual([]);
     expect(entries(item({ type: "contextCompaction" }))[0]).toMatch(/^note: Context compacted/);
     const summary = { seq: 7, type: "provider/unhandled", data: { rawType: "sdk/user", rawEvent: { params: { message: { message: { content: "This session is being continued from a previous conversation. Summary: …" } } } } } };
@@ -385,9 +385,9 @@ describe("W220 log entries from BB events", () => {
   });
 
   it("clips tool output to its head and tail and splits other long text", () => {
-    const [, echo] = eventEntries(item({ type: "commandExecution", command: "cat big", exitCode: 0, aggregatedOutput: "a".repeat(40_000) + "END" }), "coord", facts);
-    expect(echo!.text.length).toBeLessThan(30_100);
-    expect(echo!.text).toMatch(/clipped[\s\S]*END$/);
+    const [use] = eventEntries(item({ type: "commandExecution", command: "cat big", exitCode: 0, aggregatedOutput: "a".repeat(40_000) + "END" }), "coord", facts);
+    expect(use!.text.length).toBeLessThan(30_100);
+    expect(use!.text).toMatch(/^Bash cat big\n→ exit 0\n[\s\S]*clipped[\s\S]*END$/);
     const parts = eventEntries(item({ type: "agentMessage", text: "b".repeat(65_000) }), "coord", facts).flatMap(splitEntry);
     expect(parts.map((p) => p.text.length)).toEqual([30_000, 30_000, 5_000]);
   });
