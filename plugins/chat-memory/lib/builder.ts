@@ -114,7 +114,7 @@ export class TreeBuilder {
   /** Fed messages without their line yet, once recovered: the build's frontier, never the history. */
   private unbuilt = new Set<number>();
   /** By waiting turn: the messages 0..count-1 whose lines it needs, and until when it waits. */
-  private needs = new Set<{ count: number; deadline: number }>();
+  private needs = new Set<{ count: number; deadline: number; mode: "turn" | "priority-only" }>();
   /** Calls past their bound, told when a turn lets go (their extension may end). */
   private releases = new Set<() => void>();
   /** Its scope closed or the service stopped: listeners hear it once more. */
@@ -193,12 +193,12 @@ export class TreeBuilder {
   /** How much longer the turns its node is urgent for wait; 0 or less if none does. */
   private waitedMs(n: NodeRef) {
     let deadline = -Infinity;
-    for (const need of this.needs) if (end(n) < need.count) deadline = Math.max(deadline, need.deadline);
+    for (const need of this.needs) if (need.mode === "turn" && end(n) < need.count) deadline = Math.max(deadline, need.deadline);
     return deadline - this.now();
   }
-  /** A turn waits for the lines of messages 0..count-1 until the returned release, or its deadline. */
-  need(count: number, deadline: number) {
-    const need = { count, deadline };
+  /** Prioritize messages 0..count-1; only a running turn may extend their call timeouts. */
+  need(count: number, deadline: number, mode: "turn" | "priority-only" = "turn") {
+    const need = { count, deadline, mode };
     this.needs.add(need);
     return () => {
       if (this.needs.delete(need)) for (const listener of this.releases) listener();

@@ -29,6 +29,8 @@ export const notFound = (error: unknown) => (error as { status?: number }).statu
 const INGEST_PAGES = 20;
 /** The memory's own progress (log and tree) reaches the UI at most this often; it also polls. */
 const PROGRESS_PUBLISH_MS = 30_000;
+/** Admission urgency lasts until the existing core queue fallback rechecks it. */
+const ADMISSION_WAIT_MS = 30_000;
 
 /**
  * The hidden tool BB's Claude Code provider (Erwin's fork) calls before each new turn whose tools,
@@ -175,6 +177,8 @@ export class ChatMemory {
   private published = new Map<string, number>();
   /** Scopes with queued admissions; whether their failure transition was already announced. */
   private waiting = new Map<string, boolean>();
+  /** Bounded preparation leases, not a message queue: core owns every queued row. */
+  private preparing = new Map<string, { scopeId: string; groups: Map<string, Set<string>>; release: () => void; timer: ReturnType<typeof setTimeout> }>();
   /** By thread: the view lines its last UniiChat turn froze into its system prompt. */
   private frozen = new Map<string, NodeRef[]>();
   private facts = new Map<string, Promise<ThreadFacts | null>>();
@@ -217,6 +221,7 @@ export class ChatMemory {
   /** Abort the sweep, every copy and build, and give up every summary waiter. */
   dispose() {
     this.life.abort();
+    for (const threadId of this.preparing.keys()) this.releasePreparation(threadId);
     this.stopLink?.[Symbol.dispose]();
     this.stopLink = null;
     for (const run of [...this.ingests.values(), ...this.builds.values()]) run.abort.abort();
@@ -287,20 +292,77 @@ export class ChatMemory {
    * the reason and its message kept, a new turn of an OptChat thread on another provider (Codex,
    * T146). BB would refuse the turn anyway (the hook is in its tools); this only explains it early.
    */
-  async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn" }): Promise<DispatchDecision> {
+  async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn"; queuedIds?: string[] }): Promise<DispatchDecision> {
     const scope = this.store.scopeOf(d.threadId);
     if (d.attempt === "join-turn" || scope?.mode !== "optchat") return { action: "proceed" };
     if (d.providerId === "claude-code") {
-      if (this.ready(scope.id)) return {action: "proceed"};
+      if (this.ready(scope.id)) { this.releaseScopePreparation(scope.id); return {action: "proceed"}; }
       const failure = this.requiredFailure(scope.id);
-      if (failure) return {action: "reject", message: failure};
+      if (failure) { this.releaseScopePreparation(scope.id); return {action: "reject", message: failure}; }
       if (!this.waiting.has(scope.id)) this.waiting.set(scope.id, false);
+      if (!this.disposed) {
+        const previous = this.preparing.get(d.threadId);
+        const groups = previous?.scopeId === scope.id ? previous.groups : new Map<string, Set<string>>();
+        if (d.queuedIds?.length) {
+          // A drain can regroup rows previously observed in independent dispatches.
+          for (const id of d.queuedIds) this.removePreparationRow(groups, id);
+          groups.set(d.queuedIds[0]!, new Set(d.queuedIds));
+        }
+        // Catch-up may append history after this pass. It all belongs to this preparation.
+        // Queued admission changes permit priority only, never model-call timeouts.
+        const release = this.builder(scope.id).need(Infinity, this.store.now() + ADMISSION_WAIT_MS, "priority-only");
+        // Release observers must see uninterrupted priority during a renewal.
+        this.releasePreparation(d.threadId);
+        const timer = setTimeout(() => this.releasePreparation(d.threadId), ADMISSION_WAIT_MS);
+        timer.unref?.();
+        this.preparing.set(d.threadId, {scopeId: scope.id, groups, release, timer});
+      }
       this.kick(d.threadId);
       this.build(scope.id);
-      return {action: "wait", reason: "UniiChat is preparing historical summaries", sendAt: this.store.now() + 30_000};
+      return {action: "wait", reason: "UniiChat is preparing historical summaries", sendAt: this.store.now() + ADMISSION_WAIT_MS};
     }
     const name = await this.threadName(d.threadId);
     return { action: "reject", message: `UniiChat runs on Claude Code only for now (T146): ${name} runs on ${d.providerId}, so this message was not sent. Adventure coordinators run on Claude Code (rule R3): replace it with a Claude Code coordinator to go on.` };
+  }
+
+  releasePreparation(threadId: string) {
+    const preparation = this.preparing.get(threadId);
+    if (!preparation) return;
+    this.preparing.delete(threadId);
+    clearTimeout(preparation.timer);
+    preparation.release();
+  }
+  private releaseScopePreparation(scopeId: string) {
+    for (const [threadId, preparation] of this.preparing) if (preparation.scopeId === scopeId) this.releasePreparation(threadId);
+  }
+  private removePreparationRow(groups: Map<string, Set<string>>, id: string) {
+    for (const [lead, ids] of [...groups]) {
+      if (!ids.delete(id)) continue;
+      if (!ids.size) groups.delete(lead);
+      else if (lead === id) {
+        groups.delete(lead);
+        groups.set(ids.values().next().value!, ids);
+      }
+    }
+  }
+  /** A wait transition announces only the lead row, but applies to its whole dispatch group. */
+  preparationQueued(threadId: string, id: string, held: boolean) {
+    const preparation = this.preparing.get(threadId);
+    if (!preparation) return;
+    if (held) {
+      // Inline admissions learn their row ID here; drains already supplied the group.
+      if (![...preparation.groups.values()].some(ids => ids.has(id))) preparation.groups.set(id, new Set([id]));
+    } else {
+      preparation.groups.delete(id);
+      if (!preparation.groups.size) this.releasePreparation(threadId);
+    }
+  }
+  /** Cancellation and successful dispatch are announced once per row. */
+  preparationRemoved(threadId: string, id: string) {
+    const preparation = this.preparing.get(threadId);
+    if (!preparation) return;
+    this.removePreparationRow(preparation.groups, id);
+    if (!preparation.groups.size) this.releasePreparation(threadId);
   }
 
   private ready(scopeId: string) {
@@ -333,9 +395,11 @@ export class ChatMemory {
   private wake(scopeId: string) {
     if (this.disposed || !this.waiting.has(scopeId)) return;
     if (this.ready(scopeId)) {
+      this.releaseScopePreparation(scopeId);
       this.waiting.delete(scopeId);
       this.deps.recheck?.();
     } else if (!this.waiting.get(scopeId) && this.requiredFailure(scopeId)) {
+      this.releaseScopePreparation(scopeId);
       this.waiting.set(scopeId, true);
       this.deps.recheck?.();
     }
