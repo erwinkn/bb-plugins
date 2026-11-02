@@ -101,7 +101,7 @@ import type { LiveThread } from "./overview";
 import { RunningChildren } from "./context";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
-import { MEMORY_SCOPE_KEY, attachMemory, createWorkerMemory, workerMemoryKey, workerHasPrivateMemory } from "./memory-scopes";
+import { MEMORY_SCOPE_KEY, attachMemory, createWorkerMemory, prioritizeMemory, workerMemoryKey, workerHasPrivateMemory } from "./memory-scopes";
 import { SLOW_CALL_MS, StepTimer } from "./step-timing";
 
 export const METADATA_VERSION = 1;
@@ -197,6 +197,23 @@ type HandoverRecheck =
 
 /** W492: a thread that can't be archived yet but will be once it is quiet. */
 class ThreadBusy extends ProjectError {}
+/** W568: a retire's own condition on the worker (as in the write queue) and its thread (as just read, null without one); refuses by throwing. */
+type RetireCheck = (worker: WorkerRecord, thread: ThreadDto | null) => void;
+
+/** W568: why retire-idle keeps a worker that has no PR (counted apart in its answer). */
+const NO_PR_KEPT = "no PR, kept";
+/**
+ * W568, rule R11: whose context retire-idle may let go, given the PRs it holds (none open: the
+ * caller refuses those first). A worker's context stays until its PRs are merged or closed, so one
+ * whose PRs all are may go. A reviewer has no PR of its own and is fresh each round (D449): it may go.
+ * Any other worker without a PR (an analysis, an investigation) is kept, pending Erwin's call: this
+ * line is the policy. Returns why it is kept, or null.
+ */
+export const retirePolicy = (worker: WorkerRecord, prs: { url: string; open: boolean }[]): string | null =>
+  prs.length || worker.role === "review" ? null : NO_PR_KEPT;
+/** W568: "5 h", "3 d" or "12 min", for retire-idle's lists. */
+const duration = (ms: number) =>
+  ms >= 48 * 3_600_000 ? `${Math.floor(ms / 86_400_000)} d` : ms >= 3_600_000 ? `${Math.floor(ms / 3_600_000)} h` : `${Math.max(0, Math.floor(ms / 60_000))} min`;
 /** W492: how long a retirement waits for its worker's thread to go quiet. */
 const RETIRE_WAIT_MS = 24 * 3_600_000;
 /** W496: how often the sweep looks for archived nested threads unarchived while no event reached the plugin. */
@@ -390,6 +407,29 @@ export class ProjectsService {
         );
     } catch (error) {
       if ((error as { status?: number }).status !== 404) throw error;
+    }
+  }
+
+  /** W568: the Adventures whose coordinator memory Chat memory was told goes first, this process. */
+  private readonly prioritized = new Set<string>();
+  private prioritizeFailed = false;
+  /**
+   * W568: each live Adventure's coordinator memory goes first in Chat memory's summarizer queue.
+   * Chat memory keeps the priority with the scope, so this is said once per Adventure and process
+   * (each sweep tells the new ones); a failure is tried again next sweep, and logged once.
+   */
+  async prioritizeCoordinatorMemories(signal?: AbortSignal) {
+    for (const project of this.store.projects()) {
+      if (signal?.aborted) return;
+      if (this.prioritized.has(project.id)) continue;
+      try {
+        await prioritizeMemory(this.sdk, project.id);
+        this.prioritized.add(project.id);
+      } catch (error) {
+        if (!this.prioritizeFailed) this.bb.log.warn(`Chat memory did not take the coordinator memories' priority (${errorMessage(error)}); trying again each sweep.`);
+        this.prioritizeFailed = true;
+        return;
+      }
     }
   }
 
@@ -6033,21 +6073,23 @@ export class ProjectsService {
    * whose thread is still busy (its turn ending after its report, a child
    * finishing) is retired once it is quiet (finishRetirements): the call
    * answers state "retiring" and a note. `waited`: that later attempt, which
-   * leaves the request as it is.
+   * leaves the request as it is. `check`: a caller's own condition (W568's idle age and PRs) on the
+   * worker as it is in the write queue and on its thread as last read, run once, synchronously, right
+   * before the archive call (retireThread); it refuses by throwing.
    */
-  async retireWorker(projectId: string, ref: string, reason: string, { waited = false } = {}): Promise<WorkerRecord | (Omit<WorkerRecord, "state"> & { state: "retiring"; note: string })> {
+  async retireWorker(projectId: string, ref: string, reason: string, { waited = false, check }: { waited?: boolean; check?: RetireCheck } = {}): Promise<WorkerRecord | (Omit<WorkerRecord, "state"> & { state: "retiring"; note: string })> {
     const project = this.requireProject(projectId);
     const worker = this.requireWorker(project, ref);
     if (worker.state === "retired") return worker;
     const timer = new StepTimer();
     try {
-      return await this.retireChecked(project, worker, reason, waited, timer);
+      return await this.retireChecked(project, worker, reason, waited, timer, check);
     } finally {
       if (timer.totalMs > SLOW_CALL_MS) this.bb.log.warn(`Slow retire of ${worker.ref} (${project.id}): ${timer.summary()}`);
     }
   }
 
-  private async retireChecked(project: ProjectRecord, worker: WorkerRecord, reason: string, waited: boolean, timer: StepTimer) {
+  private async retireChecked(project: ProjectRecord, worker: WorkerRecord, reason: string, waited: boolean, timer: StepTimer, check?: RetireCheck) {
     const unconfirmed = this.store
       .assignmentsIn(project.id, [], UNSETTLED_OPS)
       .filter((a) => a.workerNum === worker.num);
@@ -6063,9 +6105,10 @@ export class ProjectsService {
       throw new ProjectError(
         `${worker.ref} still has ${open.ref} open (${open.state}). Wait for its report or stop it first.`,
       );
-    if (worker.threadId)
+    if (!worker.threadId) check?.(worker, null);
+    else
       try {
-        await this.retireThread(worker.threadId, (line) => this.recordLate(project.id, "worker", `${worker.ref} retired, but ${line}`), timer);
+        await this.retireThread(worker.threadId, (line) => this.recordLate(project.id, "worker", `${worker.ref} retired, but ${line}`), timer, (thread) => check?.(worker, thread));
       } catch (error) {
         if (!(error instanceof ThreadBusy) || waited) throw error;
         this.store.requestRetire(project.id, worker.num, reason, this.now());
@@ -6091,6 +6134,119 @@ export class ProjectsService {
       );
       return updated;
     }));
+  }
+
+  /**
+   * W568: retires, across every live Adventure, the workers whose thread has been quiet for at
+   * least `idleMs` (since BB's last change to it, `updatedAt`; a worker without a thread, since its
+   * own record's), longest idle first. One condition decides who may go (`ineligible`: unconfirmed
+   * or open work, an open PR held or watched, a context `retirePolicy` keeps, activity within
+   * `idleMs`): the scan
+   * applies it to each worker, and again, on fresh evidence, each retire and each dry-run proof. A
+   * retire goes through retireWorker in a write-queue slot of its own, which refuses a busy thread
+   * (never left to retire later) and runs the condition after its last await, just before the archive
+   * call. `dryRun` only lists, giving each the refusal retiring it would meet. At most `limit` retire
+   * or fail per call (each takes about a second); refusals don't count, the rest are counted as left.
+   * Nothing is sent to any thread.
+   */
+  async retireIdle(options: { idleMs: number; dryRun: boolean; limit: number; by: string }) {
+    // Read live from SQLite on every call: PR records and watches change outside the write queue.
+    const ineligible = (projectId: string, worker: WorkerRecord, thread: ThreadDto | null): string | null => {
+      if (this.store.assignmentsIn(projectId, [], UNSETTLED_OPS).some((a) => a.workerNum === worker.num)) return "an operation is unconfirmed";
+      const open = this.store.openAssignment(projectId, worker.num);
+      if (open) return `${open.ref} is open (${open.state})`;
+      const held = this.store.prsHeld(projectId).get(worker.ref) ?? [];
+      const prs = [...new Set([...held.filter((pr) => pr.open).map((pr) => pr.url), ...((worker.threadId && this.prWatches.openWatches().get(worker.threadId)?.urls) || [])])];
+      if (prs.length) return `holds or watches open PR ${prs.join(", ")}`;
+      const kept = retirePolicy(worker, held);
+      if (kept) return kept;
+      const idleMs = idleFor(worker, thread);
+      return idleMs < options.idleMs ? `active ${duration(idleMs)} ago` : null;
+    };
+    const idleFor = (worker: WorkerRecord, thread: ThreadDto | null) => this.now() - (thread?.updatedAt ?? worker.updatedAt);
+    // 8 at a time: one read per worker's thread, then a dry run's proof of quiet per idle one.
+    const pooled = async <T, R>(items: T[], each: (item: T) => Promise<R>) => {
+      const results = new Map<T, R | Error>();
+      const queue = [...items];
+      await Promise.all(Array.from({ length: 8 }, async () => {
+        for (let item = queue.shift(); item !== undefined; item = queue.shift())
+          results.set(item, await each(item).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error)))));
+      }));
+      return results;
+    };
+    const plans = this.store.projects().map((project) => ({
+      project,
+      workers: this.store.workers(project.id).filter((w) => w.state !== "retired"),
+      skipped: [] as { worker: string; reason: string }[],
+    }));
+    const threads = await pooled(plans.flatMap((p) => p.workers.flatMap((w) => (w.threadId ? [w.threadId] : []))), (threadId) => this.sdk.threads.get({ threadId }));
+    let idle: { project: ProjectRecord; worker: WorkerRecord; idleMs: number; skipped: { worker: string; reason: string }[] }[] = [];
+    for (const { project, workers, skipped } of plans)
+      for (const worker of workers) {
+        const thread = worker.threadId ? threads.get(worker.threadId)! : null;
+        const reason = thread instanceof Error ? `its thread could not be read (${errorMessage(thread)})` : ineligible(project.id, worker, thread);
+        if (reason) skipped.push({ worker: worker.ref, reason });
+        else idle.push({ project, worker, idleMs: idleFor(worker, thread as ThreadDto | null), skipped });
+      }
+    idle.sort((a, b) => b.idleMs - a.idleMs);
+    const refused = (i: (typeof idle)[number], error: unknown) => i.skipped.push({ worker: i.worker.ref, reason: errorMessage(error) });
+    // The scan's condition again, on the worker and thread as they are at the end of the proof.
+    const check = (projectId: string): RetireCheck => (worker, thread) => {
+      const reason = ineligible(projectId, worker, thread);
+      if (reason) throw new ProjectError(`${reason}, since the scan`);
+    };
+    if (options.dryRun) {
+      // What retireThread does up to its archive call: the proof of quiet, then the check.
+      const proofs = await pooled(idle, async (i) => check(i.project.id)(i.worker, i.worker.threadId ? await this.quietThread(i.worker.threadId, new StepTimer()) : null));
+      idle = idle.filter((i) => {
+        const proof = proofs.get(i);
+        if (proof instanceof Error) refused(i, proof instanceof ProjectError ? proof : new Error(`its thread could not be checked (${errorMessage(proof)})`));
+        return !(proof instanceof Error);
+      });
+    }
+    const outcomes = new Map<WorkerRecord, { retired: true } | { error: string }>();
+    const left: typeof idle = [];
+    for (const i of options.dryRun ? [] : [...idle]) {
+      if (outcomes.size >= options.limit) {
+        left.push(i);
+        continue;
+      }
+      const reason = `idle for ${duration(i.idleMs)} (retire-idle by ${options.by})`;
+      // waited: a thread that turned busy since refuses (ThreadBusy) rather than retiring later.
+      const outcome = await this.serialize(() => this.retireWorker(i.project.id, i.worker.ref, reason, { waited: true, check: check(i.project.id) }))
+        .then(() => null, (error: unknown) => error);
+      // A refusal (ProjectError, ThreadBusy among them) is a reason to keep it; anything else failed.
+      if (outcome instanceof ProjectError) {
+        refused(i, outcome);
+        idle = idle.filter((other) => other !== i);
+      } else outcomes.set(i.worker, outcome === null ? { retired: true } : { error: errorMessage(outcome) });
+    }
+    const adventures = plans.flatMap(({ project, skipped }) => {
+      const mine = idle.filter((i) => i.project === project);
+      const entry = (i: (typeof mine)[number]) => ({ worker: i.worker.ref, idle: duration(i.idleMs) });
+      const done = mine.filter((i) => outcomes.get(i.worker) && "retired" in outcomes.get(i.worker)!);
+      const failed = mine.flatMap((i) => { const o = outcomes.get(i.worker); return o && "error" in o ? [{ worker: i.worker.ref, error: o.error }] : []; });
+      if (!mine.length && !skipped.length) return [];
+      return [{
+        id: project.id,
+        name: project.name,
+        ...(options.dryRun ? { wouldRetire: mine.map(entry) } : { retired: done.map(entry), failed, left: left.filter((i) => i.project === project).length }),
+        skipped,
+      }];
+    });
+    const retired = [...outcomes.values()].filter((o) => "retired" in o).length;
+    const skipped = plans.reduce((n, p) => n + p.skipped.length, 0);
+    const noPrKept = plans.reduce((n, p) => n + p.skipped.filter((k) => k.reason === NO_PR_KEPT).length, 0);
+    return {
+      dryRun: options.dryRun,
+      idle: duration(options.idleMs),
+      // Of the skipped, the workers kept only because they have no PR (retirePolicy).
+      totals: options.dryRun
+        ? { wouldRetire: idle.length, skipped, noPrKept }
+        : { retired, failed: outcomes.size - retired, skipped, noPrKept, left: left.length },
+      ...(left.length ? { note: `${left.length} more idle workers are left: run it again (at most ${options.limit} retire or fail per call).` } : {}),
+      adventures,
+    };
   }
 
   /**
@@ -6122,13 +6278,60 @@ export class ProjectsService {
   }
 
   /**
-   * Archive and release one thread, after proving nothing under it is still working. The Stop
-   * that follows the archive is not awaited (W514: BB's Stop waits on the host daemon, over a
-   * second per thread, and the thread is already proven quiet and archived): it runs in the
-   * background, and a failure is logged once as `stopFailed` says, never lost.
+   * Archive and release one thread, after proving nothing under it is still working. `decide`: the
+   * caller's last word on the proof's thread (an archived one included), run after the last await
+   * and with none before the archive call, so nothing it reads (W568: PRs, idle age) can change in
+   * between; it refuses by throwing. The Stop that follows the archive is not awaited (W514: BB's
+   * Stop waits on the host daemon, over a second per thread, and the thread is already proven quiet
+   * and archived): it runs in the background, and a failure is logged once as `stopFailed` says,
+   * never lost.
    */
-  private async retireThread(threadId: string, stopFailed: (message: string) => void, timer = new StepTimer()) {
-    const thread = await timer.step("get", () => this.sdk.threads.get({ threadId }));
+  private async retireThread(threadId: string, stopFailed: (message: string) => void, timer = new StepTimer(), decide?: (thread: ThreadDto) => void) {
+    const thread = await this.quietThread(threadId, timer);
+    decide?.(thread);
+    if (ProjectsService.gone(thread)) return;
+    await timer.step("archive", () => this.sdk.threads.archive({ threadId }));
+    this.stopInBackground(threadId, stopFailed);
+  }
+
+  private static gone(thread: ThreadDto) {
+    return thread.archivedAt !== null || thread.deletedAt !== null;
+  }
+
+  /**
+   * The proof retireThread needs before it archives, and nothing more (W568: retire-idle's dry run
+   * gives the same refusals): the thread as last read, quiet, or already archived or deleted by BB.
+   * Throws ThreadBusy while something under it runs, ProjectError when that cannot be proven. The
+   * root is read again after the list and descendant reads, so a turn or any change to it (its
+   * `updatedAt`) while they ran is in what the caller decides on.
+   */
+  private async quietThread(threadId: string, timer: StepTimer): Promise<ThreadDto> {
+    const thread = ProjectsService.quietRoot(await timer.step("get", () => this.sdk.threads.get({ threadId })));
+    if (ProjectsService.gone(thread)) return thread;
+    // The GET DTO has no background command or workflow counters; only the thread's
+    // own list row proves it quiet before anything destructive is called (T91).
+    const row = await timer.step("list", () => this.threadListRow(thread));
+    const quiet = ProjectsService.rowQuiescence(row);
+    if (quiet === "running")
+      throw new ThreadBusy(
+        "its thread still has native background commands, workflows, agents or queued work running",
+      );
+    if (quiet === "unknown")
+      throw new ProjectError(
+        "its thread could not be proven quiet: BB's list row for it was missing or unreadable",
+      );
+    const walk = await timer.step("children", () => this.descendants(threadId, DESCENDANT_BUDGET));
+    const blockers = await this.liveDescendants(threadId, DESCENDANT_BUDGET, walk);
+    if (blockers.length) {
+      const why = `archiving cascades to its native descendants, and ${blockers.slice(0, 3).join("; ")}${blockers.length > 3 ? `; and ${blockers.length - 3} more` : ""}`;
+      // Only children that are running are waited out; unreadable ones or too many to check refuse.
+      throw walk.complete && walk.threads.every((child) => child.running !== "unreadable") ? new ThreadBusy(why) : new ProjectError(why);
+    }
+    return ProjectsService.quietRoot(await timer.step("get", () => this.sdk.threads.get({ threadId })));
+  }
+
+  /** A root thread read that proves it quiet or gone, else the refusal. */
+  private static quietRoot(thread: ThreadDto | null | undefined): ThreadDto {
     // Native archive and Stop are destructive: the root DTO must positively
     // prove the thread is quiet or already gone before either runs. A
     // lifecycle field that is merely well-formed-but-null is not proof of an
@@ -6157,7 +6360,7 @@ export class ProjectsService {
       throw new ProjectError(
         "its native thread returned unreadable execution evidence; refusing to archive it",
       );
-    if (thread.archivedAt !== null || thread.deletedAt !== null) return;
+    if (ProjectsService.gone(thread)) return thread;
     if (BUSY_STATUSES.has(thread.status) || thread.status === "pending")
       throw new ThreadBusy("its thread is still running");
     if (thread.activeBackgroundAgentCount > 0)
@@ -6168,27 +6371,7 @@ export class ProjectsService {
       throw new ThreadBusy(
         "its thread has queued messages that would start more work",
       );
-    // The GET DTO has no background command or workflow counters; only the thread's
-    // own list row proves it quiet before anything destructive is called (T91).
-    const row = await timer.step("list", () => this.threadListRow(thread));
-    const quiet = ProjectsService.rowQuiescence(row);
-    if (quiet === "running")
-      throw new ThreadBusy(
-        "its thread still has native background commands, workflows, agents or queued work running",
-      );
-    if (quiet === "unknown")
-      throw new ProjectError(
-        "its thread could not be proven quiet: BB's list row for it was missing or unreadable",
-      );
-    const walk = await timer.step("children", () => this.descendants(threadId, DESCENDANT_BUDGET));
-    const blockers = await this.liveDescendants(threadId, DESCENDANT_BUDGET, walk);
-    if (blockers.length) {
-      const why = `archiving cascades to its native descendants, and ${blockers.slice(0, 3).join("; ")}${blockers.length > 3 ? `; and ${blockers.length - 3} more` : ""}`;
-      // Only children that are running are waited out; unreadable ones or too many to check refuse.
-      throw walk.complete && walk.threads.every((child) => child.running !== "unreadable") ? new ThreadBusy(why) : new ProjectError(why);
-    }
-    await timer.step("archive", () => this.sdk.threads.archive({ threadId }));
-    this.stopInBackground(threadId, stopFailed);
+    return thread;
   }
 
   /** The server's change signal, for activity written outside any request (a background Stop's failure). */

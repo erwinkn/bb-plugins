@@ -38,6 +38,9 @@ export const MIGRATIONS = [
   `ALTER TABLE log ADD COLUMN source_part INTEGER`,
   `ALTER TABLE log ADD COLUMN request_id TEXT`,
   `CREATE INDEX log_request ON log (scope, thread_id, request_id)`,
+  // W568: the owner's priority for the scope's summarizer calls (higher first; an Adventure
+  // coordinator's is 1). Older code ignores it.
+  `ALTER TABLE scopes ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
 ];
 
 export const MEMORY_MODES = ["regular", "optchat"] as const;
@@ -56,6 +59,8 @@ export interface Scope {
   mode: MemoryMode;
   /** The scope's own compaction limit; null follows the setting. */
   compactTokens: number | null;
+  /** Its summarizer calls go before those of every scope of lower priority (W568); 0 by default. */
+  priority: number;
 }
 /** A thread chat memory has met: the memory it writes to now, and how far its BB events are logged. */
 export interface MemoryThread {
@@ -102,6 +107,7 @@ const scope = (row: Row): Scope => ({
   owner: String(row.owner),
   mode: modeOf(String(row.owner)),
   compactTokens: row.compact_tokens == null ? null : Number(row.compact_tokens),
+  priority: Number(row.priority ?? 0),
 });
 const thread = (row: Row): MemoryThread => ({
   threadId: String(row.thread_id),
@@ -149,6 +155,9 @@ export class MemoryStore {
   ensureScope(id: string, owner: string) {
     const now = this.now();
     this.sql(`INSERT OR IGNORE INTO scopes (id, owner, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(id, owner, modeOf(owner), now, now);
+  }
+  savePriority(id: string, priority: number) {
+    this.sql(`UPDATE scopes SET priority = ?, updated_at = ? WHERE id = ? AND priority != ?`).run(priority, this.now(), id, priority);
   }
   saveCompactTokens(id: string, compactTokens: number | null) {
     this.sql(`UPDATE scopes SET compact_tokens = ?, updated_at = ? WHERE id = ?`).run(compactTokens, this.now(), id);

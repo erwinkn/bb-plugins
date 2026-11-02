@@ -182,6 +182,14 @@ export class ChatMemory {
   /** By thread: the view lines its last UniiChat turn froze into its system prompt. */
   private frozen = new Map<string, NodeRef[]>();
   private facts = new Map<string, Promise<ThreadFacts | null>>();
+  /**
+   * W568: by thread, whether its tree rests: BB has it archived (or no longer has it), as last read
+   * or announced; a thread that comes back or starts a turn is awake. A scope all of whose threads
+   * rest gets no summarizer calls until one wakes or a turn needs its tree.
+   */
+  private resting = new Map<string, boolean | Promise<boolean>>();
+  /** W568: scope priorities, as the store holds them, read once each. */
+  private priorities = new Map<string, number>();
   /** The wait bounds (ms); tests change them. */
   waits = { turn: TURN_WAIT_MS, summaries: SUMMARY_WAIT_MS };
 
@@ -201,7 +209,7 @@ export class ChatMemory {
     },
   ) {
     this.store = deps.store;
-    this.permits = new FairPermits(() => deps.settings().summarizerConcurrency);
+    this.permits = new FairPermits(() => deps.settings().summarizerConcurrency, (scopeId) => this.priority(scopeId));
   }
 
   /** Test seam: the summarizer later calls use. */
@@ -263,6 +271,82 @@ export class ChatMemory {
     return scopeId;
   }
 
+  /** W568: the owner's priority for a scope's summarizer calls (higher first). Returns the scope. */
+  prioritize(scopeId: string, priority: number) {
+    this.store.transaction(() => {
+      this.store.ensureScope(scopeId, ownerOf(scopeId));
+      this.store.savePriority(scopeId, priority);
+    });
+    this.priorities.set(scopeId, priority);
+    return scopeId;
+  }
+  private priority(scopeId: string) {
+    let priority = this.priorities.get(scopeId);
+    if (priority === undefined) this.priorities.set(scopeId, (priority = this.store.scope(scopeId)?.priority ?? 0));
+    return priority;
+  }
+
+  /**
+   * W568: BB archived the thread (true), or brought it back or started a turn in it (false). An
+   * archived thread's build stops unless a turn waits for it (its calls in flight are cancelled and
+   * their nodes wait); one that wakes builds again.
+   */
+  threadArchived(threadId: string, archived: boolean) {
+    const scope = this.store.scopeOf(threadId);
+    if (!scope) return;
+    this.resting.set(threadId, archived);
+    if (!archived) return this.build(scope.id);
+    void this.restIfUnwanted(scope.id);
+  }
+  /**
+   * Stop the scope's run if nothing waits for it and all its threads rest. A run started for a
+   * waiter never read the state, so it is read here first; the decision itself uses what is known
+   * after the read, so a wake or a new waiter meanwhile keeps the run.
+   */
+  private async restIfUnwanted(scopeId: string) {
+    // Disposed (BB may have closed the database already), nothing is left to stop.
+    const unwanted = () => !this.disposed && this.builds.get(scopeId) && !this.builders.get(scopeId)?.waited;
+    if (!unwanted() || !(await this.restingScope(scopeId))) return;
+    if (unwanted() && this.restingNow(scopeId)) this.builds.get(scopeId)!.abort.abort();
+  }
+  /** Whether the thread rests, read from BB once and then kept by its archive events; a failed read is tried again next time. */
+  private rests(threadId: string, fresh = false): boolean | Promise<boolean> {
+    const known = this.resting.get(threadId);
+    if (known !== undefined && !(fresh && typeof known === "boolean")) return known;
+    const read = this.deps.thread(threadId).then(
+      (facts) => {
+        // An archive event meanwhile is newer than this read.
+        if (this.resting.get(threadId) !== read) return this.resting.get(threadId) === true;
+        const archived = facts?.archived ?? true;
+        this.resting.set(threadId, archived);
+        // A read that finds the thread archived acts like its archive event: a run that started
+        // without knowing (an earlier read failed) stops unless a waiter wants it.
+        const scope = archived && !this.disposed ? this.store.scopeOf(threadId) : null;
+        if (scope) void this.restIfUnwanted(scope.id);
+        return archived;
+      },
+      () => {
+        if (this.resting.get(threadId) === read) this.resting.delete(threadId);
+        return false;
+      },
+    );
+    this.resting.set(threadId, read);
+    return read;
+  }
+  /** Whether every thread that writes to the scope rests (none does: it builds). */
+  private async restingScope(scopeId: string) {
+    if (this.disposed) return false;
+    const threads = this.store.threadsOf(scopeId);
+    if (!threads.length) return false;
+    for (const t of threads) if (!(await this.rests(t.threadId))) return false;
+    return true;
+  }
+  /** restingScope from what is known now: a thread not read yet counts as awake. */
+  private restingNow(scopeId: string) {
+    const threads = this.store.threadsOf(scopeId);
+    return threads.length > 0 && threads.every((t) => this.resting.get(t.threadId) === true);
+  }
+
   // Sessions (D458, D460) ------------------------------------------------------------------
 
   /**
@@ -318,6 +402,7 @@ export class ChatMemory {
         this.preparing.set(d.threadId, {scopeId: scope.id, groups, release, timer});
       }
       this.kick(d.threadId);
+      // Its need above is the demand that builds a resting scope; disposed, nothing builds.
       this.build(scope.id);
       return {action: "wait", reason: "UniiChat is preparing historical summaries", sendAt: this.store.now() + ADMISSION_WAIT_MS};
     }
@@ -529,8 +614,10 @@ export class ChatMemory {
    * D485: the safety net for turn ends BB never announced (its events are fire-and-forget): every
    * attached thread whose last turn/completed is past its cursor is copied, then every scope with a
    * thread builds (a failed line's retry comes due). The startup walk takes archived threads too;
-   * the recurring one skips them (`skipArchived`), as their archive was a final copy. Dispose ends
-   * it at once, even mid-read: it returns before touching the database again.
+   * the recurring one skips them (`skipArchived`), as their archive was a final copy. W568: the
+   * startup walk learns which threads are archived, one read each, so a resting scope never builds;
+   * the recurring one reads it again before a copy. Dispose ends it at once, even mid-read: it
+   * returns before touching the database again.
    */
   async sweep(skipArchived: boolean) {
     const { signal } = this.life;
@@ -539,8 +626,9 @@ export class ChatMemory {
       if (signal.aborted) return;
       try {
         const [latest] = await abortable(this.deps.list({ threadId: t.threadId, types: ["item/completed", "turn/completed", "turn/input/accepted", "client/turn/requested"], order: "desc", limit: "1" }), signal);
-        if (!latest || latest.seq <= t.cursor) continue;
-        if (skipArchived && (await abortable(this.deps.thread(t.threadId), signal))?.archived) continue;
+        const behind = !!latest && latest.seq > t.cursor;
+        const rests = await abortable(Promise.resolve(this.rests(t.threadId, behind && skipArchived)), signal);
+        if (!behind || (skipArchived && rests)) continue;
         this.kick(t.threadId);
       } catch (error) {
         if (signal.aborted) return;
@@ -591,7 +679,16 @@ export class ChatMemory {
     return { initiative, thread: this.store.threadsOf(scopeId)[0]?.threadId ?? null, purpose: "memory-tree" };
   }
 
-  /** Start (or extend) the background build. */
+  /**
+   * Start (or extend) the background build. W568: a scope all of whose threads rest (archived)
+   * does not build unless a turn waits for it: its builder holds that turn's need (an admission's
+   * or a turn's, taken in the same synchronous call as this one and released when the turn stops
+   * waiting), so demand lasts exactly as long as a waiter. Demand and the cached state are read
+   * after the archive reads, so a turn or a wake arriving during one still builds. A build asked
+   * for while an archive was cancelling the run starts again, fresh, once the cancelled one has
+   * ended, and decides anew. A run that started for a waiter stops when the last waiter leaves
+   * (admission expired or released, turn done or stopped) and the scope still rests.
+   */
   build(scopeId: string) {
     if (this.disposed) return;
     const running = this.builds.get(scopeId);
@@ -602,10 +699,14 @@ export class ChatMemory {
     const entry: Run = { abort: new AbortController(), again: false, done: Promise.resolve(), error: null };
     const { signal } = entry.abort;
     const builder = this.builder(scopeId);
+    const unsubscribe = builder.onRelease(() => void this.restIfUnwanted(scopeId));
     entry.done = (async () => {
       try {
         do {
           entry.again = false;
+          // restingNow: an unarchive or turn that came during the reads wakes it, whatever they said.
+          if (!builder.waited && (await this.restingScope(scopeId)) && !builder.waited && this.restingNow(scopeId)) break;
+          if (signal.aborted) break;
           await builder.run(signal);
           if (!signal.aborted) this.progressed(scopeId);
         } while (entry.again && !signal.aborted);
@@ -613,8 +714,10 @@ export class ChatMemory {
         entry.error = error;
         if (!signal.aborted) this.deps.log(`Memory tree for ${scopeId} failed: ${errorMessage(error)}`);
       } finally {
+        unsubscribe();
         this.builds.delete(scopeId);
         this.wake(scopeId);
+        if (signal.aborted && entry.again) this.build(scopeId);
       }
     })();
     this.builds.set(scopeId, entry);
@@ -837,6 +940,7 @@ export class ChatMemory {
   private async waitSummarized(scopeId: string, count: number, deadline: number, fail: (why: string) => Error, signal: AbortSignal | undefined, wait: Wait) {
     if (this.disposed) throw fail("Chat memory is stopping");
     if (signal?.aborted) throw fail("the turn stopped");
+    // Builds a resting scope only through the need taken below, in this same synchronous call.
     this.build(scopeId);
     const builder = this.builder(scopeId);
     if (this.historyReady(scopeId, count)) return;

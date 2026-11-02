@@ -69,6 +69,10 @@ export default function plugin(bb: BbPluginApi) {
       if (caller.kind !== "plugin") throw new MemoryError("A thread is attached to a memory by the plugin that owns it.");
       return { scope: memory.attach(threadId, `${caller.pluginId}:${key}`)! };
     },
+    prioritize: ({ key, priority }, { experimental_caller: caller }) => {
+      if (caller.kind !== "plugin") throw new MemoryError("A memory's priority is set by the plugin that owns it.");
+      return { scope: memory.prioritize(`${caller.pluginId}:${key}`, priority) };
+    },
     read: ({ threadId }) => memory.read(memory.scopeOf(threadId).id),
     zoom: ({ threadId, id, n, offset, attachment }) => memory.zoomText(memory.scopeOf(threadId).id, id, n, offset, attachment),
     status: async ({ threadId }) => {
@@ -165,7 +169,10 @@ export default function plugin(bb: BbPluginApi) {
   });
   bb.events.on("experimental_thread.events", ({ thread }) => ingest(thread.id));
   bb.events.on("thread.failed", ({ thread }) => ingest(thread.id));
-  bb.events.on("thread.archived", ({ thread }) => { memory.releasePreparation(thread.id); ingest(thread.id); });
+  // W568: an archived thread's final copy is logged, but its tree rests until it comes back or starts a turn.
+  bb.events.on("thread.archived", ({ thread }) => { memory.releasePreparation(thread.id); memory.threadArchived(thread.id, true); ingest(thread.id); });
+  bb.events.on("thread.unarchived", ({ thread }) => memory.threadArchived(thread.id, false));
+  bb.events.on("thread.active", ({ thread }) => memory.threadArchived(thread.id, false));
 
   bb.background.service("chat-memory-sweep", {
     async start(signal) {

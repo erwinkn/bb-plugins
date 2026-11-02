@@ -348,6 +348,7 @@ export class Runtime {
     await this.service.verifyEndedNested(signal).catch((error) => {
       if (!signal?.aborted) this.log.warn(`Could not read an archived nested thread again: ${errorMessage(error)}`);
     });
+    await this.service.prioritizeCoordinatorMemories(signal);
     await this.service.checkWorkers().catch((error) =>
       this.log.warn(`Worker check failed: ${errorMessage(error)}`),
     );

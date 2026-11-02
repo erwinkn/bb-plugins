@@ -196,6 +196,15 @@ export class TreeBuilder {
     for (const need of this.needs) if (need.mode === "turn" && end(n) < need.count) deadline = Math.max(deadline, need.deadline);
     return deadline - this.now();
   }
+  /** Whether a turn waits for any of its lines now (W568: such a build never rests). */
+  get waited() {
+    return this.needs.size > 0;
+  }
+  /** Call listener whenever a need is released; returns its unsubscribe. */
+  onRelease(listener: () => void) {
+    this.releases.add(listener);
+    return () => void this.releases.delete(listener);
+  }
   /** Prioritize messages 0..count-1; only a running turn may extend their call timeouts. */
   need(count: number, deadline: number, mode: "turn" | "priority-only" = "turn") {
     const need = { count, deadline, mode };
@@ -431,7 +440,7 @@ export class TreeBuilder {
     let outcome: Outcome | null = null;
     let pause: Pause | undefined;
     const timeoutMs = CALL_TIMEOUT_MS * 2 ** (this.failures.get(key(...node)) ?? 0);
-    const onRelease = (listener: () => void) => (this.releases.add(listener), () => void this.releases.delete(listener));
+    const onRelease = (listener: () => void) => this.onRelease(listener);
     try {
       for (let a = 0; a < ATTEMPTS; a++) {
         const request = { instructions: this.options.instructions(), input, effort: this.options.effort(), cacheKey: this.options.cacheKey, attribution: this.options.attribution?.(), signal, timeoutMs, extendMs: () => this.waitedMs(node), onRelease, onStart: started };

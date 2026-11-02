@@ -20,6 +20,8 @@ describe("W315 urgent calls go first", () => {
     const order: string[] = [];
     let release!: () => void;
     const first = permits.run("bg", new AbortController().signal, () => new Promise<void>((resolve) => (release = resolve)));
+    // Permits are given out once per macrotask (W568): the first call holds its permit before the rest ask.
+    await tick();
     let needed = false;
     const work = (owner: string, name: string, urgent?: () => boolean) => permits.run(owner, new AbortController().signal, async () => void order.push(name), urgent);
     const waiting = [work("bg", "bg1"), work("bg", "bg2"), work("other", "other1"), work("turn", "turn1", () => needed), work("bg", "bg3")];

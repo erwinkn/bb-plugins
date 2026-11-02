@@ -16,6 +16,15 @@ export const chatMemoryContract = defineRpcContract({
     output: z.object({ scope: z.string() }),
   },
   /**
+   * W568: an owner plugin sets the priority of one of its scopes, "<owner>:<key>" (created if
+   * new): its summarizer calls go before those of every scope of lower priority, after the calls a
+   * waiting turn needs. 0 by default; Initiatives gives each Adventure coordinator's 1. Plugins only.
+   */
+  prioritize: {
+    input: z.object({ key: id, priority: z.number().int().min(0).max(9) }).strict(),
+    output: z.object({ scope: z.string() }),
+  },
+  /**
    * The memory view of the thread's scope (memory_read) and a line zoomed (memory_zoom), for an
    * owner's aliases: sessions built before T145 call initiative_read {view:"memory"} and
    * initiative_zoom.

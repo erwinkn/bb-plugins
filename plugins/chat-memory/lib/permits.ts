@@ -5,13 +5,19 @@
  * W315: an urgent call (for a node a turn is waiting for) goes before every other waiting call, so no
  * backlog holds a turn back. Urgency is asked each time a permit frees, not once: a turn can come
  * to need a call that is already waiting.
+ * W568: after urgent calls, a scope of higher priority (an Adventure coordinator's) goes before
+ * every scope of lower priority; scopes of one priority still take turns.
  */
 export class FairPermits {
   private active = 0;
+  private scheduled = false;
   /** Waiting calls by scope; the map's order is the rotation. */
   private waiting = new Map<string, Waiter[]>();
 
-  constructor(private readonly limit: () => number) {}
+  constructor(
+    private readonly limit: () => number,
+    private readonly priority: (owner: string) => number = () => 0,
+  ) {}
 
   /** Calls in flight now (tests). */
   get inFlight() {
@@ -28,7 +34,7 @@ export class FairPermits {
       return signal.aborted ? null : await work();
     } finally {
       this.active--;
-      this.admit();
+      this.schedule();
     }
   }
 
@@ -53,8 +59,22 @@ export class FairPermits {
       this.waiting.set(owner, queue);
       signal.addEventListener("abort", aborted, { once: true });
     });
-    this.admit();
+    this.schedule();
     return granted;
+  }
+
+  /**
+   * W568: permits are given out once per macrotask, after every call asked for in it is waiting:
+   * a scope whose call just ended asks for its next one in the same macrotask (its builder runs on
+   * microtasks), so a coordinator's backlog keeps its permits rather than racing lower scopes.
+   */
+  private schedule() {
+    if (this.scheduled) return;
+    this.scheduled = true;
+    setImmediate(() => {
+      this.scheduled = false;
+      this.admit();
+    });
   }
 
   private admit() {
@@ -69,14 +89,17 @@ export class FairPermits {
     }
   }
 
-  /** The first urgent call in rotation order, else the next scope's oldest call. */
+  /** The first urgent call in rotation order, else the oldest call of the next scope of the highest priority. */
   private next(): [string, Waiter[], number] {
+    let first: [string, Waiter[], number] | null = null;
+    let best = -Infinity;
     for (const [owner, queue] of this.waiting) {
       const k = queue.findIndex((w) => w.urgent());
       if (k >= 0) return [owner, queue, k];
+      const priority = this.priority(owner);
+      if (priority > best) [first, best] = [[owner, queue, 0], priority];
     }
-    const [owner, queue] = this.waiting.entries().next().value!;
-    return [owner, queue, 0];
+    return first!;
   }
 }
 

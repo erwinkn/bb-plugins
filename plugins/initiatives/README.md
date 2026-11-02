@@ -279,6 +279,30 @@ Details:
   Workers keep their threads and move to the new coordinator. It runs from a
   terminal or a coordinator thread; workers, former coordinators and user
   threads are refused, an archived Initiative's included.
+- **Retire idle workers** (W568): `bb initiative retire-idle [--idle=<hours>]
+  [--dry-run] [--limit=<n>]` retires, across every open Adventure, the workers
+  whose thread has been quiet for at least `--idle` hours (24 by default; BB's
+  last change to the thread), longest idle first. One condition decides who may
+  go: no open or unconfirmed work, no open PR held or watched (a PR whose state
+  is not known yet counts as open), a context rule R11 lets go, and no activity
+  within `--idle`. Under R11 a worker keeps its context until its PR is merged
+  or dropped: a worker with PRs may go once every one is merged or closed, a
+  reviewer (no PR of its own, fresh each round, D449) once it is quiet, and any
+  other worker without a PR (an analysis, an investigation) is kept, listed as
+  `no PR, kept` and counted apart (`noPrKept`). That last choice is one line,
+  `retirePolicy` in `lib/service.ts`. The scan applies it, and each retire applies it
+  again on fresh evidence: through the usual retire, in its own slot of the
+  write queue, which also refuses a busy thread or native child (a busy one is
+  kept, never left to retire later), it reads the thread once more after BB's
+  slower list and child reads, then runs the condition with no await before the
+  archive call (a PR can be claimed or watched, or the thread touched, while
+  BB's reads run), even for a thread BB already archived. `--dry-run` runs the
+  same proof and condition without the archive, and lists, by Adventure, whom it
+  would retire and why it keeps each other worker. At most `--limit` (25) retire or fail per call,
+  about a second each (refusals don't count); the answer says how many are
+  left. A number needs its value (`--idle=48`). Nobody is woken. It runs from a
+  terminal or the coordinator of an open Adventure; any other thread is refused.
+  Retiring archives the worker's thread, so Chat memory stops building its tree.
 - **Older sessions** keep working: `initiative_delegate`, the full structured
   `initiative_report`, `initiative_progress` (now a no-op) and the old
   `initiative_task`/`initiative_manage`/`initiative_worker` actions still run.

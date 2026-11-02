@@ -82,10 +82,16 @@ import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples
 const PREFETCH_LISTINGS = 3;
 /** W473: the most often one prefetch batch announces what it found. */
 const PREFETCH_ANNOUNCE_MS = 100;
-const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "rules", "reconcile", "recreate-coordinators"];
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "rules", "reconcile", "recreate-coordinators", "retire-idle"];
 /** Tools initiative_batch can run, by their name without the initiative_ prefix. */
 const BATCH_TOOLS = ["spawn", "message", "task", "worker", "question", "rule", "decision", "update", "pr", "read"] as const;
-const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | rules (import <id> <file> | export <id> [file]) | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | rules (import <id> <file> | export <id> [file]) | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>] | retire-idle [--idle=<hours>] [--dry-run] [--limit=<n>]";
+/** W568: retire-idle's flags; --idle in hours. A number needs its value (`--idle=24`): bare `--idle` is refused, never read as 1. */
+const retireIdleFlags = z.object({
+  idle: z.string().default("24").pipe(z.coerce.number<string>().positive()),
+  "dry-run": z.boolean().default(false),
+  limit: z.string().default("25").pipe(z.coerce.number<string>().int().min(1).max(500)),
+}).strict();
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
 import { SLOW_CALL_MS } from "./lib/step-timing";
@@ -1631,6 +1637,11 @@ export default function plugin(bb: BbPluginApi) {
         summary: "Start a fresh coordinator for each Initiative from a GPT-6 Luna handover; --dry-run only writes and prints the handovers",
         usage: "bb initiative recreate-coordinators (--all | <initiative-id>...) [--dry-run] [--wait=<seconds>]",
       },
+      {
+        name: "retire-idle",
+        summary: "Retire, across every Adventure, the workers idle longer than --idle hours (default 24); open or unconfirmed work and busy threads are refused, and a worker's context is kept (rule R11) while it holds or watches an open PR, or, unless it is a reviewer, has no PR at all. --dry-run lists them by Adventure; at most --limit (default 25) retire per call. Nobody is woken",
+        usage: "bb initiative retire-idle [--idle=<hours>] [--dry-run] [--limit=<n>]",
+      },
     ],
     run: (argv, ctx) => announcing(async () => {
       try {
@@ -1743,6 +1754,17 @@ export default function plugin(bb: BbPluginApi) {
           const wait = flags.find(a => a.startsWith("--wait="));
           const waitMs = wait ? Math.max(0, Math.min(1800, Number(wait.slice(7)) || 0)) * 1000 : 12 * 60_000;
           result = await service.recreateCoordinators(all ? store.projects().filter(p => p.archivedAt === null).map(p => p.id) : ids, { dryRun: flags.includes("--dry-run"), waitMs });
+        } else if (action === "retire-idle") {
+          // W568: an operator's bulk retire, from a terminal or the coordinator of a live Adventure; any other thread is refused.
+          const caller = ctx.threadId ? store.membership(ctx.threadId) : null;
+          if (ctx.threadId && !(caller && !caller.former && caller.workerNum === 0))
+            throw new ProjectError("Run this from a terminal or from a coordinator thread.");
+          const flags = retireIdleFlags.parse(Object.fromEntries(args.slice(1).map((a) => {
+            const [key, value] = a.replace(/^--/, "").split("=", 2) as [string, string | undefined];
+            if (!a.startsWith("--")) throw new ProjectError(`Unexpected argument ${a}. Usage: bb initiative retire-idle [--idle=<hours>] [--dry-run] [--limit=<n>]`);
+            return [key, value ?? true];
+          })));
+          result = await service.retireIdle({ idleMs: flags.idle * 3_600_000, dryRun: flags["dry-run"], limit: flags.limit, by: ctx.threadId ? "the coordinator" : "the user" });
         } else
           throw new ProjectError(
             `${action && !CLI_COMMANDS.includes(action) ? `Unknown subcommand ${action}. ` : action ? `Unexpected arguments for ${action}. ` : ""}${CLI_USAGE}`,

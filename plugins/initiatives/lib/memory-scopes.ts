@@ -24,6 +24,15 @@ export async function attachMemory(sdk: Sdk, threadId: string, projectId: string
   }
 }
 
+/**
+ * W568: an Adventure coordinator's memory goes first in Chat memory's summarizer queue, after the
+ * calls a waiting turn needs and before every worker's. The priority belongs to the scope, so a
+ * replacement coordinator, which takes over the scope (R3), keeps it.
+ */
+export async function prioritizeMemory(sdk: Sdk, projectId: string): Promise<void> {
+  await sdk.plugins.callRpc({ pluginId: CHAT_MEMORY_PLUGIN_ID, method: "prioritize", input: { key: projectId, priority: 1 }, outputSchema: z.object({ scope: z.string() }) });
+}
+
 /** Stable across native sessions and generations; never shared with a coordinator or reviewer. */
 export const workerMemoryKey = (worker: import("./store").WorkerRecord) => `${worker.projectId}:worker:${worker.num}`;
 export const workerHasPrivateMemory = (worker: import("./store").WorkerRecord) =>

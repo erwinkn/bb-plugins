@@ -3816,6 +3816,15 @@ export class Store {
       .get(projectId, kind, url) as { num: number; workerNum: number; role: string } | undefined) ?? null;
   }
 
+  /** W568: the PRs each worker of an Adventure holds in its records, each open (or its state not known yet) or not (merged or closed). */
+  prsHeld(projectId: string): Map<string, { url: string; open: boolean }[]> {
+    const rows = this.db.prepare(`SELECT r.worker, r.url, (s.state IS NULL OR s.state = 'OPEN') AS open FROM pr_records r
+      LEFT JOIN pr_states s ON s.url = r.url WHERE r.project_id = ? AND r.worker IS NOT NULL ORDER BY r.url`).all(projectId) as { worker: string; url: string; open: number }[];
+    const held = new Map<string, { url: string; open: boolean }[]>();
+    for (const r of rows) held.set(r.worker, [...(held.get(r.worker) ?? []), { url: r.url, open: r.open === 1 }]);
+    return held;
+  }
+
   /** W492: who holds a PR in each Adventure's records (its recorded worker), by Adventure. */
   prHolders(url: string): { projectId: string; worker: string }[] {
     return this.db.prepare("SELECT project_id AS projectId, worker FROM pr_records WHERE url = ? AND worker IS NOT NULL").all(url) as { projectId: string; worker: string }[];

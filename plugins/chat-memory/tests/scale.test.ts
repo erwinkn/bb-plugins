@@ -44,6 +44,8 @@ describe("W244 one Luna limit across every scope", () => {
     const order: string[] = [];
     let release!: () => void;
     const first = permits.run("a", new AbortController().signal, () => new Promise<void>((resolve) => (release = resolve)));
+    // Permits are given out once per macrotask (W568): the first call holds its permit before the rest ask.
+    await tick();
     const work = (owner: string, k: number) => permits.run(owner, new AbortController().signal, async () => void order.push(`${owner}${k}`));
     const waiting = [work("a", 1), work("a", 2), work("a", 3), work("b", 1), work("c", 1)];
     const stop = new AbortController();

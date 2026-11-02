@@ -230,6 +230,26 @@ rendered lines. Cutoff-feedback prompts are not used.
 Up to `summarizerConcurrency` (8) calls run at once across every scope,
 round-robin by scope, except that the lines an UniiChat turn is waiting for, and
 their merges, take the next free call before any other scope's backlog (W315).
+After those, a scope of higher priority goes before every scope of lower
+priority (W568): an owner sets it with the `prioritize` RPC, and Initiatives
+gives each Adventure coordinator's memory 1, so coordinators' trees build ahead
+of the workers' (0); scopes of one priority still take turns. Permits are given
+out once per macrotask, after every call asked for in it waits, so a scope whose
+call just ended has its next one in the running.
+A scope whose threads are all archived rests (W568): its log stays whole, but it
+gets no summarizer calls (a build running when the thread is archived stops, its
+calls in flight cancelled) until a thread comes back, starts a turn, or a turn
+waits for its memory, even one that comes while a build is reading whether to
+rest. A turn's demand is its need on the builder, so it lasts exactly as long as
+the turn waits: a build asked for while the archive is still cancelling the run
+starts again once it has ended, and rests again unless a thread woke or a turn
+still waits. A run a waiter started stops when its last waiter leaves (the
+admission expires or is released, the turn ends or stops), so it never drains the
+rest of an archived backlog. Whether a thread is archived is read
+once, at the startup sweep or first build, then kept from BB's archive events;
+a failed read counts the thread as awake until a later read succeeds, and a read
+that finds it archived stops the run like its archive event would. Once the
+service stops, none of this touches the database again (BB may have closed it).
 A call gives up after 30 s, then 60 s, then 120 s for the same line (Luna at
 high answers 95% of calls within 30 s), so a hung call frees its slot; a call a
 turn waits for runs on to the turn's deadline instead, so a reply at 65 s still
