@@ -23,12 +23,27 @@ export interface MemoryMessage {
   sourcePart?: number | null;
   /** Request whose acceptance logged this input; seq still names the canonical original. */
   requestId?: string | null;
+  /**
+   * W571: a group of tool uses in a row, from event seq through this one (null: one event, as
+   * logged before groups).
+   */
+  endSeq?: number | null;
+  /** W571: the number of tool uses in that group, so a zoom can tell when one is missing. */
+  uses?: number | null;
 }
 export type LogEntry = Omit<MemoryMessage, "i" | "size">;
 
 /** Tool output keeps its head and tail, 30,000 characters in all; other long text is split. */
 export const CLIP = 30_000;
 const SPLIT = 30_000;
+/**
+ * W571: a run of tool uses (those between two other entries) is logged as groups of at most
+ * GROUP_USES uses or GROUP_BYTES bytes, whichever is reached first; a use larger than that is a
+ * group alone. Uses within a group are separated by USES.
+ */
+export const GROUP_USES = 8;
+export const GROUP_BYTES = 16_000;
+export const USES = "\n\n";
 
 export const clip = (s: string) =>
   s.length <= CLIP ? s : `${s.slice(0, CLIP / 2)}\n[... ${s.length - CLIP} chars clipped ...]\n${s.slice(-CLIP / 2)}`;
@@ -100,7 +115,7 @@ export interface EntryOptions {
   legacy?: boolean;
 }
 
-/** One BB event of a thread as log entries (a tool use is one tool entry: its call and result), or none. */
+/** One BB event of a thread as log entries (a tool use is one tool entry: its call and result), or none. Tool uses are grouped later (Runs). */
 export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts, { original = false, legacy = false }: EntryOptions = {}): LogEntry[] {
   const output = original ? (s: string) => s : clip;
   const base = { at: timeOf(row), threadId, seq: row.seq };
@@ -172,6 +187,21 @@ export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts
  * still holds the question.
  */
 export function turnEntries(rows: readonly EventRow[], threadId: string, facts: ThreadFacts): LogEntry[] {
+  // A run never spans a turn end, as in stableEntries: the entries come sorted by seq, so a group
+  // closes at the first entry past a turn/completed.
+  const ends = rows.filter((r) => r.type === "turn/completed").map((r) => r.seq).sort((a, b) => a - b);
+  const runs = new Runs();
+  let k = 0;
+  for (const e of turnLog(rows, threadId, facts)) {
+    if (k < ends.length && ends[k]! < (e.seq ?? 0)) runs.close();
+    while (k < ends.length && ends[k]! < (e.seq ?? 0)) k++;
+    runs.push(e);
+  }
+  runs.close();
+  return runs.out.flatMap(splitEntry);
+}
+/** turnEntries' entries one by one, before tool uses are grouped and long text is split. */
+function turnLog(rows: readonly EventRow[], threadId: string, facts: ThreadFacts): LogEntry[] {
   const entries: LogEntry[] = [];
   let turn: Array<{ request: boolean; entries: LogEntry[] }> = [];
   let unavailable = false;
@@ -188,7 +218,39 @@ export function turnEntries(rows: readonly EventRow[], threadId: string, facts: 
     turn = [];
     unavailable = false;
   }
-  return entries.sort((a,b) => (a.seq ?? 0)-(b.seq ?? 0)).flatMap(splitEntry);
+  return entries.sort((a,b) => (a.seq ?? 0)-(b.seq ?? 0));
+}
+
+/**
+ * W571: groups the tool uses of a run as they come (GROUP_USES, GROUP_BYTES). Any other entry
+ * closes the open group, and so does the end of a turn; a group is logged once closed, so no
+ * logged row ever grows.
+ */
+class Runs {
+  out: LogEntry[] = [];
+  open: LogEntry[] = [];
+  private bytes = 0;
+  push(...entries: LogEntry[]) {
+    for (const e of entries) {
+      if (e.kind !== "tool") {
+        this.close();
+        this.out.push(e);
+        continue;
+      }
+      const size = bytes(e.text);
+      if (this.open.length && (this.open.length >= GROUP_USES || this.bytes + USES.length + size > GROUP_BYTES)) this.close();
+      this.bytes += (this.open.length ? USES.length : 0) + size;
+      this.open.push(e);
+      // A full group is logged at once, not when the next entry comes (review r4 P2).
+      if (this.open.length >= GROUP_USES || this.bytes >= GROUP_BYTES) this.close();
+    }
+  }
+  close() {
+    const [first] = this.open;
+    if (first) this.out.push({ ...first, text: this.open.map((e) => e.text).join(USES), endSeq: this.open.at(-1)!.seq, uses: this.open.length });
+    this.open = [];
+    this.bytes = 0;
+  }
 }
 
 /** Requests remain durable but invisible until the provider confirms acceptance. */
@@ -198,23 +260,48 @@ export interface IngestState {
   /** Pre-acceptance failures are recoverable by a later accepted retry, never by legacy completion. */
   unsent?: EventRow[];
   modern: boolean;
+  /**
+   * W571: the last seq whose requests and rejections this state holds. Set when a read parks: the
+   * next read reads the parked range again and skips them.
+   */
+  through?: number;
 }
-export function stableEntries(rows: readonly EventRow[], state: IngestState, threadId: string, facts: ThreadFacts) {
-  const entries: LogEntry[] = [];
+/**
+ * The entries of a read of rows after the thread's cursor, with the ingestion state to save
+ * alongside them; `from` is left as it was.
+ *
+ * W571: a read that ends inside a run of tool uses logs what came before the run and parks the
+ * cursor just before the row that opened it (`parked`), with the state as it stood there: the
+ * next read reads the run again and logs it once it closes. Only a plain item/completed opens a
+ * run, and an acceptance or a turn end closes one, so besides the run's uses a parked range holds
+ * only entry-less events and requests or rejections. The state returned keeps those (review r2
+ * P1: a request read before a scope move belongs to the old scope, parked or not) and marks them
+ * read (`through`), so the next read of the range skips them.
+ * The open group is logged at once instead when `final` (the thread was archived: no turn of it
+ * goes on), or when parking would leave the cursor at or before `advance` (a read with more to
+ * read must move it, or it would read the same range again forever).
+ */
+export function stableEntries(rows: readonly EventRow[], from: IngestState, threadId: string, facts: ThreadFacts, { final = false, advance = -Infinity } = {}) {
+  const state: IngestState = structuredClone(from);
+  const runs = new Runs();
+  let park: number | null = null;
+  const read = from.through ?? -Infinity;
+  delete state.through;
   state.buffered ??= [];
   for (const row of rows) {
-    if (row.type === "client/turn/requested") { state.pending.push(row); continue; }
+    if (row.type === "client/turn/requested") { if (row.seq > read) state.pending.push(row); continue; }
     if (row.type === "turn/input/accepted") {
       state.modern = true;
-      entries.push(...state.buffered.flatMap(r => eventEntries(r, threadId, facts)));
+      runs.push(...state.buffered.flatMap(r => eventEntries(r, threadId, facts)));
       state.buffered = [];
       const id = row.data?.clientRequestId;
       const request = state.pending.find(r => r.data?.requestId === id);
       const originalId = request?.data?.retryOfRequestId;
       const original = originalId ? [...state.pending, ...(state.unsent ?? [])].find(r => r.data?.requestId === originalId) : null;
-      if (original ?? request) entries.push(...eventEntries((original ?? request)!, threadId, facts).map(e => ({...e, requestId: id})));
+      if (original ?? request) runs.push(...eventEntries((original ?? request)!, threadId, facts).map(e => ({...e, requestId: id})));
       state.pending = state.pending.filter(r => r.data?.requestId !== id && (!original || r.data?.requestId !== originalId));
       if (original) state.unsent = state.unsent?.filter(r => r.data?.requestId !== originalId);
+      runs.close();
     } else if (row.type === "client/turn/rejected") {
       const id = row.data?.requestId ?? row.data?.clientRequestId;
       state.pending = state.pending.filter(r => r.data?.requestId !== id);
@@ -228,15 +315,25 @@ export function stableEntries(rows: readonly EventRow[], state: IngestState, thr
           && state.buffered.some(r => r.type === "provider/error" && String(r.data?.detail ?? "").includes(UNAVAILABLE))
           && !state.buffered.some(r => eventEntries(r, threadId, facts).length);
         if (unsent) (state.unsent ??= []).push(...state.pending);
-        entries.push(...turnEntries([...state.pending, ...state.buffered, row].sort((a,b) => a.seq-b.seq), threadId, facts));
+        runs.push(...turnLog([...state.pending, ...state.buffered, row].sort((a,b) => a.seq-b.seq), threadId, facts));
         state.pending = [];
         state.buffered = [];
       }
-      if (state.modern) entries.push(...eventEntries(row, threadId, facts));
+      if (state.modern) runs.push(...eventEntries(row, threadId, facts));
+      runs.close();
     } else if (!state.modern) state.buffered.push(row);
-    else entries.push(...eventEntries(row, threadId, facts));
+    else {
+      const first = runs.open[0];
+      runs.push(...eventEntries(row, threadId, facts));
+      // This row opened a new group: the cursor would park before it.
+      if (runs.open[0] && runs.open[0] !== first) park = row.seq - 1;
+    }
+    if (!runs.open.length) park = null;
   }
+  const parked = park !== null && !final && park > advance ? park : null;
+  if (parked === null) runs.close();
+  else state.through = rows.at(-1)!.seq;
   // Append in processing/acceptance order. seq is canonical provenance, so a queued input or
   // retry may point backward; sorting by it would move that input ahead of already acted-on output.
-  return entries.flatMap(splitEntry);
+  return { entries: runs.out.flatMap(splitEntry), state, parked };
 }

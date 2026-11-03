@@ -41,6 +41,11 @@ export const MIGRATIONS = [
   // W568: the owner's priority for the scope's summarizer calls (higher first; an Adventure
   // coordinator's is 1). Older code ignores it.
   `ALTER TABLE scopes ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
+  // W571: a row's last event when it groups a run of tool uses (seq is the first). Older code
+  // ignores it and zooms into the first use alone.
+  `ALTER TABLE log ADD COLUMN end_seq INTEGER`,
+  // W571: the number of tool uses such a row groups (review r2 P2).
+  `ALTER TABLE log ADD COLUMN uses INTEGER`,
 ];
 
 export const MEMORY_MODES = ["regular", "optchat"] as const;
@@ -101,6 +106,8 @@ const message = (row: Row): MemoryMessage => ({
   seq: row.seq == null ? null : Number(row.seq),
   sourcePart: row.source_part == null ? null : Number(row.source_part),
   requestId: (row.request_id as string | null) ?? null,
+  endSeq: row.end_seq == null ? null : Number(row.end_seq),
+  uses: row.uses == null ? null : Number(row.uses),
 });
 const scope = (row: Row): Scope => ({
   id: String(row.id),
@@ -249,11 +256,11 @@ export class MemoryStore {
       if (!t?.scope) return null;
       let i = this.count(t.scope);
       let size = 0;
-      const insert = this.sql(`INSERT INTO log (scope, i, kind, text, size, at, thread_id, seq, source_part, request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const insert = this.sql(`INSERT INTO log (scope, i, kind, text, size, at, thread_id, seq, source_part, request_id, end_seq, uses) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       const fresh = acceptedPending ? entries : entries.filter((e) => (e.seq ?? 0) > t.cursor);
       for (const entry of fresh) {
         const m = withSize(entry, i++);
-        insert.run(t.scope, m.i, m.kind, m.text, m.size, m.at, m.threadId, m.seq, m.sourcePart ?? null, m.requestId ?? null);
+        insert.run(t.scope, m.i, m.kind, m.text, m.size, m.at, m.threadId, m.seq, m.sourcePart ?? null, m.requestId ?? null, m.endSeq ?? null, m.uses ?? null);
         size += m.size;
       }
       if (size) {
@@ -268,9 +275,18 @@ export class MemoryStore {
   leavesBuilt(scopeId: string) {
     return Number(this.sql(`SELECT COUNT(*) FROM nodes WHERE scope = ? AND l = 0`).pluck().get(scopeId));
   }
+  /**
+   * The thread's ingestion state in `scope`. A thread moved to another scope starts it afresh: the
+   * requests it read but has not seen accepted stay out of the new scope (D491). W571: except
+   * `modern`, a fact of the thread's provider, not of a scope. Forgetting it would buffer the tool
+   * uses past a parked cursor as legacy events and move the cursor past them unlogged. And
+   * `through`: the requests of a parked range were read in the old scope and stay out too.
+   */
   ingestion(threadId: string, scope: string): IngestState {
-    const row = this.sql(`SELECT state FROM ingestion WHERE thread_id = ? AND scope = ?`).pluck().get(threadId, scope) as string | undefined;
-    return row ? JSON.parse(row) : {pending: [], modern: false};
+    const row = this.sql(`SELECT scope, state FROM ingestion WHERE thread_id = ?`).get(threadId) as { scope: string; state: string } | undefined;
+    if (!row) return {pending: [], modern: false};
+    const state = JSON.parse(row.state) as IngestState;
+    return row.scope === scope ? state : {pending: [], modern: state.modern, ...(state.through !== undefined && {through: state.through})};
   }
   saveIngestion(threadId: string, scope: string, state: IngestState) {
     this.sql(`INSERT INTO ingestion VALUES (?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET scope = excluded.scope, state = excluded.state`).run(threadId, scope, JSON.stringify(state));

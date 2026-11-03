@@ -54,20 +54,6 @@ describe("W571 tool entries", () => {
     const row = item({ type: "commandExecution", command: "git status", exitCode: 0, aggregatedOutput: "clean" });
     expect(eventEntries(row, "w", facts, { legacy: true }).map((e) => [e.kind, e.sourcePart, e.text])).toEqual([["tool", 0, "Bash git status"], ["echo", 1, "exit 0\nclean"]]);
   });
-
-  it("logs a 20-command turn as 22 messages, not 42", async () => {
-    const f = fixture();
-    const s = await f.attach("initiatives", "p", f.thread("w"));
-    f.history.push({ threadId: "w", seq: 1000, type: "client/turn/requested", data: { requestId: "r", input: [{ type: "text", text: "check the repo" }] } });
-    f.history.push({ threadId: "w", seq: 1001, type: "turn/input/accepted", data: { clientRequestId: "r" } });
-    for (let k = 0; k < 20; k++) f.history.push({ threadId: "w", ...item({ type: "commandExecution", command: `git log -${k}`, exitCode: 0, aggregatedOutput: `out ${k}` }, 1002 + k) });
-    f.history.push({ threadId: "w", seq: 1022, type: "item/completed", data: { item: { type: "agentMessage", text: "Done." } } });
-    f.history.push({ threadId: "w", seq: 1023, type: "turn/completed", data: { status: "completed" } });
-    await f.memory.ingest("w");
-    const log = f.log(s);
-    expect(log).toHaveLength(22);
-    expect(log.slice(0, 3)).toEqual(["user: check the repo", "tool: Bash git log -0\n→ exit 0\nout 0", "tool: Bash git log -1\n→ exit 0\nout 1"]);
-  });
 });
 
 describe("W571 zoom", () => {
@@ -89,25 +75,24 @@ describe("W571 zoom", () => {
       offset = Number(next[1]);
     }
   }
-  /** A thread with an attached scope, and its events through `through` logged by the code before W571. */
-  async function legacyLog(rows: EventRow[], through: number, sourceParts = true) {
+  /** A thread with an attached scope, and its events through `through` logged by the code before W571 (legacy), or by W571's, one row per use. */
+  async function legacyLog(rows: EventRow[], through: number, sourceParts = true, legacy = true) {
     const f = fixture();
     const s = await f.attach("initiatives", "p", f.thread("w"));
     for (const row of rows) f.history.push({ threadId: "w", ...row });
-    const logged: LogEntry[] = rows.flatMap((row) => eventEntries(row, "w", facts, { legacy: true })).flatMap(splitEntry).map((e) => (sourceParts ? e : { ...e, sourcePart: null }));
+    const logged: LogEntry[] = rows.flatMap((row) => eventEntries(row, "w", facts, { legacy })).flatMap(splitEntry).map((e) => (sourceParts ? e : { ...e, sourcePart: null }));
     f.store.append("w", logged, through);
     return { f, s };
   }
 
-  it("returns a new tool row's call with its whole result, its image and its truncation note", async () => {
-    const f = fixture();
-    const s = await f.attach("initiatives", "p", f.thread("w"));
+  it("returns a W571 tool row's call with its whole result, its image and its truncation note", async () => {
     const result = "é".repeat(20_000) + "MIDDLE-EVIDENCE" + "€".repeat(20_000);
-    f.history.push({ threadId: "w", ...item({ type: "toolCall", tool: "read", arguments: { path: "p" }, result }, 1000) });
-    f.history.push({ threadId: "w", ...item({ type: "toolCall", tool: "screenshot", arguments: { url: "a" }, result: image }, 1001) });
-    f.history.push({ threadId: "w", ...item({ type: "commandExecution", command: "cat log", exitCode: 0, aggregatedOutput: "head [...] tail", truncation: { removed: 100 } }, 1002) });
-    f.history.push({ threadId: "w", seq: 1003, type: "turn/completed", data: { status: "completed" } });
-    await f.memory.ingest("w");
+    // Logged by W571, one row per use (groups of uses now).
+    const { f, s } = await legacyLog([
+      item({ type: "toolCall", tool: "read", arguments: { path: "p" }, result }, 1000),
+      item({ type: "toolCall", tool: "screenshot", arguments: { url: "a" }, result: image }, 1001),
+      item({ type: "commandExecution", command: "cat log", exitCode: 0, aggregatedOutput: "head [...] tail", truncation: { removed: 100 } }, 1002),
+    ], 1002, true, false);
     // The clipped result and its call pass 30,000 characters: two parts of one entry.
     expect(f.store.messages(s).map((m) => [m.seq, m.kind, m.sourcePart])).toEqual([[1000, "tool", 0], [1000, "tool", 0], [1001, "tool", 0], [1002, "tool", 0]]);
     expect(f.log(s).join("")).not.toContain("MIDDLE-EVIDENCE");

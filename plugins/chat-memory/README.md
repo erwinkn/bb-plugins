@@ -158,9 +158,15 @@ semantic message via its original thread/sequence, including text clipped in the
 memory log. Responses carry source, availability, byte range and explicit next
 `offset`, in 24,000-byte UTF-8 pages. A split stored entry identifies its canonical
 semantic message; pages expose that message, not unrelated event fields.
-`attachment` selects an attachment index listed in the result. A tool use is
-one message, its call and result; a call or an echo logged apart before W571
-zooms to that part alone. The log, not the text, tells them apart: a row logged
+`attachment` selects an attachment index listed in the result. A group of tool
+uses zooms to every use in full, each call then `→` and its result, read from
+its events `seq` through `end_seq`; its result images are indexed in order
+across the group. The row keeps its number of uses (`uses`), so a group missing
+any of its events, its ends or one inside, falls back to the saved copy. Screenshots its text leaves out can pass BB's 8 MiB response
+limit together, so a page of the group's events that fails is read again at half
+the size, down to one event. A row of one tool use (logged by a6413e6, before
+groups) zooms to its call and result; a call or an echo logged apart before
+W571 zooms to that part alone. The log, not the text, tells them apart: a row logged
 that way is an echo, or a tool row its event's echo row follows. Thoughts and nested subagent items are excluded. Inline
 image data is omitted from summary input and returned only as tool image content.
 The RPC remains text-valued, with an image-available notice for compatibility.
@@ -187,22 +193,45 @@ Append-only, one row per message, across all of a scope's threads, read from
 BB's own thread events (`client/turn/requested`, `item/completed`,
 `turn/completed`, and Claude Code's compaction summary), the same for every
 provider. Kinds: `user`, `agent` (replies; lines written before T145 say
-`coord`), `tool` (one tool use: the call, then `→` and its result, the result's
-head and tail within 30,000 characters, as in `Bash git status` / `→ exit 0` /
-`clean`), `echo` (a result logged apart from its call, before W571), `work`
+`coord`), `tool` (tool uses in a row, each its call, then `→` and its result,
+the result's head and tail within 30,000 characters, as in `Bash git status` /
+`→ exit 0` / `clean`; uses are separated by a blank line), `echo` (a result
+logged apart from its call, before W571), `work`
 (`[name] …` from another thread, by its title; `[bb] …` from BB,
 including `[bb] (stopped) …` after a stopped turn), `note` (a plugin's brief or
 handover, compaction summaries). Thoughts are never logged.
 
-A thread's events are copied **through its last `turn/completed`** (D487),
-which BB writes for every turn that ends: completed, failed or stopped. A turn
-in progress waits for its end, and is never read: a copy first looks up the
-newest `turn/completed` and pages only up to it. One copy runs per thread at a time; it appends
-to the scope the thread's row names when the append commits, and moves the
-cursor in the same transaction, so a message is logged once whatever triggers
-it. A thread moved mid-turn has that whole turn logged in the new scope
-(accepted: which memory a turn "used" is not tracked). Turns of different
-threads land in the order they are copied. The requests of a turn that failed
+W571: a run of tool uses (those between two other messages, whatever the
+parallel batches) is logged as groups of at most 8 uses or 16,000 bytes,
+whichever comes first; a use larger than that is a group alone, and a group
+longer than 30,000 characters is split like any text. A group is logged only
+once closed: by the next other message, by its turn's `turn/completed`, by the
+caps, or by the thread's archive (its final copy). A copy that ends inside an
+open group logs what came before it and leaves the cursor just before the
+group's first use; the next copy reads those events again. No open group is
+saved anywhere, so no logged row ever grows and a scope move, a detach or a
+restart needs nothing of its own: the group is logged by the copy that closes
+it, to the scope the thread writes to then. A request queued inside the parked
+range is kept as read, in the ingestion state, with the seq it was read through,
+so the next copy skips it; a copy that moves no cursor (the run is still open)
+saves that state too. A moved thread's ingestion state starts afresh in its
+new scope (its requests read but not yet accepted stay out of it, parked or not)
+but keeps two facts of the thread: whether its provider sends acceptances (a
+re-read run is grouped again, never taken for a legacy turn), and that seq. A
+copy whose whole read (2,000 events) is
+one open run logs it as it stands, so the cursor always moves on. A thread BB
+deletes mid-run loses its unlogged group (at most 8 uses). Rows logged before
+(one use per row, a legacy call and echo) stay as they are.
+
+A thread's events are copied **as they are stable**, mid-turn too (since
+6b5c51a; D487 first copied through the last `turn/completed` only): a copy
+reads the semantic events after the thread's cursor, up to 2,000 per read, and
+stops before an open group of tool uses (above). One copy runs per thread at a
+time; it appends to the scope the thread's row names when the append commits,
+and moves the cursor in the same transaction, only if the cursor and the
+ingestion state are still as its read began, so a message is logged once whatever triggers it. A thread
+moved mid-turn has what was copied before the move in the old scope and the
+rest in the new one. Turns of different threads land in the order they are copied. The requests of a turn that failed
 before any output because UniiChat could not get its memory are left out (D502:
 the `provider/error` of the turn says "UniiChat memory unavailable for this
 turn"): the model never saw them, BB keeps the text for the user to send again,
@@ -214,7 +243,8 @@ says "Please continue." after it.
 Copies run when a thread goes idle, fails, or is archived (its final copy,
 D485), before each of its UniiChat turns, and from a sweep: at start over every
 attached thread, then every 5 minutes over those not archived, copying any
-whose last `turn/completed` is past its cursor. BB's announcements are
+whose newest event is past its cursor (a parked group keeps it so: the sweep
+reads it again). BB's announcements are
 fire-and-forget; the cursor makes a duplicate copy nothing and a missed one
 wait for the next trigger. A thread BB deleted is forgotten. A stop ends the
 sweep at once, even mid-read: it touches the database no more.

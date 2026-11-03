@@ -1,5 +1,5 @@
 import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
-import { TOOL_USES, eventEntries, splitEntry, type MemoryMessage } from "./log";
+import { TOOL_USES, USES, eventEntries, splitEntry, type EventRow, type MemoryMessage } from "./log";
 import { senderParts } from "./sender-parts";
 import type { ListEvents } from "./ingest";
 
@@ -23,12 +23,74 @@ export function evidencePage(text: string, offset: number) {
  * echo row for its result. The caller reads that from the log (an echo row, or a tool row whose
  * event goes on with an echo row), never from the text, which source retention can change.
  */
+type Attachment = {path?: string; url?: string; type?: string; data?: string; mimeType?: string};
+const RETAINED = "canonical retained output; source retention may have removed the middle (see truncation marker)";
+/** A tool call's result images. */
+function resultImages(item: Record<string, any> | undefined): Attachment[] {
+  if (item?.type !== "toolCall") return [];
+  let result = item.result;
+  if (typeof result === "string") { try {result = JSON.parse(result);} catch { /* plain text output */ } }
+  return (result?.content ?? []).filter((c: {type: string}) => c.type === "image");
+}
+
+/**
+ * W571: a group's uses, each in full, read from its events seq through endSeq. Every tool entry
+ * in that range belongs to the group: a run's uses are logged in event order, and any other entry
+ * would have closed it. Reads stop before endSeq + 1 (exclusive): a large event after the group
+ * must not push a page past BB's response limit. Inside the range, events whose payloads
+ * (screenshots) the logged text leaves out can pass that limit together: a page that fails is
+ * read again at half the size, down to one event, whose own failure is the zoom's.
+ */
+async function groupSource(deps: EvidenceDeps, m: MemoryMessage & {threadId: string; seq: number; endSeq: number}) {
+  const uses: string[] = [];
+  const seqs: number[] = [];
+  const attachments: Attachment[] = [];
+  let truncated = false;
+  const facts = {spawnedByPlugin: false, sender: () => "thread"};
+  let limit = 100;
+  for (let after = m.seq - 1; after < m.endSeq;) {
+    let page: EventRow[];
+    try {
+      page = await deps.list({threadId: m.threadId, types: ["item/completed"], order: "asc", afterSeq: String(after), beforeSeq: String(m.endSeq + 1), limit: String(limit)});
+    } catch (error) {
+      if (limit === 1) throw error;
+      limit = Math.ceil(limit / 2);
+      continue;
+    }
+    const rows = page.filter(r => r.seq > after).sort((a, b) => a.seq - b.seq);
+    for (const row of rows) {
+      if (row.seq > m.endSeq) break;
+      const tools = eventEntries(row, m.threadId, facts, {original: true}).filter(e => e.kind === "tool");
+      if (!tools.length) continue;
+      uses.push(...tools.map(e => e.text));
+      seqs.push(row.seq);
+      if (row.data?.item?.truncation) truncated = true;
+      attachments.push(...resultImages(row.data?.item));
+    }
+    if (rows.length < limit) break;
+    after = rows.at(-1)!.seq;
+  }
+  // The ends alone miss a use gone from the middle (review r2 P2); rows logged without a count
+  // are checked by their ends.
+  if (seqs[0] !== m.seq || seqs.at(-1) !== m.endSeq || (m.uses != null && uses.length !== m.uses)) return null;
+  return {text: uses.join(USES), availability: truncated ? RETAINED : "canonical semantic message", attachments};
+}
+
 export async function originalEvidence(deps: EvidenceDeps, m: MemoryMessage, offset = 0, attachment?: number, split = false): Promise<PluginAgentToolResult> {
-  const source = `${m.threadId ?? "import"}:${m.seq ?? "unknown"}`;
+  const group = m.endSeq != null && m.endSeq !== m.seq;
+  const source = `${m.threadId ?? "import"}:${m.seq ?? "unknown"}${group ? `..${m.endSeq}` : ""}`;
   let text = m.text;
   let availability = "saved copy only; canonical source unavailable";
-  let attachments: Array<{path?: string; url?: string; type?: string; data?: string; mimeType?: string}> = [];
-  if (m.threadId && m.seq !== null) {
+  let attachments: Attachment[] = [];
+  if (group && m.threadId && m.seq !== null) {
+    try {
+      const found = await groupSource(deps, {...m, threadId: m.threadId, seq: m.seq, endSeq: m.endSeq!});
+      if (found) ({text, availability, attachments} = found);
+      else availability = "saved copy only; canonical tool uses could not be matched";
+    } catch (error) {
+      availability = `saved copy only; canonical read failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } else if (m.threadId && m.seq !== null) {
     try {
       const [row] = await deps.list({threadId: m.threadId, types: ["client/turn/requested","item/completed","turn/completed","provider/unhandled"], order: "asc", afterSeq: String(m.seq-1), limit: "1"});
       if (row?.seq === m.seq) {
@@ -53,17 +115,13 @@ export async function originalEvidence(deps: EvidenceDeps, m: MemoryMessage, off
           availability = "canonical semantic message";
           // The selected entry holds the tool's result: a combined tool entry, or a legacy echo.
           const withResult = toolUse && (m.kind === "echo" || !legacy);
-          if (item?.truncation && withResult) availability = "canonical retained output; source retention may have removed the middle (see truncation marker)";
+          if (item?.truncation && withResult) availability = RETAINED;
           if (row.type === "client/turn/requested") {
             const parts = senderParts(row.data);
             const input = m.kind === "work" && parts.length > 1 ? parts[index]?.input : row.data?.input;
             attachments = (input ?? []).filter((c: {type: string}) => ["localImage","localFile","image"].includes(c.type));
           }
-          if (withResult && item?.type === "toolCall") {
-            let result = item.result;
-            if (typeof result === "string") { try {result = JSON.parse(result);} catch { /* plain text output */ } }
-            attachments = (result?.content ?? []).filter((c: {type: string}) => c.type === "image");
-          }
+          if (withResult) attachments = resultImages(item);
         } else availability = "saved copy only; canonical semantic message could not be matched";
       }
     } catch (error) {

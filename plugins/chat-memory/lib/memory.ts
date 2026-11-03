@@ -313,9 +313,10 @@ export class ChatMemory {
    * their nodes wait); one that wakes builds again.
    */
   threadArchived(threadId: string, archived: boolean) {
+    // Kept for a detached thread too (W571 review r4 P2): attached again, its copy is final.
+    this.resting.set(threadId, archived);
     const scope = this.store.scopeOf(threadId);
     if (!scope) return;
-    this.resting.set(threadId, archived);
     if (!archived) return this.build(scope.id);
     void this.restIfUnwanted(scope.id);
   }
@@ -609,20 +610,34 @@ export class ChatMemory {
     const stopped = () => this.disposed || signal?.aborted === true;
     const t = this.store.thread(threadId);
     if (!t?.scope) return { scope: null, more: false };
+    // W571 review r4 P1: the state is read with the cursor, before any await. The commit below
+    // compares both with what it began from, so a read that a newer one overtook saves nothing.
+    const from = this.store.ingestion(threadId, t.scope);
     try {
       const read = await readStable(this.deps.list, threadId, t.cursor, INGEST_PAGES, stopped);
       if (stopped()) return {scope: null, more: false};
       if (read.through === t.cursor) return { scope: null, more: false };
-      const state = this.store.ingestion(threadId, t.scope);
-      const entries = stableEntries(read.rows, state, threadId, await this.logFacts(threadId, [...state.pending, ...read.rows]));
+      // W571: a read ending inside a run of tool uses parks the cursor before it (stableEntries).
+      // An archived thread runs no turn, so its last read logs its open group (one with more to
+      // read keeps it open: the next read may extend it).
+      const final = this.resting.get(threadId) === true && !read.more;
+      const { entries, state, parked } = stableEntries(read.rows, from, threadId, await this.logFacts(threadId, [...from.pending, ...read.rows]), { final, advance: read.more ? t.cursor : -Infinity });
       if (stopped()) return { scope: null, more: false };
+      const through = parked ?? read.through;
+      const was = JSON.stringify(from);
       const appended = this.store.transaction(() => {
+        // The read's range is consumed once: by the read that finds the cursor, and the state, as
+        // they were when it began. The state too: a read that consumed nothing still saves one.
         const current = this.store.thread(threadId);
         if (current?.scope !== t.scope || current.cursor !== t.cursor) return null;
-        const appended = this.store.append(threadId, entries, read.through, true);
+        if (JSON.stringify(this.store.ingestion(threadId, t.scope!)) !== was) return null;
+        // W571 review r3 P1: a read that began at the run's first use consumes nothing, but the
+        // requests it read (and its `through`) are saved, so a scope move still keeps them out.
+        const appended = through === t.cursor ? { scope: t.scope!, appended: 0 } : this.store.append(threadId, entries, through, true);
         this.store.saveIngestion(threadId, t.scope!, state);
         return appended;
       });
+      if (through === t.cursor) return { scope: null, more: false };
       return { scope: appended?.appended ? appended.scope : null, more: appended === null ? !!this.store.thread(threadId)?.scope : read.more };
     } catch (error) {
       if (stopped() || !notFound(error)) throw error;

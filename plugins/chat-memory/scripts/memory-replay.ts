@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { TreeBuilder, type NodeHow, type TreeStore } from "../lib/builder";
-import { eventEntries, splitEntry, withSize, type EventRow, type MemoryMessage, MEMORY_KINDS } from "../lib/log";
+import { stableEntries, withSize, type EventRow, type MemoryMessage, MEMORY_KINDS } from "../lib/log";
 import { cacheKey } from "../lib/memory";
 import { COMPACTION_PROMPT } from "../lib/prompt";
 import { responsesSummarizer, usageCost, type Summarizer, type Usage } from "../lib/summarizer";
@@ -27,7 +27,8 @@ if (!base || !token) throw new Error("ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKE
 mkdirSync(out, { recursive: true });
 
 const events = JSON.parse(readFileSync(file, "utf8")) as (EventRow & { threadId?: string })[];
-const all = events.flatMap((row) => eventEntries(row, row.threadId ?? "thread", { spawnedByPlugin: false, sender: (id) => id })).flatMap(splitEntry);
+// As ingestion logs them (tool uses grouped), read in one go; the end closes the open group.
+const all = stableEntries(events, { pending: [], modern: false }, events[0]?.threadId ?? "thread", { spawnedByPlugin: false, sender: (id) => id }, { final: true }).entries;
 console.error(`The whole log: ${all.length} messages.`);
 const from = Number(fromArg ?? 0);
 const messages: MemoryMessage[] = all.slice(from, from + Number(countArg ?? all.length)).map((e, i) => withSize(e, i));
