@@ -7151,6 +7151,7 @@ export class ProjectsService {
     }
     await this.sendFailureNotices();
     await this.redeliverReports();
+    await this.settleDecisionReceipts();
   }
 
   /**
@@ -7400,6 +7401,38 @@ export class ProjectsService {
       catch (error) { this.bb.log.warn(`Report notice check for ${cycle.projectId}:${cycle.num} failed: ${errorMessage(error)}`); }
       finally { release(); }
     }
+  }
+
+  /**
+   * A decision notice that BB queued keeps its send-time "queued" receipt until BB has handled the
+   * message. Read it back like a report notice: a turn carrying the notice's op was taken → sent;
+   * BB refused it for good → failed; neither queue row nor turn found (once the log is read
+   * through and has had REPORT_NOTICE_SETTLE_MS to catch up) → uncertain. Still queued or
+   * unreadable: left as is. A newer notice for the decision owns the record; this never overwrites it.
+   */
+  async settleDecisionReceipts() {
+    for (const { projectId, num } of this.store.queuedDecisionNotices()) {
+      try { await this.settleDecisionReceipt(projectId, num); }
+      catch (error) { this.bb.log.warn(`Decision receipt check for ${projectId}:${num} failed: ${errorMessage(error)}`); }
+    }
+  }
+
+  private async settleDecisionReceipt(projectId: string, num: number) {
+    const item = this.store.decisionItem(projectId, num);
+    const receipt = item?.notification;
+    if (!item || receipt?.state !== "queued" || !receipt.coordinatorThreadId) return;
+    const verdict = await noticeVerdict(this.sdk, { lead: receipt.coordinatorThreadId, marker: opMarker(receipt.op), since: this.store.notificationAt(projectId, num) ?? item.updatedAt, queuedId: receipt.queuedId ?? null, now: this.now() });
+    const settled: { state: "sent" | "failed" | "uncertain"; detail?: string } | null =
+      verdict === "accepted" ? { state: "sent" }
+      : verdict === "rejected" ? { state: "failed", detail: "BB refused the coordinator's turn for this message and holds no retry." }
+      : verdict === "gone" ? { state: "uncertain", detail: "The coordinator thread no longer exists." }
+      : verdict === "missing" && this.now() - item.updatedAt >= REPORT_NOTICE_SETTLE_MS ? { state: "uncertain", detail: "BB no longer queues this message and the coordinator's log shows no turn carrying it." }
+      : null;
+    if (!settled) return;
+    // Settled only if still the same receipt: a newer notice replaces it with its own op.
+    const now = this.store.decisionItem(projectId, num)?.notification;
+    if (now?.op !== receipt.op || now.state !== "queued") return;
+    this.store.updateDecision(projectId, num, { notification: { op: receipt.op, coordinatorThreadId: receipt.coordinatorThreadId, ...settled } });
   }
 
   private async checkReportNotice(cycle: ReportNoticeCycle) {

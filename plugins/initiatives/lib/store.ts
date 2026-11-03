@@ -578,6 +578,10 @@ export const MIGRATIONS = [
   `CREATE TABLE assignment_pr_scans (project_id TEXT NOT NULL, num INTEGER NOT NULL, report_seq INTEGER NOT NULL, reported INTEGER NOT NULL, PRIMARY KEY (project_id, num))`,
   // W548: PR watches, their states and wakes.
   ...PR_WATCH_MIGRATIONS,
+  // W573: when a decision's current coordinator notice (its op) was first recorded, just before
+  // the send. The queued-receipt check reads the coordinator's log from here. Beside the strict
+  // notification JSON so the previous build still decodes it; null on older rows.
+  `ALTER TABLE knowledge ADD COLUMN decision_notification_at INTEGER`,
 ];
 
 /** W496: a stored ended fact; one that does not parse reads as none, so the thread is read again. */
@@ -3461,6 +3465,18 @@ export class Store {
     ).map(toDecision);
   }
 
+  /** When the decision's current notice was first recorded (before its send); null for older rows. */
+  notificationAt(projectId: string, num: number): number | null {
+    const row = this.db.prepare(`SELECT decision_notification_at AS at FROM knowledge WHERE project_id = ? AND num = ?`).get(projectId, num) as { at: number | null } | undefined;
+    return row?.at ?? null;
+  }
+
+  /** Decisions whose coordinator notice BB queued and nothing has revisited since. */
+  queuedDecisionNotices(): { projectId: string; num: number }[] {
+    return (this.db.prepare(`SELECT project_id, num FROM knowledge WHERE ${DECISION} AND json_extract(decision_notification, '$.state') = 'queued' ORDER BY project_id, num`).all() as Row[])
+      .map(row => ({ projectId: String(row.project_id), num: Number(row.num) }));
+  }
+
   updateDecision(
     projectId: string,
     num: number,
@@ -3472,7 +3488,7 @@ export class Store {
     const stored = splitBody(next.body);
     this.db
       .prepare(
-        `UPDATE knowledge SET status = ?, body = ?, human_attention = ?, decision_owner = ?, decision_review = ?, decision_review_message = ?, decision_notification = ?, blocker_choice = ?, updated_at = ? WHERE project_id = ? AND num = ?`,
+        `UPDATE knowledge SET status = ?, body = ?, human_attention = ?, decision_owner = ?, decision_review = ?, decision_review_message = ?, decision_notification = ?, decision_notification_at = ?, blocker_choice = ?, updated_at = ? WHERE project_id = ? AND num = ?`,
       )
       .run(
         next.status,
@@ -3482,6 +3498,7 @@ export class Store {
         next.review,
         next.reviewMessage,
         json(next.notification),
+        next.notification === null ? null : next.notification.op === current.notification?.op ? this.notificationAt(projectId, num) : this.now(),
         stored.choice,
         this.now(),
         projectId,

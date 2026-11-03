@@ -65,10 +65,12 @@ const read = async (sdk: Sdk, lead: string, since: number) => {
 
 export interface NoticeQuery {
   lead: string;
-  /** The worker thread the notice was sent as. */
-  sender: string;
-  /** The message after its header line. */
-  text: string;
+  /** The worker thread the notice was sent as. Not used with `marker`. */
+  sender?: string;
+  /** The message after its header line. Not used with `marker`. */
+  text?: string;
+  /** Instead of sender and text: an op marker the notice carries, unique to it, from any sender. */
+  marker?: string;
   /** When the notice's first send began. */
   since: number;
   /** The BB queue row holding the latest send, when BB queued it. */
@@ -82,15 +84,15 @@ export interface NoticeQuery {
  * of them was, and is BB's to deliver while a queue row holds it or a retry of it.
  */
 export async function noticeVerdict(sdk: Sdk, q: NoticeQuery): Promise<NoticeVerdict> {
-  const wanted = q.text.replace(/\s+/g, " ").trim();
+  const wanted = (q.text ?? "").replace(/\s+/g, " ").trim();
   const analyze = async (): Promise<NoticeVerdict> => {
     const queued = await sdk.threads.queuedMessages.list({ threadId: q.lead });
     if (q.queuedId && queued.some(row => row.id === q.queuedId)) return "queued";
     const { rows, complete } = await read(sdk, q.lead, q.since);
-    const isNotice = (input: unknown) => textOf(input).replace(ENVELOPE, "").replace(/\s+/g, " ").trim() === wanted;
+    const isNotice = (input: unknown) => q.marker ? textOf(input).includes(q.marker) : textOf(input).replace(ENVELOPE, "").replace(/\s+/g, " ").trim() === wanted;
     // BB runs several queued messages as one turn: each is its own input group, and merging them would hide the notice.
     const mine = rows.filter(row => row.type === "client/turn/requested" && (timeOf(row) ?? Infinity) >= q.since - SLACK_MS &&
-      senderParts(row.data).some(part => part.sender === q.sender) &&
+      (q.marker || senderParts(row.data).some(part => part.sender === q.sender)) &&
       [...senderParts(row.data).map(part => part.input), ...(Array.isArray(row.data?.inputGroups) ? row.data.inputGroups : [])].some(isNotice));
     if (!mine.length) return complete ? "missing" : "unknown";
     const originals = new Set(mine.map(row => (row.data?.retryOfRequestId ?? row.data?.requestId) as string));

@@ -1186,7 +1186,11 @@ quiet because that coordinator already received them. Worker chat answers notify
 by default; `notify: false` records an explicitly quiet answer. A saved answer
 retains failed or uncertain delivery state. Only a definite failure offers an
 explicit same-answer retry; pending, sent, queued and uncertain receipts never
-authorize a duplicate send.
+authorize a duplicate send. A `queued` receipt (BB held the notice while the
+coordinator was busy) is settled by the worker sweep once BB handled it: the
+coordinator's log shows a turn carrying the notice's op → `sent`; BB refused that
+turn for good → `failed`; the queue row is gone and no such turn exists →
+`uncertain`. While BB still queues it, it stays `queued`.
 
 ```sh
 bb initiative list
