@@ -11,6 +11,8 @@ import { UNAVAILABLE } from "../lib/log";
  */
 const WAIT = 3_000;
 const INTO_WAIT = 1_000;
+/** R12: a turn waits this long only past its ceiling: 100 lines without summaries are about 50 KB. */
+const CEILING = 10_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A worker thread with 100 messages none of which has a summary yet, and its incoming request. */
@@ -19,6 +21,7 @@ async function w569(stuck = true) {
   const scope = await f.attach("initiatives", "p", f.thread("w"));
   if (stuck) f.memory.useSummarizer(stuckLuna);
   f.memory.waits.turn = WAIT;
+  f.memory.ceiling = CEILING;
   // The turn's own catch-up copies them.
   for (let i = 0; i < 50; i++) f.turn("w", `ask ${i} ${"q".repeat(1_500)}`, `answer ${i} ${"x".repeat(1_500)}`);
   const request = f.say("w", "go on");
@@ -35,6 +38,7 @@ describe("W570 a reload during a turn's memory wait", () => {
     await sleep(INTO_WAIT);
     const fresh = await f.reload();
     fresh.waits.turn = WAIT;
+    fresh.ceiling = CEILING;
     // The old call ends at once, with the error the provider recognises; not "the turn stopped".
     expect((await failure)?.message).toBe(TURN_CONTEXT_RESTARTING);
     expect(log.mock.calls.flat().join("\n")).toMatch(/waited [\d,]+ ms for the summaries of 100 messages; chat-memory is restarting; the provider asks again/);
@@ -44,7 +48,7 @@ describe("W570 a reload during a turn's memory wait", () => {
     const text = answer.systemPrompt + answer.input;
     expect(text).toContain("summary of");
     expect(text).toContain("go on");
-    // D458: summaries only, never the raw history.
+    // R12: of the raw history, never more than a line's start.
     expect(text).not.toContain("x".repeat(1_000));
   });
 
@@ -55,10 +59,11 @@ describe("W570 a reload during a turn's memory wait", () => {
     await sleep(INTO_WAIT);
     const fresh = await f.reload();
     fresh.waits.turn = WAIT;
+    fresh.ceiling = CEILING;
     fresh.useSummarizer(stuckLuna);
     expect(((await turn) as Error).message).toBe(TURN_CONTEXT_RESTARTING);
     const again = Date.now();
-    await expect(f.ask("w", request, "go on", { elapsedMs: again - first })).rejects.toThrow(`${UNAVAILABLE}: 100 earlier messages have no summary yet`);
+    await expect(f.ask("w", request, "go on", { elapsedMs: again - first })).rejects.toThrow(`${UNAVAILABLE}: its view of the history is over its 10,000-byte ceiling`);
     const end = Date.now();
     expect(end - first).toBeGreaterThanOrEqual(WAIT - 50);
     // A fresh 3 s wait would end at about 4 s after the first ask.

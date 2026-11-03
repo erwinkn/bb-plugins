@@ -30,14 +30,58 @@ const WORD_BYTES = 64;
  * "…; agent: ran migr". A word longer than WORD_BYTES is cut at a character boundary instead.
  */
 export function capLine(text: string) {
-  if (bytes(text) <= LIMIT) return text;
+  return bytes(text) <= LIMIT ? text : `${head(text, LIMIT - bytes(CUT))}${CUT}`;
+}
+/** The start of a text longer than `room` bytes that fits in it, cut as capLine cuts. */
+function head(text: string, room: number) {
   const buf = Buffer.from(text, "utf8");
-  let at = LIMIT - bytes(CUT);
+  let at = room;
   while ((buf[at]! & 0xc0) === 0x80) at--; // not inside a multi-byte character
-  const head = buf.subarray(0, at).toString("utf8");
+  const start = buf.subarray(0, at).toString("utf8");
   const atSpace = /^\s/.test(buf.subarray(at, at + 4).toString("utf8"));
-  const words = atSpace ? head : head.replace(/\S+$/, "");
-  return `${(at - bytes(words) <= WORD_BYTES ? words : head).trimEnd()}${CUT}`;
+  const words = atSpace ? start : start.replace(/\S+$/, "");
+  return (at - bytes(words) <= WORD_BYTES ? words : start).trimEnd();
+}
+/**
+ * A line holds no newline: a run of whitespace with one in it becomes one space. Linear: `\s+`
+ * takes each run once, where `\s*\n\s*` backtracks over a long run without a newline in
+ * quadratic time (30,000 spaces took 0.7 s).
+ */
+const oneLine = (text: string) => text.replace(/\s+/g, (run) => (run.includes("\n") ? " " : run));
+/**
+ * The start of oneLine(text) without its leading whitespace: at least `room` + 1 UTF-16 units of
+ * it (so more than `room` bytes) when the text goes on, and whether it does. It reads the text a
+ * run at a time and stops there, so a megabyte message costs what its start does.
+ */
+function lineStart(text: string, room: number) {
+  const piece = /\s+|\S{1,1024}/y;
+  piece.lastIndex = text.search(/\S/);
+  if (piece.lastIndex < 0) return { start: "", more: false };
+  let start = "";
+  while (start.length <= room) {
+    const run = piece.exec(text)?.[0];
+    if (run === undefined) return { start: start.trimEnd(), more: false };
+    start += !/^\s/.test(run) ? run : run.includes("\n") ? " " : run.slice(0, room + 1 - start.length);
+  }
+  // Only whitespace left: oneLine(text).trim() ends here.
+  const rest = /\s*/y;
+  rest.lastIndex = piece.lastIndex;
+  rest.exec(text);
+  return rest.lastIndex < text.length ? { start, more: true } : { start: start.trimEnd(), more: false };
+}
+const ELLIPSIS = "…";
+/** What follows the start of a message a turn shows before its summary exists (R12). */
+export const PENDING = ` ${PLACEHOLDER}`;
+/**
+ * R12: the line of a message whose summary a turn did not get within its short wait: the start of
+ * the message on one line, cut as capLine cuts, then PENDING, in at most TARGET_BYTES, the size of a
+ * summary, so the view's size math holds. Example: "user: Can you check why the deploy… (not
+ * summarized yet: zoom it)". memory_zoom {id, n:1} gives the whole message.
+ */
+export function pendingLine(text: string) {
+  const room = TARGET_BYTES - bytes(PENDING);
+  const { start, more } = lineStart(text, room);
+  return `${!more && bytes(start) <= room ? start : `${head(start, room - bytes(ELLIPSIS))}${ELLIPSIS}`}${PENDING}`;
 }
 export const key = (l: number, i: number) => `${l}:${i}`;
 export const start = ([l, i]: NodeRef) => i * 2 ** l;
@@ -53,7 +97,7 @@ export function nodeAt(id: number, n: number): NodeRef | null {
 }
 
 export function renderLine(n: NodeRef, nodes: Nodes) {
-  return `${label(n)}|${(nodes.get(key(...n)) ?? PLACEHOLDER).replace(/\s*\n\s*/g, " ")}`;
+  return `${label(n)}|${oneLine(nodes.get(key(...n)) ?? PLACEHOLDER)}`;
 }
 export const viewBytes = (view: readonly NodeRef[], nodes: Nodes) =>
   view.reduce((sum, n) => sum + bytes(renderLine(n, nodes)) + 1, 0);

@@ -5,6 +5,7 @@ const ticks = async () => { for (let i = 0; i < 40; i++) await new Promise<void>
 
 it("gives queued coordinator preparation the next shared permit ahead of background migration", async () => {
   const f = fixture();
+  f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
   const scope = await f.attach("initiatives", "p", f.thread("c"));
   const stop = new AbortController();
   const held: Array<() => void> = [];
@@ -31,6 +32,7 @@ it("gives queued coordinator preparation the next shared permit ahead of backgro
 
 it("bounds and renews admission urgency without accumulating needs", async () => {
   const f = fixture();
+  f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
   const scope = await f.attach("initiatives", "p", f.thread("c"));
   f.memory.useSummarizer(stuckLuna);
   f.turn("c", "past", "x".repeat(2000)); f.memory.kick("c"); await ticks();
@@ -50,6 +52,7 @@ it("bounds and renews admission urgency without accumulating needs", async () =>
 for (const ending of ["cancelled", "dispatched", "other owner", "archived", "deleted", "failed"] as const) {
   it(`releases preparation on ${ending}, retaining other queued rows until removed`, async () => {
     const f = fixture();
+    f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
     const scope = await f.attach("initiatives", "p", f.thread("c"));
     let finish!: () => void;
     const gate = new Promise<void>(r => finish = r);

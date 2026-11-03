@@ -99,7 +99,7 @@ would fail anyway: a new turn of an UniiChat thread on another provider. BB
 keeps the message. Messages that join a running turn, and every other thread's,
 go on.
 
-## UniiChat turns (D431 phase 2, D458)
+## UniiChat turns (D431 phase 2, R12)
 
 BB's Claude Code provider (Erwin's fork) calls the hidden tool
 `claude_code_turn_context` before each new turn whose tools include it
@@ -109,21 +109,52 @@ turn:
 
 1. catches up stable semantic events using bounded, coalesced reads;
 2. cuts history before the incoming request if it was already accepted;
-3. waits for every needed historical leaf summary, with cancellation and a 90-second final admission deadline;
-4. returns a fresh session with the frozen summary prefix and growing summary tail, followed by the new message. Historical views contain no raw tail or clipped fallback.
+3. waits at most 3 seconds (`SUMMARY_WAIT_MS`) for the summaries of earlier messages still being written, and never for merges (R12, which replaces D458's no-raw-history rule and D558);
+4. returns a fresh session with the frozen summary prefix and growing summary tail, followed by the new message.
+
+A message still without its summary after that short wait shows as the start of
+its own text, on one line, cut at a word to a summary's 512 bytes, then
+`(not summarized yet: zoom it)`, the note `bb chat-memory read` prints for an
+unbuilt line:
+
+```
+212+1|agent: The migration ran on staging; next I check the replica lag, then… (not summarized yet: zoom it)
+```
+
+`memory_zoom {id: 212, n: 1}` gives the whole message. A line whose summary is
+still coming never enters the frozen prefix (the cached part of the prompt), so
+a summary landing later changes no cached line. A summary that failed its tries
+shows the same way rather than failing the turn; its line stays as it is until
+the retry 30 minutes later, so it may enter the frozen prefix, and later turns
+reuse the prefix past it. The prefix is kept only while its text is unchanged:
+when that summary lands, the next turn cuts it again (one cache miss). The short
+wait is skipped while the summarizer is paused past it (rate limit, unavailable
+route). When merges lag, the view goes over its 128 KB
+target as it is, up to a hard ceiling of 256 KB (`CEILING_BYTES`): only a view
+past that waits, for the summaries that bring it back under, and fails visibly
+at the 90-second deadline. Replayed on the 69 turns that failed on 2026-11-02
+after waiting up to 90 s, every one would have gone within 3 s: 7 to 465 lines
+shown by their start (median 80), 20 views over the 128 KB target (by at most
+97 KB), none past the ceiling. Across all 575 OptChat turns since 2026-11-01,
+82% found every summary written already; waiting 3, 5 or 30 s adds 1, 2 or 3
+points, since the rest are backlogs that seconds do not clear. A turn checks
+its view against the ceiling after each summary it waits for; the check stops
+counting once past it, and reads each message once (a cache of 8,192 lines),
+so a 10,000-message backlog costs a few hundred reads, not 10,000 per summary.
 
 **A reload during the wait (W570).** BB aborts the old plugin instance's tool
 calls with the reason `plugin-disposed` before it disposes it. The turn then
 fails with the fixed `TURN_CONTEXT_RESTARTING` error ("…chat-memory is
 restarting…"), not "the turn stopped". A provider that sees it may ask the new
 instance again with `elapsedMs`, the time since its first ask: the 90-second
-wait still ends 90 seconds after that first ask. Asking again needs a change in
+wait still ends 90 seconds after that first ask, and the 3-second wait for
+summaries is what `elapsedMs` leaves of it, so reloads never stretch either. Asking again needs a change in
 the fork (it asks once today); without it, the turn fails visibly with that
 error, as before. Both errors start with "OptChat memory unavailable", so the
 unsent message stays out of memory (D502).
 
 The dispatch hook answers immediately with core's durable `wait` decision while
-history or summaries are preparing. It supplies a 30-second recovery due time and
+history is being copied or, R12, while the view is past its ceiling. It supplies a 30-second recovery due time and
 calls `experimental_hooks.recheck("message.dispatch")` when a waiting scope becomes
 ready. BB retains queued reviewer returns, question returns, retries and user work.
 The final turn hook remains strict even when a user bypasses a dispatch policy.
@@ -299,11 +330,11 @@ high answers 95% of calls within 30 s), so a hung call frees its slot; a call a
 turn waits for runs on to the turn's deadline instead, so a reply at 65 s still
 makes a 90 s turn. A stopped turn stops waiting, and a call past its bound
 that no turn waits for any more gives up at once. A line whose call fails 3 times
-stays unsummarized and failed, never cut to fit (D458), unless every reply was empty
+stays unsummarized and failed, never cut into a summary (D458), unless every reply was empty
 (a retry gets the same): that line is built at once from its input cut to fit with
 ` [cut]` (its message, or its two lines joined; counted under "fallbacks"). A failed line holds no build slot,
-the panel shows it as a problem, an UniiChat turn that needs it fails at once
-("message 1234 could not be summarized (…)"), and it is tried again 30 minutes
+the panel shows it as a problem, an UniiChat turn shows its message by its start
+(R12), and it is tried again 30 minutes
 later. Lines built before the cap (some over 512 bytes, fallbacks ending in `…`)
 and lines Initiatives cut before T145 stay as they are: nodes are never rebuilt
 ("cut after failures" in the panel counts fallbacks). A 429 pauses new calls with a growing backoff; an

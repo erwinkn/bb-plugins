@@ -9,6 +9,7 @@ const ticks = async () => { for (let i = 0; i < 40; i++) await new Promise<void>
 for (const otherWait of [{kind: "plugin", pluginId: "other"}, {kind: "thread-busy"}]) {
   it(`releases a lead-only group handoff to ${otherWait.kind}, preserving independent groups and threads`, async () => {
     const f = fixture();
+    f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
     const scope = await f.attach("initiatives", "p", f.thread("c"), f.thread("d"));
     f.memory.useSummarizer(stuckLuna);
     f.turn("c", "past", "x".repeat(2000)); f.memory.kick("c"); await ticks();
@@ -38,6 +39,7 @@ for (const otherWait of [{kind: "plugin", pluginId: "other"}, {kind: "thread-bus
 
 it("renews urgency continuously for release observers", async () => {
   const f = fixture();
+  f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
   const scope = await f.attach("initiatives", "p", f.thread("c"));
   f.memory.useSummarizer(stuckLuna);
   f.turn("c", "past", "x".repeat(2000)); f.memory.kick("c"); await ticks();
@@ -54,6 +56,7 @@ it("renews urgency continuously for release observers", async () => {
 // the review's 40s no-abort expectation, which depended on an admission extension.
 it("keeps real summary-call bounds under repeated queued renewals, then honors a genuine turn need", async () => {
   const f = fixture();
+  f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
   const scope = await f.attach("initiatives", "p", f.thread("c"));
   vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout", "Date"]});
   (f.store as unknown as {now: () => number}).now = () => Date.now();
@@ -102,6 +105,7 @@ it("keeps real summary-call bounds under repeated queued renewals, then honors a
 
 it("preserves a remaining row when its former lead joins a different dispatch group", async () => {
   const f = fixture();
+  f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
   const scope = await f.attach("initiatives", "p", f.thread("c"));
   f.memory.useSummarizer(stuckLuna);
   f.turn("c", "past", "x".repeat(2000)); f.memory.kick("c"); await ticks();

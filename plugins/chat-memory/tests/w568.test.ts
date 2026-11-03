@@ -160,6 +160,7 @@ describe("W568 archived threads' trees rest", () => {
 
   it("does not build again after an archive cancels a run an admission asked for: the admission left with it", async () => {
     const f = fixture();
+    f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
     const { luna, summarize } = heldLuna();
     f.memory.useSummarizer(summarize);
     const scope = await seeded(f, "coord", 40, "initiatives");
@@ -180,6 +181,7 @@ describe("W568 archived threads' trees rest", () => {
 
   it("stops an archived scope's run when the admission that started it is released", async () => {
     const f = fixture();
+    f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
     const { luna, summarize } = heldLuna();
     f.memory.useSummarizer(summarize);
     const scope = await seeded(f, "coord", 40, "initiatives", { archived: true });
@@ -246,6 +248,7 @@ describe("W568 archived threads' trees rest", () => {
 
   it("still builds for a turn that waits on an archived thread's UniiChat memory", async () => {
     const f = fixture();
+    f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
     const { luna, summarize } = heldLuna();
     f.memory.useSummarizer(summarize);
     const scope = await seeded(f, "coord", 6, "initiatives", { archived: true });

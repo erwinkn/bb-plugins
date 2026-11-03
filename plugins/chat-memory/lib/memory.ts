@@ -9,9 +9,8 @@ import { FairPermits, NO_DEMAND } from "./permits";
 import type { Settings } from "./settings";
 import { MemoryStore, type MemoryMode, type Scope } from "./store";
 import type { Summarizer } from "./summarizer";
-import { VIEW_BYTES, bytes, NodeCache, children, end, label, nodeAt, renderLine, start, viewBytes } from "./tree";
-import { turnView } from "./turn";
-import type { NodeRef } from "./tree";
+import { NodeCache, children, end, label, nodeAt, pendingLine, renderLine, start, viewBytes } from "./tree";
+import { CEILING_BYTES, turnBytes, turnView } from "./turn";
 import { originalEvidence, type EvidenceDeps } from "./evidence";
 import { senderParts } from "./sender-parts";
 
@@ -59,8 +58,9 @@ export type TurnAnswer =
   | Record<string, never>;
 
 /**
- * D458: how long an OptChat turn waits for its memory (its own last turn logged, the summaries the
- * view needs) before it fails. The fork's hook gives an answer 120 s.
+ * How long an OptChat turn may wait for its memory before it fails: its own last turn logged, and,
+ * R12, only past CEILING_BYTES, the merges that bring its view back under. The fork's hook gives an
+ * answer 120 s.
  */
 export const TURN_WAIT_MS = 90_000;
 /**
@@ -72,8 +72,14 @@ export const TURN_WAIT_MS = 90_000;
 export const TURN_CONTEXT_RESTARTING = `${UNAVAILABLE}: chat-memory is restarting. The message was not sent; send it again.`;
 /** The reason BB aborts a plugin's tool calls with when it disposes the plugin (a reload, a disable). */
 export const PLUGIN_DISPOSED = "plugin-disposed";
-/** Kept for callers configuring older wait settings; summary admission now uses the turn deadline. */
+/**
+ * R12: how long a turn waits for the summaries of its earlier messages that are still being written;
+ * then each message still without one shows its start (pendingLine). A summary call takes 2.8 s at
+ * p50 and 4.5 s at p90 (gpt-6-luna, 2026-11-02), and 9 lines in 10 take one call.
+ */
 export const SUMMARY_WAIT_MS = 3_000;
+/** R12: message previews cached (memory.previews), at most 512 bytes each: 4 MB at most. */
+const PREVIEWS = 8_192;
 /** Failed reads of the thread's last turn a turn tries before it fails. */
 export const TURN_READ_ATTEMPTS = 3;
 const RETRY_PAUSE_MS = 250;
@@ -126,9 +132,9 @@ export interface MemoryStatus {
   }>;
   log: { messages: number; bytes: number };
   tree: {
-    /** No catch-up in flight; required summaries exist and the historical view fits its byte bound. */
+    /** No catch-up in flight, and the view a turn gets is within its ceiling (R12): a turn can start now. */
     ready: boolean;
-    /** Terminal failure in required history; unrelated ancestor failures stay diagnostic only. */
+    /** Why a turn past the ceiling cannot wait it out (its build stopped, lines failed); null under it. */
     requiredFailure?: string | null;
     ingesting: boolean;
     summarized: number;
@@ -136,7 +142,7 @@ export interface MemoryStatus {
     /** Nodes a complete tree over the log has. */
     total: number;
     fallbacks: number;
-    /** Lines whose summary failed after bounded retries (D458): turns that need them fail. */
+    /** Lines whose summary failed after bounded retries (D458): turns show their message by its start (R12). */
     failed: number;
     viewBytes: number;
     memoryViewBytes: number;
@@ -194,7 +200,13 @@ export class ChatMemory {
   /** Bounded preparation leases, not a message queue: core owns every queued row. */
   private preparing = new Map<string, { scopeId: string; groups: Map<string, Set<string>>; release: () => void; timer: ReturnType<typeof setTimeout> }>();
   /** By thread: the view lines its last UniiChat turn froze into its system prompt. */
-  private frozen = new Map<string, NodeRef[]>();
+  private frozen = new Map<string, string[]>();
+  /**
+   * R12: pendingLine of a logged message, by "scope:i", the PREVIEWS most recent. The log only grows,
+   * so a line never changes; a turn waiting on a backlog checks its view after each summary built,
+   * and reads each message once instead of on every check.
+   */
+  private previews = new Map<string, string>();
   private facts = new Map<string, Promise<ThreadFacts | null>>();
   /**
    * W568: by thread, whether its tree rests: BB has it archived (or no longer has it), as last read
@@ -206,6 +218,8 @@ export class ChatMemory {
   private priorities = new Map<string, number>();
   /** The wait bounds (ms); tests change them. */
   waits = { turn: TURN_WAIT_MS, summaries: SUMMARY_WAIT_MS };
+  /** R12: the most a turn's view holds before the turn waits (CEILING_BYTES; tests lower it). */
+  ceiling = CEILING_BYTES;
 
   constructor(
     private readonly deps: {
@@ -472,30 +486,49 @@ export class ChatMemory {
     if (!preparation.groups.size) this.releasePreparation(threadId);
   }
 
+  /** Whether a turn of the scope can start now: its log caught up, and its view under the ceiling. */
   private ready(scopeId: string) {
     if (this.store.threadsOf(scopeId).some(t => this.ingests.has(t.threadId))) return false;
-    return this.historyReady(scopeId, this.store.count(scopeId));
+    return this.fits(scopeId, this.store.count(scopeId));
   }
-  private historyReady(scopeId: string, count: number) {
+  /**
+   * R12: a turn's view of messages 0..count-1, each message without its summary shown by its start.
+   * Throws only if the view holds an unbuilt merge, which no view does (turnView).
+   */
+  private turnLines(scopeId: string, count: number, frozen: readonly string[] | null) {
     const builder = this.builders.get(scopeId);
-    if (builder ? !builder.summarized(count) : this.store.leavesBuilt(scopeId) < count) return false;
+    return turnView({...this.viewInput(scopeId, count), frozen, stalled: (i) => builder?.stalled(i) ?? false});
+  }
+  private viewInput(scopeId: string, count: number) {
     const {nodes, views} = this.tree(scopeId);
-    try {
-      const view = turnView({chat: views.chat, fed: views.fed, nodes, cut: count, frozen: null});
-      return [...view.frozenLines, ...view.tailLines].reduce((sum, line) => sum + bytes(line) + 1, 0) <= VIEW_BYTES.chat[0];
-    } catch { return false; } // An unbuilt selected node means preparation is still required.
+    return {chat: views.chat, fed: views.fed, nodes, cut: count, pending: (i: number) => this.preview(scopeId, i)};
   }
+  private preview(scopeId: string, i: number) {
+    const id = `${scopeId}:${i}`;
+    let line = this.previews.get(id);
+    if (line === undefined) {
+      line = pendingLine(messageText(this.store.message(scopeId, i)!));
+      this.previews.set(id, line);
+      if (this.previews.size > PREVIEWS) this.previews.delete(this.previews.keys().next().value!);
+    }
+    return line;
+  }
+  /** R12: whether a turn's view of messages 0..count-1 is within the ceiling, so it need not wait. Stops counting past it. */
+  private fits(scopeId: string, count: number) {
+    try { return turnBytes(this.viewInput(scopeId, count), this.ceiling) <= this.ceiling; } catch { return false; }
+  }
+  /**
+   * Why a turn over the ceiling cannot wait it out: its build stopped, and lines failed. A failed
+   * line is no failure under the ceiling: the turn shows its message's start (R12).
+   */
   private requiredFailure(scopeId: string, count = this.store.count(scopeId)) {
-    // A failed unused ancestor must not reject a complete bounded view.
-    if (this.historyReady(scopeId, count)) return null;
-    const builder = this.builders.get(scopeId);
-    const failed = builder?.failedBefore(count);
-    if (failed) return `${UNAVAILABLE}: message ${failed.i} could not be summarized (${failed.error}); it is tried again within 30 minutes. The message was not sent; send it again.`;
+    if (this.fits(scopeId, count)) return null;
     // Exhausted builds have no successful or pending merges left to bring this view under its
     // bound. While any legitimate work remains, keep preparing: another merge may suffice.
-    if (builder?.summarized(count) && builder.status.state === "idle" && !this.builds.has(scopeId)) {
-      const merge = builder.failedLines()[0];
-      if (merge) return `${UNAVAILABLE}: historical summary view needs merges that could not be summarized (${merge.line}: ${merge.error}); it is tried again within 30 minutes. The message was not sent; send it again.`;
+    const builder = this.builders.get(scopeId);
+    if (builder?.status.state === "idle" && !this.builds.has(scopeId)) {
+      const line = builder.failedLines()[0];
+      if (line) return `${UNAVAILABLE}: the history view is over its ${this.ceiling.toLocaleString("en-US")}-byte ceiling and needs lines that could not be summarized (${line.line}: ${line.error}); they are tried again within 30 minutes. The message was not sent; send it again.`;
     }
     return null;
   }
@@ -799,7 +832,7 @@ export class ChatMemory {
     const ready = this.ready(scopeId);
     const failed = builder?.failedLines() ?? [];
     if (failed.length)
-      problems.push(`${failed.length} memory line${failed.length === 1 ? "" : "s"} could not be summarized (${failed[0]!.line}: ${failed[0]!.error}); tried again within 30 minutes. Until then, UniiChat turns that need them fail.`);
+      problems.push(`${failed.length} memory line${failed.length === 1 ? "" : "s"} could not be summarized (${failed[0]!.line}: ${failed[0]!.error}); tried again within 30 minutes. Until then, UniiChat turns show a message without its summary by its start.`);
     if (builder?.status.state === "unavailable") problems.push(`The summarizer is unavailable: ${builder.status.detail}`);
     return {
       scope: { id: scope.id, owner: scope.owner },
@@ -896,8 +929,10 @@ export class ChatMemory {
    * a fresh session whose system prompt ends with the view's older lines and whose first message
    * holds its newest lines, the time and the message.
    *
-   * Catch up stable events, exclude the incoming request from history, and wait for all required
-   * leaf summaries. Failure and cancellation are visible; no resident-session or raw fallback.
+   * Catch up stable events, exclude the incoming request from history, and wait a few seconds at
+   * most for the summaries of earlier messages, never for merges (R12): a message still without one
+   * shows its start, and a view over its target goes as it is. Only a view past CEILING_BYTES waits,
+   * until the deadline. Failure and cancellation are visible; no resident-session fallback.
    */
   async turnContext(threadId: string, ask: TurnAsk, signal?: AbortSignal): Promise<TurnAnswer> {
     // A provider that asks again after a restart counts the wait from its first ask (W570).
@@ -928,16 +963,15 @@ export class ChatMemory {
       }
       if (!request) throw fail("the incoming request could not be located in the latest 1000 requests");
       const cut = this.store.requestCut(scope.id, threadId, ask.requestId, request.data?.retryOfRequestId ? undefined : request.seq) ?? this.store.count(scope.id);
-      await this.waitSummarized(scope.id, cut, deadline, fail, signal, wait);
-      // A failure between readiness and rendering is still a visible admission failure.
-      const builder = this.builders.get(scope.id);
-      const failure = builder && this.failedLine(builder, cut, fail);
-      if (failure) throw failure;
-      const { nodes, views } = this.tree(scope.id);
-      const view = turnView({ chat: views.chat, fed: views.fed, nodes, cut, frozen: this.frozen.get(threadId) ?? null });
+      await this.waitLines(scope.id, cut, deadline, ask.elapsedMs ?? 0, fail, signal, wait);
+      let view = this.turnLines(scope.id, cut, this.frozen.get(threadId) ?? null);
+      while (view.bytes > this.ceiling) {
+        await this.waitUnder(scope.id, cut, deadline, fail, signal, wait);
+        view = this.turnLines(scope.id, cut, this.frozen.get(threadId) ?? null);
+      }
       if (this.store.scopeOf(threadId)?.id !== scope.id) throw fail("the memory scope changed during preparation");
-      this.frozen.set(threadId, view.frozen);
-      this.logWait(threadId, wait, "all historical messages summarized");
+      this.frozen.set(threadId, view.frozenLines);
+      this.logWait(threadId, wait, view.pending ? `${view.pending} shown by their start, not summarized yet` : "all historical messages summarized");
       return { session: "fresh", sessionId: randomUUID(), systemPrompt: turnSystem(view.frozenLines), input: turnMessage(this.store.now(), ask.input, view.tailLines) };
     } catch (error) {
       // A reload stopped it (W570), whatever it was doing then: the provider asks the new instance.
@@ -953,12 +987,6 @@ export class ChatMemory {
     if (wait.since === null) return;
     const ms = (this.store.now() - wait.since).toLocaleString("en-US");
     this.deps.log(`${wait.scopeId}: turn of ${threadId} waited ${ms} ms for the summaries of ${wait.messages ?? "?"} message${wait.messages === 1 ? "" : "s"}; ${outcome}`);
-  }
-
-  /** D458: the first of messages 0..count-1 whose summary failed its bounded tries, as the turn's failure. */
-  private failedLine(builder: TreeBuilder, count: number, fail: (why: string) => Error) {
-    const f = builder.failedBefore(count);
-    return f && fail(`message ${f.i} could not be summarized (${f.error}); it is tried again within 30 minutes`);
   }
 
   /** One copy of the thread that started after this call, settled. */
@@ -986,38 +1014,55 @@ export class ChatMemory {
     }
   }
 
-  /** Wait for every required historical leaf, bounded by the final turn deadline. */
-  private async waitSummarized(scopeId: string, count: number, deadline: number, fail: (why: string) => Error, signal: AbortSignal | undefined, wait: Wait) {
+  /**
+   * R12: wait SUMMARY_WAIT_MS at most, never past the deadline, for the summaries of messages
+   * 0..count-1 still being written. A failed line waits for its retry, so the turn does not. A turn
+   * asked again after a restart had `elapsed` of it already (W570): reloads cannot stretch it.
+   */
+  private async waitLines(scopeId: string, count: number, deadline: number, elapsed: number, fail: (why: string) => Error, signal: AbortSignal | undefined, wait: Wait) {
     if (this.disposed) throw fail("Chat memory is stopping");
     if (signal?.aborted) throw fail("the turn stopped");
     // Builds a resting scope only through the need taken below, in this same synchronous call.
     this.build(scopeId);
     const builder = this.builder(scopeId);
-    if (this.historyReady(scopeId, count)) return;
-    // D458: a summary that failed its bounded tries is no summary; the turn fails now, never shows it clipped.
+    const until = Math.min(deadline, this.store.now() + this.waits.summaries - elapsed);
+    // A builder paused past the wait (rate limit, summarizer unavailable) lands nothing in it.
+    if (until <= this.store.now() || !builder.coming(count) || (builder.status.until ?? 0) >= until) return;
+    // How many lines it waits for, once the builder knows: a builder just loaded finds them in its recovery.
+    const counted = () => void (wait.messages ??= builder.unsummarizedLines(count)?.length ?? null);
+    Object.assign(wait, { scopeId, since: this.store.now() });
+    counted();
+    const uncount = builder.onBuilt(counted);
+    const release = builder.need(count, until);
+    try {
+      await this.until(builder, () => !builder.coming(count), () => null, until, fail, signal, this.builds.get(scopeId)?.done);
+    } finally {
+      release();
+      uncount();
+    }
+  }
+
+  /** R12: the last resort, a view past CEILING_BYTES: wait, until the deadline, for what brings it back under. */
+  private async waitUnder(scopeId: string, count: number, deadline: number, fail: (why: string) => Error, signal: AbortSignal | undefined, wait: Wait) {
     const failed = () => {
       const reason = this.requiredFailure(scopeId, count);
       return reason ? new MemoryError(reason) : null;
     };
     const failure = failed();
     if (failure) throw failure;
-    // How many lines it waits for, once the builder knows: a builder just loaded finds them in its recovery.
-    const counted = () => void (wait.messages ??= builder.unsummarizedLines(count)?.length ?? null);
-    const since = this.store.now();
-    Object.assign(wait, { scopeId, since });
-    counted();
-    const uncount = builder.onBuilt(counted);
+    const builder = this.builder(scopeId);
+    wait.scopeId = scopeId;
+    wait.since ??= this.store.now();
     const release = builder.need(count, deadline);
+    this.build(scopeId);
     try {
-      if (await this.until(builder, () => this.historyReady(scopeId, count), failed, deadline, fail, signal, this.builds.get(scopeId)?.done)) return;
+      if (await this.until(builder, () => this.fits(scopeId, count), failed, deadline, fail, signal, this.builds.get(scopeId)?.done)) return;
     } finally {
       release();
-      uncount();
     }
     const status = builder.status;
     const why = status.state === "backoff" ? `the summarizer is rate-limited (${status.detail})` : status.state === "unavailable" ? `the summarizer is unavailable (${status.detail})` : "the summarizer is still writing them";
-    const missing = builder.unsummarized(count);
-    throw fail(missing ? `${missing} earlier messages have no summary yet: ${why}` : `the historical summary view still exceeds ${VIEW_BYTES.chat[0]} bytes or needs merge summaries: ${why}`);
+    throw fail(`its view of the history is over its ${this.ceiling.toLocaleString("en-US")}-byte ceiling and waits for summaries that bring it back under: ${why}`);
   }
 
   /** Whether `ready` holds, looked at now and after each node built, by `until`; a failed line, a stop or a close throws. */

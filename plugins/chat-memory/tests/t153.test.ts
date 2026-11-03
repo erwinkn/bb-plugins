@@ -318,33 +318,44 @@ describe("T153 restarts", () => {
 });
 
 describe("T153 OptChat turns", () => {
-  it("waits for even a small historical reply instead of showing it raw", async () => {
+  it("R12: shows a historical reply still without its summary by its start, after the short wait and no longer", async () => {
     const f = await initiative();
     f.memory.useSummarizer(stuckLuna);
-    f.memory.waits.turn = 100;
     f.turn("coord", "short", "y".repeat(10_000));
-    await expect(f.ask("coord", f.say("coord", "go"), "go")).rejects.toThrow("no summary yet");
+    const started = Date.now();
+    const answer = fresh(await f.ask("coord", f.say("coord", "go"), "go"));
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+    expect(Date.now() - started).toBeLessThan(1_400);
+    const view = `${answer.systemPrompt}\n${answer.input}`;
+    expect(view).toMatch(/1\+1\|agent: y+… \(not summarized yet: zoom it\)/);
+    expect(view).not.toContain("y".repeat(600));
+    f.memory.dispose();
   });
 
-  it("fails the turn visibly when what has no summary by the deadline is too much to show clipped, naming why (W503)", async () => {
+  it("R12: past its ceiling, a view waits and fails the turn visibly at the deadline, naming why (W503)", async () => {
     const f = await initiative();
     f.memory.useSummarizer(stuckLuna);
-    // 60 replies of 3 KB: the 50 before the newest 32 KB would be 100 KB clipped, past CLIPPED_BYTES.
+    // 60 replies of 3 KB: 120 lines without summaries, about 40 KB, past a 10 KB ceiling.
     for (let n = 0; n < 60; n++) f.turn("coord", `part ${n}`, "z".repeat(3_000));
     f.memory.waits.summaries = 300;
+    f.memory.ceiling = 10_000;
     const started = Date.now();
-    await expect(f.ask("coord", f.say("coord", "go"), "go")).rejects.toThrow(/OptChat memory unavailable for this turn: \d+ earlier messages have no summary yet: the summarizer is still writing them\. The message was not sent/);
+    await expect(f.ask("coord", f.say("coord", "go"), "go")).rejects.toThrow(/OptChat memory unavailable for this turn: its view of the history is over its 10,000-byte ceiling and waits for summaries that bring it back under: the summarizer is still writing them\. The message was not sent/);
     expect(Date.now() - started).toBeGreaterThanOrEqual(1_400);
     f.memory.dispose();
   });
 
-  it("fails the turn after the bounded tries of a summary that keeps failing; a message that fits is shown whole, never cut (A469 4)", async () => {
+  it("R12: a summary that keeps failing shows its message's start, never a summary cut from it, and the turn does not wait for its retry (A469 4)", async () => {
     const f = await initiative();
     f.memory.useSummarizer(async () => ({ ok: false, reason: "failed", error: "400 rejected" }));
     f.turn("coord", `${"background ".repeat(200)} NEVER DEPLOY TO PRODUCTION`, "ok");
-    await expect(f.ask("coord", f.say("coord", "proceed"), "proceed")).rejects.toThrow("could not be summarized");
-    for (let n = 0; n < 3; n++) f.turn("coord", `part ${n}`, "w".repeat(14_000));
-    await expect(f.ask("coord", f.say("coord", "proceed"), "proceed")).rejects.toThrow(/OptChat memory unavailable for this turn: message \d+ could not be summarized \(400 rejected\)/);
+    await f.idle("coord");
+    await f.memory.settled();
+    const started = Date.now();
+    const answer = fresh(await f.ask("coord", f.say("coord", "proceed"), "proceed"));
+    expect(Date.now() - started).toBeLessThan(900);
+    expect(`${answer.systemPrompt}\n${answer.input}`).toMatch(/0\+1\|user: background background .*… \(not summarized yet: zoom it\)/);
+    expect(await f.memory.zoomText(P, 0, 1)).toContain("NEVER DEPLOY TO PRODUCTION");
     const status = await f.memory.status(P);
     expect(status.tree.fallbacks).toBe(0);
     expect(status.problems).toContainEqual(expect.stringMatching(/could not be summarized/));

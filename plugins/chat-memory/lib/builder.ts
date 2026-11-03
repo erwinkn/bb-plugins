@@ -322,6 +322,21 @@ export class TreeBuilder {
     return true;
   }
 
+  /**
+   * R12: whether a line of messages 0..count-1 is still on its way: not built, and not failed (a
+   * failed line waits FAILED_RETRY_MS for its retry). True until the load's recovery has found them.
+   */
+  coming(count: number) {
+    if (!this.recovered || this.views.fed < count) return true;
+    for (const i of this.unbuilt) if (i < count && !this.failed.has(key(0, i))) return true;
+    return false;
+  }
+
+  /** R12: whether message i's summary failed and waits for its retry: its line stays unbuilt until then. */
+  stalled(i: number) {
+    return this.failed.has(key(0, i));
+  }
+
   /** How many of messages 0..count-1 have no line yet. */
   unsummarized(count: number) {
     let n = Math.max(0, count - this.views.fed);

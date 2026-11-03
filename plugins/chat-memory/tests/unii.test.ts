@@ -8,10 +8,13 @@ it("ingests active accepted input and semantic output exactly once across restar
  await f.memory.ingest("w"); expect(f.log(s)).toEqual(["user: accepted brief","agent: stable reply"]);
  f.memory.dispose(); await f.memory.settled(); f.memory.start(); await f.memory.ingest("w"); expect(f.log(s)).toHaveLength(2);
 });
-it("never admits raw history when summaries are unavailable", async()=>{
+it("R12: shows a message whose summary is unavailable by its start only, in a summary's size", async()=>{
  const f=fixture(); await f.attach("initiatives","p",f.thread("w")); f.memory.useSummarizer(stuckLuna); f.memory.waits.turn=100;
  f.turn("w","past","RAW".repeat(1000));
- await expect(f.ask("w",f.say("w","next"),"next")).rejects.toThrow("no summary yet");
+ const a=await f.ask("w",f.say("w","next"),"next") as {systemPrompt:string;input:string};
+ const line=(a.systemPrompt+"\n"+a.input).split("\n").find(l=>l.startsWith("1+1|"))!;
+ expect(line).toMatch(/^1\+1\|agent: RAW[RAW]*… \(not summarized yet: zoom it\)$/);
+ expect(Buffer.byteLength(line.slice("1+1|".length))).toBeLessThanOrEqual(512);
 });
 
 it("keeps unaccepted queued input durable across a completed turn and restart, then logs it only on acceptance",async()=>{
@@ -33,8 +36,8 @@ it("coalesces a burst of 1000 already-debounced semantic notifications to at mos
  await Promise.all(Array.from({length:1000},()=>f.harness.behavior.emitThreadEvent("experimental_thread.events",{thread:makeThreadResponse({id:"w"}),sequence:100} as never)));
  await f.memory.settled(); expect(f.reads.length).toBeLessThanOrEqual(2);
 });
-it("dispatch waits promptly for preparation, then rechecks the durable core queue once ready",async()=>{
- const f=fixture(); const s=await f.attach("initiatives","p:worker:1",f.thread("w"));
+it("past its ceiling, dispatch waits promptly for preparation, then rechecks the durable core queue once ready",async()=>{
+ const f=fixture(); f.memory.ceiling=300; const s=await f.attach("initiatives","p:worker:1",f.thread("w"));
  f.memory.useSummarizer(stuckLuna); f.turn("w","past","x".repeat(1000));
  f.memory.kick("w"); await new Promise(r=>setTimeout(r,10));
  let rechecks=0; f.memory["deps"].recheck=()=>{rechecks++;};
@@ -51,7 +54,7 @@ it("keeps accepted inputs from a prior scope out of a new private worker scope",
  f.history.push({threadId:"w",seq:1000,type:"turn/input/accepted",data:{clientRequestId:id}});
  await f.memory.ingest("w");expect(f.log(next)).toEqual([]);expect(f.log(old)).toEqual([]);
 });
-it("waits for only the merges needed to bound the historical view, after out-of-order completion and recovery",async()=>{
+it("past its ceiling, waits for only the merges needed to bound the historical view, after out-of-order completion and recovery",async()=>{
  const f=fixture();const s=await f.attach("initiatives","p:worker:1",f.thread("w"));
  const {fakeLuna}=await import("./fixture");
  f.store.append("w",Array.from({length:300},(_,i)=>({kind:"agent" as const,text:"source ".repeat(200),at:i,threadId:"w",seq:i+1})),300);
@@ -62,6 +65,8 @@ it("waits for only the merges needed to bound the historical view, after out-of-
  const held:Array<()=>void>=[];
  f.memory.useSummarizer(async r=>{await new Promise<void>(resolve=>{held.push(resolve);r.signal.addEventListener("abort",()=>resolve(),{once:true});});return fakeLuna(r);});
  let rechecks=0;f.memory["deps"].recheck=()=>{rechecks++;};
+ // R12: 175 KB, over the 128 KB target but under the ceiling, goes without waiting for merges.
+ expect(await f.dispatch("w")).toEqual({action:"proceed"});f.memory.ceiling=128_000;
  expect((await f.memory.status(s)).tree.ready).toBe(false);
  expect(await f.dispatch("w")).toMatchObject({action:"wait"});
  const tick=()=>new Promise<void>(r=>setImmediate(r));

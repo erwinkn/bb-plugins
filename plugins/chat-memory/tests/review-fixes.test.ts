@@ -1,5 +1,7 @@
 import {expect,it} from "vitest";
 import {fixture} from "./fixture";
+import {CEILING_BYTES} from "../lib/turn";
+import {VIEW_BYTES} from "../lib/tree";
 
 it("retains the preceding final reply when the next input was queued mid-turn, across ingestion passes",async()=>{
  const f=fixture();await f.attach("initiatives","p",f.thread("w"));
@@ -23,8 +25,8 @@ it("excludes the accepted retry's normalized original entry from history across 
  expect(f.log(scope)).toEqual(["user: unique question"]);
  expect(answer.systemPrompt).not.toContain("unique question");expect(answer.input.split("unique question")).toHaveLength(2);
 });
-it("rejects failed required summaries visibly after a queue recheck, rather than repeating wait",async()=>{
- const f=fixture();const s=await f.attach("initiatives","p",f.thread("w"));
+it("R12: a failed summary holds no turn under the ceiling; past it, the turn is refused visibly after a queue recheck, rather than repeating wait",async()=>{
+ const f=fixture();f.memory.ceiling=300;const s=await f.attach("initiatives","p",f.thread("w"));
  let release!:()=>void;const gate=new Promise<void>(r=>release=r);
  f.memory.useSummarizer(async()=>{await gate;return {ok:false,reason:"failed",error:"permanent failure"};});
  f.turn("w","first","x".repeat(1000));f.memory.kick("w");
@@ -32,6 +34,8 @@ it("rejects failed required summaries visibly after a queue recheck, rather than
  expect(await f.dispatch("w")).toMatchObject({action:"wait"});release();await f.memory.settled();expect(rechecks).toBe(1);
  for(let i=0;i<3;i++)expect(await f.dispatch("w")).toMatchObject({action:"reject",message:expect.stringContaining("permanent failure")});
  expect((await f.memory.status(s)).tree).toMatchObject({requiredFailure:expect.stringContaining("permanent failure")});
+ f.memory.ceiling=CEILING_BYTES;expect(await f.dispatch("w")).toEqual({action:"proceed"});
+ expect((await f.memory.status(s)).tree).toMatchObject({ready:true,requiredFailure:null,failed:1});
 });
 it("recovers both chunks and only the correct sender's image in a long batched worker report",async()=>{
  const f=fixture();const s=await f.attach("initiatives","p",f.thread("target"));f.thread("a",{title:"W1"});f.thread("b",{title:"W2"});
@@ -45,11 +49,13 @@ it("recovers both chunks and only the correct sender's image in a long batched w
   expect(await f.memory.evidence(s,id,1,0,0)).toMatchObject({content:[{type:"text"},{type:"image",data:"AQID"}]});
  }
 });
-it("rejects blocked merge preparation only after legitimate pending merges settle",async()=>{
+it("past the ceiling, rejects blocked merge preparation only after legitimate pending merges settle",async()=>{
  const f=fixture();const scope=await f.attach("initiatives","p",f.thread("w"));
  f.store.append("w",Array.from({length:300},(_,i)=>({kind:"agent" as const,text:"source".repeat(200),at:i,threadId:"w",seq:i+1})),300);
  const tree=f.store.tree(scope);for(let i=0;i<300;i++)tree.saveNode(0,i,"x".repeat(512),"model",1);
  tree.saveViews({fed:300,chat:Array.from({length:300},(_,i)=>[0,i]),compaction:[],merging:true});
+ // R12: 155 KB, over the 128 KB target but under the ceiling, goes without waiting for merges.
+ expect(await f.dispatch("w")).toEqual({action:"proceed"});f.memory.ceiling=VIEW_BYTES.chat[0];
  let release!:()=>void;const gate=new Promise<void>(r=>release=r);let held=false;
  f.memory.useSummarizer(async r=>{
   const text=r.input.map(m=>m.content.map(c=>c.text).join("\n")).join("\n");
