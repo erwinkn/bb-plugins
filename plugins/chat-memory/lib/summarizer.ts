@@ -35,10 +35,6 @@ export interface SummarizerRequest {
   signal: AbortSignal;
   /** W315: the call gives up this long after it starts (its wait for a permit aside): reason "timeout". */
   timeoutMs?: number;
-  /** Asked once timeoutMs is up: how much longer to wait for the reply instead (a turn waits for it); 0 or less gives up. */
-  extendMs?: () => number;
-  /** Subscribes to a waiting turn letting go (extendMs may give less): returns the unsubscribe. */
-  onRelease?: (listener: () => void) => () => void;
   /** The response started: its prefix is in the cache by now. */
   onStart?: () => void;
 }
@@ -121,41 +117,25 @@ export function responsesSummarizer(deps: {
   headers: (signal: AbortSignal) => Promise<Record<string, string>>;
   model?: string;
 }): Summarizer {
-  return async ({ timeoutMs, extendMs, onRelease, ...request }) => {
+  return async ({ timeoutMs, ...request }) => {
     // Stopped before it started (between its permit's grant and now): it never starts.
     if (request.signal.aborted) return { ok: false, reason: "aborted", error: "stopped" };
     if (timeoutMs === undefined) return call(request.signal, request);
-    // The call's own signal: the caller's stop, or the bound, pushed back while extendMs asks.
+    // The call's own signal: the caller's stop, or the bound.
     const bound = new AbortController();
     const stop = () => bound.abort();
     request.signal.addEventListener("abort", stop, { once: true });
-    const t0 = Date.now();
-    let allowedMs = timeoutMs;
-    const expire = () => {
-      const more = extendMs?.() ?? 0;
-      if (!(more > 0)) return stop();
-      allowedMs += more;
-      timer = setTimeout(expire, more);
-    };
-    let timer = setTimeout(expire, timeoutMs);
-    // Past its bound, a call is held only for the turns still waiting: once the last lets go, it gives up now.
-    const unsubscribe = onRelease?.(() => {
-      if (allowedMs === timeoutMs) return;
-      clearTimeout(timer);
-      allowedMs = Date.now() - t0;
-      expire();
-    });
+    const timer = setTimeout(stop, timeoutMs);
     try {
       const result = await call(bound.signal, request);
-      return !result.ok && result.reason === "aborted" && !request.signal.aborted ? { ok: false, reason: "timeout", error: `no reply within ${allowedMs / 1000} s` } : result;
+      return !result.ok && result.reason === "aborted" && !request.signal.aborted ? { ok: false, reason: "timeout", error: `no reply within ${timeoutMs / 1000} s` } : result;
     } finally {
       clearTimeout(timer);
-      unsubscribe?.();
       request.signal.removeEventListener("abort", stop);
     }
   };
 
-  async function call(signal: AbortSignal, { instructions, input, effort, cacheKey, attribution, onStart }: Omit<SummarizerRequest, "timeoutMs" | "extendMs" | "onRelease">): Promise<SummarizerResult> {
+  async function call(signal: AbortSignal, { instructions, input, effort, cacheKey, attribution, onStart }: Omit<SummarizerRequest, "timeoutMs">): Promise<SummarizerResult> {
     const t0 = Date.now();
     let headers: Record<string, string>;
     try {

@@ -48,7 +48,6 @@ export default function plugin(bb: BbPluginApi) {
     summarizer: poolerSummarizer(bb),
     log: (message) => bb.log.warn(message),
     changed: (scope) => bb.realtime.publish(CHANGED_CHANNEL, { scope }),
-    recheck: () => { void bb.experimental_hooks.recheck("message.dispatch").catch(error => bb.log.warn(`UniiChat queue recheck failed: ${errorMessage(error)}`)); },
   });
   const compaction = createCompaction({
     sdk: bb.sdk,
@@ -104,13 +103,8 @@ export default function plugin(bb: BbPluginApi) {
   // D460: an OptChat message that cannot run as OptChat is refused here, early and with its reason
   // (lib/memory.ts admit). The turn itself enforces the mode on every path (FORK.md).
   bb.experimental_hooks.on("message.dispatch", (ctx) =>
-    memory.admit({ threadId: ctx.thread.id, providerId: ctx.requestedExecution.providerId, attempt: ctx.attempt, queuedIds: ctx.queuedMessages.map(row => row.id) }),
+    memory.admit({ threadId: ctx.thread.id, providerId: ctx.requestedExecution.providerId, attempt: ctx.attempt }),
   );
-
-  bb.events.on("message.queued", ({entry}) => memory.preparationQueued(entry.threadId, entry.id, entry.waitingOn?.kind === "plugin" && entry.waitingOn.pluginId === bb.pluginId));
-  bb.events.on("message.cancelled", ({entry}) => memory.preparationRemoved(entry.threadId, entry.id));
-  bb.events.on("message.dispatched", ({entry}) => memory.preparationRemoved(entry.threadId, entry.id));
-  bb.events.on("thread.deleted", ({thread}) => memory.releasePreparation(thread.id));
 
   bb.agents.registerTool({
     ...ALWAYS_LOAD,
@@ -171,7 +165,7 @@ export default function plugin(bb: BbPluginApi) {
   bb.events.on("experimental_thread.events", ({ thread }) => ingest(thread.id));
   bb.events.on("thread.failed", ({ thread }) => ingest(thread.id));
   // W568: an archived thread's final copy is logged, but its tree rests until it comes back or starts a turn.
-  bb.events.on("thread.archived", ({ thread }) => { memory.releasePreparation(thread.id); memory.threadArchived(thread.id, true); ingest(thread.id); });
+  bb.events.on("thread.archived", ({ thread }) => { memory.threadArchived(thread.id, true); ingest(thread.id); });
   bb.events.on("thread.unarchived", ({ thread }) => memory.threadArchived(thread.id, false));
   bb.events.on("thread.active", ({ thread }) => memory.threadArchived(thread.id, false));
 

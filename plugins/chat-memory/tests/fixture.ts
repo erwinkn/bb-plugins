@@ -135,6 +135,10 @@ export function fixture() {
       return requestId;
     },
     /** The provider reports an error in the thread's turn (BB's provider/error), as the turn's failure says it. */
+    /** The provider takes a request into its conversation: Claude Code says so before it asks for the turn's memory. */
+    accept: (threadId: string, requestId: string) => record(threadId, "turn/input/accepted", { clientRequestId: requestId }),
+    /** BB refuses a request at the door (a dispatch hook's reject): it never reaches the provider. */
+    refuse: (threadId: string, requestId: string, message: string) => record(threadId, "client/turn/rejected", { requestId, message }),
     providerError: (threadId: string, detail: string) => record(threadId, "provider/error", { message: "Provider error", detail }),
     usage: (threadId: string, usedTokens: number) => record(threadId, "thread/contextWindowUsage/updated", { contextWindowUsage: { usedTokens } }),
     /** An owner plugin attaches threads to its scope "<owner>:<key>" (D491). Returns the scope. */

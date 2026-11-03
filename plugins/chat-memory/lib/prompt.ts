@@ -118,7 +118,7 @@ reply what you learned that will matter later.`;
 /**
  * D431 phase 2: an UniiChat turn is a fresh session whose system prompt ends with TURN_PROMPT and
  * the view's older lines; its first message holds the view's newest lines, the time and the new
- * message (turnMessage). Admission waits for the bounded summary-only historical view.
+ * message (turnMessage). The turn waits a few seconds at most for the view's summaries (R12).
  */
 export const TURN_PROMPT = `# Memory (UniiChat)
 

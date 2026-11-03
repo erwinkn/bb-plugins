@@ -39,6 +39,8 @@ async function seeded(f: Fixture, key: string, n: number, owner = "test", facts:
   f.store.append(key, Array.from({ length: n }, (_, i) => ({ kind: "user" as const, text: `${i}: `.padEnd(1000, "x"), at: i, threadId: key, seq: i + 1 })), n);
   return scope;
 }
+/** A turn's need, as the turn's wait takes it (and releases it in its finally when the turn stops or times out). */
+const need = (f: Fixture, scope: string) => (f.memory as unknown as { builder: (id: string) => { need: (count: number) => () => void } }).builder(scope).need(Infinity);
 const emit = (f: Fixture, name: "thread.unarchived" | "thread.active" | "thread.archived", threadId: string) =>
   f.harness.behavior.emitThreadEvent(name, { thread: makeThreadResponse({ id: threadId }) } as never);
 
@@ -147,8 +149,7 @@ describe("W568 archived threads' trees rest", () => {
     f.memory.build(scope);
     await ticks();
     // The read is out; a turn waits for the tree (its need on the builder, as waitSummarized takes it); then BB answers "archived".
-    const builder = (f.memory as unknown as { builder: (id: string) => { need: (count: number, deadline: number) => () => void } }).builder(scope);
-    const release = builder.need(Infinity, Date.now() + 60_000);
+    const release = need(f, scope);
     f.memory.build(scope);
     answer();
     await ticks();
@@ -158,62 +159,13 @@ describe("W568 archived threads' trees rest", () => {
     await f.memory.settled();
   });
 
-  it("does not build again after an archive cancels a run an admission asked for: the admission left with it", async () => {
-    const f = fixture();
-    f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
-    const { luna, summarize } = heldLuna();
-    f.memory.useSummarizer(summarize);
-    const scope = await seeded(f, "coord", 40, "initiatives");
-    await f.dispatch("coord");
-    await ticks();
-    const started = luna.calls.length;
-    expect(started).toBeGreaterThan(0);
-    // Archived with a last turn: the admission is released, the run cancelled, and the final copy asks for a build again.
-    f.turn("coord", "last words");
-    await f.archived("coord");
-    expect(f.log(scope).at(-2)).toContain("last words");
-    luna.release();
-    await ticks();
-    expect(luna.calls.length).toBe(started);
-    f.memory.dispose();
-    await f.memory.settled();
-  });
-
-  it("stops an archived scope's run when the admission that started it is released", async () => {
-    const f = fixture();
-    f.memory.ceiling = 300; // R12: only a view past its ceiling holds a turn
-    const { luna, summarize } = heldLuna();
-    f.memory.useSummarizer(summarize);
-    const scope = await seeded(f, "coord", 40, "initiatives", { archived: true });
-    await f.dispatch("coord");
-    await ticks();
-    const started = luna.calls.length;
-    expect(started).toBeGreaterThan(0);
-    // The admission expires (or is released): nothing waits any more, so the backlog stays unbuilt.
-    f.memory.releasePreparation("coord");
-    await ticks();
-    expect(luna.active).toBe(0);
-    luna.release();
-    await ticks();
-    expect(luna.calls.length).toBe(started);
-    await f.memory.settled();
-    // A wake still builds.
-    f.memory.threadArchived("coord", false);
-    await ticks();
-    expect(luna.calls.length).toBeGreaterThan(started);
-    f.memory.dispose();
-    await f.memory.settled();
-    void scope;
-  });
-
   it("stops an archived scope's run when the turn that waited for it leaves", async () => {
     const f = fixture();
     const { luna, summarize } = heldLuna();
     f.memory.useSummarizer(summarize);
     const scope = await seeded(f, "old", 40, "test", { archived: true });
     // A turn's need, as waitSummarized takes it (and releases it in its finally when the turn stops or times out).
-    const builder = (f.memory as unknown as { builder: (id: string) => { need: (count: number, deadline: number) => () => void } }).builder(scope);
-    const release = builder.need(Infinity, Date.now() + 60_000);
+    const release = need(f, scope);
     f.memory.build(scope);
     await ticks();
     const started = luna.calls.length;
@@ -255,10 +207,11 @@ describe("W568 archived threads' trees rest", () => {
     f.memory.build(scope);
     await ticks();
     expect(luna.calls).toEqual([]);
-    await f.dispatch("coord");
-    await ticks();
+    const asked = f.ask("coord", f.say("coord", "go"), "go").catch(() => null);
+    for (let i = 0; i < 20 && !luna.calls.length; i++) await ticks();
     expect(luna.calls.length).toBeGreaterThan(0);
     f.memory.dispose();
+    await asked;
     await f.memory.settled();
   });
 
@@ -266,7 +219,7 @@ describe("W568 archived threads' trees rest", () => {
     const f = fixture();
     const { summarize } = heldLuna();
     f.memory.useSummarizer(summarize);
-    await seeded(f, "coord", 40, "initiatives", { archived: true });
+    const scope = await seeded(f, "coord", 40, "initiatives", { archived: true });
     const deps = (f.memory as unknown as { deps: { thread: (id: string) => Promise<unknown> } }).deps;
     const read = deps.thread;
     const late: (() => void)[] = [];
@@ -275,12 +228,14 @@ describe("W568 archived threads' trees rest", () => {
     const onRejection = (reason: unknown) => void rejections.push(reason);
     process.on("unhandledRejection", onRejection);
     try {
-      // An admission asks for a build (its need skips the archive-state read); archive-state reads hang.
-      await f.dispatch("coord");
+      // A turn asks for a build (its need skips the archive-state read); archive-state reads hang.
+      const release = need(f, scope);
+      f.memory.build(scope);
       await ticks();
-      // The plugin stops, releasing the admission, whose release asks whether the run should rest;
+      // The plugin stops and the turn lets go, whose release asks whether the run should rest;
       // BB closes the database, then any read in flight answers "archived".
       f.memory.dispose();
+      release();
       f.store.handle.close();
       for (const answer of late.splice(0)) answer();
       await ticks();

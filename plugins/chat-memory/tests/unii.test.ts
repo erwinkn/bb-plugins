@@ -36,18 +36,6 @@ it("coalesces a burst of 1000 already-debounced semantic notifications to at mos
  await Promise.all(Array.from({length:1000},()=>f.harness.behavior.emitThreadEvent("experimental_thread.events",{thread:makeThreadResponse({id:"w"}),sequence:100} as never)));
  await f.memory.settled(); expect(f.reads.length).toBeLessThanOrEqual(2);
 });
-it("past its ceiling, dispatch waits promptly for preparation, then rechecks the durable core queue once ready",async()=>{
- const f=fixture(); f.memory.ceiling=300; const s=await f.attach("initiatives","p:worker:1",f.thread("w"));
- f.memory.useSummarizer(stuckLuna); f.turn("w","past","x".repeat(1000));
- f.memory.kick("w"); await new Promise(r=>setTimeout(r,10));
- let rechecks=0; f.memory["deps"].recheck=()=>{rechecks++;};
- expect(await f.dispatch("w")).toMatchObject({action:"wait",reason:expect.stringContaining("preparing")});
- expect((await f.memory.status(s)).tree.ready).toBe(false);
- f.memory.dispose();await f.memory.settled();f.memory.start();
- const {fakeLuna}=await import("./fixture");f.memory.useSummarizer(fakeLuna);f.memory.build(s);await f.memory.settled();
- expect(rechecks).toBe(1);expect((await f.memory.status(s)).tree.ready).toBe(true);
- expect(await f.dispatch("w")).toEqual({action:"proceed"});
-});
 it("keeps accepted inputs from a prior scope out of a new private worker scope",async()=>{
  const f=fixture();const old=await f.attach("initiatives","p",f.thread("w"));const id=f.say("w","pending old scope");
  await f.memory.ingest("w");const next=await f.attach("initiatives","p:worker:1","w");
@@ -64,18 +52,19 @@ it("past its ceiling, waits for only the merges needed to bound the historical v
  f.memory.dispose();await f.memory.settled();f.memory.start();
  const held:Array<()=>void>=[];
  f.memory.useSummarizer(async r=>{await new Promise<void>(resolve=>{held.push(resolve);r.signal.addEventListener("abort",()=>resolve(),{once:true});});return fakeLuna(r);});
- let rechecks=0;f.memory["deps"].recheck=()=>{rechecks++;};
  // R12: 175 KB, over the 128 KB target but under the ceiling, goes without waiting for merges.
  expect(await f.dispatch("w")).toEqual({action:"proceed"});f.memory.ceiling=128_000;
  expect((await f.memory.status(s)).tree.ready).toBe(false);
- expect(await f.dispatch("w")).toMatchObject({action:"wait"});
- const tick=()=>new Promise<void>(r=>setImmediate(r));
- for(let n=0;n<1000 && !(await f.memory.status(s)).tree.ready;n++){held.pop()?.();await tick();}
- expect((await f.memory.status(s)).tree.ready).toBe(true);
- expect(rechecks).toBe(1);expect(held.length).toBeGreaterThan(0);
+ // Past the ceiling, the dispatch still goes at once: the turn is what waits.
  expect(await f.dispatch("w")).toEqual({action:"proceed"});
  f.history.push({threadId:"w",seq:10000,type:"client/turn/requested",data:{requestId:"after-recovery",input:[{type:"text",text:"go"}]}});
- const answer=await f.ask("w","after-recovery","go") as {systemPrompt:string;input:string};
+ let answered=false;
+ const asked=f.ask("w","after-recovery","go").finally(()=>{answered=true;}) as Promise<{systemPrompt:string;input:string}>;
+ const tick=()=>new Promise<void>(r=>setImmediate(r));
+ for(let n=0;n<1000 && !answered;n++){held.pop()?.();await tick();}
+ const answer=await asked;
+ expect((await f.memory.status(s)).tree.ready).toBe(true);
+ expect(held.length).toBeGreaterThan(0);
  const lines=(answer.systemPrompt+"\n"+answer.input).split("\n").filter(l=>/^\d+\+\d+\|/.test(l));
  expect(Buffer.byteLength(lines.join("\n"))+lines.length).toBeLessThanOrEqual(128_000);
  expect(lines.join("\n")).not.toContain("not summarized yet");

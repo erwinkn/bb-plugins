@@ -291,7 +291,7 @@ export class MemoryStore {
   saveIngestion(threadId: string, scope: string, state: IngestState) {
     this.sql(`INSERT INTO ingestion VALUES (?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET scope = excluded.scope, state = excluded.state`).run(threadId, scope, JSON.stringify(state));
   }
-  /** First historical message from the incoming request, if acceptance raced admission. */
+  /** First historical message from the incoming request, if its acceptance was logged before the turn asked for its context. */
   requestCut(scope: string, threadId: string, requestId: string, legacySeq?: number) {
     const exact = this.sql(`SELECT MIN(i) FROM log WHERE scope = ? AND thread_id = ? AND request_id = ?`).pluck().get(scope, threadId, requestId) as number | null;
     if (exact !== null || legacySeq === undefined) return exact;

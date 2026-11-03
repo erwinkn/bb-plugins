@@ -95,8 +95,9 @@ thread (Codex support is T146).
 
 **The turn gate.** Chat memory also answers BB's `message.dispatch` hook, which
 runs before a message reaches a provider, to refuse early, with the reason, what
-would fail anyway: a new turn of an UniiChat thread on another provider. BB
-keeps the message. Messages that join a running turn, and every other thread's,
+would fail anyway: a new turn of an UniiChat thread on another provider, and one
+whose history view is known to fail (`tree.requiredFailure`, below). BB keeps the
+message. Messages that join a running turn, and every other thread's,
 go on.
 
 ## UniiChat turns (D431 phase 2, R12)
@@ -153,20 +154,29 @@ the fork (it asks once today); without it, the turn fails visibly with that
 error, as before. Both errors start with "OptChat memory unavailable", so the
 unsent message stays out of memory (D502).
 
-The dispatch hook answers immediately with core's durable `wait` decision while
-history is being copied or, R12, while the view is past its ceiling. It supplies a 30-second recovery due time and
-calls `experimental_hooks.recheck("message.dispatch")` when a waiting scope becomes
-ready. BB retains queued reviewer returns, question returns, retries and user work.
-The final turn hook remains strict even when a user bypasses a dispatch policy.
+**No hold before sending.** The dispatch hook lets every message go at once; it
+refuses only an UniiChat turn on another provider than Claude Code (D460), or one
+whose view is already known to fail (`tree.requiredFailure`). Claude Code records
+a message as accepted before it asks for the turn's memory, so a failure found
+only then leaves that message in memory, and a resend logs it twice; refused at
+the dispatch, it never gets that far (D502). The
+turn's own wait covers the rest: it copies the last turn into the log first,
+then waits as above (a turn asked again after a reload included). A message
+added to a running turn joins it, as it always did. Until 2026-11-03 the hook held a message
+in BB's queue while history was copied or the view was past its ceiling,
+re-checking every 30 seconds; R12 left it nothing to wait for that the turn
+does not wait for itself.
 `tree.ready` proves actual leaf completion, a fully built selected historical view
 of at most 128,000 UTF-8 bytes, and no ingestion in flight;
 It can become ready during a merge batch once that bound is met, without waiting
 for unrelated ancestors. `tree.summarized` remains the existing feed count. `tree.requiredFailure` is
 a terminal error for a required failed leaf or an oversized view whose merge
 work has exhausted its runnable paths. While legitimate merges remain in
-flight, preparation continues. Unused failed ancestors do not block a complete
-bounded view. Dispatch returns a visible rejection for required failure,
-preserving core's input/failure handling; transient preparation stays queued. `tree.ingesting` distinguishes
+flight, a turn past the ceiling waits for them; once none remain, it fails at
+once with that error, which starts with "OptChat memory unavailable"; a turn
+dispatched after that is refused before it is sent, so its message stays in the
+thread and out of memory (D502). Unused failed ancestors
+do not block a complete bounded view. `tree.ingesting` distinguishes
 history preparation from summary preparation. Attach and status never wait for a
 model. A newly attached existing worker begins catch-up immediately, before its
 next message; only attached workers are swept. No retired worker is attached or
@@ -181,7 +191,7 @@ with no logged entry cannot remove later replies of the preceding turn.
 Requests are durable pending records until `turn/input/accepted`, so queued work
 is not presented as acted-on history. Pending state, log append and cursor advance
 commit together. Historical providers without acceptance events retain their
-terminal-turn recovery path; failed UniiChat admission requests are excluded.
+terminal-turn recovery path; requests whose UniiChat turn failed for its memory are excluded.
 Pending requests belong to their original scope and cannot leak after a move.
 
 `memory_zoom {id,n:1}` and the read-only zoom RPC retrieve the selected canonical
@@ -327,17 +337,20 @@ rest. A turn's demand is its need on the builder, so it lasts exactly as long as
 the turn waits: a build asked for while the archive is still cancelling the run
 starts again once it has ended, and rests again unless a thread woke or a turn
 still waits. A run a waiter started stops when its last waiter leaves (the
-admission expires or is released, the turn ends or stops), so it never drains the
+turn ends or stops), so it never drains the
 rest of an archived backlog. Whether a thread is archived is read
 once, at the startup sweep or first build, then kept from BB's archive events;
 a failed read counts the thread as awake until a later read succeeds, and a read
 that finds it archived stops the run like its archive event would. Once the
 service stops, none of this touches the database again (BB may have closed it).
 A call gives up after 30 s, then 60 s, then 120 s for the same line (Luna at
-high answers 95% of calls within 30 s), so a hung call frees its slot; a call a
-turn waits for runs on to the turn's deadline instead, so a reply at 65 s still
-makes a 90 s turn. A stopped turn stops waiting, and a call past its bound
-that no turn waits for any more gives up at once. A line whose call fails 3 times
+high answers 95% of calls within 30 s), so a hung call frees its slot. A call a
+turn waits for is bound the same way. An ordinary turn waits at most 3 s for a
+summary (R12); only a turn whose view is over the 256 KB ceiling waits up to its
+90 s deadline, for merges. Such a merge is cut at 30 s too: one that would have
+replied at 65 s no longer lands inside the turn's deadline, and its retry comes
+too late (95 s). That rare case is the price of fixed call bounds, with no
+extension tied to waiting turns. A stopped turn stops waiting. A line whose call fails 3 times
 stays unsummarized and failed, never cut into a summary (D458), unless every reply was empty
 (a retry gets the same): that line is built at once from its input cut to fit with
 ` [cut]` (its message, or its two lines joined; counted under "fallbacks"). A failed line holds no build slot,

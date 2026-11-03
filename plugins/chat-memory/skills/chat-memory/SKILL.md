@@ -36,5 +36,6 @@ UniiChat, every personal scope stays Regular. Agents never write it, and no tool
 
 - Regular: one long session, compacted past 300k tokens.
 - UniiChat: each turn is a fresh session over the memory view (Claude Code only). When the view
-  is preparing, BB queues the message durably. Final admission has a bounded deadline and
-  cancellation; a failure preserves the message and never runs the old session.
+  lags, the message still goes at once: a summary missing after a few seconds shows as its
+  message's start. Past the view's ceiling the turn waits up to 90 s, then fails visibly; a failure
+  preserves the message and never runs the old session.

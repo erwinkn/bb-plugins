@@ -145,10 +145,10 @@ describe("R12 merges", () => {
     expect(lines(answer).some((l) => /^\d+\+[2-9]\d*\|summary of/.test(l))).toBe(true);
   });
 
-  it("past the ceiling with merges that never come, fails visibly at the deadline; the dispatch waits rather than proceeds", async () => {
+  it("past the ceiling with merges that never come, fails visibly at the deadline; the dispatch never holds the message", async () => {
     const { f } = await lagging(500);
     f.memory.useSummarizer(stuckLuna);
-    expect(await f.dispatch("w")).toMatchObject({ action: "wait" });
+    expect(await f.dispatch("w")).toEqual({ action: "proceed" });
     f.history.push({ threadId: "w", seq: 10_000, type: "client/turn/requested", data: { requestId: "r", input: [{ type: "text", text: "go" }] } });
     const start = Date.now();
     await expect(f.ask("w", "r", "go")).rejects.toThrow(
@@ -159,24 +159,27 @@ describe("R12 merges", () => {
 });
 
 describe("R12 and D502", () => {
-  it("leaves the message of a turn that failed past the ceiling out of memory, and logs it once when sent again", async () => {
+  it("refuses at the dispatch a turn known to fail past the ceiling, so its message never enters memory, and logs it once when sent again", async () => {
     const { f, scope } = await worker();
-    // Its summary fails: past the ceiling, nothing more can bring the view under, so the turn fails at once.
+    // Its summary fails: past the ceiling, nothing more can bring the view under.
     f.memory.useSummarizer(async () => ({ ok: false, reason: "failed", error: "400 rejected" }));
     f.turn("w", "earlier", "x".repeat(3_000));
     await f.idle("w");
     f.memory.ceiling = 300;
-    const failure = (await f.ask("w", f.say("w", "deploy it"), "deploy it").catch((error: Error) => error)) as Error;
-    expect(failure.message).toBe(`${UNAVAILABLE}: the history view is over its 300-byte ceiling and needs lines that could not be summarized (1+1: 400 rejected); they are tried again within 30 minutes. The message was not sent; send it again.`);
-    f.providerError("w", `Claude Code could not get the turn's memory context: Tool "claude_code_turn_context" failed: ${failure.message}`);
-    f.done("w", "failed");
-    await f.failed("w");
+    const refused = f.say("w", "deploy it");
+    const decision = await f.dispatch("w");
+    expect(decision).toEqual({ action: "reject", message: `${UNAVAILABLE}: the history view is over its 300-byte ceiling and needs lines that could not be summarized (1+1: 400 rejected); they are tried again within 30 minutes. The message was not sent; send it again.` });
+    f.refuse("w", refused, (decision as { message: string }).message);
+    await f.memory.ingest("w");
     expect(f.log(scope)).toEqual(["user: earlier", `agent: ${"x".repeat(3_000)}`]);
-    // Under the ceiling again, the message sent again goes with the earlier reply shown by its start.
+    // Under the ceiling again, the message sent again goes, with the earlier reply shown by its start.
     f.memory.ceiling = CEILING_BYTES;
-    const again = (await f.ask("w", f.say("w", "deploy it"), "deploy it")) as Fresh;
-    expect(again.input).toContain("deploy it");
-    expect(lines(again)[1]).toMatch(/^1\+1\|agent: x+…/);
+    expect(await f.dispatch("w")).toEqual({ action: "proceed" });
+    const again = f.say("w", "deploy it");
+    f.accept("w", again);
+    const answer = (await f.ask("w", again, "deploy it")) as Fresh;
+    expect(answer.input).toContain("deploy it");
+    expect(lines(answer)[1]).toMatch(/^1\+1\|agent: x+…/);
     f.reply("w", "Deployed.");
     f.done("w");
     await f.memory.ingest("w");

@@ -5,7 +5,7 @@ import { TreeBuilder, type BuilderStatus } from "./builder";
 import { readStable, type ListEvents } from "./ingest";
 import { UNAVAILABLE, stableEntries, type EventRow, type MemoryMessage } from "./log";
 import { COMPACTION_PROMPT, messageText, stamp, turnMessage, turnSystem } from "./prompt";
-import { FairPermits, NO_DEMAND } from "./permits";
+import { FairPermits } from "./permits";
 import type { Settings } from "./settings";
 import { MemoryStore, type MemoryMode, type Scope } from "./store";
 import type { Summarizer } from "./summarizer";
@@ -28,8 +28,6 @@ export const notFound = (error: unknown) => (error as { status?: number }).statu
 const INGEST_PAGES = 20;
 /** The memory's own progress (log and tree) reaches the UI at most this often; it also polls. */
 const PROGRESS_PUBLISH_MS = 30_000;
-/** Admission urgency lasts until the existing core queue fallback rechecks it. */
-const ADMISSION_WAIT_MS = 30_000;
 
 /**
  * The hidden tool BB's Claude Code provider (Erwin's fork) calls before each new turn whose tools,
@@ -97,7 +95,7 @@ const scopeNamed = (owner: string, metadata: Readonly<Record<string, unknown>>) 
 /** "<owner>:<key>" → owner. */
 const ownerOf = (scopeId: string) => scopeId.slice(0, scopeId.indexOf(":"));
 /** What the turn gate (BB's message.dispatch hook) answers. */
-export type DispatchDecision = { action: "proceed" } | { action: "reject"; message: string } | {action: "wait"; reason: string; sendAt: number};
+export type DispatchDecision = { action: "proceed" } | { action: "reject"; message: string };
 
 /** What the memory needs to know about a BB thread. */
 export interface ThreadFacts {
@@ -132,7 +130,7 @@ export interface MemoryStatus {
   }>;
   log: { messages: number; bytes: number };
   tree: {
-    /** No catch-up in flight, and the view a turn gets is within its ceiling (R12): a turn can start now. */
+    /** No catch-up in flight, and the view a turn gets is within its ceiling (R12): a turn goes without its last-resort wait. */
     ready: boolean;
     /** Why a turn past the ceiling cannot wait it out (its build stopped, lines failed); null under it. */
     requiredFailure?: string | null;
@@ -195,10 +193,6 @@ export class ChatMemory {
   private builds = new Map<string, Run>();
   private builders = new Map<string, TreeBuilder>();
   private published = new Map<string, number>();
-  /** Scopes with queued admissions; whether their failure transition was already announced. */
-  private waiting = new Map<string, boolean>();
-  /** Bounded preparation leases, not a message queue: core owns every queued row. */
-  private preparing = new Map<string, { scopeId: string; groups: Map<string, Set<string>>; release: () => void; timer: ReturnType<typeof setTimeout> }>();
   /** By thread: the view lines its last UniiChat turn froze into its system prompt. */
   private frozen = new Map<string, string[]>();
   /**
@@ -233,18 +227,10 @@ export class ChatMemory {
       log: (message: string) => void;
       /** Something the UI shows for the scope changed. */
       changed?: (scopeId: string) => void;
-      recheck?: () => void;
     },
   ) {
     this.store = deps.store;
-    this.permits = new FairPermits(
-      () => deps.settings().summarizerConcurrency,
-      (scopeId) => this.priority(scopeId),
-      (scopeId) => {
-        const builder = this.builders.get(scopeId);
-        return builder ? { left: builder.left, since: builder.waitingSince } : NO_DEMAND;
-      },
-    );
+    this.permits = new FairPermits(() => deps.settings().summarizerConcurrency, (scopeId) => this.priority(scopeId));
   }
 
   /** Test seam: the summarizer later calls use. */
@@ -264,7 +250,6 @@ export class ChatMemory {
   /** Abort the sweep, every copy and build, and give up every summary waiter. */
   dispose() {
     this.life.abort();
-    for (const threadId of this.preparing.keys()) this.releasePreparation(threadId);
     this.stopLink?.[Symbol.dispose]();
     this.stopLink = null;
     for (const run of [...this.ingests.values(), ...this.builds.values()]) run.abort.abort();
@@ -411,82 +396,23 @@ export class ChatMemory {
    * D460: the turn gate, before BB sends a message on (its message.dispatch hook). It refuses, with
    * the reason and its message kept, a new turn of an OptChat thread on another provider (Codex,
    * T146). BB would refuse the turn anyway (the hook is in its tools); this only explains it early.
+   * It also refuses a new turn already known to fail (requiredFailure): refused here, the message
+   * never reaches the provider, which records its input as accepted before it asks for the turn's
+   * memory, so a failure then would leave that input in memory (D502).
+   * Every other message goes at once: the turn itself waits for what its memory needs (R12).
    */
-  async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn"; queuedIds?: string[] }): Promise<DispatchDecision> {
+  async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn" }): Promise<DispatchDecision> {
     const scope = this.store.scopeOf(d.threadId);
     if (d.attempt === "join-turn" || scope?.mode !== "optchat") return { action: "proceed" };
     if (d.providerId === "claude-code") {
-      if (this.ready(scope.id)) { this.releaseScopePreparation(scope.id); return {action: "proceed"}; }
       const failure = this.requiredFailure(scope.id);
-      if (failure) { this.releaseScopePreparation(scope.id); return {action: "reject", message: failure}; }
-      if (!this.waiting.has(scope.id)) this.waiting.set(scope.id, false);
-      if (!this.disposed) {
-        const previous = this.preparing.get(d.threadId);
-        const groups = previous?.scopeId === scope.id ? previous.groups : new Map<string, Set<string>>();
-        if (d.queuedIds?.length) {
-          // A drain can regroup rows previously observed in independent dispatches.
-          for (const id of d.queuedIds) this.removePreparationRow(groups, id);
-          groups.set(d.queuedIds[0]!, new Set(d.queuedIds));
-        }
-        // Catch-up may append history after this pass. It all belongs to this preparation.
-        // Queued admission changes permit priority only, never model-call timeouts.
-        const release = this.builder(scope.id).need(Infinity, this.store.now() + ADMISSION_WAIT_MS, "priority-only");
-        // Release observers must see uninterrupted priority during a renewal.
-        this.releasePreparation(d.threadId);
-        const timer = setTimeout(() => this.releasePreparation(d.threadId), ADMISSION_WAIT_MS);
-        timer.unref?.();
-        this.preparing.set(d.threadId, {scopeId: scope.id, groups, release, timer});
-      }
-      this.kick(d.threadId);
-      // Its need above is the demand that builds a resting scope; disposed, nothing builds.
-      this.build(scope.id);
-      return {action: "wait", reason: "UniiChat is preparing historical summaries", sendAt: this.store.now() + ADMISSION_WAIT_MS};
+      return failure ? { action: "reject", message: failure } : { action: "proceed" };
     }
     const name = await this.threadName(d.threadId);
     return { action: "reject", message: `UniiChat runs on Claude Code only for now (T146): ${name} runs on ${d.providerId}, so this message was not sent. Adventure coordinators run on Claude Code (rule R3): replace it with a Claude Code coordinator to go on.` };
   }
 
-  releasePreparation(threadId: string) {
-    const preparation = this.preparing.get(threadId);
-    if (!preparation) return;
-    this.preparing.delete(threadId);
-    clearTimeout(preparation.timer);
-    preparation.release();
-  }
-  private releaseScopePreparation(scopeId: string) {
-    for (const [threadId, preparation] of this.preparing) if (preparation.scopeId === scopeId) this.releasePreparation(threadId);
-  }
-  private removePreparationRow(groups: Map<string, Set<string>>, id: string) {
-    for (const [lead, ids] of [...groups]) {
-      if (!ids.delete(id)) continue;
-      if (!ids.size) groups.delete(lead);
-      else if (lead === id) {
-        groups.delete(lead);
-        groups.set(ids.values().next().value!, ids);
-      }
-    }
-  }
-  /** A wait transition announces only the lead row, but applies to its whole dispatch group. */
-  preparationQueued(threadId: string, id: string, held: boolean) {
-    const preparation = this.preparing.get(threadId);
-    if (!preparation) return;
-    if (held) {
-      // Inline admissions learn their row ID here; drains already supplied the group.
-      if (![...preparation.groups.values()].some(ids => ids.has(id))) preparation.groups.set(id, new Set([id]));
-    } else {
-      preparation.groups.delete(id);
-      if (!preparation.groups.size) this.releasePreparation(threadId);
-    }
-  }
-  /** Cancellation and successful dispatch are announced once per row. */
-  preparationRemoved(threadId: string, id: string) {
-    const preparation = this.preparing.get(threadId);
-    if (!preparation) return;
-    this.removePreparationRow(preparation.groups, id);
-    if (!preparation.groups.size) this.releasePreparation(threadId);
-  }
-
-  /** Whether a turn of the scope can start now: its log caught up, and its view under the ceiling. */
+  /** Whether a turn of the scope would go without its last-resort wait: its log caught up, and its view under the ceiling. */
   private ready(scopeId: string) {
     if (this.store.threadsOf(scopeId).some(t => this.ingests.has(t.threadId))) return false;
     return this.fits(scopeId, this.store.count(scopeId));
@@ -524,7 +450,7 @@ export class ChatMemory {
   private requiredFailure(scopeId: string, count = this.store.count(scopeId)) {
     if (this.fits(scopeId, count)) return null;
     // Exhausted builds have no successful or pending merges left to bring this view under its
-    // bound. While any legitimate work remains, keep preparing: another merge may suffice.
+    // bound. While any legitimate work remains, the turn waits: another merge may suffice.
     const builder = this.builders.get(scopeId);
     if (builder?.status.state === "idle" && !this.builds.has(scopeId)) {
       const line = builder.failedLines()[0];
@@ -532,19 +458,6 @@ export class ChatMemory {
     }
     return null;
   }
-  private wake(scopeId: string) {
-    if (this.disposed || !this.waiting.has(scopeId)) return;
-    if (this.ready(scopeId)) {
-      this.releaseScopePreparation(scopeId);
-      this.waiting.delete(scopeId);
-      this.deps.recheck?.();
-    } else if (!this.waiting.get(scopeId) && this.requiredFailure(scopeId)) {
-      this.releaseScopePreparation(scopeId);
-      this.waiting.set(scopeId, true);
-      this.deps.recheck?.();
-    }
-  }
-
   /** "Title" or the thread's id. */
   private async threadName(threadId: string) {
     const facts = await this.threadFacts(threadId).catch(() => null);
@@ -626,7 +539,6 @@ export class ChatMemory {
         if (!signal.aborted) this.deps.log(`Memory log of ${threadId} failed: ${errorMessage(error)}`);
       } finally {
         this.ingests.delete(threadId);
-        if (!this.disposed) { const scope = this.store.scopeOf(threadId); if (scope) this.wake(scope.id); }
       }
     })();
     this.ingests.set(threadId, entry);
@@ -734,7 +646,6 @@ export class ChatMemory {
         log: (message) => this.deps.log(`${scopeId}: ${message}`),
       });
       this.builders.set(scopeId, builder);
-      builder.onBuilt(() => this.wake(scopeId));
     }
     return builder;
   }
@@ -750,13 +661,13 @@ export class ChatMemory {
 
   /**
    * Start (or extend) the background build. W568: a scope all of whose threads rest (archived)
-   * does not build unless a turn waits for it: its builder holds that turn's need (an admission's
-   * or a turn's, taken in the same synchronous call as this one and released when the turn stops
+   * does not build unless a turn waits for it: its builder holds that turn's need (taken
+   * in the same synchronous call as this one and released when the turn stops
    * waiting), so demand lasts exactly as long as a waiter. Demand and the cached state are read
    * after the archive reads, so a turn or a wake arriving during one still builds. A build asked
    * for while an archive was cancelling the run starts again, fresh, once the cancelled one has
    * ended, and decides anew. A run that started for a waiter stops when the last waiter leaves
-   * (admission expired or released, turn done or stopped) and the scope still rests.
+   * (its turn done or stopped) and the scope still rests.
    */
   build(scopeId: string) {
     if (this.disposed) return;
@@ -785,7 +696,6 @@ export class ChatMemory {
       } finally {
         unsubscribe();
         this.builds.delete(scopeId);
-        this.wake(scopeId);
         if (signal.aborted && entry.again) this.build(scopeId);
       }
     })();
@@ -982,7 +892,7 @@ export class ChatMemory {
     }
   }
 
-  /** One progress line for an admission that waited for summaries. */
+  /** One progress line for a turn that waited for summaries. */
   private logWait(threadId: string, wait: Wait, outcome: string) {
     if (wait.since === null) return;
     const ms = (this.store.now() - wait.since).toLocaleString("en-US");
@@ -1033,7 +943,7 @@ export class ChatMemory {
     Object.assign(wait, { scopeId, since: this.store.now() });
     counted();
     const uncount = builder.onBuilt(counted);
-    const release = builder.need(count, until);
+    const release = builder.need(count);
     try {
       await this.until(builder, () => !builder.coming(count), () => null, until, fail, signal, this.builds.get(scopeId)?.done);
     } finally {
@@ -1053,7 +963,7 @@ export class ChatMemory {
     const builder = this.builder(scopeId);
     wait.scopeId = scopeId;
     wait.since ??= this.store.now();
-    const release = builder.need(count, deadline);
+    const release = builder.need(count);
     this.build(scopeId);
     try {
       if (await this.until(builder, () => this.fits(scopeId, count), failed, deadline, fail, signal, this.builds.get(scopeId)?.done)) return;

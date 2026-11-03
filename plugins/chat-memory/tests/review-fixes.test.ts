@@ -25,15 +25,16 @@ it("excludes the accepted retry's normalized original entry from history across 
  expect(f.log(scope)).toEqual(["user: unique question"]);
  expect(answer.systemPrompt).not.toContain("unique question");expect(answer.input.split("unique question")).toHaveLength(2);
 });
-it("R12: a failed summary holds no turn under the ceiling; past it, the turn is refused visibly after a queue recheck, rather than repeating wait",async()=>{
+it("R12: a failed summary holds no turn under the ceiling; past it, the turn fails visibly at once, and the dispatch refuses it once known (D502)",async()=>{
  const f=fixture();f.memory.ceiling=300;const s=await f.attach("initiatives","p",f.thread("w"));
  let release!:()=>void;const gate=new Promise<void>(r=>release=r);
  f.memory.useSummarizer(async()=>{await gate;return {ok:false,reason:"failed",error:"permanent failure"};});
  f.turn("w","first","x".repeat(1000));f.memory.kick("w");
- let rechecks=0;f.memory["deps"].recheck=()=>{rechecks++;};
- expect(await f.dispatch("w")).toMatchObject({action:"wait"});release();await f.memory.settled();expect(rechecks).toBe(1);
- for(let i=0;i<3;i++)expect(await f.dispatch("w")).toMatchObject({action:"reject",message:expect.stringContaining("permanent failure")});
+ expect(await f.dispatch("w")).toEqual({action:"proceed"});release();await f.memory.settled();
+ // Known before the dispatch: refused there, so the provider never accepts (and memory never logs) the message.
+ expect(await f.dispatch("w")).toMatchObject({action:"reject",message:expect.stringContaining("permanent failure")});
  expect((await f.memory.status(s)).tree).toMatchObject({requiredFailure:expect.stringContaining("permanent failure")});
+ await expect(f.ask("w",f.say("w","go"),"go")).rejects.toThrow("permanent failure");
  f.memory.ceiling=CEILING_BYTES;expect(await f.dispatch("w")).toEqual({action:"proceed"});
  expect((await f.memory.status(s)).tree).toMatchObject({ready:true,requiredFailure:null,failed:1});
 });
@@ -49,7 +50,7 @@ it("recovers both chunks and only the correct sender's image in a long batched w
   expect(await f.memory.evidence(s,id,1,0,0)).toMatchObject({content:[{type:"text"},{type:"image",data:"AQID"}]});
  }
 });
-it("past the ceiling, rejects blocked merge preparation only after legitimate pending merges settle",async()=>{
+it("past the ceiling, fails a turn on blocked merges only after legitimate pending merges settle",async()=>{
  const f=fixture();const scope=await f.attach("initiatives","p",f.thread("w"));
  f.store.append("w",Array.from({length:300},(_,i)=>({kind:"agent" as const,text:"source".repeat(200),at:i,threadId:"w",seq:i+1})),300);
  const tree=f.store.tree(scope);for(let i=0;i<300;i++)tree.saveNode(0,i,"x".repeat(512),"model",1);
@@ -62,13 +63,20 @@ it("past the ceiling, rejects blocked merge preparation only after legitimate pe
   if(text.includes("merge lines 298+1 and 299+1")){held=true;await gate;}
   return {ok:false,reason:"failed",error:"permanent merge failure"};
  });
- let rechecks=0;f.memory["deps"].recheck=()=>{rechecks++;};expect(await f.dispatch("w")).toMatchObject({action:"wait"});
+ f.memory.build(scope);
  for(let i=0;i<1000 && (!held || (await f.memory.status(scope)).tree.failed<149);i++)await new Promise<void>(r=>setImmediate(r));
  expect(held).toBe(true);expect((await f.memory.status(scope)).tree.failed).toBeGreaterThan(0);
- expect((await f.memory.status(scope)).tree.requiredFailure).toBeNull();expect(await f.dispatch("w")).toMatchObject({action:"wait"});
- release();await f.memory.settled();
+ expect((await f.memory.status(scope)).tree.requiredFailure).toBeNull();expect(await f.dispatch("w")).toEqual({action:"proceed"});
+ // A turn started while a legitimate merge is still out waits for it rather than failing.
+ f.history.push({threadId:"w",seq:10000,type:"client/turn/requested",data:{requestId:"go",input:[{type:"text",text:"go"}]}});
+ let outcome:unknown="pending";const turn=f.ask("w","go","go").then(a=>{outcome=a;},e=>{outcome=e;});
+ for(let i=0;i<50;i++)await new Promise<void>(r=>setImmediate(r));
+ expect(outcome).toBe("pending");
+ release();await turn;
+ expect(String((outcome as Error).message)).toContain("permanent merge failure");
+ await f.memory.settled();
  expect((await f.memory.status(scope)).tree.requiredFailure).toContain("permanent merge failure");
- expect(rechecks).toBe(1);for(let i=0;i<3;i++)expect(await f.dispatch("w")).toMatchObject({action:"reject",message:expect.stringContaining("merge")});
+ expect(await f.dispatch("w")).toMatchObject({action:"reject",message:expect.stringContaining("permanent merge failure")});
 });
 it("does not reject a bounded healthy view for an unused failed ancestor",async()=>{
  const f=fixture();const scope=await f.attach("initiatives","p",f.thread("w"));

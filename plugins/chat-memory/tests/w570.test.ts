@@ -58,7 +58,7 @@ describe("W570 a waiting turn's lines go before merges", () => {
     const { started, held, summarize } = heldSummarizer();
     const builder = new TreeBuilder(store, emptyViews(), { summarize, instructions: () => "", effort: () => "high", concurrency: () => 2, cacheKey: "k" });
     // The turn's own message is 8: it waits for lines 0..7.
-    const release = builder.need(8, Date.now() + 90_000);
+    const release = builder.need(8);
     const stop = new AbortController();
     const run = builder.run(stop.signal);
     await ticks();
@@ -92,7 +92,7 @@ describe("W570 a waiting turn's lines go before merges", () => {
     // Background build: the merge of 0..1 covers earlier messages than line 2.
     expect(started).toEqual(["k:0", "k:1", "k:0+1 and 1+1", "k:2"]);
     // A turn needing 0..2 (its own message is 3): line 3 is no line it needs, so it keeps its place.
-    const release = builder.need(3, Date.now() + 90_000);
+    const release = builder.need(3);
     for (const h of held.splice(0)) h.go();
     await ticks();
     expect(started.slice(4)).toEqual(["k:3"]);
@@ -120,7 +120,7 @@ describe("W570 a waiting turn's lines go before merges", () => {
       concurrency: () => 8,
       cacheKey: "k",
     });
-    const release = builder.need(300, Date.now() + 90_000);
+    const release = builder.need(300);
     const stop = new AbortController();
     const run = builder.run(stop.signal);
     await ticks();
@@ -138,7 +138,7 @@ describe("W570 a waiting turn's lines go before merges", () => {
     await run;
   });
 
-  it("an admission's need (all lines) also puts lines first, and its merges still take permits before other scopes", async () => {
+  it("a turn's need for all its lines puts them first, and its merges still take permits before another scope's background work", async () => {
     const permits = new FairPermits(() => 2);
     const mine = heldSummarizer(permits, "mine");
     const other = heldSummarizer(permits, "other");
@@ -146,7 +146,7 @@ describe("W570 a waiting turn's lines go before merges", () => {
     const background = new TreeBuilder(memoryStore(() => 50), emptyViews(), { summarize: other.summarize, instructions: () => "", effort: () => "high", concurrency: () => 2, cacheKey: "other" });
     const stop = new AbortController();
     const runs = [builder.run(stop.signal), background.run(stop.signal)];
-    const release = builder.need(Infinity, Date.now() + 30_000, "priority-only");
+    const release = builder.need(Infinity);
     await ticks();
     const done = async () => {
       for (const h of [...mine.held.splice(0), ...other.held.splice(0)]) h.go();

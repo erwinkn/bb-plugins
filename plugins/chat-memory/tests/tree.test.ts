@@ -200,7 +200,7 @@ describe("W220 tree builder", () => {
     const logs: string[] = [];
     let calls = 0;
     const b = builder(store, async (r) => (target(r) === "0+1" ? (calls++, ok("  ")) : ok(line(r, 300))), { log: (m) => logs.push(m) });
-    const release = b.need(1, Date.now() + 90_000);
+    const release = b.need(1);
     await b.run(new AbortController().signal);
     release();
     expect(calls).toBe(3);

@@ -127,7 +127,7 @@ describe("W315 a turn's lines go first, in batches", () => {
     expect(calls.map((c) => [c.task, c.urgent()])).toEqual([["0", false], ["1", false]]);
     // A turn needs messages 0..2: the calls already waiting become urgent; message 3, its own, is not.
     count = 4;
-    const release = builder.need(3, Date.now() + 90_000);
+    const release = builder.need(3);
     expect(calls.map((c) => c.urgent())).toEqual([true, true]);
     // Lines of 300 bytes: their merge needs a call too, urgent as well (it is before message 2),
     // but it starts after line 2, which the turn needs (W570).
@@ -169,7 +169,7 @@ describe("W315 a turn's lines go first, in batches", () => {
       concurrency: () => 8,
       cacheKey: "k",
     });
-    const release = builder.need(3000, Date.now() + 90_000);
+    const release = builder.need(3000);
     const stop = new AbortController();
     const run = builder.run(stop.signal);
     let longest = 0;
@@ -197,56 +197,23 @@ describe("W315 a turn's lines go first, in batches", () => {
   });
 });
 
-describe("W315 a waiting turn keeps its call", () => {
-  it("lets a call the turn waits for run to the turn's deadline, then cuts it as any other", async () => {
+describe("W315 bounded calls", () => {
+  it("cuts a call a turn waits for at its bound like any other (R12: no turn waits long for it)", async () => {
     const { store } = memoryStore(() => 1);
     const { calls, summarize } = heldSummarizer();
-    let now = 1_000_000;
-    const builder = new TreeBuilder(store, emptyViews(), { summarize, instructions: () => "", effort: () => "high", concurrency: () => 1, cacheKey: "k", now: () => now });
+    const builder = new TreeBuilder(store, emptyViews(), { summarize, instructions: () => "", effort: () => "high", concurrency: () => 1, cacheKey: "k" });
+    const release = builder.need(1);
     const stop = new AbortController();
     const run = builder.run(stop.signal);
     await ticks();
-    const { request } = calls[0]!;
-    expect(request.timeoutMs).toBe(CALL_TIMEOUT_MS);
-    // No turn waits: the bound stands.
-    expect(request.extendMs!()).toBeLessThanOrEqual(0);
-    const release = builder.need(1, now + 90_000);
-    now += 30_000;
-    expect(request.extendMs!()).toBe(60_000);
+    expect(calls[0]!.request).toMatchObject({ timeoutMs: CALL_TIMEOUT_MS });
+    expect(Object.keys(calls[0]!.request)).not.toContain("extendMs");
     release();
-    expect(request.extendMs!()).toBeLessThanOrEqual(0);
     stop.abort();
     await run;
   });
 
-  it("gives a reply 65 s away its time while a 90 s turn waits for it, where a cut at 30 s fails the turn", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    try {
-      const { store, texts } = memoryStore(() => 1);
-      let fetches = 0;
-      // Luna replies 65 s after each request, unless stopped.
-      const slow = (_url: unknown, init?: RequestInit) =>
-        new Promise<Response>((resolve, reject) => {
-          fetches++;
-          const timer = setTimeout(() => resolve(new Response(`data: ${JSON.stringify({ type: "response.completed", response: { output: [{ type: "message", content: [{ type: "output_text", text: "summary" }] }] } })}\n\n`)), 65_000);
-          init!.signal!.addEventListener("abort", () => (clearTimeout(timer), reject(new DOMException("aborted", "AbortError"))));
-        });
-      const summarizer = responsesSummarizer({ fetch: slow as typeof fetch, url: () => "http://luna", headers: async () => ({}) });
-      const builder = new TreeBuilder(store, emptyViews(), { summarize: (r) => summarizer(r), instructions: () => "", effort: () => "high", concurrency: () => 1, cacheKey: "k" });
-      const release = builder.need(1, Date.now() + 90_000);
-      const run = builder.run(new AbortController().signal);
-      await vi.advanceTimersByTimeAsync(66_000);
-      expect(texts.get("0:0")).toBe("summary");
-      expect(fetches).toBe(1);
-      release();
-      await run;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
 
-describe("W315 bounded calls", () => {
   it("gives up a call with no reply within its bound as a timeout, never as a stop", async () => {
     // As fetch does: rejects once its signal aborts, at once if it has.
     const hang = (_url: unknown, init?: RequestInit) =>
@@ -337,21 +304,6 @@ describe("W315 a stopped call never starts", () => {
     stop.abort();
     expect(await stopped).toMatchObject({ ok: false, reason: "aborted" });
   });
-
-  it("lets a call run past its bound while extendMs gives it more, then gives up", async () => {
-    const replyIn = (ms: number) => (_url: unknown, init?: RequestInit) =>
-      new Promise<Response>((resolve, reject) => {
-        const timer = setTimeout(() => resolve(completed()), ms);
-        init!.signal!.addEventListener("abort", () => (clearTimeout(timer), reject(new DOMException("aborted", "AbortError"))));
-      });
-    const extendOnce = () => {
-      let asked = 0;
-      return () => (asked++ ? 0 : 40);
-    };
-    const at = (ms: number) => responsesSummarizer({ fetch: replyIn(ms) as typeof fetch, url: () => "http://luna", headers: async () => ({}) });
-    expect(await at(40)({ ...request(new AbortController().signal), timeoutMs: 20, extendMs: extendOnce() })).toMatchObject({ ok: true, text: "summary" });
-    expect(await at(200)({ ...request(new AbortController().signal), timeoutMs: 20, extendMs: extendOnce() })).toMatchObject({ ok: false, reason: "timeout", error: "no reply within 0.06 s" });
-  });
 });
 
 describe("W315 a stopped turn stops waiting", () => {
@@ -381,79 +333,6 @@ describe("W315 a stopped turn stops waiting", () => {
     expect(builder["needs"].size).toBe(0);
     f.memory.dispose();
     await f.memory.settled();
-  });
-});
-
-describe("W324 a stopped turn lets go of its call's extension", () => {
-  // One permit; Luna never answers, a turn waits 90 s for its line, and the call it waits for is past its 30 s bound.
-  const extended = async (alsoNeeded: boolean) => {
-    const f = fixture();
-    await f.attach("initiatives", "a", f.thread("a"));
-    f.turn("a", "hello");
-    await f.idle("a");
-    (f.memory as unknown as { deps: { settings: () => object } }).deps.settings = () => ({ regularCompactTokens: 0, hybridCompactTokens: 0, summarizerEffort: "high", summarizerConcurrency: 1 });
-    // A turn that waits on to its 90 s deadline, as one with too much to show clipped does (W503).
-    f.memory.waits = { turn: 90_000, summaries: 90_000 };
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    (f.store as unknown as { now: () => number }).now = () => Date.now();
-    const t0 = Date.now();
-    let cutAt: number | undefined;
-    const hung = (_url: unknown, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener("abort", () => ((cutAt ??= Date.now() - t0), reject(new DOMException("aborted", "AbortError"))), { once: true }));
-    f.memory.useSummarizer(responsesSummarizer({ fetch: hung as typeof fetch, url: () => "http://luna", headers: async () => ({}) }));
-    // More than 32 KB without a summary: the turn waits for one.
-    f.reply("a", "x".repeat(34_000));
-    f.done("a");
-    const requestId = f.say("a", "continue");
-    const stop = new AbortController();
-    const outcome = f.harness.behavior.callAgentTool(TURN_CONTEXT_TOOL, { protocol: 4, input: "continue", requestId, sessionId: "s-a" }, { threadId: "a", signal: stop.signal }).then(
-      () => "answered",
-      (error: Error) => error.message,
-    );
-    await ticks();
-    const builder = (f.memory as unknown as { builders: Map<string, TreeBuilder> }).builders.get("initiatives:a")!;
-    // Another turn waiting for the same lines, until the same deadline.
-    if (alsoNeeded) builder.need(Infinity, t0 + 90_000);
-    await vi.advanceTimersByTimeAsync(31_000);
-    expect(f.memory.permits.inFlight).toBe(1);
-    expect(cutAt).toBeUndefined();
-    // An urgent call queued for the permit, then the turn stops.
-    let otherAt: number | undefined;
-    const other = f.memory.permits.run("other", new AbortController().signal, async () => void (otherAt = Date.now() - t0), () => true);
-    stop.abort();
-    expect(await outcome).toMatch(/the turn stopped/);
-    await ticks();
-    return { f, other, at: () => ({ cutAt, otherAt }) };
-  };
-  const close = async (f: ReturnType<typeof fixture>) => {
-    f.memory.dispose();
-    await ticks();
-    await f.memory.settled();
-    vi.useRealTimers();
-  };
-
-  it("cuts the call once its last waiting turn stops past its bound, and lets the next urgent call in at once", async () => {
-    const { f, other, at } = await extended(false);
-    try {
-      expect(at()).toEqual({ cutAt: 31_000, otherAt: 31_000 });
-      await other;
-    } finally {
-      await close(f);
-    }
-  });
-
-  it("keeps the extension while another turn still waits for the call", async () => {
-    const { f, other, at } = await extended(true);
-    try {
-      await vi.advanceTimersByTimeAsync(58_000);
-      expect(at()).toEqual({ cutAt: undefined, otherAt: undefined });
-      expect(f.memory.permits.inFlight).toBe(1);
-      await vi.advanceTimersByTimeAsync(1_000);
-      await other;
-      expect(at()).toEqual({ cutAt: 90_000, otherAt: 90_000 });
-    } finally {
-      await close(f);
-    }
   });
 });
 

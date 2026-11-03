@@ -57,9 +57,9 @@ const FAILED_RETRY_MS = 30 * 60_000;
 /**
  * W315: a call's bound, doubled after each failure of its node (30, 60, 120 s), so a node that is
  * slow every time still gets built. Luna at high answers 95% of calls within 30 s (p50 3 s, p90
- * 8 s; at xhigh p90 26 s, p95 38 s). A call a turn waits for is never cut before the turn's
- * deadline: a reply at 65 s still makes a 90 s turn, where a retry at 30 s would be cut at 90 s.
- * Once no turn waits for it any more (they stopped), a call past its bound gives up at once.
+ * 8 s; at xhigh p90 26 s, p95 38 s). R12: an ordinary turn waits at most 3 s for a summary, so a
+ * call a turn waits for is cut at its bound like any other. Only a turn over the ceiling waits
+ * up to 90 s, for merges; a merge that would reply after 60 s now misses that deadline (README).
  */
 export const CALL_TIMEOUT_MS = 30_000;
 const BACKOFF = { min: 15_000, max: 10 * 60_000, unavailable: 10 * 60_000 };
@@ -114,15 +114,10 @@ export class TreeBuilder {
   private recovered = false;
   /** Fed messages without their line yet, once recovered: the build's frontier, never the history. */
   private unbuilt = new Set<number>();
-  /** By waiting turn: the messages 0..count-1 whose lines it needs, and until when it waits. */
-  private needs = new Set<{ count: number; deadline: number; mode: "turn" | "priority-only" }>();
-  /** Calls past their bound, told when a turn lets go (their extension may end). */
+  /** By waiting turn: the messages 0..count-1 whose lines it needs. */
+  private needs = new Set<{ count: number }>();
+  /** Told whenever a turn lets go of its need (W568: a resting scope's build may stop). */
   private releases = new Set<() => void>();
-  /** W570: when its needs last changed but by a new one joining others (see waitingSince). */
-  private waitStart = -Infinity;
-  /** W570: bumped whenever the views may have merged; with fed, the key of boundMerges' memo. */
-  private settled = 0;
-  private bound: { fed: number; settled: number; merges: Set<string> } | null = null;
   /** Its scope closed or the service stopped: listeners hear it once more. */
   closed = false;
   readonly nodes: NodeCache;
@@ -210,17 +205,6 @@ export class TreeBuilder {
     const byEnd = (a: NodeRef, b: NodeRef) => end(a) - end(b) || a[0] - b[0];
     const below = this.urgentBelow();
     if (!below) return byEnd;
-    const merges = this.boundMerges();
-    const later = ([l, i]: NodeRef) => (l === 0 ? i < below : merges.has(key(l, i))) ? 0 : 1;
-    return (a, b) => later(a) - later(b) || byEnd(a, b);
-  }
-  /**
-   * The merges a view over its bound waits for: two neighbours in it whose parent is unbuilt.
-   * Kept until a message is fed or a node lands: rendering a view reads every node in it, and the
-   * permits ask each urgent scope's `left` again whenever one frees.
-   */
-  private boundMerges() {
-    if (this.bound?.fed === this.views.fed && this.bound.settled === this.settled) return this.bound.merges;
     const merges = new Set<string>();
     const over = (view: readonly NodeRef[], bound: number) => {
       if (viewBytes(view, this.nodes) <= bound) return;
@@ -232,48 +216,24 @@ export class TreeBuilder {
     };
     over(this.views.compaction, VIEW_BYTES.compaction[0]);
     if (this.views.merging) over(this.views.chat, VIEW_BYTES.chat[1]);
-    this.bound = { fed: this.views.fed, settled: this.settled, merges };
-    return merges;
-  }
-  /** How much longer the turns its node is urgent for wait; 0 or less if none does. */
-  private waitedMs(n: NodeRef) {
-    let deadline = -Infinity;
-    for (const need of this.needs) if (need.mode === "turn" && end(n) < need.count) deadline = Math.max(deadline, need.deadline);
-    return deadline - this.now();
+    const later = ([l, i]: NodeRef) => (l === 0 ? i < below : merges.has(key(l, i))) ? 0 : 1;
+    return (a, b) => later(a) - later(b) || byEnd(a, b);
   }
   /** Whether a turn waits for any of its lines now (W568: such a build never rests). */
   get waited() {
     return this.needs.size > 0;
-  }
-  /**
-   * W570: how many calls its waiting turns still need at least (the permits serve the fewest first):
-   * a line per message they lack one for, and the merges a view over its bound waits for now.
-   */
-  get left() {
-    const below = this.urgentBelow();
-    return below ? this.unsummarized(Math.min(below, this.store.messageCount())) + this.boundMerges().size : 0;
-  }
-  /**
-   * W570: since when its calls have been urgent without a break, as far as the permits age a scope:
-   * from its first need, again from each release (one may leave fewer, or none, of its calls urgent).
-   */
-  get waitingSince() {
-    return this.waitStart;
   }
   /** Call listener whenever a need is released; returns its unsubscribe. */
   onRelease(listener: () => void) {
     this.releases.add(listener);
     return () => void this.releases.delete(listener);
   }
-  /** Prioritize messages 0..count-1; only a running turn may extend their call timeouts. */
-  need(count: number, deadline: number, mode: "turn" | "priority-only" = "turn") {
-    const need = { count, deadline, mode };
-    if (!this.needs.size) this.waitStart = this.now();
+  /** Prioritize messages 0..count-1 while a turn waits for their lines; returns the release. */
+  need(count: number) {
+    const need = { count };
     this.needs.add(need);
     return () => {
-      if (!this.needs.delete(need)) return;
-      this.waitStart = this.now();
-      for (const listener of this.releases) listener();
+      if (this.needs.delete(need)) for (const listener of this.releases) listener();
     };
   }
 
@@ -296,7 +256,6 @@ export class TreeBuilder {
   }
   /** Go on with any merge the built nodes allow, and save the views if they changed. */
   private saveSettled() {
-    this.settled++;
     const merging = this.views.merging;
     const merges = settleViews(this.views, this.nodes);
     if (merges.chat || merges.compaction || merging !== this.views.merging) this.store.saveViews(this.views);
@@ -519,10 +478,9 @@ export class TreeBuilder {
     let outcome: Outcome | null = null;
     let pause: Pause | undefined;
     const timeoutMs = CALL_TIMEOUT_MS * 2 ** (this.failures.get(key(...node)) ?? 0);
-    const onRelease = (listener: () => void) => this.onRelease(listener);
     try {
       for (let a = 0; a < ATTEMPTS; a++) {
-        const request = { instructions: this.options.instructions(), input, effort: this.options.effort(), cacheKey: this.options.cacheKey, attribution: this.options.attribution?.(), signal, timeoutMs, extendMs: () => this.waitedMs(node), onRelease, onStart: started };
+        const request = { instructions: this.options.instructions(), input, effort: this.options.effort(), cacheKey: this.options.cacheKey, attribution: this.options.attribution?.(), signal, timeoutMs, onStart: started };
         const r = await this.options.summarize(request, () => this.urgent(node));
         started();
         tries++;
