@@ -154,7 +154,8 @@ export const stamp = (at: number) => `${new Date(at).toISOString().slice(0, 16).
 export const turnMessage = (at: number, text: string, lines: readonly string[] = []) =>
   `${lines.length ? `<chat>\n${lines.join("\n")}\n</chat>\n\n` : ""}Now: ${stamp(at)}.\n\nNew message:\n${text}`;
 
-const RULER = "-".repeat(TARGET_BYTES);
+/** What a compaction asks for, first and after a line too long: a budget, and a ruler of its length. */
+const BUDGET = `at most ${TARGET_BYTES} bytes (about 60 words), the length of this ruler:\n${"-".repeat(TARGET_BYTES)}`;
 
 /** A message as a compaction's <input> and as zoom(id, 1) shows it. */
 export const messageText = (m: Pick<MemoryMessage, "kind" | "text">) => `${m.kind}: ${m.text}`;
@@ -162,21 +163,22 @@ export const messageText = (m: Pick<MemoryMessage, "kind" | "text">) => `${m.kin
 /** The task after a compaction's <chat>: compress one message, or merge two adjacent lines. */
 export function task(node: NodeRef, nodes: Nodes, message?: Pick<MemoryMessage, "kind" | "text">) {
   if (node[0] === 0)
-    return `Compaction: compress message ${node[1]} into one line of at most ${TARGET_BYTES} bytes (about 70 words), the length of this ruler:\n${RULER}\n<input>\n${messageText(message!)}\n</input>`;
+    return `Compaction: compress message ${node[1]} into one line of ${BUDGET}\n<input>\n${messageText(message!)}\n</input>`;
   const [a, b] = children(node);
-  return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most ${TARGET_BYTES} bytes (about 70 words), the length of this ruler:\n${RULER}\n<chat> may hold their messages, ${label(node).split("+")[0]} to ${end(node)}, in more detail: take details of them from there too.\n<input>\n${renderLine(a, nodes)}\n${renderLine(b, nodes)}\n</input>`;
+  return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of ${BUDGET}\n<chat> may hold their messages, ${label(node).split("+")[0]} to ${end(node)}, in more detail: take details of them from there too.\n<input>\n${renderLine(a, nodes)}\n${renderLine(b, nodes)}\n</input>`;
 }
 
 /**
- * W315: a retry asks for a quarter less than the limit. Luna at high overshoots its ask (first
- * replies p50 667 bytes for 512); asked to cut "just enough" it cut ~10% a try, 3.5 calls a line
- * and 1 line in 4 still over after 5 tries. Asked for 384, 3 retries in 4 fit: 2.1 calls a line.
+ * The follow-up for a line over the limit, in the same conversation: its size, and the same budget
+ * again. W315: Luna overshoots its ask; asked to cut "just enough" it cut ~10% a try (3.5 calls a
+ * line), so a retry asked for 384 bytes. W574 (120 real lines, ranked blind by Opus): asked for
+ * 448 first and 448 again, 36 retries in 47 fit and the rest are cut, but lines keep ~35 more bytes
+ * than asked for 384 and won 35-10; cutting the first reply with no retry lost 5-42, and a third
+ * try for the cut ones lost 3-8 to the cut line. UniiChat's retry (a fresh call showing where the
+ * limit cuts the line) shrank lines ~5% a try: 1 line in 5 still over after 5 tries.
  */
-const RETRY_BYTES = 384;
-
-/** The follow-up for a line over the limit: its size, and a shorter ruler to write it again to. */
 export const tooLong = (line: string) =>
-  `Too long: your line is ${bytes(line)} bytes, over the ${LIMIT}-byte limit. Write the whole line again for the same <input> in at most ${RETRY_BYTES} bytes (about 50 words), the length of this ruler:\n${"-".repeat(RETRY_BYTES)}\nDrop or shorten the least valuable items; keep the user's words and lasting effects.`;
+  `Too long: your line is ${bytes(line)} bytes, over the ${LIMIT}-byte limit. Write the whole line again for the same <input> in ${BUDGET}\nDrop or shorten the least valuable items; keep the user's words and lasting effects.`;
 
 /** A reply as a line: no fences, tags or id+n| head. */
 export const cleanLine = (text: string) =>

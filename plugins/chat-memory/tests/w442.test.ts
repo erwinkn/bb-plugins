@@ -109,16 +109,16 @@ describe("W442 builder", () => {
     expect(logs).toEqual([]);
   });
 
-  it("asks once more, for 384 bytes, and keeps a retry that fits whole", async () => {
+  it("asks once more, for the same budget, and keeps a retry that fits whole", async () => {
     const { store, nodes } = memoryStore(long(1));
     const requests: SummarizerRequest[] = [];
     const logs: string[] = [];
     const retry = words("0+1", 380);
     await builder(store, async (r) => (requests.push(r), ok(requests.length === 1 ? words("0+1", 700) : retry)), logs).run(new AbortController().signal);
     expect(requests).toHaveLength(2);
-    // The first ask states the budget; the retry gives the reply's size and a shorter one.
+    // The first ask states the budget; the retry gives the reply's size and the same budget again.
     expect(requests[0]!.input.find((m) => m.role === "user")!.content[0]!.text).toContain(`at most ${TARGET_BYTES} bytes`);
-    expect(requests[1]!.input.at(-1)!.content[0]!.text).toMatch(/^Too long: your line is \d+ bytes, over the 576-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
+    expect(requests[1]!.input.at(-1)!.content[0]!.text).toMatch(/^Too long: your line is \d+ bytes, over the 576-byte limit\. Write the whole line again for the same <input> in at most 448 bytes/);
     expect(nodes.get(key(0, 0))).toEqual({ text: retry, how: "model", tries: 2 });
     expect(logs).toEqual([]);
   });

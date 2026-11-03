@@ -282,24 +282,32 @@ sweep at once, even mid-read: it touches the database no more.
 
 ## The tree
 
-As the gist and W216: message i becomes a line requested at 512 bytes and stored at most 576 bytes
+As the gist and W216: message i becomes a line requested at 448 bytes (W574) and stored at most 576 bytes
 (`id+n|text`), adjacent lines merge in pairs; text that fits is kept with no
 call. The chat view (what an UniiChat turn sees) is a 128→64 KB sawtooth merged
 by due = (T+1)/2^l − i; the memory view (`memory_read`, the context of every
 summarizer call) is it merged further, 32→16 KB. Both are saved, never rebuilt.
 GPT-6 Luna (`summarizerEffort`, high since D484) writes lines with the gist's
-compaction prompt and its 512-dash ruler; a reply over the 576-byte hard maximum is asked again once,
-for at most 384 bytes (W315: Luna overshoots its ask, so asking again for 512
-took 3.5 calls a line; asking for 384 fits 3 times in 4). If the shorter reply
+compaction prompt and its 448-dash ruler; a reply over the 576-byte hard maximum is asked again once,
+in the same conversation, for the same 448 bytes. W574 measured this on 120 real lines (Luna at
+high, ranked blind by Opus 5.5): asked for 448 instead of 512, a first reply fits 61% of the time
+instead of 43% (merges overflow most), so a line costs 1.39 calls instead of 1.57 (half the
+sample overflowed in production; there, retries should fall from about 36% of lines to 25%). A retry for
+448 fits 3 times in 4 and the rest are cut, but its lines keep ~35 more bytes than W315's retry
+for 384 and won 35-10. Cutting the first reply with no retry lost 5-42, and a third try for the
+cut ones lost 3-8 to the cut line. UniiChat's retry (a fresh call showing where the limit cuts the
+long line, asking to cut just enough) shrank lines only ~5% a try. The prompt's bad/good
+examples (W572) leave the fit rate as it was (61% with or without them at 448) and tie on quality
+(124-103 judged with, over both budgets), for ~10% more tokens. If the shorter reply
 is still over 576 bytes, it is cut at the last word boundary and ends in
 ` [cut]`, at most 576 bytes in all, and the log says so. When that boundary is
 more than 64 bytes back (a long hash or path), the cut falls on a character
 boundary inside the word instead. No new line is over 576 bytes, and none is
 cut without ` [cut]` (lines saved before this cap keep their length);
 both prompts tell the reader a `[cut]` line's rest is in what it was made from.
-The initial task and ruler remain 512 bytes; the 576 maximum applies to model
-acceptance, exact free leaves, free joins and storage validation. Existing 512-byte
-nodes stay unchanged. There is no runtime sizing setting and no data rewrite.
+The initial task and ruler are 448 bytes; the 576 maximum applies to model
+acceptance, exact free leaves, free joins and storage validation. Existing nodes
+stay unchanged. There is no runtime sizing setting and no data rewrite.
 The actual historical view still has a 128000-byte upper bound, measured from
 rendered lines. Cutoff-feedback prompts are not used.
 Up to `summarizerConcurrency` (8) calls run at once across every scope,

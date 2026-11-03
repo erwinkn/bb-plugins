@@ -78,7 +78,7 @@ export const PLUGIN_DISPOSED = "plugin-disposed";
  * p50 and 4.5 s at p90 (gpt-6-luna, 2026-11-02), and 9 lines in 10 take one call.
  */
 export const SUMMARY_WAIT_MS = 3_000;
-/** R12: message previews cached (memory.previews), at most 512 bytes each: 4 MB at most. */
+/** R12: message previews cached (memory.previews), at most TARGET_BYTES (448) each: under 4 MB. */
 const PREVIEWS = 8_192;
 /** Failed reads of the thread's last turn a turn tries before it fails. */
 export const TURN_READ_ATTEMPTS = 3;

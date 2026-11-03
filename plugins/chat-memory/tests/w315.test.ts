@@ -458,7 +458,12 @@ describe("W324 a stopped turn lets go of its call's extension", () => {
 });
 
 describe("W315 a line too long costs one more call, not four", () => {
-  it("asks a retry for less than the limit, so a summarizer that overshoots its ask by 20% fits on its second try", async () => {
+  // W574: asked for 448 bytes, a 20% overshoot (537) fits at once; a 30% one (582) is asked once
+  // more for 448, overshoots again and is cut: never a third call.
+  it.each([
+    [1.2, 1, false],
+    [1.3, 2, true],
+  ])("asks for less than the limit: a summarizer that overshoots its ask by x%s takes %s calls a line (cut: %s)", async (overshoot, perLine, cut) => {
     const texts = new Map<string, string>();
     const store: TreeStore = {
       messageCount: () => 8,
@@ -471,12 +476,12 @@ describe("W315 a line too long costs one more call, not four", () => {
     };
     let calls = 0;
     const builder = new TreeBuilder(store, emptyViews(), {
-      // Luna as measured: whatever it is asked, it writes about a fifth more.
+      // Luna as measured: whatever it is asked, it writes a fifth to a third more.
       summarize: async (r) => {
         calls++;
         const said = r.input.flatMap((m) => m.content.map((c) => c.text)).join("\n");
         const asked = Number([...said.matchAll(/at most (\d+) bytes/g)].at(-1)![1]);
-        return ok("x".repeat(Math.floor(asked * 1.2)));
+        return ok("x".repeat(Math.floor(asked * overshoot)));
       },
       instructions: () => "",
       effort: () => "high",
@@ -487,6 +492,7 @@ describe("W315 a line too long costs one more call, not four", () => {
     // 8 messages of 1 KB: 8 lines and 7 merges, every one too long at first.
     expect(texts.size).toBe(15);
     expect([...texts.values()].every((t) => bytes(t) <= LIMIT)).toBe(true);
-    expect(calls).toBe(2 * 15);
+    expect(calls).toBe(perLine * 15);
+    expect([...texts.values()].every((t) => t.endsWith(" [cut]") === cut)).toBe(true);
   });
 });

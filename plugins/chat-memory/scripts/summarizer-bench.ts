@@ -444,7 +444,7 @@ its input for weeks; what it omits is lost for good. The writers were told, in o
 Also: name minor items in a word or two rather than drop them; copy names, numbers, ids, paths and errors
 exactly; tag each item with its kind (user:, agent:, tool:, echo:, work:, note:) and credit quoted text to
 its real author; never make anything look further along than it was (a plan or attempt written as done);
-never add what the input lacks. All lines had the same byte budget (about 512 bytes).
+never add what the input lacks. All lines had the same byte budget.
 
 You get the input (a message, or two adjacent lines to merge plus the messages they cover), the <chat>
 the writers saw before it (older memory lines), and several candidate lines labelled with letters. Judge

@@ -228,9 +228,9 @@ describe("R12 review round 1", () => {
     const read = f.store.message.bind(f.store);
     f.store.message = (scopeId, i) => (reads++, read(scopeId, i));
     expect(fits(scope, n)).toBe(false);
-    // Each pending line is about 520 bytes: the ceiling holds about 490 of them.
-    expect(reads).toBeGreaterThan(400);
-    expect(reads).toBeLessThan(Math.ceil(CEILING_BYTES / 500));
+    // Each pending line is about TARGET_BYTES (448) plus its label: the ceiling holds about 560 of them.
+    expect(reads).toBeGreaterThan(Math.floor(CEILING_BYTES / (TARGET_BYTES + 32)));
+    expect(reads).toBeLessThan(Math.ceil(CEILING_BYTES / (TARGET_BYTES - 16)));
     reads = 0;
     expect(fits(scope, n)).toBe(false);
     expect(reads).toBe(0);

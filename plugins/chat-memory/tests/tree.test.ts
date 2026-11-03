@@ -109,10 +109,10 @@ describe("W220 tree builder", () => {
     const retry = requests[1]!.input;
     expect(retry).toHaveLength(3);
     expect(retry[1]).toMatchObject({ role: "assistant" });
-    expect((retry[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is 700 bytes, over the 576-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
+    expect((retry[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is 700 bytes, over the 576-byte limit\. Write the whole line again for the same <input> in at most 448 bytes \(about 60 words\), the length of this ruler:\n-{448}\n/);
     // The first task carries the ruler and the message as kind: text.
     const task = requests[0]!.input.find((m) => m.role === "user")!.content[0]!.text;
-    expect(task).toContain("-".repeat(512));
+    expect(task).toContain(`at most 448 bytes (about 60 words), the length of this ruler:\n${"-".repeat(448)}\n<input>`);
     expect(task).toContain("<input>\nuser: message 0");
   });
 

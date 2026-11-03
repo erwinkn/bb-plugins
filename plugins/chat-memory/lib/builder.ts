@@ -45,7 +45,7 @@ export type BuilderStatus =
   | { state: "idle" | "building"; detail: null; until: null }
   | { state: "backoff" | "unavailable"; detail: string; until: number };
 
-/** A reply over LIMIT is asked again once, shorter; the shorter of the two is cut to fit if it still is over. */
+/** A reply over LIMIT is asked again once; the shorter of the two is cut to fit if it still is over. */
 const ATTEMPTS = 2;
 /** Nodes of one level that one step of the load's recovery reads, before yielding the event loop. */
 const RECOVER_SLICE = 4096;
@@ -77,7 +77,7 @@ type Outcome =
  * once fewer than `concurrency` earlier ones are unbuilt, a merge starts once both halves are
  * built, and ready nodes wait in a queue (never found by scanning the tree). Up to `concurrency`
  * calls run at once; a call waits while another is writing the same cached prefix. A line over
- * The model is asked for 512 bytes; a reply over 576 bytes is asked again once in the same conversation, for 384; if the shorter reply is still
+ * The model is asked for 448 bytes; a reply over 576 bytes is asked again once in the same conversation, for 448 again; if the shorter reply is still
  * over, it is cut at a word boundary and ends in " [cut]" (logged), never cut silently.
  *
  * run() returns when everything logged so far is built, or when its signal aborts: calls in
