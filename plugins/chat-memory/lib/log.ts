@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { bytes } from "./tree";
 import { senderParts } from "./sender-parts";
 
@@ -44,6 +45,8 @@ const SPLIT = 30_000;
 export const GROUP_USES = 8;
 export const GROUP_BYTES = 16_000;
 export const USES = "\n\n";
+/** D565: how many skipped resends an ingestion state keeps the cut of. */
+export const SKIPPED_KEPT = 8;
 
 export const clip = (s: string) =>
   s.length <= CLIP ? s : `${s.slice(0, CLIP / 2)}\n[... ${s.length - CLIP} chars clipped ...]\n${s.slice(-CLIP / 2)}`;
@@ -180,6 +183,17 @@ export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts
 }
 
 /**
+ * D565: what makes a logged user message the same as another: its text and its attachments (paths
+ * and URLs whole, inline image data included), hashed. Null for anything but one user entry.
+ */
+function userKey(row: EventRow, entries: readonly LogEntry[]): string | null {
+  if (entries.length !== 1 || entries[0]!.kind !== "user") return null;
+  const input: unknown[] = Array.isArray(row.data?.input) ? row.data.input : [];
+  const attachments = input.flatMap((c: any) => ["localImage", "localFile", "image"].includes(c?.type) ? [[c.type, c.path ?? null, c.url ?? null]] : []);
+  return createHash("sha256").update(JSON.stringify([inputText(input).trim(), attachments])).digest("hex");
+}
+
+/**
  * A thread's completed turns (readTurns: its rows end with a turn/completed) as log entries, in
  * order. D502: the requests of a turn that failed with UNAVAILABLE, before any output, are left
  * out: the turn never reached the model, and BB keeps the text for the user to send again. Any
@@ -261,6 +275,17 @@ export interface IngestState {
   unsent?: EventRow[];
   modern: boolean;
   /**
+   * D565: the key (userKey) of the last user message logged on acceptance while no assistant text
+   * or tool use has been logged since. An accepted message with the same key is not logged again:
+   * it is the same message sent again after a turn that produced nothing.
+   */
+  unanswered?: string;
+  /**
+   * D565: the requests last skipped as such a resend (at most SKIPPED_KEPT), each with its cut: the
+   * log's length when it was accepted. No row carries its id, so its turn's history ends there.
+   */
+  skipped?: { requestId: string; cut: number }[];
+  /**
    * W571: the last seq whose requests and rejections this state holds. Set when a read parks: the
    * next read reads the parked range again and skips them.
    */
@@ -285,20 +310,38 @@ export function stableEntries(rows: readonly EventRow[], from: IngestState, thre
   const state: IngestState = structuredClone(from);
   const runs = new Runs();
   let park: number | null = null;
+  /** D565: the requests skipped by this read, each at the number of entries logged before it. */
+  const skips: { requestId: string; at: number }[] = [];
   const read = from.through ?? -Infinity;
   delete state.through;
   state.buffered ??= [];
+  // Output answers the last user message: the same text again is then a new message (D565).
+  const log = (entries: LogEntry[]) => {
+    if (entries.some(e => e.kind === "agent" || e.kind === "tool")) delete state.unanswered;
+    runs.push(...entries);
+  };
   for (const row of rows) {
     if (row.type === "client/turn/requested") { if (row.seq > read) state.pending.push(row); continue; }
     if (row.type === "turn/input/accepted") {
       state.modern = true;
-      runs.push(...state.buffered.flatMap(r => eventEntries(r, threadId, facts)));
+      log(state.buffered.flatMap(r => eventEntries(r, threadId, facts)));
       state.buffered = [];
       const id = row.data?.clientRequestId;
       const request = state.pending.find(r => r.data?.requestId === id);
       const originalId = request?.data?.retryOfRequestId;
       const original = originalId ? [...state.pending, ...(state.unsent ?? [])].find(r => r.data?.requestId === originalId) : null;
-      if (original ?? request) runs.push(...eventEntries((original ?? request)!, threadId, facts).map(e => ({...e, requestId: id})));
+      const accepted = original ?? request;
+      if (accepted) {
+        const entries = eventEntries(accepted, threadId, facts).map(e => ({...e, requestId: id}));
+        const key = userKey(accepted, entries);
+        // D565: an exact resend of a message whose turn produced nothing is logged once.
+        if (!key || key !== state.unanswered) log(entries);
+        else if (id) {
+          runs.close();
+          skips.push({ requestId: id, at: runs.out.flatMap(splitEntry).length });
+        }
+        if (key) state.unanswered = key;
+      }
       state.pending = state.pending.filter(r => r.data?.requestId !== id && (!original || r.data?.requestId !== originalId));
       if (original) state.unsent = state.unsent?.filter(r => r.data?.requestId !== originalId);
       runs.close();
@@ -324,7 +367,7 @@ export function stableEntries(rows: readonly EventRow[], from: IngestState, thre
     } else if (!state.modern) state.buffered.push(row);
     else {
       const first = runs.open[0];
-      runs.push(...eventEntries(row, threadId, facts));
+      log(eventEntries(row, threadId, facts));
       // This row opened a new group: the cursor would park before it.
       if (runs.open[0] && runs.open[0] !== first) park = row.seq - 1;
     }
@@ -335,5 +378,5 @@ export function stableEntries(rows: readonly EventRow[], from: IngestState, thre
   else state.through = rows.at(-1)!.seq;
   // Append in processing/acceptance order. seq is canonical provenance, so a queued input or
   // retry may point backward; sorting by it would move that input ahead of already acted-on output.
-  return { entries: runs.out.flatMap(splitEntry), state, parked };
+  return { entries: runs.out.flatMap(splitEntry), state, parked, skips };
 }

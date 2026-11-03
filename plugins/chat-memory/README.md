@@ -193,6 +193,15 @@ is not presented as acted-on history. Pending state, log append and cursor advan
 commit together. Historical providers without acceptance events retain their
 terminal-turn recovery path; requests whose UniiChat turn failed for its memory are excluded.
 Pending requests belong to their original scope and cannot leak after a move.
+A message accepted after its turn failed for its memory is still logged, so
+sending it again would log it twice. An accepted user message that exactly
+repeats the last one logged (same text, same attachments, inline image data
+included) while nothing answered it yet (no assistant text, no tool use) is
+therefore not logged again (D565). Anything else is logged: other text, other
+attachments, "Please continue.", and any repeat after a turn that did answer.
+The skipped resend's turn still gets the history up to its acceptance: its
+ingestion state keeps the log's length at that point (the last 8 such cuts), so
+messages logged after it, by this thread or another, stay out of its context.
 
 `memory_zoom {id,n:1}` and the read-only zoom RPC retrieve the selected canonical
 semantic message via its original thread/sequence, including text clipped in the

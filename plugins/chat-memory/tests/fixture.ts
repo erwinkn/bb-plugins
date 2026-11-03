@@ -125,6 +125,8 @@ export function fixture() {
       return requestId;
     },
     reply: (threadId: string, text: string) => record(threadId, "item/completed", { item: { type: "agentMessage", id: `i${seq}`, text } }),
+    /** The agent runs a command, with no text of its own. */
+    command: (threadId: string, command: string, output: string) => record(threadId, "item/completed", { item: { type: "commandExecution", id: `i${seq}`, command, exitCode: 0, aggregatedOutput: output } }),
     /** The thread's turn ends: BB records its turn/completed. */
     done: (threadId: string, status: "completed" | "failed" | "interrupted" = "completed") => record(threadId, "turn/completed", { status }),
     /** A whole turn: the message, the reply, its end. Returns the request id. */

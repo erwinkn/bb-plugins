@@ -3,7 +3,7 @@ import { addAbortListener } from "node:events";
 import { z } from "zod";
 import { TreeBuilder, type BuilderStatus } from "./builder";
 import { readStable, type ListEvents } from "./ingest";
-import { UNAVAILABLE, stableEntries, type EventRow, type MemoryMessage } from "./log";
+import { SKIPPED_KEPT, UNAVAILABLE, stableEntries, type EventRow, type MemoryMessage } from "./log";
 import { COMPACTION_PROMPT, messageText, stamp, turnMessage, turnSystem } from "./prompt";
 import { FairPermits } from "./permits";
 import type { Settings } from "./settings";
@@ -566,7 +566,7 @@ export class ChatMemory {
       // An archived thread runs no turn, so its last read logs its open group (one with more to
       // read keeps it open: the next read may extend it).
       const final = this.resting.get(threadId) === true && !read.more;
-      const { entries, state, parked } = stableEntries(read.rows, from, threadId, await this.logFacts(threadId, [...from.pending, ...read.rows]), { final, advance: read.more ? t.cursor : -Infinity });
+      const { entries, state, parked, skips } = stableEntries(read.rows, from, threadId, await this.logFacts(threadId, [...from.pending, ...read.rows]), { final, advance: read.more ? t.cursor : -Infinity });
       if (stopped()) return { scope: null, more: false };
       const through = parked ?? read.through;
       const was = JSON.stringify(from);
@@ -578,7 +578,13 @@ export class ChatMemory {
         if (JSON.stringify(this.store.ingestion(threadId, t.scope!)) !== was) return null;
         // W571 review r3 P1: a read that began at the run's first use consumes nothing, but the
         // requests it read (and its `through`) are saved, so a scope move still keeps them out.
-        const appended = through === t.cursor ? { scope: t.scope!, appended: 0 } : this.store.append(threadId, entries, through, true);
+        const appending = through !== t.cursor;
+        // D565: a skipped resend's cut is the log's length when it was accepted, in this scope.
+        if (skips.length) {
+          const length = this.store.count(t.scope!);
+          state.skipped = [...state.skipped ?? [], ...skips.map(s => ({ requestId: s.requestId, cut: length + (appending ? s.at : 0) }))].slice(-SKIPPED_KEPT);
+        }
+        const appended = appending ? this.store.append(threadId, entries, through, true) : { scope: t.scope!, appended: 0 };
         this.store.saveIngestion(threadId, t.scope!, state);
         return appended;
       });

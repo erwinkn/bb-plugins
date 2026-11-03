@@ -294,7 +294,11 @@ export class MemoryStore {
   /** First historical message from the incoming request, if its acceptance was logged before the turn asked for its context. */
   requestCut(scope: string, threadId: string, requestId: string, legacySeq?: number) {
     const exact = this.sql(`SELECT MIN(i) FROM log WHERE scope = ? AND thread_id = ? AND request_id = ?`).pluck().get(scope, threadId, requestId) as number | null;
-    if (exact !== null || legacySeq === undefined) return exact;
+    if (exact !== null) return exact;
+    // D565: a resend skipped as identical has no row; its cut was saved when it was accepted.
+    const skipped = this.ingestion(threadId, scope).skipped?.find((s) => s.requestId === requestId);
+    if (skipped) return skipped.cut;
+    if (legacySeq === undefined) return null;
     // Old rows have no acceptance identity. Only an exact non-retry source event is safe.
     return this.sql(`SELECT MIN(i) FROM log WHERE scope = ? AND thread_id = ? AND request_id IS NULL AND seq = ?`).pluck().get(scope, threadId, legacySeq) as number | null;
   }
