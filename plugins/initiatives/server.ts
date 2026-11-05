@@ -1159,7 +1159,7 @@ export default function plugin(bb: BbPluginApi) {
         && (command.tasks ?? []).every((task) => open.taskNums.includes(Number(task.replace(/^T/i, ""))))
         && BUSY_STATUSES.has((await bb.sdk.threads.get({ threadId: worker.threadId })).status))
         return { ...await service.message(threadId, { target: worker.ref, text: command.note }),
-          note: `${worker.ref} is still working on ${open.ref}, so this went to it as a steer message; its ${open.ref} report covers it.` };
+          note: `${worker.ref} is still working on ${open.ref}, so this went to it as a steer message; the report it files for ${open.ref} will cover it.` };
     }
     // Work for a reviewer is refused: each review round gets a fresh reviewer (W239).
     return perform(p.id, command, "coordinator", threadId);

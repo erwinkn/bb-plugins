@@ -1265,7 +1265,7 @@ export class PrWatcher {
         this.still(wakes, confirmed, route);
         const answer = (await sdk.threads.send({
           threadId: worker.threadId!, mode: "steer-if-active",
-          input: textInput(`Adventures · ${project.name} · PR watch\n\n${yours} (from the plugin, not your lead):\n\n${body}\n\n${NOT_A_MERGE} Handle what needs it (a fix, a reply, or nothing) within ${open ? `your ${open}` : "your current work"}; its report covers it.`),
+          input: textInput(`Adventures · ${project.name} · PR watch\n\n${yours} (from the plugin, not your lead):\n\n${body}\n\n${NOT_A_MERGE} Handle what needs it (a fix, a reply, or nothing)${open ? ` as part of ${open}. ${open} has no report yet: once nothing more is pending, finish it with initiative_report` : " as part of your current work"}.`),
         })) as { delivery?: string; queuedMessage?: { id?: string } } | undefined;
         let how = `${route.busy ? "while it works" : `during ${open}`}${answer?.delivery === "queued" ? ", queued by BB" : ""}`;
         // A Stop that landed as the message went out.

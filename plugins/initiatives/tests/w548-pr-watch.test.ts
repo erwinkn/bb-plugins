@@ -399,6 +399,21 @@ describe("W548 PrWatcher", () => {
     expect(t.sent()[0]).toMatchObject({ to: "thr_w1", mode: "steer-if-active" });
     expect(t.sent()[0]!.text).toMatch(/#1 "PR 1"[\s\S]*#2 "PR 2"/);
     expect(t.sent()[0]!.text).toContain(NOT_A_MERGE);
+    // W576: with no open assignment the ending still names no report; it never says one already covers the wake.
+    expect(t.sent()[0]!.text.endsWith(" Handle what needs it (a fix, a reply, or nothing) as part of your current work.")).toBe(true);
+    expect(t.sent()[0]!.text).not.toContain("its report covers it");
+  });
+
+  it("tells a worker with an open assignment that the assignment has no report yet (W576)", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.start();
+    const open = assign(t, 1, "Do the thing.");
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    const text = t.sent().at(-1)!.text;
+    expect(text.endsWith(`${NOT_A_MERGE} Handle what needs it (a fix, a reply, or nothing) as part of A${open.num}. A${open.num} has no report yet: once nothing more is pending, finish it with initiative_report.`)).toBe(true);
+    expect(text).not.toContain("its report covers it");
   });
 
   it("sends to the coordinator, in one message a pass, when the worker is retired, or idle with a cold cache", async () => {

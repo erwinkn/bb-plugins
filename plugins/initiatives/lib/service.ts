@@ -7209,8 +7209,11 @@ export class ProjectsService {
         const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
         // W563: past PR_WAIT_MAX_MS, a worker waiting on a PR is flagged after all, saying so.
         const waited = watchers.has(threadId) ? `, though it watches an open PR: nothing has woken it for ${PR_WAIT_MAX_MS / 3_600_000} h` : "";
+        // W576: the work this worker holds may have an older report on file; say when it has none.
+        const latest = this.store.latestAssignment(project.id, current.num);
+        const unreported = latest && !latest.report ? ` ${latest.ref} has no report yet.` : "";
         await this.sdk.threads.send({ threadId: lead, mode: "queue-if-active", input: textInput(
-          `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input${waited}. Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
+          `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input${waited}.${unreported} Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
         this.store.setFlag(stuckKey(project.id, worker.num, input.seq));
       } catch (error) {
         this.store.log(project.id, "report", `Could not check whether ${worker.ref} is stuck: ${errorMessage(error)}`);

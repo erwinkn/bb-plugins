@@ -259,7 +259,7 @@ describe("W210 stuck workers", () => {
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: "coordinator", mode: "queue-if-active" });
     expect(f.send.mock.calls[0][0]).not.toHaveProperty("senderThreadId");
-    expect(sentTexts(f)[0]).toBe(`Initiative · Search · W1\n\nW1 stopped (idle) without reporting since its last input. Its last message:\n\nWaiting for CI.\n\nRead its thread (${w.threadId}).`);
+    expect(sentTexts(f)[0]).toBe(`Initiative · Search · W1\n\nW1 stopped (idle) without reporting since its last input. A1 has no report yet. Its last message:\n\nWaiting for CI.\n\nRead its thread (${w.threadId}).`);
     await check();
     expect(stuckSends(f)).toHaveLength(1);
     // A new input re-arms it.
@@ -360,7 +360,7 @@ describe("W210 stuck workers", () => {
       await sweepAt(f, since + PR_WAIT_MAX_MS - 4 * 60_000);
       expect(stuckSends(f)).toHaveLength(0);
       await sweepAt(f, since + PR_WAIT_MAX_MS + 60_000);
-      expect(stuckSends(f)).toEqual([`Initiative · Search · W1\n\nW1 stopped (idle) without reporting since its last input, though it watches an open PR: nothing has woken it for 6 h. Its last message:\n\nWaiting for CI.\n\nRead its thread (${w.threadId}).`]);
+      expect(stuckSends(f)).toEqual([`Initiative · Search · W1\n\nW1 stopped (idle) without reporting since its last input, though it watches an open PR: nothing has woken it for 6 h. A1 has no report yet. Its last message:\n\nWaiting for CI.\n\nRead its thread (${w.threadId}).`]);
       await sweepAt(f, since + PR_WAIT_MAX_MS + 10 * 60_000);
       expect(stuckSends(f)).toHaveLength(1);
     });
@@ -393,7 +393,7 @@ describe("W210 stuck workers", () => {
         if (end === "unwatched") f.service.prWatches.unwatch(url, w.threadId);
         else if (end !== "other") f.service.prWatches.write([{ url, gen: row.gen, state: { ...row.state!, ended: end }, wake: null }]);
         await check();
-        expect(stuckSends(f), end).toEqual([expect.stringContaining("W1 stopped (idle) without reporting since its last input. Its last message:")]);
+        expect(stuckSends(f), end).toEqual([expect.stringContaining("W1 stopped (idle) without reporting since its last input. A1 has no report yet. Its last message:")]);
       }
     });
 

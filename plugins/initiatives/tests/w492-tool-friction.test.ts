@@ -122,7 +122,7 @@ describe("W492 initiative_message", () => {
     f.threads.set(w.threadId, { ...f.threads.get(w.threadId)!, status: "active" });
     const assignments = f.store.assignments(project.id).length;
     expect(await tool(f, "initiative_message", { to: w.worker, text: "Also drop the retry.", work: true })).toEqual({ to: w.worker, delivery: expect.anything(),
-      note: `${w.worker} is still working on A1, so this went to it as a steer message; its A1 report covers it.` });
+      note: `${w.worker} is still working on A1, so this went to it as a steer message; the report it files for A1 will cover it.` });
     expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ threadId: w.threadId, mode: "steer-if-active" });
     expect(f.store.assignments(project.id)).toHaveLength(assignments);
     await expect(tool(f, "initiative_message", { to: w.worker, text: "After that, the docs.", work: true, mode: "queue" })).rejects.toThrow(/this option was removed/);
