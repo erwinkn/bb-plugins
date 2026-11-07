@@ -788,7 +788,7 @@ export function Dashboard({
             if (tab === "archive" || tab === "tasks") setHistoryNeeded(true);
             // Workers needs retired workers and token totals; Activity lists coordinator generations.
             if (["workers", "usage", "activity"].includes(tab)) setDetailsNeeded(true);
-            if (tab === "rules") void loadInventory();
+            if (tab === "context") void loadInventory();
           }}
           detailNotice={detailsNeeded && !details.loaded ? "Loading worker details…" : details.error}
           inventory={inventory}

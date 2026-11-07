@@ -64,7 +64,9 @@ if (computed.length < 3) throw new Error(`${project.name} needs three computed, 
 const [handSet, toCancel, toClose] = computed;
 const untouched = computed[3] ?? null;
 store.setTaskStatus(project.id, handSet!.num, "cancelled");
-store.addRule(project.id, "Rehearsal rule: every PR targets dev.");
+// The rules table outlived the feature (W578); the previous build still reads its rows.
+db.prepare("INSERT INTO rules (project_id, num, text, position, sources, created_at, updated_at) VALUES (?, (SELECT COALESCE(MAX(num), 0) + 1 FROM rules WHERE project_id = ?), ?, 1, '[]', ?, ?)")
+  .run(project.id, project.id, "Rehearsal rule: every PR targets dev.", Date.now(), Date.now());
 store.markPrsOpen(["https://github.com/example/rehearsal/pull/1"], Date.now());
 store.upsertFlag(CUTOVER_FLAG, Date.now());
 check("v9 writes", true, `${project.name}: reply_to on ${a.ref}, ${handSet!.ref} cancelled by hand, a rule, a PR state, ${CUTOVER_FLAG}`);

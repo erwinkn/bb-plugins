@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { manageCommand, manageToolSchema, messageCommand, messageToolSchema, questionToolSchema, ruleCommand, ruleToolSchema, spawnCommand, spawnToolSchema, taskCommand, taskToolSchema, workerCommand, workerToolSchema } from "../lib/agent-tools";
+import { manageCommand, manageToolSchema, messageCommand, messageToolSchema, questionToolSchema, spawnCommand, spawnToolSchema, taskCommand, taskToolSchema, workerCommand, workerToolSchema } from "../lib/agent-tools";
 import { prToolSchema } from "../lib/pr-stages";
 import { parseDecisionCommand, REMOVED_ACTIONS } from "../lib/commands";
 import { agentReadSchema, readOptionsSchema, validateFields, validateSelection, viewForRef, withImpliedDetail, type ReadView } from "../lib/read";
@@ -49,7 +49,6 @@ function fill(value: unknown, key = ""): unknown {
 
 const DECISION = ["user-choice", "veto-request", "question", "answer", "withdraw", "decision"];
 const TASK = ["create", "update", "status", "close", "reopen"];
-const RULE = ["add", "edit", "remove"];
 const WORKER = ["retire", "stop", "adopt"];
 const MANAGE = ["pause", "resume", "stop-work", "archive", "edit", "handover"];
 function toolFor(example: Record<string, unknown>) {
@@ -57,7 +56,6 @@ function toolFor(example: Record<string, unknown>) {
   if (typeof action === "string") {
     if (DECISION.includes(action)) return "initiative_decision";
     if (TASK.includes(action)) return "initiative_task";
-    if (RULE.includes(action)) return "initiative_rule";
     if (WORKER.includes(action)) return "initiative_worker";
     if (MANAGE.includes(action)) return "initiative_manage";
     return null;
@@ -78,7 +76,6 @@ function parseAs(tool: string, raw: Record<string, unknown>) {
     case "initiative_message": return messageCommand(messageToolSchema.parse(raw));
     case "initiative_manage": return manageCommand(manageToolSchema.parse(raw));
     case "initiative_spawn": return spawnCommand(spawnToolSchema.parse(raw));
-    case "initiative_rule": return ruleCommand(ruleToolSchema.parse(raw));
     case "initiative_question": return questionToolSchema.parse(raw);
     case "initiative_pr": return prToolSchema.parse(raw);
     case "initiative_read": {
@@ -118,9 +115,9 @@ describe("W188 every suggested call parses through the real API", () => {
   const all = examples();
 
   it("finds the suggested calls (the scan itself works)", () => {
-    // notOpenQuestion's rule hints, the read hints, the removed-action replacements.
+    // The supersede hint, the read hints, the removed-action replacements.
     expect(all.length).toBeGreaterThan(10);
-    expect(all.some(e => e.file === "lib/service.ts" && e.tool === "initiative_rule" && e.text.includes('"action":"add"'))).toBe(true);
+    expect(all.some(e => e.file === "lib/service.ts" && e.tool === "initiative_decision" && e.text.includes('"action":"answer"'))).toBe(true);
   });
 
   it.each(all.map(e => [`${e.file}:${e.line} ${e.text.slice(0, 90)}`, e] as const))("%s", (_name, example) => {

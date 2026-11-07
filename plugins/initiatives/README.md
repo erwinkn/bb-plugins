@@ -20,7 +20,7 @@ An example, in the Equisafe Initiative:
    The coordinator spawns W1420: `initiative_spawn {label, purpose, text, tasks:["T163"]}`.
    Its assignment A1641 records `reply_to` = the coordinator tab. The brief ends with the
    **reviewer command** (a `bb thread spawn` of the other model family, from the
-   `reviewOfClaude`/`reviewOfGpt` profile) and the **standing rules**. When the
+   `reviewOfClaude`/`reviewOfGpt` profile). When the
    `reviewFallback` profile runs another provider or model than that reviewer (the same model
    at another effort hits the same quota), a second command follows it. If a usage limit or an
    unavailable model stops the reviewer before its verdict, the plugin switches it (W545,
@@ -65,15 +65,14 @@ An example, in the Equisafe Initiative:
    the reviewer finished a turn by the time it stopped leaves it (R8).
 2. W1420 implements, opens its PR and keeps its stage with `initiative_pr`. For each review
    round it starts a fresh reviewer as an ordinary BB child thread (`--parent-self
-   --lifecycle-owner-thread`, in its checkout), copies the rules that matter into the
-   reviewer's brief, and ends its turn: BB's child turn-end notice wakes it. Ending a turn
+   --lifecycle-owner-thread`, in its checkout) and ends its turn: BB's child turn-end notice wakes it. Ending a turn
    records nothing; only `initiative_report` finishes work.
-3. No fixed round cap (rule R5, Erwin 2026-10-17, in the worker guidance; the plugin counts
+3. No fixed round cap (Erwin 2026-10-17, in the worker guidance; the plugin counts
    nothing). The repository's own review-loop skill, when it has one (Equisafe's
    `autoreview`), decides what each round checks, when to stop and what clean means (Erwin, 2026-11-07); the
    worker guidance's default loop, for a repository without one, states the same rule: before
    round 1, say where the behaviour of each branch, filter, check or field the change deletes or moves lives now, why nothing needs it, or that the worker can't tell and cuts it anyway, listing it; reviewers group findings by root cause, and the worker fixes each cause
-   and sweeps the change for its other instances; keep going only while the P1s and P2s the worker accepts get fewer each round, with no more P1s, and none caused by the previous fix. In that default loop, clean (rule R8, Erwin 2026-10-20) means the reviewer's verdict is correct with no P1 or P2; P3s left are fixed
+   and sweeps the change for its other instances; keep going only while the P1s and P2s the worker accepts get fewer each round, with no more P1s, and none caused by the previous fix. In that default loop, clean (Erwin 2026-10-20) means the reviewer's verdict is correct with no P1 or P2; P3s left are fixed
    if cheap and listed in the PR notes, with no re-review. One reviewer per round; an expert (Fable 5.1
    or Muse Wonder Full) is a second one only when the brief asks for it on a high-risk change (auth, money, locking,
    migrations, crypto, concurrency), consulted once after the first has passed the head; such a change, broad work (a large refactor) or a feature over several PRs also gets a design artifact the expert reviews once
@@ -81,13 +80,13 @@ An example, in the Equisafe Initiative:
    done once. A loop that stops without converging, a decision the review-loop skill would ask
    the user for, or scope creep: it reports blocked with the open findings, options and the
    design cause it suspects. The lead sends it back to review (`initiative_message work:true`)
-   only when a standing rule or Erwin's explicit instruction settles the finding; otherwise
+   only when Erwin's explicit instruction settles the finding; otherwise
    it asks Erwin (`initiative_question`).
 4. The report goes to the worker's **lead**, the coordinator. A done report queues behind a
    busy coordinator and runs as its own turn when drained; a blocked one steers into the
    running turn.
 5. Every later work message ends with the whole loop (the worker guidance as a new session
-   gets it, the reviewer command, the rules), under "How you work in this Initiative
+   gets it, the reviewer command), under "How you work in this Initiative
    (current; replaces anything earlier)".
 
 What changed from v8 (the previous build, `3d46353`):
@@ -106,14 +105,17 @@ What changed from v8 (the previous build, `3d46353`):
   its PR records or anywhere in its reports; the newest work decides the outcome. PR states (`pr_states`) come from the merge
   queue's open lists plus a background lookup pass after each fetch (up to 50 PRs in one
   GraphQL request, W516); reads never call GitHub.
-- **Standing rules replace the decision log** (D518, D523): `initiative_rule`, the Rules
-  tab, `initiative_read {view:"rules"}`, `bb initiative rules import|export`. The list
-  travels in briefs, work messages and each coordinator's first message; instructions carry
-  only a pointer (BB cuts them at 4096). A PR a rule names is nobody's work: PR attribution
-  reads a brief without that shared appendix. Every change, an import or its undo included,
-  is announced to the coordinator (unless it made the change) and the workers with open work;
-  a send that fails is named in `notReached`. `user-choice`/`veto-request` are refused with where
-  such a choice goes now; questions stay (`initiative_question`).
+- **The decision log is retired** (D518): `user-choice`/`veto-request` are refused with where
+  such a choice goes now (a lasting one in the repo's docs or `AGENTS.md`, one about a PR in
+  its notes); questions stay (`initiative_question`). v9 replaced the log with standing rules
+  (D523): a numbered list appended to every brief and work message. W578 removed them
+  (Erwin: "let's just remove the rules"): a big Adventure's list cost ~5k tokens per message,
+  and the lists went stale and contradicted themselves. The `initiative_rule` tool, the
+  `rules` read view, the Rules tab (now Context again), `bb initiative rules` and the
+  rule-change announcements are gone. The `rules` table stays, unread, so the previous build
+  still runs on the same database. R# references here and in code comments name rules as
+  they stood; the final lists are in
+  `~/.bb-backups/initiative-rules/rules-export-20261107.json`.
 - **Stuck vs waiting**: a worker with a live descendant isn't flagged. "Live" is one rule
   everywhere (`running()` in `lib/bb.ts`): a busy status, background agents, commands or
   workflows, queued work, or pending input. The Account Pooler's context route names a
@@ -1394,8 +1396,8 @@ T149 (D446) gave an Initiative **discussions**: extra threads, shown as tabs
 beside the coordinator, that shared its memory and (from v9) led workers like
 it. R3 and R6 removed them: each memory tree belongs to one thread, and the
 coordinator is every worker's lead. The tab strip, the **+** (`discussionCreate`)
-and the `panel` read's `tabs` are gone; nothing routes reports, messages, rule
-announcements or notices to a discussion any more.
+and the `panel` read's `tabs` are gone; nothing routes reports, messages or
+notices to a discussion any more.
 
 Nothing was migrated away. `project_threads.discussion` stays (new rows leave
 it 0), so rolling back to the previous build needs no restore. A thread that was

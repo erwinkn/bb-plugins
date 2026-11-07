@@ -6,14 +6,12 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type FormEvent,
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
 import { Markdown, useRealtime } from "@get-bb/plugin-sdk/app";
 import type { Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
 import { BUSY_THREAD, PR_WAIT_MAX_MS, workerKind, KIND_GROUP, type WorkerGroup as LiveGroup } from "./lib/worker-group";
-import { MAX_RULES, RULE_MAX_CHARACTERS } from "./lib/rules";
 import type { Command } from "./lib/commands";
 import type { Cached, ChildPage, projectsContract } from "./lib/contract";
 import { useData } from "./use-data";
@@ -25,7 +23,7 @@ import { WRITE_SLOW_MESSAGE, WRITE_SLOW_MS } from "./lib/write-timeout";
 import "./control-room.css";
 
 /** Five tabs, then the three views behind ⋯ (D512, v9 §10). */
-export type Tab = "inbox" | "workers" | "prs" | "tasks" | "rules" | "activity" | "usage" | "archive";
+export type Tab = "inbox" | "workers" | "prs" | "tasks" | "context" | "activity" | "usage" | "archive";
 type Inventory = typeof projectsContract.inventory.output._output;
 type Run = (command: Command) => Promise<unknown>;
 const message = (error: unknown) =>
@@ -89,8 +87,6 @@ const glyphs = {
   log: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
   usage: "M5 20V11M12 20V4M19 20v-6",
   open: "M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4",
-  up: "M6 15l6-6 6 6",
-  edit: "M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16zM13.5 6.5l4 4",
   pr: "M6 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM6 15.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM6 8.5v7M18 15.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM18 15.5V9a3 3 0 0 0-3-3h-3M14.5 3.5 12 6l2.5 2.5",
 };
 function Glyph({ name }: { name: keyof typeof glyphs }) {
@@ -250,7 +246,7 @@ const mainTabs: readonly TabSpec[] = [
   ["workers", "Workers", null],
   ["prs", "PRs", "pr"],
   ["tasks", "Tasks", null],
-  ["rules", "Rules", null],
+  ["context", "Context", null],
 ];
 /** Behind ⋯; the open one joins the strip so the reader sees where they are. */
 const moreTabs: readonly TabSpec[] = [
@@ -258,8 +254,8 @@ const moreTabs: readonly TabSpec[] = [
   ["usage", "Usage", "usage"],
   ["archive", "Archive", "context"],
 ];
-/** Views a remembered tab or an old route may still name, before v9's five tabs. */
-const formerTabs: Record<string, Tab> = { threads: "workers", decisions: "archive", context: "rules", log: "activity" };
+/** Views a remembered tab or an old route may still name: before v9's five tabs, and the Rules tab (W578). */
+const formerTabs: Record<string, Tab> = { threads: "workers", decisions: "archive", rules: "context", log: "activity" };
 export const isTab = (value: unknown): value is Tab => [...mainTabs, ...moreTabs].some(([id]) => id === value);
 /** A tab from a stored or routed value, mapping the views v9 renamed; null when it names none. */
 export const toTab = (value: unknown): Tab | null =>
@@ -510,10 +506,10 @@ export function ControlRoom({
                 <Action run={run} command={{ action: "pause", paused: !p.paused }}>
                   {p.paused ? "Resume" : "Pause"}
                 </Action>
-                <button onClick={() => { chooseTab("rules"); setEditing(true); close(); }}>Edit initiative</button>
+                <button onClick={() => { chooseTab("context"); setEditing(true); close(); }}>Edit initiative</button>
                 <button
                   onClick={() => {
-                    chooseTab("rules");
+                    chooseTab("context");
                     close();
                     requestAnimationFrame(() => repositories.current?.scrollIntoView?.({ block: "start" }));
                   }}
@@ -737,7 +733,7 @@ export function ControlRoom({
             <Tasks o={o} run={run} newTask={newTask} showWorker={showWorker} />
           </KeepTab>
           {mergeQueue ? <KeepTab current={tab} id="prs">{mergeQueue.view}</KeepTab> : null}
-          <KeepTab current={tab} id="rules">
+          <KeepTab current={tab} id="context">
             <>
               <section className="cr-card cr-purpose" aria-label="Purpose and objectives">
                 {editing ? (
@@ -772,7 +768,6 @@ export function ControlRoom({
                   </>
                 )}
               </section>
-              <Rules o={o} run={run} openArchive={() => chooseTab("archive")} />
               <section ref={repositories} className="cr-repositories">
                 <Repositories o={o} inventory={inventory} run={run} />
               </section>
@@ -1981,119 +1976,6 @@ function TaskRow({ t, run, showWorker }: {
   );
 }
 
-// ---- Rules (D523): the standing rules the coordinator and every worker get.
-
-function Rules({ o, run, openArchive }: { o: Overview; run: Run; openArchive: () => void }) {
-  const [adding, setAdding] = useState(false);
-  return (
-    <section className="cr-rules" aria-label="Standing rules">
-      <h2 className="cr-section-heading cr-rules-head">
-        Standing rules <span className="cr-rules-count">{o.rules.length} / {MAX_RULES}</span>
-      </h2>
-      {o.rules.length ? (
-        <ol className="cr-rule-list">
-          {o.rules.map((rule, index) => (
-            <RuleRow key={rule.ref} rule={rule} index={index} last={index === o.rules.length - 1} run={run} />
-          ))}
-        </ol>
-      ) : (
-        <p className="cr-lede">No standing rules yet.</p>
-      )}
-      {adding ? (
-        <RuleForm label="New rule" initial="" save={(text) => run({ action: "rule-add", text })} close={() => setAdding(false)} />
-      ) : o.rules.length < MAX_RULES ? (
-        <button type="button" className="cr-add-box" onClick={() => setAdding(true)}>+ Add rule</button>
-      ) : null}
-      <p className="cr-lede">
-        The coordinator and every worker get these: in briefs, work messages and each coordinator’s first message; a change is
-        announced to the coordinator and workers with open work.
-      </p>
-      <button type="button" className="cr-link cr-archive-link" onClick={openArchive}>
-        Archive{o.historyLoaded ? `: ${o.decisions.length} earlier decisions and closed questions` : ": earlier decisions and closed questions"} (read-only) →
-      </button>
-    </section>
-  );
-}
-
-function RuleRow({ rule, index, last, run }: {
-  rule: Overview["rules"][number];
-  index: number;
-  last: boolean;
-  run: Run;
-}) {
-  const [mode, setMode] = useState<"view" | "edit" | "delete">("view");
-  const write = useWrite();
-  const act = (command: Command) => void write.run(() => run(command));
-  if (mode === "edit")
-    return (
-      <li className="cr-rule">
-        <span className="cr-ref">{rule.ref}</span>
-        <RuleForm label={`Edit ${rule.ref}`} initial={rule.text} save={(text) => run({ action: "rule-edit", rule: rule.ref, text })} close={() => setMode("view")} />
-      </li>
-    );
-  return (
-    <li className="cr-rule">
-      <span className="cr-ref">{rule.ref}</span>
-      <div className="cr-rule-text">
-        <p>{rule.text}</p>
-        {rule.sources.length ? <p className="cr-rule-sources">from {rule.sources.join(", ")}</p> : null}
-        {mode === "delete" ? (
-          <div className="project-actions">
-            <span>Delete {rule.ref}?</span>
-            <button type="button" disabled={write.busy} onClick={() => act({ action: "rule-remove", rule: rule.ref })}>{write.busy ? "Deleting…" : "Delete"}</button>
-            <button type="button" onClick={() => setMode("view")}>Keep</button>
-          </div>
-        ) : null}
-        {write.error ? <p role="alert" className="project-error">{write.error}</p> : null}
-      </div>
-      <div className="cr-rule-actions">
-        <button type="button" className="cr-iconbtn" aria-label={`Move ${rule.ref} up`} disabled={index === 0 || write.busy} onClick={() => act({ action: "rule-move", rule: rule.ref, to: index })}><Glyph name="up" /></button>
-        <button type="button" className="cr-iconbtn" aria-label={`Move ${rule.ref} down`} disabled={last || write.busy} onClick={() => act({ action: "rule-move", rule: rule.ref, to: index + 2 })}><Glyph name="down" /></button>
-        <button type="button" className="cr-iconbtn" aria-label={`Edit ${rule.ref}`} onClick={() => setMode("edit")}><Glyph name="edit" /></button>
-        <button type="button" className="cr-iconbtn" aria-label={`Delete ${rule.ref}`} onClick={() => setMode("delete")}><Glyph name="close" /></button>
-      </div>
-    </li>
-  );
-}
-
-/** One line, one or two sentences: Enter saves, Escape cancels. */
-function RuleForm({ label, initial, save, close }: {
-  label: string;
-  initial: string;
-  save: (text: string) => Promise<unknown>;
-  close: () => void;
-}) {
-  const [text, setText] = useState(initial);
-  const write = useWrite();
-  const clean = text.replace(/\s+/g, " ").trim();
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!clean || write.busy) return;
-    const done = await write.run(() => save(clean));
-    if (done.ok) close();
-  };
-  return (
-    <form className="cr-rule-form" onSubmit={submit}>
-      <input
-        aria-label={label}
-        value={text}
-        autoFocus
-        maxLength={RULE_MAX_CHARACTERS}
-        placeholder="One or two sentences."
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}
-      />
-      <div className="project-actions">
-        <button className="project-primary" disabled={!clean || write.busy}>{write.busy ? "Saving…" : "Save rule"}</button>
-        <button type="button" onClick={close}>Cancel</button>
-        <span className="cr-rule-limit">{clean.length} / {RULE_MAX_CHARACTERS}</span>
-      </div>
-      {write.slow ? <p role="status" className="project-muted">{WRITE_SLOW_MESSAGE}</p> : null}
-      {write.error ? <p role="alert" className="project-error">{write.error}</p> : null}
-    </form>
-  );
-}
-
 // ---- Archive: the decision record, read-only (v9 §6: no veto, no review).
 
 type DecisionRow = Overview["decisions"][number];
@@ -2145,7 +2027,7 @@ function Archive({ o, run }: { o: Overview; run: Run }) {
   return (
     <section className="cr-decisions" aria-label="Archive">
       <div className="cr-toolbar">
-        <p className="cr-lede">Earlier decisions, facts and closed questions. Standing rules live on the Rules tab.</p>
+        <p className="cr-lede">Earlier decisions, facts and closed questions.</p>
         <div className="project-usage-filter" role="group" aria-label="Who made the decision">
           {decisionFilters.map(([id, label]) => (
             <button key={id} aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>

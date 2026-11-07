@@ -343,8 +343,6 @@ export interface Overview {
   notDelivered?: NotDeliveredMessage[];
   /** v9: tasks with their shown status; done and cancelled ones only with history (`history`, `full`). */
   tasks: TaskItem[];
-  /** v9 (D523): the standing rules, in order. */
-  rules: { ref: string; text: string; sources: string[] }[];
   /** v9: each live worker's descendants as the server's cache knows them (W# →); no native read. */
   workerWaiting?: Record<string, WorkerWaiting>;
   /**
@@ -891,7 +889,6 @@ export function buildOverview(
       workers: [...(taskWorkers.get(task.num) ?? [])],
       updatedAt: task.updatedAt,
     })),
-    rules: store.rules(projectId).map((r) => ({ ref: r.ref, text: r.text, sources: r.sources })),
     workers: {
       current: workers
         .filter((worker) => worker.state !== "retired")

@@ -27,7 +27,7 @@ function storedReportPrs(report: string | null): string[] {
  * order of first appearance.
  */
 export function assignmentPrRefs(brief: string, report: string | null): { named: string[]; referenced: string[] } {
-  // Without the appendix every worker shares: a PR a rule names is no one's work.
+  // Without the appendix every worker shares: a PR it names is no one's work.
   const own = ownBriefText(brief);
   return {
     // Who works on a PR, by URL. Both: a review's report rarely repeats the PR its brief gave it.

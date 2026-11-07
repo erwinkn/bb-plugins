@@ -1,8 +1,6 @@
 import Database from "better-sqlite3";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { fixture, legacyDiscussion, projectFixture } from "./fake-native";
 import { MIGRATIONS, Store } from "../lib/store";
@@ -10,13 +8,11 @@ import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, GUIDANCE
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 import { computeTaskStatus, type LinkingWork } from "../lib/task-status";
 import { CUTOVER_FLAG, cutoverInstruction } from "../lib/cutover";
-import { renderCoordinatorSeed } from "../lib/brief";
-import { formatRulesFile, parseRulesFile } from "../lib/rules";
 import { assembleInstructions, INSTRUCTIONS_MAX } from "../lib/instructions";
 
 // v9 (Initiatives redesign, design.md): worker-owned review loops, the coordinator as every
 // worker's lead (discussions, briefly leads too, are gone: R6), computed task status with a
-// hand-set override, standing rules, pre-switch work and the cutover, D529.
+// hand-set override, pre-switch work and the cutover, D529. Standing rules were removed (W578).
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool = async (f: Fx, name: string, input: unknown, threadId = "coordinator") =>
@@ -25,7 +21,6 @@ const texts = (f: Fx, threadId?: string) =>
   f.send.mock.calls.map(([args]) => args).filter((a) => !threadId || a.threadId === threadId).map((a) => a.input[0].text as string);
 const configure = (f: Fx, threadId: string) =>
   f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(threadId)! }));
-const rule = (n: number) => `Rule ${n}: ${"keep every query tenant-scoped and every migration reversible ".repeat(7)}`.slice(0, 400);
 const PRECONDITION = `SELECT DISTINCT a.project_id, a.worker_num FROM assignments a
   JOIN workers w ON w.project_id = a.project_id AND w.num = a.worker_num
   WHERE a.reply_to IS NOT NULL AND w.state <> 'retired'`;
@@ -40,11 +35,6 @@ function stoppedTurn(f: Fx, threadId: string) {
   f.idle(threadId);
 }
 
-const scratch: string[] = [];
-afterEach(() => {
-  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
 describe("v9 §6.1 the instruction budget", () => {
   const guidance = `${"g".repeat(MAX_GUIDANCE_CHARACTERS - 1)}Z`;
   it("every configure branch stays within 4096 and ends with the whole guidance", async () => {
@@ -55,7 +45,7 @@ describe("v9 §6.1 the instruction budget", () => {
       const { instructions } = await configure(f, threadId);
       expect(instructions!.length, threadId).toBeLessThanOrEqual(INSTRUCTIONS_MAX);
       expect(instructions!.endsWith(guidance), threadId).toBe(true);
-      expect(instructions, threadId).toMatch(/Standing rules: 0\./);
+      expect(instructions, threadId).not.toMatch(/Standing rules|view:"rules"/);
     }
     // The user's own thread gets no guidance, and stays far below the limit.
     const own = (await f.perform(project.id, { action: "thread-create", title: "Mine", request: {
@@ -66,7 +56,7 @@ describe("v9 §6.1 the instruction budget", () => {
 
   it("assembles plugin lines first and clips only them (the pending coordinator's long branch)", () => {
     const pending = "You are the pending coordinator of the \"" + "N".repeat(80) + "\" Initiative: this thread's checkout is still being proven. ".repeat(6);
-    const out = assembleInstructions([pending, "Standing rules: 60, last changed 2026-10-14 10:12 UTC. Read them with initiative_read {view:\"rules\"}."], guidance);
+    const out = assembleInstructions([pending, "A second plugin line."], guidance);
     expect(out.length).toBeLessThanOrEqual(INSTRUCTIONS_MAX);
     expect(out.endsWith(guidance)).toBe(true);
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
@@ -75,30 +65,29 @@ describe("v9 §6.1 the instruction budget", () => {
 });
 
 describe("v9 §3 the worker owns its review loop", () => {
-  it("guidance: fresh reviewer each round from the other family, no round cap while findings converge (R5), blocked on whack-a-mole or scope creep; leads send it back only on a rule or the user's word", () => {
+  it("guidance: fresh reviewer each round from the other family, no round cap while findings converge (R5), blocked on whack-a-mole or scope creep; leads send it back only on the user's word", () => {
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Each round, one fresh reviewer from the other model family, started with your brief's reviewer command, runs code-review.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Clean: verdict correct, no P1 or P2.\n- Once only P3s remain, fix the cheap ones, list the rest in your PR notes and report done: no re-review to confirm P3 fixes. If your brief asks for an expert second reviewer (Fable 5.1, or Muse Wonder Full: muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Done when the last round is clean. Blocked (open findings, your view, options, suspected design cause) when the loop stops converging, the skill would ask the user, or scope creeps.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child, background job or watched PR is pending, end your turn; it wakes you. Ending a turn reports nothing. End one without a report only to wait like that.");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("if a standing rule or the user's explicit instruction settles it, answer the worker and let it keep reviewing");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Blocked: if the user's explicit instruction settles it, answer the worker and let it keep reviewing");
     // W498 (R5): no 4- or 6-round limit is left in either default.
     for (const text of [DEFAULT_WORKER_INSTRUCTIONS, DEFAULT_COORDINATOR_INSTRUCTIONS]) expect(text).not.toMatch(/\b[46] (more )?(review )?rounds|after round \d|At most \d/);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Otherwise ask the user with initiative_question, with the worker's options and recommendation");
   });
 
-  it("a brief ends with the reviewer command of the other family and the rules; every work message with the whole loop", async () => {
+  it("a brief ends with the reviewer command of the other family; every work message with the whole loop", async () => {
     const { f, project } = await projectFixture();
-    await tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev." });
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
     // A Claude worker's reviewer is the reviewOfClaude profile (GPT by default).
     expect(brief).toContain('Reviewer command (code-review skill, other model family):\nbb thread spawn --project "$BB_PROJECT_ID" --parent-self \\\n  --lifecycle-owner-thread "$BB_THREAD_ID" --environment "$BB_ENVIRONMENT_ID" \\\n  --provider codex --model gpt-6-astra --reasoning-level xhigh');
-    expect(brief).toMatch(/\n\nStanding rules \(1, last changed [^)]+\)\. The full list; follow it:\nR1\. Every PR targets dev\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
+    expect(brief).toMatch(/--prompt-file "\$BB_THREAD_STORAGE\/review-r<N>\.md"\n\nUniiChat keeps private history; turns queue during preparation\. Use memory_zoom\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
     expect(brief).not.toContain("How you work in this Initiative");
     await tool(f, "initiative_report", { outcome: "blocked", summary: "Still rejected after 4 review rounds.", question: "Move the backfill?", report: "r4: P1 open." }, w.threadId);
-    await tool(f, "initiative_message", { to: "W1", text: "R1 settles it. You have 4 more review rounds.", work: true });
+    await tool(f, "initiative_message", { to: "W1", text: "Erwin settles it. You have 4 more review rounds.", work: true });
     const work = texts(f, w.threadId).at(-1)!;
     expect(work).toContain(`How you work in this Initiative (current; replaces anything earlier):\n\n${DEFAULT_WORKER_INSTRUCTIONS}\n\nReviewer command`);
-    expect(work).toMatch(/R1\. Every PR targets dev\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
+    expect(work).toMatch(/--prompt-file "\$BB_THREAD_STORAGE\/review-r<N>\.md"\n\nUniiChat keeps private history; turns queue during preparation\. Use memory_zoom\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
     expect(f.store.assignment(project.id, 2)).toMatchObject({ replyTo: "coordinator", route: "continue" });
   });
 
@@ -202,7 +191,8 @@ describe("v9 §8.1 adoption: always one assignment, obeys Pause at its commit, t
     expect(message).toMatch(/^You are now W1 "Audit" \(metrics\) in the "Search" Initiative, on A1\./);
     expect(message).toContain("bb initiative report");
     expect(message).toContain(`How you work in this Initiative (current; replaces anything earlier):\n\n${DEFAULT_WORKER_INSTRUCTIONS}\n\nReviewer command`);
-    expect(message).toMatch(/Standing rules: none yet\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
+    expect(message).toMatch(/--prompt-file "\$BB_THREAD_STORAGE\/review-r<N>\.md"(\n\n[^\n]+)?\n\n\[initiatives:op_[a-z0-9]+\]$/);
+    expect(message).not.toContain("Standing rules");
     expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ threadId: "adopt-me", mode: "queue-if-active" });
     // It reports from the shell while its tools predate the switch.
     const cli = await f.harness.runCli(["report", JSON.stringify({ outcome: "done", summary: "Audited.", report: "All good." })], { threadId: "adopt-me" });
@@ -228,80 +218,6 @@ describe("v9 §8.1 adoption: always one assignment, obeys Pause at its commit, t
     expect(f.store.assignments(project.id)).toEqual([]);
     expect(texts(f, "adopt-me")).toEqual([]);
     expect(f.store.db.prepare(PRECONDITION).all()).toEqual([]);
-  });
-});
-
-describe("v9 §6 standing rules (D523)", () => {
-  it("the coordinator adds, edits and removes; each change reaches workers with open work, not idle ones, nor a former discussion", async () => {
-    const { f, project } = await projectFixture();
-    const chat = legacyDiscussion(f, project.id);
-    const [busy] = await tool(f, "initiative_spawn", { label: "Busy", purpose: "busy", text: "Work." });
-    const [done] = await tool(f, "initiative_spawn", { label: "Done", purpose: "done", text: "Work." });
-    await tool(f, "initiative_report", { outcome: "done", summary: "Done.", report: "Done." }, done.threadId);
-    f.send.mockClear();
-    const added = await tool(f, "initiative_rule", { action: "add", text: "A backfill over 1 M rows runs as a separate, resumable job." });
-    expect(added).toMatchObject({ rule: "R1", reached: ["W1"] });
-    expect(f.send.mock.calls.map(([a]) => [a.threadId, a.mode])).toEqual([[busy.threadId, "queue-if-active"]]);
-    expect(texts(f)[0]).toContain('Rule R1 added: "A backfill over 1 M rows runs as a separate, resumable job."');
-    // From the user: the coordinator hears of it too. The former discussion never does, and can't change rules.
-    f.send.mockClear();
-    await f.perform(project.id, { action: "rule-edit", rule: "R1", text: "A backfill over 1 M rows runs as its own job." }, "user", null);
-    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator", busy.threadId]);
-    await expect(tool(f, "initiative_rule", { action: "add", text: "x" }, chat)).rejects.toThrow();
-    await tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev." });
-    await tool(f, "initiative_rule", { action: "remove", rule: "R1" });
-    const read = await tool(f, "initiative_read", { view: "rules" });
-    expect(read.rules).toEqual([{ ref: "R2", text: "Every PR targets dev." }]);
-    // A removed number is never reused.
-    expect((await tool(f, "initiative_rule", { action: "add", text: "Third." })).rule).toBe("R3");
-    expect(f.store.activity(project.id, 20).filter((a) => a.kind === "rule").map((a) => a.summary)).toContain("R1 removed by the coordinator (was: A backfill over 1 M rows runs as its own job.)");
-    // Workers can't change rules.
-    await expect(tool(f, "initiative_rule", { action: "add", text: "x" }, busy.threadId)).rejects.toThrow();
-  });
-
-  it("at most 60 rules of 400 characters, one line each; the user reorders on the Rules tab", async () => {
-    const { f, project } = await projectFixture();
-    for (let n = 1; n <= 60; n++) f.store.addRule(project.id, rule(n));
-    await expect(tool(f, "initiative_rule", { action: "add", text: "One too many." })).rejects.toThrow(/60 standing rules/);
-    await expect(tool(f, "initiative_rule", { action: "edit", rule: "R1", text: "x".repeat(401) })).rejects.toThrow();
-    await expect(f.perform(project.id, { action: "rule-add", text: "two\nlines" }, "user", null)).rejects.toThrow();
-    await f.perform(project.id, { action: "rule-move", rule: "R60", to: 1 }, "user", null);
-    expect(f.store.rules(project.id).slice(0, 2).map((r) => r.ref)).toEqual(["R60", "R1"]);
-    await expect(f.perform(project.id, { action: "rule-move", rule: "R1", to: 2 }, "coordinator", "coordinator")).rejects.toThrow(/Only the user reorders/);
-  });
-
-  it("the full list reaches a coordinator's first message, after a handover that mentions none", async () => {
-    const rules = Array.from({ length: 60 }, (_, i) => ({ ref: `R${i + 1}`, num: i + 1, text: rule(i + 1), updatedAt: 0 })) as never[];
-    const { renderRules } = await import("../lib/rules");
-    for (const replacing of [true, false]) {
-      const seed = renderCoordinatorSeed({ project: { name: "Equisafe", objective: "Ship." }, replacing, reason: replacing ? "context" : null,
-        handover: replacing ? "W1420 owns #2631; nothing about rules here." : null, rules: renderRules(rules), preSwitch: null });
-      expect(seed).toContain(`R1. ${rule(1)}`);
-      expect(seed.endsWith(`R60. ${rule(60)}`)).toBe(true);
-    }
-  });
-
-  it("import makes the list exactly the file's and writes the previous list next to it: importing that is the exact undo", async () => {
-    const { f, project } = await projectFixture();
-    const dir = mkdtempSync(join(tmpdir(), "v9-rules-"));
-    scratch.push(dir);
-    await tool(f, "initiative_rule", { action: "add", text: "Old rule." });
-    await f.perform(project.id, { action: "rule-add", text: "Edited on the dashboard.", sources: ["D12"] }, "user", null);
-    const file = join(dir, "rules-proposal.md");
-    writeFileSync(file, "# Proposal\n\nR3. Every PR targets dev.\n    Sources: D12, D40\nR1. Old rule, reworded.\nR7. Migrations have a down step.\n");
-    const imported = await f.harness.runCli(["rules", "import", project.id, file]);
-    expect(imported.exitCode).toBe(0);
-    expect(f.store.rules(project.id).map((r) => [r.ref, r.text, r.sources])).toEqual([
-      ["R3", "Every PR targets dev.", ["D12", "D40"]], ["R1", "Old rule, reworded.", []], ["R7", "Migrations have a down step.", []]]);
-    const backup = readdirSync(dir).find((name) => name.startsWith("rules-before-"))!;
-    expect(JSON.parse(imported.stdout!).undo).toBe(`bb initiative rules import ${project.id} ${join(dir, backup)}`);
-    expect((await f.harness.runCli(["rules", "import", project.id, join(dir, backup)])).exitCode).toBe(0);
-    expect(f.store.rules(project.id).map((r) => [r.ref, r.text, r.sources])).toEqual([["R1", "Old rule.", []], ["R2", "Edited on the dashboard.", ["D12"]]]);
-    // The format round-trips numbers, order, text and sources.
-    const list = [{ num: 9, text: "Nine.", sources: ["D1"] }, { num: 2, text: "Two: with a colon, and #2631.", sources: [] }];
-    expect(parseRulesFile(formatRulesFile("X", list))).toEqual(list);
-    expect(() => parseRulesFile("R1. a\nnot a rule\n")).toThrow(/line 2/);
-    expect(readFileSync(join(dir, backup), "utf8")).toContain("R2. Edited on the dashboard.\n    Sources: D12");
   });
 });
 
@@ -423,7 +339,7 @@ describe("v9 §12 pre-switch work and the cutover", () => {
     f.idle("coordinator");
     await f.service.replaceCoordinator(project.id, { reason: "fresh context", handover: "Short handover." });
     const seed = f.spawn.mock.calls.at(-1)![0].prompt as string;
-    expect(seed).toMatch(/Short handover\.[^]*Standing rules: none yet\.\n\nWork given out before the switch to worker-owned reviews \(1 worker\):\n/);
+    expect(seed).toMatch(/Short handover\.\n\nWork given out before the switch to worker-owned reviews \(1 worker\):\n/);
     expect(seed).toContain(`- W1 · A1 · reported done`);
     expect(seed).toContain("Given out before the switch to worker-owned reviews: W1 did not review this itself.");
     expect(seed).toContain(cutoverInstruction(f.store.flagSetAt(CUTOVER_FLAG)!).slice(0, 60));

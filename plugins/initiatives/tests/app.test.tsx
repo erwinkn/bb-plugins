@@ -511,7 +511,7 @@ describe("project dashboard", () => {
     };
     const command = vi.fn().mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => o, command });
-    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Context" }));
     await waitFor(() =>
       expect(
         slot.getByText("Every answer traces back to a source thread."),
@@ -565,7 +565,7 @@ describe("project dashboard", () => {
       return Promise.resolve({});
     });
     const slot = mount({ list: () => [], overview: () => current, command });
-    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Context" }));
     await waitFor(() =>
       expect(slot.getByRole("button", { name: "Edit purpose and objectives" })).toBeTruthy(),
     );
@@ -594,7 +594,7 @@ describe("project dashboard", () => {
       )
       .mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => current, command });
-    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Context" }));
     await waitFor(() =>
       expect(slot.getByRole("button", { name: "Edit purpose and objectives" })).toBeTruthy(),
     );
@@ -959,7 +959,7 @@ describe("project dashboard", () => {
     const slot = mount({ list: () => [], overview: () => o });
     await slot.findByRole("tab", { name: /Inbox/ });
     const tabs = slot.getAllByRole("tab");
-    expect(tabs.map(t => t.textContent)).toEqual(["Inbox1", "Workers", "PRs", "Tasks", "Rules"]);
+    expect(tabs.map(t => t.textContent)).toEqual(["Inbox1", "Workers", "PRs", "Tasks", "Context"]);
     // The PR tab carries a real glyph for the narrowest strip, never text.
     expect(tabs[2]!.querySelector(".cr-tab-icon svg")).toBeTruthy();
     expect(tabs[0]!.querySelector(".cr-count--hot")).toBeTruthy();
@@ -1025,7 +1025,7 @@ describe("project dashboard", () => {
   it("A96 tab labels are not repeated as headings and legacy records are absent from active UI", async () => {
     const slot = mount({ list: () => [], overview: () => overview(), command: vi.fn() });
     await slot.findByRole("tab", { name: /Tasks/ });
-    for (const name of ["Workers", "Tasks", "Rules"]) {
+    for (const name of ["Workers", "Tasks", "Context"]) {
       fireEvent.click(slot.getByRole("tab", { name: new RegExp(name) }));
       expect(slot.queryByRole("heading", { name })).toBeNull();
     }
@@ -1039,14 +1039,14 @@ describe("project dashboard", () => {
   it("preserves answer and context drafts across tabs and replacement inspection", async () => {
     const o = overview();
     const slot = mount({ list: () => [], overview: () => o });
-    await slot.findByRole("tab", { name: "Rules" });
+    await slot.findByRole("tab", { name: "Context" });
     fireEvent.click(
       slot.getByRole("radio", { name: "Other Write your own answer." }),
     );
     fireEvent.change(slot.getByLabelText("Your answer"), {
       target: { value: "My pending answer" },
     });
-    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
+    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
     fireEvent.click(slot.getByRole("button", { name: "Edit purpose and objectives" }));
     fireEvent.change(slot.getByLabelText("Vision"), {
       target: { value: "My pending vision" },
@@ -1054,7 +1054,7 @@ describe("project dashboard", () => {
     await openView(slot, "Usage");
     await openReplace(slot);
     fireEvent.click(slot.getByRole("button", { name: "Close replacement" }));
-    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
+    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
     expect((slot.getByLabelText("Vision") as HTMLTextAreaElement).value).toBe(
       "My pending vision",
     );
@@ -1172,9 +1172,9 @@ describe("project dashboard", () => {
     const inbox = await slot.findByRole("tab", { name: /Inbox/ });
     fireEvent.keyDown(inbox, { key: "End" });
     expect(
-      slot.getByRole("tab", { name: "Rules" }).getAttribute("aria-selected"),
+      slot.getByRole("tab", { name: "Context" }).getAttribute("aria-selected"),
     ).toBe("true");
-    fireEvent.keyDown(slot.getByRole("tab", { name: "Rules" }), {
+    fireEvent.keyDown(slot.getByRole("tab", { name: "Context" }), {
       key: "ArrowRight",
     });
     expect(
@@ -1199,7 +1199,7 @@ describe("project dashboard", () => {
         { id: "repo", name: "Repository", environments: [] },
       ]);
     const slot = mount({ list: () => [], overview: () => o, inventory });
-    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
+    fireEvent.click(await slot.findByRole("tab", { name: "Context" }));
     await slot.findByText("Inventory unavailable");
     expect(inventory).toHaveBeenCalledTimes(1);
     fireEvent.click(slot.getByRole("button", { name: "Retry" }));
@@ -1207,7 +1207,7 @@ describe("project dashboard", () => {
       expect(slot.queryByText("Inventory unavailable")).toBeNull(),
     );
     expect(inventory).toHaveBeenCalledTimes(2);
-    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
+    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
     expect(slot.getByText("Repository")).toBeTruthy();
     expect(inventory).toHaveBeenCalledTimes(2);
   });

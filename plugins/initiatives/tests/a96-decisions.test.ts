@@ -73,8 +73,9 @@ describe("A96 lightweight decisions and safe history", () => {
   it("new configurations advertise only initiative tools and current guidance", async () => {
     const { f, project } = await projectFixture();
     const c = await config(f);
-    // v9: the decision log is retired; questions and rules replace it, and initiative_decision is a hidden alias.
-    expect(c.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["initiative_question", "initiative_rule"]));
+    // v9: the decision log is retired; questions replace it, and initiative_decision is a hidden alias. W578: no rules.
+    expect(c.tools.map(tool => tool.name)).toContain("initiative_question");
+    expect(c.tools.map(tool => tool.name)).not.toContain("initiative_rule");
     expect(c.tools.map(tool => tool.name)).not.toContain("initiative_decision");
     expect(c.tools.every(tool => tool.name.startsWith("initiative_"))).toBe(true);
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });

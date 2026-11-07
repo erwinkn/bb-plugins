@@ -196,12 +196,10 @@ describe("W492 review r1", () => {
     expect(packet).toContain("with no question for the user; the coordinator decides: Need a re-brief: the heads moved.");
   });
 
-  it("keeps a PR a rule or another worker names by owner/repo#n, and one another Adventure holds or owns", async () => {
+  it("keeps a PR another worker names by owner/repo#n, and one another Adventure holds or owns", async () => {
     const { f, project } = await projectFixture();
-    await tool(f, "initiative_rule", { action: "add", text: "Do not change o/r#7." });
     const [a] = await tool(f, "initiative_spawn", { label: "A", purpose: "a", text: "Rebase o/r#8." });
     const [b] = await tool(f, "initiative_spawn", { label: "B", purpose: "b", text: "Other work." });
-    await expect(tool(f, "initiative_pr", { prs: [{ url: url(7), stage: "working" }] }, b.threadId)).rejects.toThrow(/\(R1 names it\)/);
     await expect(tool(f, "initiative_pr", { prs: [{ url: url(8), stage: "working" }] }, b.threadId)).rejects.toThrow(new RegExp(`\\(${a.worker}'s ${a.assignment} names it\\)`));
     expect(await tool(f, "initiative_pr", { prs: [{ url: url(8), stage: "working" }] }, a.threadId)).toEqual({ prs: [{ url: url(8), stage: "working" }] });
     // Another open Adventure: its records, then its R2 owner.

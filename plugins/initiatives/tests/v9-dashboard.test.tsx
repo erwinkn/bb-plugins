@@ -5,7 +5,7 @@ import { installTestPluginRuntime, loadPluginApp, renderSlot } from "@get-bb/plu
 import { memoryStore } from "./helpers";
 import { buildOverview, type Overview, type WorkerChild, type WorkerItem } from "../lib/overview";
 
-// v9 §10: the Workers, Tasks and Rules tabs of the dashboard.
+// v9 §10: the Workers, Tasks and Context tabs of the dashboard.
 installTestPluginRuntime();
 const app = await loadPluginApp(() => import("../app"));
 const { modelName, tokenCount, toTab } = await import("../control-room");
@@ -50,8 +50,8 @@ const sent = (command: ReturnType<typeof vi.fn>, n = 0) => command.mock.calls[n]
 
 describe("v9 tabs", () => {
   it("maps the views a remembered tab or old route may name", () => {
-    expect(["threads", "decisions", "context", "log", "workers", "nonsense", "toString"].map(toTab))
-      .toEqual(["workers", "archive", "rules", "activity", "workers", null, null]);
+    expect(["threads", "decisions", "context", "rules", "log", "workers", "nonsense", "toString"].map(toTab))
+      .toEqual(["workers", "archive", "context", "context", "activity", "workers", null, null]);
   });
 
   it("shows model names and token totals compactly", () => {
@@ -236,73 +236,13 @@ describe("v9 Tasks tab", () => {
   });
 });
 
-describe("v9 Rules tab", () => {
-  function rules() {
-    const o = base();
-    o.rules = [
-      { ref: "R1", text: "Every PR targets dev.", sources: ["D86", "D214"] },
-      { ref: "R2", text: "Never run seed:prod.", sources: [] },
-      { ref: "R3", text: "Money uses Decimal.", sources: [] },
-    ];
-    return o;
-  }
-  async function open(o = rules()) {
-    const mountedSlot = mount(o);
-    fireEvent.click(await mountedSlot.slot.findByRole("tab", { name: "Rules" }));
-    return mountedSlot;
-  }
-
-  it("shows purpose, the numbered rules with their sources, who gets them, and links the Archive", async () => {
-    const { slot } = await open();
+describe("Context tab (W578: no standing rules)", () => {
+  it("shows purpose and repositories, and no rules section", async () => {
+    const { slot } = mount(base());
+    fireEvent.click(await slot.findByRole("tab", { name: "Context" }));
     expect(slot.getByText("Ship the market platform")).toBeTruthy();
-    const list = slot.getByRole("region", { name: "Standing rules" });
-    expect(within(list).getByText("3 / 60")).toBeTruthy();
-    expect(Array.from(list.querySelectorAll("li")).map((li) => li.querySelector(".cr-ref")!.textContent)).toEqual(["R1", "R2", "R3"]);
-    expect(within(list).getByText("from D86, D214")).toBeTruthy();
-    expect(within(list).getByText(/The coordinator and every worker get these/)).toBeTruthy();
-    fireEvent.click(within(list).getByRole("button", { name: /^Archive/ }));
-    expect(slot.getByRole("tab", { name: "Archive" }).getAttribute("aria-selected")).toBe("true");
-  });
-
-  it("adds, edits, deletes and reorders rules with the rule commands", async () => {
-    const { slot, command } = await open();
-    fireEvent.click(slot.getByRole("button", { name: "+ Add rule" }));
-    fireEvent.change(slot.getByLabelText("New rule"), { target: { value: "  Ask before   adding a dependency.  " } });
-    fireEvent.click(slot.getByRole("button", { name: "Save rule" }));
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
-    expect(sent(command)).toEqual({ action: "rule-add", text: "Ask before adding a dependency." });
-    await waitFor(() => expect(slot.queryByLabelText("New rule")).toBeNull());
-
-    fireEvent.click(slot.getByRole("button", { name: "Edit R2" }));
-    fireEvent.change(slot.getByLabelText("Edit R2"), { target: { value: "Never run seed:prod; propose it to Erwin." } });
-    fireEvent.submit(slot.getByLabelText("Edit R2").closest("form")!);
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
-    expect(sent(command, 1)).toEqual({ action: "rule-edit", rule: "R2", text: "Never run seed:prod; propose it to Erwin." });
-
-    fireEvent.click(slot.getByRole("button", { name: "Delete R3" }));
-    fireEvent.click(slot.getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(3));
-    expect(sent(command, 2)).toEqual({ action: "rule-remove", rule: "R3" });
-
-    expect((slot.getByRole("button", { name: "Move R1 up" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((slot.getByRole("button", { name: "Move R3 down" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(slot.getByRole("button", { name: "Move R2 up" }));
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(4));
-    expect(sent(command, 3)).toEqual({ action: "rule-move", rule: "R2", to: 1 });
-    fireEvent.click(slot.getByRole("button", { name: "Move R2 down" }));
-    await waitFor(() => expect(command).toHaveBeenCalledTimes(5));
-    expect(sent(command, 4)).toEqual({ action: "rule-move", rule: "R2", to: 3 });
-  });
-
-  it("keeps a refused rule in its box with the error on one line", async () => {
-    const o = rules();
-    const command = vi.fn().mockRejectedValue(new Error("A rule is one line: one or two sentences."));
-    const { slot } = mount(o, command);
-    fireEvent.click(await slot.findByRole("tab", { name: "Rules" }));
-    fireEvent.click(slot.getByRole("button", { name: "+ Add rule" }));
-    fireEvent.change(slot.getByLabelText("New rule"), { target: { value: "Something" } });
-    fireEvent.click(slot.getByRole("button", { name: "Save rule" }));
-    expect((await slot.findByRole("alert")).textContent).toBe("A rule is one line: one or two sentences.");
-    expect((slot.getByLabelText("New rule") as HTMLInputElement).value).toBe("Something");
+    expect(slot.queryByRole("region", { name: "Standing rules" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "+ Add rule" })).toBeNull();
+    expect(slot.queryByRole("tab", { name: "Rules" })).toBeNull();
   });
 });

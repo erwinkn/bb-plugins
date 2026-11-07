@@ -1,17 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { legacyDiscussion, projectFixture, report } from "./fake-native";
 import { settledChildPage } from "./helpers";
 
 // v9 round 2 (W434's review, D522): one regression per finding, each failing on the v9 patch.
-
-const scratch: string[] = [];
-afterEach(() => {
-  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool = async (f: Fx, name: string, input: unknown, threadId = "coordinator") =>
@@ -53,24 +45,6 @@ describe("F2/F3 a task's PRs", () => {
   });
 });
 
-describe("F4 a PR a standing rule names belongs to no worker", () => {
-  it("every brief still carries the rule, but no worker owns its PR; the brief's own PR stays the worker's", async () => {
-    const { f, project } = await projectFixture();
-    await tool(f, "initiative_rule", { action: "add", text: "Follow the patterns in https://github.com/o/r/pull/7; do not change that PR." });
-    const [a] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
-    const [b] = await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix https://github.com/o/r/pull/8." });
-    expect(f.store.assignment(project.id, 2)!.briefText).toContain("R1. Follow the patterns in https://github.com/o/r/pull/7");
-    for (const w of [a, b])
-      await expect(tool(f, "initiative_pr", { prs: [{ url: "https://github.com/o/r/pull/7", stage: "in-review" }] }, w.threadId)).rejects.toThrow();
-    await tool(f, "initiative_pr", { prs: [{ url: "https://github.com/o/r/pull/8", stage: "in-review" }] }, b.threadId);
-    expect(f.store.prRecords(project.id).get("https://github.com/o/r/pull/8")?.stage).toBe("in-review");
-    // A follow-up message carries the whole loop block (guidance, reviewer, rules): still not the worker's PR.
-    await tool(f, "initiative_report", { outcome: "done", summary: "Done.", report: "Done." }, a.threadId);
-    await tool(f, "initiative_message", { to: "W1", text: "One more pass.", work: true });
-    await expect(tool(f, "initiative_pr", { prs: [{ url: "https://github.com/o/r/pull/7", stage: "in-review" }] }, a.threadId)).rejects.toThrow();
-  });
-});
-
 describe("F6 no new review assignments through the retained paths", () => {
   it("bb initiative command and initiative_delegate refuse role:review; a pre-switch reviewer still reports", async () => {
     const { f, project } = await projectFixture();
@@ -87,41 +61,6 @@ describe("F6 no new review assignments through the retained paths", () => {
     expect(f.spawn).not.toHaveBeenCalled();
     const filed = await tool(f, "initiative_report", { outcome: "done", summary: "Clean.", report: "No findings." }, reviewer.threadId!);
     expect(filed).toMatchObject({ assignment: reviewer.assignment, state: "reported" });
-  });
-});
-
-describe("F5 an import is a rule change like any other", () => {
-  it("import and its undo reach the coordinator and the workers with open work, and say whom", async () => {
-    const { f, project } = await projectFixture();
-    const dir = mkdtempSync(join(tmpdir(), "v9-r2-rules-"));
-    scratch.push(dir);
-    const chat = legacyDiscussion(f, project.id);
-    const [busy] = await tool(f, "initiative_spawn", { label: "Busy", purpose: "busy", text: "Work." });
-    await tool(f, "initiative_rule", { action: "add", text: "Old rule." });
-    f.send.mockClear();
-    const file = join(dir, "rules.md");
-    writeFileSync(file, "R1. Every PR targets dev.\n");
-    const imported = await f.harness.runCli(["rules", "import", project.id, file]);
-    expect(imported.exitCode).toBe(0);
-    expect(JSON.parse(imported.stdout!)).toMatchObject({ rules: 1, reached: ["the coordinator", "W1"] });
-    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["coordinator", busy.threadId]);
-    expect(f.send.mock.calls[0]![0].input[0].text).toContain("The standing rules were replaced by an import (1 rule).");
-    // A former discussion is an ordinary user thread: it can't import.
-    const undoArgs = JSON.parse(imported.stdout!).undo.split(" ").slice(2);
-    const refused = await f.harness.runCli(undoArgs, { threadId: chat });
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toMatch(/from a terminal or the coordinator of that Initiative/);
-    // The undo is an import too; from the coordinator, it isn't told its own change.
-    f.send.mockClear();
-    const undo = await f.harness.runCli(undoArgs, { threadId: "coordinator" });
-    expect(undo.exitCode).toBe(0);
-    expect(JSON.parse(undo.stdout!)).toMatchObject({ reached: ["W1"] });
-    expect(f.store.rules(project.id).map((r) => r.text)).toEqual(["Old rule."]);
-    // The same list again changes nothing and tells no one.
-    f.send.mockClear();
-    const again = await f.harness.runCli(JSON.parse(imported.stdout!).undo.split(" ").slice(2));
-    expect(JSON.parse(again.stdout!)).toMatchObject({ note: "Unchanged." });
-    expect(f.send).not.toHaveBeenCalled();
   });
 });
 
