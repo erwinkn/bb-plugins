@@ -24,7 +24,6 @@ import { DECISION_ACTIONS, decisionIssues, normalizeDecisionInput } from "./deci
 import { settlementReceipt } from "./receipts";
 import { PROJECT_COLORS, PROJECT_ICONS } from "./tree-schema";
 import { HAND_STATUSES } from "./task-status";
-import { MAX_RULES, ruleSources, ruleText } from "./rules";
 
 const text = (max = 2000) => z.string().trim().min(1).max(max);
 const ref = text(80);
@@ -158,14 +157,6 @@ export const workerCommands = [
       detachNativeParent: z.boolean().optional(),
     })
     .strict(),
-] as const;
-/** Standing rules (D523): at most MAX_RULES, each one line (ruleText, ruleSources). */
-export const ruleCommands = [
-  z.object({ action: z.literal("rule-add"), text: ruleText, sources: ruleSources.optional() }).strict(),
-  z.object({ action: z.literal("rule-edit"), rule: ref, text: ruleText }).strict(),
-  z.object({ action: z.literal("rule-remove"), rule: ref }).strict(),
-  /** The user reorders on the Rules tab; `to` is the rule's new 1-based place. */
-  z.object({ action: z.literal("rule-move"), rule: ref, to: z.number().int().min(1).max(MAX_RULES) }).strict(),
 ] as const;
 export const decisionCommands = [
   z.object({
@@ -334,7 +325,6 @@ export const commandSchema = z.discriminatedUnion("action", [
   threadCreateSchema,
   delegateSchema,
   ...taskCommands,
-  ...ruleCommands,
   ...workerCommands,
   ...decisionCommands,
   z.object({ action: z.literal("decision-accept-all") }).strict(),
@@ -356,14 +346,14 @@ const decisionCommandSchema = z.discriminatedUnion("action", [...decisionCommand
 export type DecisionCommand = z.infer<typeof decisionCommandSchema>;
 /** The one agent boundary for initiative_decision and its CLI: flat or legacy input, errors with an example. */
 export function parseDecisionCommand(raw: unknown): DecisionCommand {
-  // v9 (D518): the decision log is retired; questions stay. A user's lasting choice becomes a
-  // standing rule, a choice about one PR a PR note, and an agent's reversible choice a line in
-  // its update.
+  // v9 (D518): the decision log is retired; questions stay. A user's lasting choice goes in the
+  // repo's docs, a choice about one PR a PR note, and an agent's reversible choice a line in its
+  // update.
   const action = (raw as { action?: unknown } | null)?.action;
   if (action === "user-choice" || action === "veto-request" || action === "decision")
     throw new ToolInputError(action === "veto-request" || (raw as { madeBy?: unknown }).madeBy === "agent"
       ? 'Veto requests are retired. Say "Reversible: …" in your initiative_update and in the PR\'s notes, and go ahead.'
-      : 'The decision log is retired. A lasting choice of the user becomes a standing rule: initiative_rule {"action":"add","text":"<the choice>"} (a worker tells its lead). A choice about one PR goes in its notes: initiative_pr {"prs":[{"url":"<the PR URL>","notes":[{"kind":"note","text":"<the choice>"}]}]}.');
+      : 'The decision log is retired. A lasting choice goes in the repo\'s docs or AGENTS.md (a worker tells its lead). A choice about one PR goes in its notes: initiative_pr {"prs":[{"url":"<the PR URL>","notes":[{"kind":"note","text":"<the choice>"}]}]}.');
   const normalized = normalizeDecisionInput(raw);
   if (!normalized.ok) throw new ToolInputError(normalized.message);
   const parsed = decisionCommandSchema.safeParse(normalized.value);
@@ -379,7 +369,7 @@ export const REMOVED_ACTIONS: Record<string, string> = {
   "task-checkpoint": 'Checkpoints were removed: record the outcome with initiative_task {"action":"update","task":"T#","note":"…"}; its status follows its work.',
   "decision-cleanup": "Decision cleanup was removed; the user checks agent decisions in the Inbox.",
   fork: "Forking was removed: spawn a fresh worker with handoffs, or message the existing one.",
-  memory: "Memory moved to the Chat memory plugin (T145): the coordinator reads it with memory_read and memory_zoom, or `bb chat-memory status`. Coordinators always use OptChat (R6); there is no mode to switch.",
+  memory: "Memory moved to the Chat memory plugin (T145): the coordinator reads it with memory_read and memory_zoom, or `bb chat-memory status`. Coordinators always use OptChat; there is no mode to switch.",
 };
 export function refuseRemoved(raw: unknown) {
   if (typeof raw !== "object" || raw === null) return;
@@ -462,15 +452,6 @@ export async function runCommand(
     }
     case "task-status":
       return service.setTaskStatus(projectId, c.task, c.status, c.reason, service.callerName(author, threadId));
-    case "rule-add":
-      return service.addRule(projectId, c.text, c.sources ?? [], service.callerName(author, threadId), threadId);
-    case "rule-edit":
-      return service.editRule(projectId, c.rule, c.text, service.callerName(author, threadId), threadId);
-    case "rule-remove":
-      return service.removeRule(projectId, c.rule, service.callerName(author, threadId), threadId);
-    case "rule-move":
-      if (author !== "user") throw new ProjectError("Only the user reorders rules, on the Rules tab.");
-      return service.moveRule(projectId, c.rule, c.to);
     case "assignment-stop":
       // v9: the older Stop of one assignment ends its thread's running descendants too, as worker-stop does.
       return service.stopWork(projectId, c.assignment, c.reason);

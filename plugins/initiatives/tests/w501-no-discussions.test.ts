@@ -52,11 +52,11 @@ describe("W501 a former discussion is an ordinary user thread", () => {
     expect(config.skills).toEqual([]);
     expect(config.instructions).toMatch(/user's own thread/);
     const coordinator = await configure(f, "coordinator");
-    expect(coordinator.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_spawn", "initiative_message", "initiative_rule", "initiative_manage"]));
+    expect(coordinator.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_spawn", "initiative_message", "initiative_manage"]));
     expect(coordinator.skills).toEqual([expect.stringContaining("initiative-coordinator")]);
   });
 
-  it("can't spawn, message, keep PR records, ask, set rules or manage work from its CLI", async () => {
+  it("can't spawn, message, keep PR records, ask or manage work from its CLI", async () => {
     const { f, project } = await projectFixture();
     const chat = legacyDiscussion(f, project.id);
     await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
@@ -66,14 +66,12 @@ describe("W501 a former discussion is an ordinary user thread", () => {
     await expect(tool(f, "initiative_message", { to: "W1", text: "Hi." }, chat)).rejects.toThrow(/user-owned threads cannot use this wrapper/);
     await expect(tool(f, "initiative_pr", { prs: [{ url: "https://github.com/o/r/pull/1", stage: "in-review" }] }, chat)).rejects.toThrow();
     await expect(tool(f, "initiative_question", { question: "Pages?", context: "Both work." }, chat)).rejects.toThrow();
-    await expect(tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev." }, chat)).rejects.toThrow();
     const cli = await f.harness.runCli(["command", JSON.stringify({ action: "task-create", title: "T" }), project.id], { threadId: chat });
     expect(cli.exitCode).toBe(1);
     expect(cli.stderr).toMatch(/Only the coordinator manages work from an agent CLI/);
     expect(f.spawn).not.toHaveBeenCalled();
     expect(f.send).not.toHaveBeenCalled();
     expect(f.store.prRecords(project.id).size).toBe(0);
-    expect(f.store.rules(project.id)).toEqual([]);
   });
 
   it("is listed in the tree as a plain member thread, and its held messages aren't watched", async () => {
@@ -107,7 +105,7 @@ describe("W501 a former discussion is an ordinary user thread", () => {
 });
 
 describe("W501 the coordinator stays every worker's lead, through a handover", () => {
-  it("a successor gets the coordinator's tools; reports and rule changes reach it, never a former discussion", async () => {
+  it("a successor gets the coordinator's tools; reports reach it, never a former discussion", async () => {
     const { f, project } = await projectFixture();
     const chat = legacyDiscussion(f, project.id);
     const [w] = await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
@@ -116,14 +114,13 @@ describe("W501 the coordinator stays every worker's lead, through a handover", (
     await f.service.replaceCoordinator(project.id, { adoptThreadId: "next", reason: "Switch model" });
     expect(f.store.project(project.id)!.coordinatorThreadId).toBe("next");
     expect(f.store.membership("coordinator")).toMatchObject({ kind: "coordinator", former: true });
-    expect((await configure(f, "next")).tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_spawn", "initiative_rule"]));
+    expect((await configure(f, "next")).tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_spawn", "initiative_manage"]));
     // The former discussion is still the user's own thread of the Initiative.
     expect(f.store.membership(chat)).toMatchObject({ kind: "adhoc" });
     f.send.mockClear();
-    await f.perform(project.id, { action: "rule-add", text: "Every PR targets dev." }, "user", null);
     const report = await tool(f, "initiative_report", { outcome: "done", summary: "Fixed.", report: "Fixed." }, w.threadId);
     expect(report.note).toBe("Report recorded and sent to the coordinator.");
-    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["next", w.threadId, "next"]);
+    expect(f.send.mock.calls.map(([a]) => a.threadId)).toEqual(["next"]);
   });
 });
 

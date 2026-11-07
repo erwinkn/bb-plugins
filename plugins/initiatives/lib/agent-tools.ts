@@ -2,7 +2,6 @@ import { z } from "zod";
 import { answerOptionsSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
 import { placementFields } from "./placement";
 import type { Command } from "./commands";
-import { ruleSources, ruleText } from "./rules";
 import { ToolInputError } from "./tool-errors";
 import { removedMode } from "./messaging";
 import { headTail } from "./handover-packet";
@@ -78,14 +77,6 @@ export const taskToolSchema = z.object({
   outcome: z.enum(["done", "cancelled"]).optional(),
 }).strict();
 export const taskToolAdvertised = taskToolSchema.extend({ action: z.enum(["create", "update", "status"]) }).omit({ outcome: true });
-
-/** v9 (D523): the standing rules, for leads. */
-export const ruleToolSchema = z.object({
-  action: z.enum(["add", "edit", "remove"]),
-  rule: ref.optional().describe("R# (edit, remove)."),
-  text: ruleText.optional().describe("add, edit: one line, one or two sentences."),
-  sources: ruleSources.optional().describe("add: where it comes from, e.g. D12."),
-}).strict();
 
 /** v9: a question for the user (the question half of the old initiative_decision); W488, W555: or the answer the user gave to one in chat. */
 export const questionToolSchema = z.object({
@@ -266,17 +257,6 @@ export function workerCommand(i: z.infer<typeof workerToolSchema>): Command | { 
       return { action: "worker-stop", worker: need(i.worker, "worker"), reason: i.reason ?? "Stopped by the coordinator." };
     case "adopt":
       return { action: "adopt", threadId: need(i.threadId, "threadId"), role: i.role ?? "work", label: need(i.label, "label"), ...(i.purpose ? { area: i.purpose } : {}) };
-  }
-}
-
-export function ruleCommand(i: z.infer<typeof ruleToolSchema>): Command {
-  switch (i.action) {
-    case "add":
-      return { action: "rule-add", text: need(i.text, "text"), ...(i.sources ? { sources: i.sources } : {}) };
-    case "edit":
-      return { action: "rule-edit", rule: need(i.rule, "rule"), text: need(i.text, "text") };
-    case "remove":
-      return { action: "rule-remove", rule: need(i.rule, "rule") };
   }
 }
 

@@ -211,7 +211,7 @@ describe("T147 v2: review findings", () => {
     for (const tool of ["initiative_manage", "initiative_report", "initiative_spwn"]) {
       const message = await refused(f, "initiative_batch", { actions: [{ tool, action: "resume" }] });
       expect(message, tool).not.toContain("drop the initiative_ prefix");
-      expect(message, tool).toContain(`\`actions.0.tool\` is "${tool}", which a batch cannot run. Use one of spawn, message, task, worker, question, rule, decision, update, pr, read (without the initiative_ prefix); any other tool is called on its own.`);
+      expect(message, tool).toContain(`\`actions.0.tool\` is "${tool}", which a batch cannot run. Use one of spawn, message, task, worker, question, decision, update, pr, read (without the initiative_ prefix); any other tool is called on its own.`);
     }
     expect(await refused(f, "initiative_batch", { actions: [{ tool: "initiative_pr", prs: [] }] })).toContain('drop the initiative_ prefix ("pr")');
   });

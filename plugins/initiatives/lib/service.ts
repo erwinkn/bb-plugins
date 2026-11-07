@@ -26,7 +26,6 @@ import { queueTargets } from "./not-delivered";
 import { briefAppendix, opMarker, ownBriefText, renderAssignment, renderCoordinatorSeed, reviewerCommand, workLoopBlock } from "./brief";
 import { reviewerOutUntil, reviewerProfileFor } from "./reviewer-fallback";
 import { CUTOVER_FLAG, cutoverInstruction, cutoverProjects, preSwitchBlock, preSwitchLine } from "./cutover";
-import { MAX_RULES, formatRulesFile, parseRulesFile, renderRules } from "./rules";
 import type { HandStatus } from "./task-status";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -129,10 +128,10 @@ const CHECKOUT_PENDING_NOTE =
 function notOpenQuestion(item: DecisionRecord) {
   const why = item.status === "answered" ? "it is already answered; the recorded answer stands"
     : item.status === "closed" ? "the user closed it"
-    : item.status === "withdrawn" ? `the coordinator withdrew it: ${(item.body.resolution?.note ?? "").replace(/\.+$/, "")}. Withdrawal records no answer. If the user has since made this choice explicitly and it lasts, record it as a standing rule: initiative_rule {"action":"add","text":"<the user's choice>"}`
+    : item.status === "withdrawn" ? `the coordinator withdrew it: ${(item.body.resolution?.note ?? "").replace(/\.+$/, "")}. Withdrawal records no answer`
     : item.status !== "active" ? `it is ${item.status}`
-    : item.madeBy === "agent" ? `it is an agent decision; the user checks it in the Inbox. If the user explicitly chose otherwise and it lasts, record their choice as a standing rule: initiative_rule {"action":"add","text":"<the user's choice>"}`
-    : `it is a recorded user decision. If the user explicitly changed it and it lasts, record it as a standing rule: initiative_rule {"action":"add","text":"<the new choice>"}`;
+    : item.madeBy === "agent" ? "it is an agent decision; the user checks it in the Inbox"
+    : "it is a recorded user decision";
   return `${item.ref} is not an open question: ${why}.`;
 }
 
@@ -803,7 +802,6 @@ export class ProjectsService {
           replacing: reason !== null,
           reason,
           handover: options?.handover ?? null,
-          rules: renderRules(this.store.rules(project.id)),
           preSwitch: preSwitchBlock(this.store, project.id, this.store.flagSetAt(CUTOVER_FLAG)),
         }),
         pluginMetadata: {
@@ -3913,125 +3911,20 @@ export class ProjectsService {
 
   /**
    * v9 (§6.1): what a work brief ends with. A fresh brief: the reviewer command (with its
-   * fallback, W537) and the full rules (the plugin builds that session with this build's
-   * instructions). Every later work message: the whole loop, the worker guidance as a new
-   * session would get it included. W560: while the reviewer is marked out, the fallback first.
+   * fallback, W537); the plugin builds that session with this build's instructions. Every
+   * later work message: the whole loop, the worker guidance as a new session would get it
+   * included. W560: while the reviewer is marked out, the fallback first.
    */
-  private workAppendix(projectId: string, policy: Policy, profile: Profile, guidance: string, route: "fresh" | "continue") {
+  private workAppendix(policy: Policy, profile: Profile, guidance: string, route: "fresh" | "continue") {
     const usual = reviewerProfileFor(policy, profile);
     const reviewer = reviewerCommand(usual, profileFor(policy, "reviewFallback"), reviewerOutUntil(this.store, usual));
     const memory = profile.providerId === "claude-code" ? "UniiChat keeps private history; turns queue during preparation. Use memory_zoom." : null;
-    const rules = [memory, renderRules(this.store.rules(projectId))].filter(Boolean).join("\n\n");
-    return route === "fresh" ? briefAppendix(reviewer, rules) : workLoopBlock(guidance, reviewer, rules);
+    return route === "fresh" ? briefAppendix(reviewer, memory) : workLoopBlock(guidance, reviewer, memory);
   }
 
   /** How activity lines name who acted. */
   callerName(author: "user" | "coordinator", threadId: string | null): string {
     return author === "user" || !threadId ? "the user" : "the coordinator";
-  }
-
-  // Standing rules (D523) ------------------------------------------------------
-
-  private requireRule(projectId: string, ref: string) {
-    const num = Number(/^R?([1-9]\d*)$/i.exec(ref.trim())?.[1]);
-    const rule = num ? this.store.rule(projectId, num) : null;
-    if (!rule || rule.removedAt !== null) throw new ProjectError(`No standing rule ${ref}. Read them with initiative_read {view:"rules"}.`);
-    return rule;
-  }
-
-  async addRule(projectId: string, text: string, sources: string[], by: string, callerThreadId: string | null) {
-    const project = this.requireProject(projectId);
-    if (this.store.rules(projectId).length >= MAX_RULES)
-      throw new ProjectError(`${project.name} has ${MAX_RULES} standing rules, the most it keeps. Merge or remove one first.`);
-    const rule = this.store.tx(() => {
-      const added = this.store.addRule(projectId, text, sources);
-      this.store.log(projectId, "rule", `${added.ref} added by ${by}: ${text}`);
-      return added;
-    });
-    return { rule: rule.ref, ...(await this.announceRule(project, `Rule ${rule.ref} added: "${text}"`, callerThreadId)) };
-  }
-
-  async editRule(projectId: string, ref: string, text: string, by: string, callerThreadId: string | null) {
-    const project = this.requireProject(projectId);
-    const rule = this.requireRule(projectId, ref);
-    if (rule.text === text) return { rule: rule.ref, note: "Unchanged." };
-    this.store.tx(() => {
-      this.store.updateRule(projectId, rule.num, { text });
-      this.store.log(projectId, "rule", `${rule.ref} changed by ${by}: ${text} (was: ${rule.text})`);
-    });
-    return { rule: rule.ref, ...(await this.announceRule(project, `Rule ${rule.ref} changed: "${text}"`, callerThreadId)) };
-  }
-
-  async removeRule(projectId: string, ref: string, by: string, callerThreadId: string | null) {
-    const project = this.requireProject(projectId);
-    const rule = this.requireRule(projectId, ref);
-    this.store.tx(() => {
-      this.store.updateRule(projectId, rule.num, { removed: true });
-      this.store.log(projectId, "rule", `${rule.ref} removed by ${by} (was: ${rule.text})`);
-    });
-    return { rule: rule.ref, ...(await this.announceRule(project, `Rule ${rule.ref} removed.`, callerThreadId)) };
-  }
-
-  /** The user reorders on the Rules tab; nothing is sent. */
-  moveRule(projectId: string, ref: string, to: number) {
-    this.requireProject(projectId);
-    const rule = this.requireRule(projectId, ref);
-    const order = this.store.rules(projectId).map((r) => r.num).filter((n) => n !== rule.num);
-    order.splice(Math.min(to, order.length + 1) - 1, 0, rule.num);
-    this.store.tx(() => {
-      this.store.orderRules(projectId, order);
-      this.store.log(projectId, "rule", `${rule.ref} moved to place ${to}`);
-    });
-    return { rule: rule.ref, order: order.map((n) => `R${n}`) };
-  }
-
-  /** The current list as a rules file (the import format). */
-  exportRules(projectId: string) {
-    const project = this.requireProject(projectId);
-    return formatRulesFile(project.name, this.store.rules(projectId));
-  }
-
-  /**
-   * `bb initiative rules import`: the live list becomes exactly the file's. The caller writes
-   * exportRules' text next to the file first, so importing that file is the exact undo.
-   */
-  async importRules(projectId: string, text: string, callerThreadId: string | null) {
-    const project = this.requireProject(projectId);
-    const rules = parseRulesFile(text);
-    if (formatRulesFile(project.name, rules) === this.exportRules(projectId)) return { initiative: project.id, rules: rules.length, note: "Unchanged." };
-    this.store.tx(() => {
-      this.store.replaceRules(projectId, rules);
-      this.store.log(projectId, "rule", `${rules.length} standing rules imported`);
-    });
-    // Like any other change, the new list reaches the live leads and the workers with open work.
-    const count = `${rules.length} rule${rules.length === 1 ? "" : "s"}`;
-    return { initiative: project.id, rules: rules.length, ...(await this.announceRule(project, `The standing rules were replaced by an import (${count}).`, callerThreadId)) };
-  }
-
-  /**
-   * One short message per rule change, queued, to the coordinator unless it made the change, and
-   * to every worker with open work. Workers without open work aren't woken: their next work
-   * message carries the current list. The result names the threads it reached, and in
-   * `notReached` those it could not send to.
-   */
-  private async announceRule(project: ProjectRecord, text: string, callerThreadId: string | null) {
-    const targets = project.coordinatorThreadId && project.coordinatorThreadId !== callerThreadId
-      ? [{ threadId: project.coordinatorThreadId, name: "the coordinator" }] : [];
-    for (const worker of this.store.workers(project.id))
-      if (worker.threadId && worker.state !== "retired" && !worker.userStopped && this.store.openAssignment(project.id, worker.num))
-        targets.push({ threadId: worker.threadId, name: worker.ref });
-    const reached: string[] = [];
-    const missed: string[] = [];
-    for (const target of targets)
-      try {
-        await this.ensureWorkerMemoryForThread(target.threadId);
-        await this.sdk.threads.send({ threadId: target.threadId, mode: "queue-if-active",
-          input: textInput(`Initiative · ${project.name} · Standing rules\n\n${text} Follow the current list from now on (initiative_read {view:"rules"}).`) });
-        reached.push(target.name);
-      } catch (error) {
-        missed.push(`${target.name} (${errorMessage(error)})`);
-      }
-    return { reached, ...(missed.length ? { notReached: missed } : {}) };
   }
 
   /**
@@ -4584,7 +4477,7 @@ export class ProjectsService {
       reviewed: reviewed ? renderPriorReport(this.store, embedded[0]!, "Review") : null,
       priorReports: embedded.slice(reviewed ? 1 : 0).map((source) => renderPriorReport(this.store, source, "Prior report")),
       text: input.note ?? null,
-      appendix: worker.role === "work" ? this.workAppendix(project.id, policy, profile, settings.workerInstructions, input.route) : null,
+      appendix: worker.role === "work" ? this.workAppendix(policy, profile, settings.workerInstructions, input.route) : null,
       opId,
     });
     this.store.setBriefText(project.id, assignment.num, text);
@@ -6821,7 +6714,7 @@ export class ProjectsService {
     const message = [
       `You are now ${worker.ref} "${worker.label}" (${worker.area}) in the "${project.name}" Initiative, on ${assignment.ref}${tasks.length ? `, for ${tasks.map((t) => t.ref).join(", ")}` : ""}. Your current work is this assignment: finish it with initiative_report (outcome, summary, report); ending a turn reports nothing. Your lead is the coordinator; message it with initiative_message to:"lead".`,
       "Until this session restarts, your tools may lack the Initiative ones. Use the shell meanwhile: `bb initiative report '{\"outcome\":\"done\",\"summary\":\"…\",\"report\":\"…\"}'`, `bb initiative pr '<json>'` and `bb initiative message '<json>'`.",
-      this.workAppendix(projectId, policy, assignment.profile, settings.workerInstructions, "continue"),
+      this.workAppendix(policy, assignment.profile, settings.workerInstructions, "continue"),
       opMarker(assignment.opId),
     ].join("\n\n");
     let sent: string | null = null;

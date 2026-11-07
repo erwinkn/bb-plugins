@@ -138,7 +138,7 @@ describe("R8 the shared appendix is cut where the brief puts it", () => {
     const guidance = `Follow the patterns in https://github.com/o/r/pull/7.\n\nWhen you brief a helper, paste the block that starts:\n\n${heading}\n\nand keep it whole.`;
     const reviewer = reviewerCommand({ providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high", serviceTier: null } as never);
     const text = renderAssignment({ assignmentRef: "A2", workerRef: "W1", workerLabel: "Fix", workerPurpose: "fix", role: "work", tasks: [], reviewOf: [],
-      reviewed: null, priorReports: [], text: "Also fix https://github.com/o/r/pull/8.", appendix: workLoopBlock(guidance, reviewer, "Standing rules: none yet."), opId: "op_abc" });
+      reviewed: null, priorReports: [], text: "Also fix https://github.com/o/r/pull/8.", appendix: workLoopBlock(guidance, reviewer, null), opId: "op_abc" });
     const own = ownBriefText(text);
     expect(own).toContain("pull/8");
     expect(own).not.toContain("pull/7");
@@ -197,18 +197,6 @@ describe("R11 an older listing does not overwrite a newer lifecycle event", () =
     expect(cache.of("W")).toMatchObject({ threadId: "new" });
     cache.observe(row("new", "idle"));
     expect(cache.of("W")).toBeNull();
-  });
-});
-
-describe("R12 every accepted rule round-trips through export and import", () => {
-  it("the agent tool refuses a rule on two lines and a source with a comma, as the commands do", async () => {
-    const { f, project } = await projectFixture();
-    await expect(tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev.\nNever force-push." })).rejects.toThrow(/one line/);
-    await expect(tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev.", sources: ["D1, D2"] })).rejects.toThrow(/without commas/);
-    await tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev. Never force-push.", sources: ["D1", "D2"] });
-    await expect(tool(f, "initiative_rule", { action: "edit", rule: "R1", text: "Every PR targets dev.\nNever force-push." })).rejects.toThrow(/one line/);
-    const exported = f.service.exportRules(project.id);
-    expect(await f.service.importRules(project.id, exported, null)).toMatchObject({ note: "Unchanged." });
   });
 });
 

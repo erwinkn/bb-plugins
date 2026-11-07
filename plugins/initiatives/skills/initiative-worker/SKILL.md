@@ -5,8 +5,8 @@ description: Work on a BB Initiative assignment using its editable guidance and 
 
 Your standing instructions come from the Initiatives plugin's Settings page (defaults in
 lib/guidance.ts) and arrive when your session starts. Your brief ends with the reviewer
-command and the standing rules; every later work message ends with the whole loop (the
-current instructions, the reviewer command and the rules), which replaces anything earlier.
+command; every later work message ends with the whole loop (the current instructions and
+the reviewer command), which replaces anything earlier.
 
 - You own your change to a clean review. Implement and verify it, then review it with the
   code-review skill: each round one fresh reviewer from the other model family, started as a
@@ -14,22 +14,21 @@ current instructions, the reviewer command and the rules), which replaces anythi
   --lifecycle-owner-thread "$BB_THREAD_ID"`, in your checkout). Ask it for a verdict (correct
   or needs attention) and findings ranked P1 to P3. If it can't run (usage limit, model
   unavailable), the plugin reruns it on the fallback and tells you until when to use it (no
-  fallback command in your brief: report blocked); name those rounds in your report. Copy the
-  standing rules that matter for its job into its brief. While it runs, end your turn: its final message wakes
+  fallback command in your brief: report blocked); name those rounds in your report. While it runs, end your turn: its final message wakes
   you, and ending a turn reports nothing. Waiting on a child, a background job or a watched
   PR, each of which will wake you, is the only reason to end a turn without a report.
 - A trivial change (one line or a handful of small tweaks), or one whose brief says "No
   review", skips the review loop: verify it and report done with "review skipped (trivial)".
 - Fix the findings you agree with. A disagreement goes, with your evidence, into the next
-  reviewer's brief and a PR note; a standing rule settles a dispute it covers.
+  reviewer's brief and a PR note.
 - A review is clean when the verdict is correct with no P1 or P2. No fixed number of review
   rounds: keep reviewing while the P1s and P2s converge. Once only P3s remain, fix the cheap
   ones, list the rest in your PR notes and report done; don't re-review to confirm P3 fixes.
   If your brief asks for an expert second reviewer (Fable 5.1, or Muse Wonder Full:
   muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Report done when the last verdict is clean. Stop and
   report blocked, with each open finding, your view and the options, on whack-a-mole (P1s,
-  or P2s that keep reappearing in the same area round after round) or on scope creep. When a
-  rule or the user's instruction settles the finding, your lead sends you back to review.
+  or P2s that keep reappearing in the same area round after round) or on scope creep. When the
+  user's instruction settles the finding, your lead sends you back to review.
 - Finish with `initiative_report {outcome, summary, report}`, the only thing that ends your
   work. It goes to your lead, the tab that gave you the work. The summary stands on its own:
   outcome, PR URL and head, review rounds and last verdict, what you need. `report` is your
@@ -55,8 +54,7 @@ current instructions, the reviewer command and the rules), which replaces anythi
   lead asks the user and continues you with their answer.
 - `initiative_message {to:"lead", text}` is for facts your lead needs now while you keep
   working; `to:"W4"` reaches a peer. No progress pings. `to:"coordinator"` also reaches your lead.
-- `initiative_read {view:"rules"}` lists the standing rules; `{refs:["W4"]}` reads a peer
-  and its latest report.
+- `initiative_read {refs:["W4"]}` reads a peer and its latest report.
 - An adopted thread whose tools predate the switch uses the shell until its session
   restarts: `bb initiative report '<json>'`, `bb initiative pr '<json>'`,
   `bb initiative message '<json>'`.

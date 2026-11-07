@@ -34,8 +34,8 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
     await waitFor(() => expect(overview).toHaveBeenCalledTimes(2));
     expect(slot.getByRole("tab", { name: "Workers" })).toBeTruthy();
     await slot.behavior.emitRealtime("initiatives-changed", { projectId: project.id }); await beat(); expect(overview).toHaveBeenCalledTimes(2);
-    // Rules loads the repository inventory; Workers loads retired workers and token totals.
-    fireEvent.click(slot.getByRole("tab", { name: "Rules" }));
+    // Context loads the repository inventory; Workers loads retired workers and token totals.
+    fireEvent.click(slot.getByRole("tab", { name: "Context" }));
     await waitFor(() => expect(inventory).toHaveBeenCalledTimes(1));
     fireEvent.click(slot.getByRole("tab", { name: "Workers" }));
     await waitFor(() => expect(overview).toHaveBeenCalledTimes(3)); expect(overview.mock.calls[0][0]).toEqual({ projectId: project.id, detail: "summary" });

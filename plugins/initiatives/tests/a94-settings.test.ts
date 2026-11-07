@@ -29,8 +29,8 @@ describe("A94 editable native Settings consumers", () => {
       workerInstructions: "Persisted worker instructions",
       executionProfiles: JSON.stringify({ implementation: fast }),
     });
-    // v9: the plugin's own lines (identity, rules pointer) come first, then the saved guidance whole.
-    expect((await configuration(f, "coordinator")).instructions).toMatch(/^You are the coordinator of the "[^"]+" Initiative[^\n]*\nStanding rules: 0\.[^\n]*\n\nPersisted coordinator instructions$/);
+    // v9: the plugin's own lines (identity) come first, then the saved guidance whole; W578: no rules pointer.
+    expect((await configuration(f, "coordinator")).instructions).toMatch(/^You are the coordinator of the "[^"]+" Initiative[^\n]*\n\nPersisted coordinator instructions$/);
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, workerInput(task.ref));
     expect(f.spawn.mock.calls[0][0]).toMatchObject(fast);

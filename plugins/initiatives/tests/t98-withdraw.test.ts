@@ -182,7 +182,7 @@ describe("T98 task blocking and answer races", () => {
     expect(f.send).toHaveBeenCalledTimes(1);
   });
 
-  it("an answer after withdrawal is refused with the reason and a path to record the user's choice", async () => {
+  it("an answer after withdrawal is refused with the reason", async () => {
     const { f, project, q } = await question();
     await tool(f, withdraw(q.ref));
     const panel = await f.harness.callRpc("command", { projectId: project.id, command: { action: "answer", decision: q.ref, choice: "Radix", note: "" } }).then(() => "", (e: Error) => e.message);
@@ -190,7 +190,8 @@ describe("T98 task blocking and answer races", () => {
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     const chat = await refused(f, { action: "answer", ref: q.ref, choice: "Radix" }, worker.threadId!);
     expect(chat).toContain(reason);
-    expect(chat).toContain('initiative_rule {"action":"add","text":"<the user\'s choice>"}');
+    expect(chat).toContain("Withdrawal records no answer.");
+    expect(chat).not.toContain("initiative_rule");
     await expect(f.harness.callRpc("command", { projectId: project.id, command: { action: "question-close", decision: q.ref, note: "" } })).rejects.toThrow(/not an open question/);
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "withdrawn", madeBy: null });
     expect(f.store.decisionItem(project.id, q.num)!.body).not.toHaveProperty("answer");
@@ -213,15 +214,12 @@ describe("T98 A238 follow-ups", () => {
       expect(message).toMatch(/tell the coordinator in chat/);
       expect(message).not.toMatch(/[{}]|"action"|madeBy|the user/);
     }
-    // Agent and CLI recorders keep the actionable madeBy:user path.
+    // Agent and CLI recorders get the reason and that nothing was recorded.
     const recorded = await refused(f, { action: "answer", ref: q.ref, choice: "Radix" });
     expect(recorded).toContain(reason);
-    expect(recorded).toContain('{"action":"add"');
+    expect(recorded).toContain("Withdrawal records no answer.");
     const agentCli = await cli(f, { action: "answer", ref: q.ref, choice: "Radix" }, "coordinator", project.id);
-    expect(agentCli.stderr).toContain('initiative_rule {"action":"add"');
-    // W188 (F5): the suggested call works as written once its placeholder is filled in.
-    const example = JSON.parse(/initiative_rule (\{.*?\})(?:$|\.)/.exec(recorded)![1]!);
-    expect(JSON.parse(await f.harness.callAgentTool("initiative_rule", { ...example, text: "Use Radix." }, { threadId: "coordinator" }) as string)).toMatchObject({ rule: "R1" });
+    expect(agentCli.stderr).toContain("Withdrawal records no answer.");
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "withdrawn", madeBy: null, notification: null });
     expect(f.store.decisionItem(project.id, q.num)!.body).not.toHaveProperty("answer");
     expect(f.send).not.toHaveBeenCalled();

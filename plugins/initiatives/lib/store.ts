@@ -487,7 +487,8 @@ export const MIGRATIONS = [
   `ALTER TABLE assignments ADD COLUMN reply_to TEXT`,
   // status_set_at: when someone set the task's status by hand; NULL means it is computed.
   `ALTER TABLE tasks ADD COLUMN status_set_at INTEGER`,
-  // Standing rules (D523). A removed rule keeps its row (removed_at), so its number is never reused.
+  // Standing rules (D523), removed in W578. The table stays so the previous build still reads its rows;
+  // a removed rule kept its row (removed_at), so its number was never reused.
   `CREATE TABLE rules (
     project_id TEXT NOT NULL,
     num INTEGER NOT NULL,
@@ -1047,21 +1048,6 @@ export interface LeaseRecord {
 }
 
 export const taskRef = (num: number) => `T${num}`;
-export const ruleRef = (num: number) => `R${num}`;
-
-/** A standing rule (D523): one or two sentences every lead and worker follows. */
-export interface RuleRecord {
-  projectId: string;
-  num: number;
-  ref: string;
-  text: string;
-  position: number;
-  /** Where it came from, e.g. the decisions it replaces (D12). */
-  sources: string[];
-  createdAt: number;
-  updatedAt: number;
-  removedAt: number | null;
-}
 
 /** A tracked PR's last known GitHub state. */
 export interface PrStateRecord {
@@ -1293,21 +1279,6 @@ function toProjectThread(row: Row): ProjectThreadRecord {
     state: row.state as ProjectThreadRecord["state"],
     createdAt: Number(row.created_at),
     confirmedAt: (row.confirmed_at as number | null) ?? null,
-  };
-}
-
-function toRule(row: Row): RuleRecord {
-  const num = Number(row.num);
-  return {
-    projectId: String(row.project_id),
-    num,
-    ref: ruleRef(num),
-    text: String(row.text),
-    position: Number(row.position),
-    sources: decode("rules", row, "sources", stringsSchema),
-    createdAt: Number(row.created_at),
-    updatedAt: Number(row.updated_at),
-    removedAt: row.removed_at == null ? null : Number(row.removed_at),
   };
 }
 
@@ -2619,68 +2590,6 @@ export class Store {
       );
     this.touchProject(projectId);
     return this.task(projectId, num)!;
-  }
-
-  // Rules ------------------------------------------------------------------
-
-  rules(projectId: string, includeRemoved = false): RuleRecord[] {
-    return (this.db
-      .prepare(`SELECT * FROM rules WHERE project_id = ? AND (? OR removed_at IS NULL) ORDER BY removed_at IS NOT NULL, position, num`)
-      .all(projectId, Number(includeRemoved)) as Row[]).map(toRule);
-  }
-
-  rule(projectId: string, num: number): RuleRecord | null {
-    const row = this.db.prepare(`SELECT * FROM rules WHERE project_id = ? AND num = ?`).get(projectId, num) as Row | undefined;
-    return row ? toRule(row) : null;
-  }
-
-  /** Appends a rule; numbers are never reused, removed rules included. */
-  addRule(projectId: string, text: string, sources: string[] = []): RuleRecord {
-    const num = this.nextNum("rules", projectId);
-    const position = (this.db.prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS p FROM rules WHERE project_id = ? AND removed_at IS NULL`).get(projectId) as { p: number }).p;
-    const now = this.now();
-    this.db
-      .prepare(`INSERT INTO rules (project_id, num, text, position, sources, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(projectId, num, text, position, JSON.stringify(sources), now, now);
-    return this.rule(projectId, num)!;
-  }
-
-  updateRule(projectId: string, num: number, patch: { text?: string; sources?: string[]; removed?: boolean }): RuleRecord {
-    const current = this.rule(projectId, num);
-    if (!current) throw new Error(`Unknown rule ${ruleRef(num)}`);
-    const now = this.now();
-    this.db
-      .prepare(`UPDATE rules SET text = ?, sources = ?, removed_at = ?, updated_at = ? WHERE project_id = ? AND num = ?`)
-      .run(patch.text ?? current.text, JSON.stringify(patch.sources ?? current.sources),
-        patch.removed === undefined ? current.removedAt : patch.removed ? now : null, now, projectId, num);
-    return this.rule(projectId, num)!;
-  }
-
-  /** Writes the live rules' order: `order` lists every live rule number once. */
-  orderRules(projectId: string, order: number[]) {
-    const update = this.db.prepare(`UPDATE rules SET position = ?, updated_at = ? WHERE project_id = ? AND num = ?`);
-    const now = this.now();
-    order.forEach((num, index) => update.run(index + 1, now, projectId, num));
-  }
-
-  /** The live rules become exactly `rules`, numbers, order, text and sources (an import). */
-  replaceRules(projectId: string, rules: { num: number; text: string; sources: string[] }[]) {
-    const now = this.now();
-    const keep = new Set(rules.map((r) => r.num));
-    for (const live of this.rules(projectId))
-      if (!keep.has(live.num)) this.db.prepare(`UPDATE rules SET removed_at = ?, updated_at = ? WHERE project_id = ? AND num = ?`).run(now, now, projectId, live.num);
-    const upsert = this.db.prepare(`INSERT INTO rules (project_id, num, text, position, sources, created_at, updated_at, removed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(project_id, num) DO UPDATE SET text = excluded.text, position = excluded.position,
-      sources = excluded.sources, updated_at = excluded.updated_at, removed_at = NULL`);
-    rules.forEach((r, index) => upsert.run(projectId, r.num, r.text, index + 1, JSON.stringify(r.sources), now, now));
-  }
-
-  /** How many live rules there are and when the list last changed (null: never). */
-  rulesStamp(projectId: string): { count: number; changedAt: number | null } {
-    const row = this.db
-      .prepare(`SELECT SUM(removed_at IS NULL) AS count, MAX(updated_at) AS changed FROM rules WHERE project_id = ?`)
-      .get(projectId) as { count: number | null; changed: number | null };
-    return { count: Number(row.count ?? 0), changedAt: row.changed === null ? null : Number(row.changed) };
   }
 
   // PR states ----------------------------------------------------------------

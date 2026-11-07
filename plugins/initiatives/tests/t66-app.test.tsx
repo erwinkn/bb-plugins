@@ -10,11 +10,11 @@ afterEach(() => { for (const s of slots.splice(0)) s.unmount(); cleanup(); });
 const recorder = { author: "coordinator" as const, threadId: "coordinator", assignment: null };
 const beat = () => act(async () => { await new Promise(r => setTimeout(r, 190)); });
 
-it("Rules manual Refresh reloads loaded inventory without forcing detailed telemetry", async () => {
+it("Context manual Refresh reloads loaded inventory without forcing detailed telemetry", async () => {
   const { f, project } = await projectFixture(); const o = await f.overview(project.id);
   const overview = vi.fn(async (_input: unknown) => o), inventory = vi.fn(async () => []);
   const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview, inventory } }); slots.push(s);
-  fireEvent.click(await s.findByRole("tab", { name: "Rules" }));
+  fireEvent.click(await s.findByRole("tab", { name: "Context" }));
   await waitFor(() => expect(inventory).toHaveBeenCalledTimes(1)); expect(overview).toHaveBeenCalledTimes(1);
   fireEvent.click(s.getByRole("button", { name: /Initiative menu/ })); fireEvent.click(s.getByRole("button", { name: "Refresh" }));
   await waitFor(() => expect(inventory).toHaveBeenCalledTimes(2)); expect(overview.mock.calls.every(c => (c[0] as { detail?: string }).detail === "summary")).toBe(true);

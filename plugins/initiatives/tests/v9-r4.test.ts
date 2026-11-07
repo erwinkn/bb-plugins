@@ -144,14 +144,3 @@ describe("F5 the verification budget holds per page", () => {
     expect(listings).toBeLessThanOrEqual(6);
   });
 });
-
-describe("F6 a rule announcement it could not send is named, not silently skipped", () => {
-  it("a refused send to a worker makes it notReached", async () => {
-    const { f } = await projectFixture();
-    await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
-    f.send.mockClear();
-    f.send.mockRejectedValueOnce(Object.assign(new Error("BB unavailable"), { status: 503 }));
-    const result = await tool(f, "initiative_rule", { action: "add", text: "Every PR targets dev." });
-    expect(result).toMatchObject({ reached: [], notReached: ["W1 (BB unavailable)"] });
-  });
-});

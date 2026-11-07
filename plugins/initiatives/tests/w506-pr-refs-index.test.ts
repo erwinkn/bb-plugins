@@ -83,7 +83,7 @@ function fixture() {
       projectId, workerNum, taskNums: [], route: "fresh", role, workKind: "implementation", threadId: null, generation: 1, profile,
       bbProjectId: "proj", environmentId: null, state: "running", opId: `op_${++op}`, opState: "done", briefText, reviewOf: null, rationale: null,
     });
-  // A rule's PR sits in the shared appendix: it is no one's work.
+  // A PR in the shared appendix (a standing rule, in briefs from before W578) is no one's work.
   const appendix = workLoopBlock("Guidance.", reviewerCommand(profile as never), `Standing rules:\nR1. Keep ${url(3)} and erwinkn/bb#33 as the reference.`);
   const rendered = (text: string) => renderAssignment({ assignmentRef: "A1", workerRef: "W1", workerLabel: "W1", workerPurpose: "a", role: "work", tasks: [],
     reviewOf: [], reviewed: null, priorReports: [], text, appendix, opId: "op_x" });
@@ -120,7 +120,7 @@ describe("W506 indexed PR refs", () => {
       expect(now).toEqual(old);
     }
     const p = compare(store, "p").now;
-    // The cases above all landed: #3 (a rule) is nobody's; a clipped number is no reference,
+    // The cases above all landed: #3 (in the appendix) is nobody's; a clipped number is no reference,
     // though a clipped URL still says who works on it, as before.
     expect(p.read.map(([u]) => u)).toEqual([url(1), url(12), url(7), url(4), url(8, "other/repo")]);
     expect(p.ofWorker).toEqual([[1, [url(1), url(2), url(7)]], [2, [url(4)]], [3, [url(1), url(4), url(6, "other/repo"), url(8, "other/repo")]]]);

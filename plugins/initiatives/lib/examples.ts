@@ -5,7 +5,6 @@ export const COMMAND_EXAMPLES = {
   "fresh-with-handoff": { action: "delegate", route: "fresh", label: "Search ranking", area: "ranking", handoffs: ["W4"], note: "Start from W4's report and verify it against the current source." },
   message: { action: "message", target: "W4", text: "The agreed RPC contract is in the linked artifact; no scope change." },
   "task-status": { action: "task-status", task: "T11", status: "cancelled", reason: "Erwin: drop T11, the vendor fixed it upstream." },
-  rule: { action: "rule-add", text: "Every PR targets dev; main changes only through the release PR." },
   question: { action: "question", question: "Who signs off the macOS bridge?", context: "Requires a native machine check before rollout.", options: [{ label: "Erwin", consequences: "Wait for the human machine check." }, "Skip the check"], recommendation: "Erwin" },
   answer: { action: "answer", ref: "D12", choice: "Erwin", note: "I will run the check." },
   "quiet-answer": { action: "answer", ref: "D12", choice: null, note: "Already resolved in this chat.", notify: false },
@@ -17,7 +16,6 @@ export const DESCRIBE_GROUPS: Record<string, readonly (keyof typeof COMMAND_EXAM
   decision: ["question", "answer", "quiet-answer", "withdraw"],
   initiative_decision: ["question", "answer", "quiet-answer", "withdraw"],
   initiative_question: ["question", "withdraw"],
-  initiative_rule: ["rule"],
   initiative_spawn: ["spawn", "fresh-with-handoff"],
   initiative_message: ["message", "work-message"],
   initiative_task: ["task-status"],
@@ -30,5 +28,4 @@ export const READ_EXAMPLES = {
   fullReport: { refs: ["A34"], detailed: true, fields: ["report"] },
   workers: { view: "workers", limit: 8 },
   context: { view: "context" },
-  rules: { view: "rules" },
 } as const;

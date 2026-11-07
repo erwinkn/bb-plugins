@@ -26,8 +26,8 @@ lead: workers report back to it. This skill only sums up the tools.
   writer in the same checkout; overlap is never refused.
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
   more work, and the worker reports on it again; the message carries the current worker
-  loop and rules. Send a blocked worker back to review only when a standing rule or the
-  user's explicit instruction settles the open finding; otherwise ask the user
+  loop. Send a blocked worker back to review only when the user's explicit instruction
+  settles the open finding; otherwise ask the user
   (`initiative_question`). More work for an idle worker whose large cache has gone cold is
   refused with the rewrite cost; resend it with `resumeCold:true`, or spawn a fresh worker
   with `handoffs:["W#"]`. From you to a worker, a message always steers, so corrections and new facts arrive
@@ -46,10 +46,8 @@ lead: workers report back to it. This skill only sums up the tools.
   worker (`initiative_worker` retire) once its PR is merged or dropped, or once it has been
   idle 24 h without ever opening one (`bb initiative retire-idle` does both in bulk); Stop
   stops it and its running children.
-- `initiative_rule` keeps the standing rules you and every worker follow
-  (`initiative_read {view:"rules"}`): add one when the user states a lasting choice; edit or
-  remove one only when the user asks. Each change is announced to the workers with open work. A choice about one PR goes in its notes; mark choices the user may
-  reverse with "Reversible: …" in your update.
+- A lasting choice goes in the repo's docs or `AGENTS.md`; a choice about one PR goes in its
+  brief.
 - `initiative_question {question, context, options?, recommendation?}` asks the user a real
   open choice; the answer comes back to the tab that asked. A worker's blocked report never
   reaches the user: when only they can answer it, you ask it here (pass the worker's options and
@@ -97,7 +95,7 @@ lead: workers report back to it. This skill only sums up the tools.
   back compact and marked `clipped:true` (e.g. 3 questions and "+22 more"); offset does
   not expand it.
 - `initiative_batch` runs several actions in one call, in order, and reports each:
-  `{actions:[{tool:"rule",action:"add",text:"…"},{tool:"worker",action:"retire",worker:"W9"}]}`.
+  `{actions:[{tool:"task",action:"create",title:"…"},{tool:"worker",action:"retire",worker:"W9"}]}`.
   Use it instead of chaining calls; one failure doesn't stop the rest.
 - Write tools answer with a short receipt (ref, new state, warnings, the new W# and
   thread), e.g. `{"tool":"task","ok":true,"ref":"T4","state":"done"}`. `initiative_read`

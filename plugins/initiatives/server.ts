@@ -32,8 +32,6 @@ import {
   prWatchToolSchema,
   reportToolSchema,
   questionToolSchema,
-  ruleCommand,
-  ruleToolSchema,
   spawnCommand,
   spawnToolAdvertised,
   spawnToolSchema,
@@ -70,7 +68,6 @@ import { PrWatcher, WATCH_TICK_MS, readPrWatch, watchAnswer, watcherLabel } from
 import { canonicalPrUrl, prToolSchema, workerPrToolSchema } from "./lib/pr-stages";
 import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
 import { AssignedPrs, COORDINATOR, initiativeNamed, recordPrs, type PrCaller } from "./lib/pr-records";
-import { prsReferenced } from "./lib/task-status";
 import { PrOwners, ledgerThreads } from "./lib/pr-owners";
 import { readPrDetail } from "./lib/pr-detail";
 import { branchThreadId } from "./lib/merge-queue";
@@ -82,10 +79,10 @@ import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples
 const PREFETCH_LISTINGS = 3;
 /** W473: the most often one prefetch batch announces what it found. */
 const PREFETCH_ANNOUNCE_MS = 100;
-const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "rules", "reconcile", "recreate-coordinators", "retire-idle"];
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "reconcile", "recreate-coordinators", "retire-idle"];
 /** Tools initiative_batch can run, by their name without the initiative_ prefix. */
-const BATCH_TOOLS = ["spawn", "message", "task", "worker", "question", "rule", "decision", "update", "pr", "read"] as const;
-const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | rules (import <id> <file> | export <id> [file]) | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>] | retire-idle [--idle=<hours>] [--dry-run] [--limit=<n>]";
+const BATCH_TOOLS = ["spawn", "message", "task", "worker", "question", "decision", "update", "pr", "read"] as const;
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>] | retire-idle [--idle=<hours>] [--dry-run] [--limit=<n>]";
 /** W568: retire-idle's flags; --idle in hours. A number needs its value (`--idle=24`): bare `--idle` is refused, never read as 1. */
 const retireIdleFlags = z.object({
   idle: z.string().default("24").pipe(z.coerce.number<string>().positive()),
@@ -97,9 +94,7 @@ import { toolReceipt } from "./lib/receipts";
 import { SLOW_CALL_MS } from "./lib/step-timing";
 import { BUSY_STATUSES, ProjectError, errorMessage } from "./lib/bb";
 import { codeReviewSkillMissing } from "./lib/service";
-import { assembleInstructions, clip80, leadRulesPointer, workerRulesPointer } from "./lib/instructions";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { assembleInstructions, clip80 } from "./lib/instructions";
 import { isOwnOrigin } from "./lib/identity";
 import { scopedNativeEvent } from "./lib/native-events";
 import { workerGroup } from "./lib/worker-group";
@@ -547,13 +542,6 @@ export default function plugin(bb: BbPluginApi) {
     service.requireProject(projectId);
     return readCollection(store, projectId, view, options);
   };
-  /** v9 (D523): the full numbered list, current first; removed rules are left out. */
-  const readRules = (projectId: string) => {
-    const project = service.requireProject(projectId);
-    const rules = store.rules(projectId);
-    return { initiative: project.name, count: rules.length, rules: rules.map((r) => ({ ref: r.ref, text: r.text, ...(r.sources.length ? { sources: r.sources } : {}) })),
-      note: "Follow every rule. A lead adds one when the user states a lasting choice (initiative_rule), and edits or removes one only when the user asks." };
-  };
   const readThreads = async (projectId: string, options: ReadOptions) => {
     options = withImpliedDetail(options);
     validateSelection("threads", options);
@@ -894,7 +882,6 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_task",
     "initiative_worker",
     "initiative_question",
-    "initiative_rule",
     "initiative_update",
     "initiative_manage",
     "initiative_pr",
@@ -972,7 +959,6 @@ export default function plugin(bb: BbPluginApi) {
           start && ["pending", "uncertain"].includes(start.state)
             ? `You are the pending coordinator of the "${clip80(project?.name ?? meta.projectId)}" Initiative: this thread's checkout is still being proven. Initiative reads and changes need confirmed membership; if it stays unavailable, leave it to the operator. Do not retry the start.`
             : `Your coordinator start did not confirm (state ${start?.state ?? "unknown"}). Initiative reads and changes need confirmed membership. Leave settlement to the operator. Do not retry the start.`,
-          leadRulesPointer(store.rulesStamp(meta.projectId)),
         ], guidance().coordinatorInstructions),
       };
     }
@@ -1019,7 +1005,6 @@ export default function plugin(bb: BbPluginApi) {
         skills: ["initiative-coordinator"],
         instructions: assembleInstructions([
           `You are the coordinator of the "${clip80(m.project.name)}" Initiative (${m.project.id}), thread ${ctx.thread.id}.`,
-          leadRulesPointer(store.rulesStamp(m.project.id)),
         ], guidance().coordinatorInstructions),
       };
     const pending = m?.worker ? null : pendingMember(ctx);
@@ -1032,7 +1017,6 @@ export default function plugin(bb: BbPluginApi) {
         skills: ["initiative-worker"],
         instructions: assembleInstructions([
           `You are ${worker.ref} "${clip80(worker.label)}" (${clip80(worker.area)}), role ${worker.role}${m && !m.former ? "" : " (membership still being confirmed)"}.`,
-          workerRulesPointer(store.rulesStamp(projectId)),
         ], guidance().workerInstructions),
       };
     }
@@ -1179,7 +1163,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_message",
     parameters: jsonSchema(messageToolAdvertised),
-    description: 'One message to a worker (W#), your lead ("lead", for a worker) or the coordinator tab: {to:"W4",text:"…"}. From a lead, tasks:["T41"] or work:true gives the worker more work (it reports again; the message carries the current worker loop and rules); a plain message corrects work in progress. A lead\'s message to a worker always steers (it arrives mid-turn, in order); a worker that has not started yet receives it once it starts. Messages never resume a stopped or retired worker.',
+    description: 'One message to a worker (W#), your lead ("lead", for a worker) or the coordinator tab: {to:"W4",text:"…"}. From a lead, tasks:["T41"] or work:true gives the worker more work (it reports again; the message carries the current worker loop); a plain message corrects work in progress. A lead\'s message to a worker always steers (it arrives mid-turn, in order); a worker that has not started yet receives it once it starts. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return receipt(await sendMessage(raw, threadId));
@@ -1249,7 +1233,7 @@ export default function plugin(bb: BbPluginApi) {
     // Plain JSON Schema with an object root: Claude's bridge blanks union roots. Validation is
     // parseDecisionCommand, shared with the CLI, so every refusal carries a valid example.
     parameters: decisionToolJsonSchema as Record<string, unknown>,
-    description: 'Older sessions only. Questions: initiative_question. A lasting choice of the user: initiative_rule add. A choice about one PR: a note with initiative_pr. A choice the user may reverse: say "Reversible: …" in your update.',
+    description: 'Older sessions only. Questions: initiative_question. A lasting choice: the repo\'s docs or AGENTS.md. A choice about one PR: a note with initiative_pr. A choice the user may reverse: say "Reversible: …" in your update.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Record decisions from an Initiative thread.");
       await ensureMember(threadId);
@@ -1304,15 +1288,6 @@ export default function plugin(bb: BbPluginApi) {
       return receipt({ ref: result.ref, status: result.status });
     },
   });
-  registerTool({
-    name: "initiative_rule",
-    parameters: jsonSchema(ruleToolSchema),
-    description: 'The standing rules every lead and worker follows (initiative_read {view:"rules"}). Add one when the user states a lasting choice: {action:"add",text:"One or two sentences."}; edit or remove one only when the user asks: {action:"edit",rule:"R5",text} · {action:"remove",rule:"R5"}. Each change is announced to the workers with open work; the result names them.',
-    async execute(raw, { threadId }) {
-      const p = await coordinatorProject(threadId);
-      return receipt(await perform(p.id, ruleCommand(parseToolInput(ruleToolSchema, raw, "initiative_rule")), "coordinator", threadId!));
-    },
-  });
   /** initiative_pr and `bb initiative pr`: record PR stages, categories and notes, in one transaction. */
   const setPrStages = async (projectId: string, raw: unknown, tool: string, caller: PrCaller) => {
     const input = parseToolInput(prToolSchema, raw, tool);
@@ -1341,9 +1316,6 @@ export default function plugin(bb: BbPluginApi) {
         const opener = head ? branchThreadId(head) : null;
         if (opener && opener === worker.threadId) return null;
         if (recorded) return `${recorded} holds it`;
-        // F4: a PR a standing rule names is every worker's reference and none's to change.
-        const rule = store.rules(projectId).find((r) => prsReferenced(r.text).includes(url));
-        if (rule) return `${rule.ref} names it`;
         const named = assignedPrs.referencing(projectId, url);
         if (named) return `${named.worker}'s ${named.assignment} names it`;
         const other = opener ? store.membership(opener)?.worker : null;
@@ -1468,7 +1440,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_read",
-    description: 'Read the Initiative. {} is the overview; {view:"rules"} the standing rules; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state (unassigned:true: the PRs no Adventure owns), refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
+    description: 'Read the Initiative. {} is the overview; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state (unassigned:true: the PRs no Adventure owns), refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
     parameters: jsonSchema(agentReadAdvertised),
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
@@ -1494,7 +1466,6 @@ export default function plugin(bb: BbPluginApi) {
       if (!view || view === "overview") return JSON.stringify(compactOverview(store, m.project.id));
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
-      if (view === "rules") return JSON.stringify(readRules(m.project.id));
       // A thread without chat memory is told so, not answered with Chat memory's HTTP 500.
       if (view === "memory") return JSON.stringify(await chatMemory("read", { threadId }, z.object({ messages: z.number(), view: z.string(), note: z.string() })).catch((error) => {
         if (!/no chat memory/i.test(errorMessage(error))) throw error;
@@ -1516,7 +1487,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_batch",
     parameters: jsonSchema(batchSchema),
-    description: 'Several Initiative actions in one call, run in order; one failing never stops the rest. Each is {tool, ...that tool\'s arguments}: {actions:[{tool:"rule",action:"add",text:"…"},{tool:"message",to:"W12",text:"…"}]}. Returns one result per action. Leads only.',
+    description: 'Several Initiative actions in one call, run in order; one failing never stops the rest. Each is {tool, ...that tool\'s arguments}: {actions:[{tool:"task",action:"create",title:"…"},{tool:"message",to:"W12",text:"…"}]}. Returns one result per action. Leads only.',
     async execute(raw, context) {
       await coordinatorProject(context.threadId);
       const { actions } = parseToolInput(batchSchema, raw, "initiative_batch");
@@ -1598,9 +1569,8 @@ export default function plugin(bb: BbPluginApi) {
     summary: "Durable initiatives, worker lifecycles, decisions and overview",
     commands: [
       { name: "message", summary: "One message to a worker or the coordinator; the coordinator adds tasks or work:true to give a worker more work", usage: "bb initiative message '{\"to\":\"W4\",\"text\":\"Interface fact\"}'" },
-      { name: "describe", summary: "Show short valid JSON examples for commands and reads", usage: "bb initiative describe [read|spawn|work-message|fresh-with-handoff|message|task-status|rule|question|answer|quiet-answer|withdraw|handover|<initiative_tool>]" },
+      { name: "describe", summary: "Show short valid JSON examples for commands and reads", usage: "bb initiative describe [read|spawn|work-message|fresh-with-handoff|message|task-status|question|answer|quiet-answer|withdraw|handover|<initiative_tool>]" },
       { name: "list", summary: "List initiatives", usage: "bb initiative list" },
-      { name: "rules", summary: "Import a standing-rules file (the live list becomes exactly the file's; the previous list is written next to it as rules-before-<time>.md, the undo) or export the list", usage: "bb initiative rules import <initiative-id> <file> | bb initiative rules export <initiative-id> [file]" },
       {
         name: "overview",
         summary: "Read the four-part initiative overview",
@@ -1610,7 +1580,7 @@ export default function plugin(bb: BbPluginApi) {
         name: "read",
         summary: "Read a stored collection",
         usage:
-          "bb initiative read <records|rules|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs. The coordinator's memory: bb chat-memory",
+          "bb initiative read <records|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs. The coordinator's memory: bb chat-memory",
       },
       {
         name: "command",
@@ -1639,7 +1609,7 @@ export default function plugin(bb: BbPluginApi) {
       },
       {
         name: "retire-idle",
-        summary: "Retire, across every Adventure, the workers idle longer than --idle hours (default 24); open or unconfirmed work and busy threads are refused, and a worker's context is kept (rule R11) while it holds or watches an open PR. --dry-run lists them by Adventure; at most --limit (default 25) retire per call. Nobody is woken",
+        summary: "Retire, across every Adventure, the workers idle longer than --idle hours (default 24); open or unconfirmed work and busy threads are refused, and a worker's context is kept while it holds or watches an open PR. --dry-run lists them by Adventure; at most --limit (default 25) retire per call. Nobody is woken",
         usage: "bb initiative retire-idle [--idle=<hours>] [--dry-run] [--limit=<n>]",
       },
     ],
@@ -1662,10 +1632,9 @@ export default function plugin(bb: BbPluginApi) {
         else if (action === "overview" && args.length <= 2)
           result = ctx.threadId ? compactOverview(store, value ?? member?.project.id ?? "") : await overview(value ?? member?.project.id ?? "");
         else if (action === "read" && args.length <= 4) {
-          const view = z.enum(["records", "rules", ...READ_VIEWS]).parse(value);
+          const view = z.enum(["records", ...READ_VIEWS]).parse(value);
           const options = readOptionsSchema.parse(args[3] ? JSON.parse(args[3]) : {});
-          result = view === "rules" ? readRules(id ?? "")
-            : view === "records" ? readRefs(store, id ?? "", options)
+          result = view === "records" ? readRefs(store, id ?? "", options)
             : view === "threads" ? await readThreads(id ?? "", options)
             : read(id ?? "", view, options);
         } else if (action === "message" && value && args.length === 2) {
@@ -1722,23 +1691,6 @@ export default function plugin(bb: BbPluginApi) {
             result = await service.report(ctx.threadId, reportSchema.safeExtend({ assignment: z.string().optional() }).parse(raw));
           else {
             result = await shortReport(ctx.threadId, raw, "bb initiative report");
-          }
-        } else if (action === "rules" && (value === "import" || value === "export") && args.length >= 3 && args.length <= 4) {
-          // v9: `rules import <id> <file>` makes the live list exactly the file's, after writing the
-          // current one to rules-before-<time>.md next to it (importing that is the exact undo).
-          const [, , projectId, file] = args as [string, string, string, string | undefined];
-          if (ctx.threadId && !(member && !member.former && member.workerNum === 0 && member.project.id === projectId))
-            throw new ProjectError("Import or export rules from a terminal or the coordinator of that Initiative.");
-          if (value === "export") {
-            const text = service.exportRules(projectId);
-            if (file) writeFileSync(resolvePath(file), text);
-            result = file ? { written: resolvePath(file) } : text;
-          } else {
-            if (!file || !existsSync(resolvePath(file))) throw new ProjectError("Name the rules file: bb initiative rules import <initiative-id> <file>.");
-            const path = resolvePath(file);
-            const before = join(dirname(path), `rules-before-${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
-            writeFileSync(before, service.exportRules(projectId));
-            result = { ...(await service.importRules(projectId, readFileSync(path, "utf8"), ctx.threadId ?? null)), undo: `bb initiative rules import ${projectId} ${before}` };
           }
         } else if (action === "reconcile" && args.length === 1) {
           result = await service.reconcile();

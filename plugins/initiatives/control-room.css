@@ -378,25 +378,8 @@
 .cr .cr-new-task { margin: 4px 0 8px; padding: 0 12px; border: 1px dashed var(--border); border-radius: 9px; }
 .cr .cr-new-task > summary { padding: 9px 0; }
 
-/* ---- Rules: purpose card, numbered rules, + Add rule, who gets them. */
-.cr-purpose, .cr-rules { max-width: 720px; }
+/* ---- Context: purpose card. */
+.cr-purpose { max-width: 720px; }
 .cr-purpose .cr-context-notes h3:first-child { margin-top: 0; }
 .cr-purpose .cr-link { margin: 8px 0 0 -4px; }
-.cr-rules-head { display: flex; align-items: baseline; gap: 8px; }
-.cr-rules-count { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--cr-ink-secondary); letter-spacing: 0; }
-.cr-rule-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--border); }
-.cr-rule { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.cr-rule > .cr-ref { padding-top: 2px; }
-.cr-rule > .cr-rule-form { grid-column: 2 / 4; }
-.cr-rule-sources { margin-top: 2px !important; font-size: 11px; color: var(--muted-foreground); }
-.cr-rule-actions { display: flex; gap: 0; opacity: .55; transition: opacity .12s; }
-.cr-rule:hover .cr-rule-actions, .cr-rule:focus-within .cr-rule-actions { opacity: 1; }
-.bb-projects .cr .cr-rule-actions .cr-iconbtn { width: 22px; min-width: 22px; height: 22px; min-height: 22px; }
-.cr-rule-actions svg { width: 13px; height: 13px; }
-.cr-rule-form input { width: 100%; font: inherit; padding: 6px 9px; border-radius: 7px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); }
-.cr-rule-form .project-actions { display: flex; align-items: center; margin: 6px 0 0; }
-.cr-rule-limit { margin-left: auto; font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--cr-faint); }
-.bb-projects .cr .cr-add-box { display: block; width: 100%; margin: 10px 0; padding: 9px 12px; border: 1px dashed var(--border); border-radius: 9px; background: transparent; text-align: left; color: var(--muted-foreground); }
-.cr-rules > .cr-rule-form { margin: 10px 0; }
-.bb-projects .cr .cr-archive-link { margin: 4px 0 0 -4px; color: var(--muted-foreground); }
 .cr-inbox, .cr-repositories { max-width: 720px; }

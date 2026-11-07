@@ -351,7 +351,7 @@ export class ReviewerFallback {
     try {
       // R8: a reviewer that finished a turn may have given its verdict, which is never redone.
       if (await this.finishedTurn(threadId)) {
-        store.log(project.id, "worker", `${worker.ref}'s reviewer ${threadId} is ${REASONS[failure.reason]} after finishing a turn; not rerun on the fallback (R8).`);
+        store.log(project.id, "worker", `${worker.ref}'s reviewer ${threadId} is ${REASONS[failure.reason]} after finishing a turn; not rerun on the fallback.`);
         await tell(`${stopped}\n\nIt had already finished a turn, so the plugin left it: a round that gave a verdict or findings stands. If it gave neither, run the round again with the fallback reviewer command from your brief.`);
         return;
       }
@@ -382,7 +382,7 @@ export class ReviewerFallback {
       }
       // R8: a reviewer switched as it started may have finished before the stop landed.
       if (failure.reason === "out" && (await this.finishedTurn(threadId))) {
-        store.log(project.id, "worker", `${worker.ref}'s reviewer ${threadId} finished a turn before the plugin could switch it; not rerun on the fallback (R8).`);
+        store.log(project.id, "worker", `${worker.ref}'s reviewer ${threadId} finished a turn before the plugin could switch it; not rerun on the fallback.`);
         await tell(`Your reviewer for ${name} started on ${profileName(reviewer)} while it is marked out, but finished a turn before the plugin could switch it, so the plugin left it: a round that gave a verdict or findings stands. If it gave neither, run the round again with the fallback reviewer command from your brief.`);
         return;
       }

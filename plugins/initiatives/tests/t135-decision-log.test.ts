@@ -47,6 +47,7 @@ describe("T135 agents never receive the decision log", () => {
     expect(decision).toMatch(/^Older sessions only/);
     expect(read).not.toMatch(/D12|decisions/);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text).not.toMatch(/read (the )?decisions|decisions first/i);
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("A lasting choice by the user becomes a rule (initiative_rule)");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("A lasting choice goes in the repo's docs or `AGENTS.md`; a choice about one PR goes in its brief.");
+    expect(decision).not.toContain("initiative_rule");
   });
 });
