@@ -185,7 +185,8 @@ describe("T136 instructions", () => {
     // Erwin (2026-10-10): slow hands-on work goes to a worker, so the coordinator answers fast.
     // W488: record the user's chat answer on its Inbox card before continuing the worker.
     // W534 (rule R8, Erwin 2026-10-20): the clean-review rule and the second-reviewer line grew both texts.
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(3000);
+    // Erwin (2026-11-07): the design-first line for high-risk and multi-PR work.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(3200);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     // W210 (D417): reports go through initiative_report; stop background work first.
     // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
@@ -195,10 +196,11 @@ describe("T136 instructions", () => {
     // W548: never wait on CI, the plugin wakes you (the cap is MAX_GUIDANCE_CHARACTERS, 3,584).
     // W554: watch your PR after opening or pushing it, unwatch it once handed off.
     // Muse Wonder Full as an optional expert reviewer next to Fable (Erwin, 2026-11-02).
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(3200);
+    // Erwin (2026-11-07): the repository's review-loop skill, else the default loop and its stop rule.
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(3550);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn. Don't start reviewers: workers do.");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while P1s and P2s converge");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Go on only while each round has fewer and smaller findings, none from the last fix.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
   });
 

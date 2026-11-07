@@ -1539,8 +1539,8 @@ describe("W548 wiring", () => {
     // W563: ending a turn while a watched PR is pending is waiting, like on a child.
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child, background job or watched PR is pending, end your turn; it wakes you.");
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
-    // W548's text is a legacy default (behind W554's, W555's, W560's, W563's and the Sol-default one): saved unedited, it upgrades to this one.
-    expect(PREVIOUS_DEFAULTS.worker[4]).toContain("the plugin wakes you when your PR changes.");
+    // W548's text is a legacy default (behind W554's, W555's, W560's, W563's, the Sol-default one and the review-loop one): saved unedited, it upgrades to this one.
+    expect(PREVIOUS_DEFAULTS.worker[5]).toContain("the plugin wakes you when your PR changes.");
   });
 });
 
