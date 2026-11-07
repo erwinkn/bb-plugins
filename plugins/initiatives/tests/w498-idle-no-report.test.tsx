@@ -129,7 +129,7 @@ describe("worker guidance: questions go in a blocked report; reviews follow rule
   it("leaves no 4- or 6-round review limit in the defaults or the skills", () => {
     for (const text of [DEFAULT_WORKER_INSTRUCTIONS, DEFAULT_COORDINATOR_INSTRUCTIONS, skill("initiative-worker"), skill("initiative-coordinator")])
       expect(text.replace(/\s+/g, " ")).not.toMatch(/\b[46] (more |extra )?(review )?rounds|after round \d|at most \d+ (converging |review )?rounds/i);
-    expect(skill("initiative-worker").replace(/\s+/g, " ")).toContain("Keep going only while each round has fewer and smaller findings and none caused by the previous fix.");
+    expect(skill("initiative-worker").replace(/\s+/g, " ")).toContain("Keep going only while the P1s and P2s you accept get fewer each round, with no more P1s, and none caused by the previous fix.");
   });
   it.each(["coordinator", "worker"] as const)("a saved copy of the %s default from before R5 upgrades to the current one", async (field) => {
     const previous = PREVIOUS_DEFAULTS[field].find((text) => text.includes("6 review rounds"))!;

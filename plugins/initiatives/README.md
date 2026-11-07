@@ -70,17 +70,13 @@ An example, in the Equisafe Initiative:
    records nothing; only `initiative_report` finishes work.
 3. No fixed round cap (rule R5, Erwin 2026-10-17, in the worker guidance; the plugin counts
    nothing). The repository's own review-loop skill, when it has one (Equisafe's
-   `autoreview`), decides what each round checks and when to stop (Erwin, 2026-11-07); the
+   `autoreview`), decides what each round checks, when to stop and what clean means (Erwin, 2026-11-07); the
    worker guidance's default loop, for a repository without one, states the same rule: before
-   round 1, say where the behaviour of each branch, filter, check or field the change deletes
-   or moves lives now; reviewers group findings by root cause, and the worker fixes each cause
-   and sweeps the change for its other instances; keep going only while each round has fewer
-   and smaller findings and none caused by the previous fix. Clean (rule R8, Erwin
-   2026-10-20) means the reviewer's verdict is correct with no P1 or P2; P3s left are fixed
+   round 1, say where the behaviour of each branch, filter, check or field the change deletes or moves lives now, why nothing needs it, or that the worker can't tell and cuts it anyway, listing it; reviewers group findings by root cause, and the worker fixes each cause
+   and sweeps the change for its other instances; keep going only while the P1s and P2s the worker accepts get fewer each round, with no more P1s, and none caused by the previous fix. In that default loop, clean (rule R8, Erwin 2026-10-20) means the reviewer's verdict is correct with no P1 or P2; P3s left are fixed
    if cheap and listed in the PR notes, with no re-review. One reviewer per round; an expert (Fable 5.1
    or Muse Wonder Full) is a second one only when the brief asks for it on a high-risk change (auth, money, locking,
-   migrations, crypto, concurrency), consulted once after the first has passed the head; such
-   a change, or a feature over several PRs, also gets a design artifact the expert reviews once
+   migrations, crypto, concurrency), consulted once after the first has passed the head; such a change, broad work (a large refactor) or a feature over several PRs also gets a design artifact the expert reviews once
    before coding. On a clean review the worker sets the PR to `ready-for-erwin` and reports
    done once. A loop that stops without converging, a decision the review-loop skill would ask
    the user for, or scope creep: it reports blocked with the open findings, options and the
