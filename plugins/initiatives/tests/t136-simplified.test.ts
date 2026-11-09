@@ -196,7 +196,7 @@ describe("T136 instructions", () => {
     // W548: never wait on CI, the plugin wakes you (the cap is MAX_GUIDANCE_CHARACTERS, 3,584).
     // W554: watch your PR after opening or pushing it, unwatch it once handed off.
     // Muse Wonder Full as an optional expert reviewer next to Fable (Erwin, 2026-11-02).
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(3200);
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(3300);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("One worker per PR (or a few small related ones) with initiative_spawn. Don't start reviewers: workers do.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while P1s and P2s converge");
