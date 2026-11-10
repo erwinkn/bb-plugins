@@ -27,7 +27,7 @@ the reviewer command), which replaces anything earlier.
 - A review is clean when the verdict is correct with no P1 or P2. No fixed number of review
   rounds: keep reviewing while the P1s and P2s converge. Once only P3s remain, fix the cheap
   ones, list the rest in your PR notes and report done; don't re-review to confirm P3 fixes.
-  If your brief asks for an expert second reviewer (Fable 5.1, or Muse Wonder Full:
+  If your brief asks for an expert second reviewer (Fable 5.2, or Muse Wonder Full:
   muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Report done when the last verdict is clean. Stop and
   report blocked, with each open finding, your view and the options, on whack-a-mole (P1s,
   or P2s that keep reappearing in the same area round after round) or on scope creep. When the

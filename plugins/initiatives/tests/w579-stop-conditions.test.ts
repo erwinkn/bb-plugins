@@ -13,7 +13,7 @@ describe("W579 brief stop conditions come before fixes", () => {
   });
 
   it("the worker default from before it is kept as a legacy text and upgrades to the current one", async () => {
-    const previous = PREVIOUS_DEFAULTS.worker[0]!;
+    const previous = PREVIOUS_DEFAULTS.worker[1]!;
     expect(previous).toContain("- Fix the findings you agree with. If you disagree");
     expect(previous).not.toContain("stop conditions");
     const f = fixture({ workerInstructions: previous });

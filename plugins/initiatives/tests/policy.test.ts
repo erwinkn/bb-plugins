@@ -95,7 +95,7 @@ describe("profiles", () => {
     });
     expect(DEFAULT_PROFILES.reviewOfGpt).toEqual({
       providerId: "claude-code",
-      model: "claude-fable-5-1",
+      model: "claude-fable-5-2",
       reasoningLevel: "xhigh",
     });
   });

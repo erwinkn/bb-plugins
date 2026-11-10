@@ -113,7 +113,7 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
   },
   reviewOfGpt: {
     providerId: "claude-code",
-    model: "claude-fable-5-1",
+    model: "claude-fable-5-2",
     reasoningLevel: "xhigh",
   },
   // When the reviewer above can't run (usage limit, model unavailable), for either family (W537).
