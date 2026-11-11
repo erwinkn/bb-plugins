@@ -18,6 +18,7 @@ import { useData } from "./use-data";
 import { experimental_ProviderIcon as ProviderIcon } from "@get-bb/plugin-sdk/app";
 import { appReads } from "./lib/dashboard-data";
 import { UsagePage } from "./usage-view";
+import { DriveFiles } from "./drive-view";
 import { useWrite } from "./write-status";
 import { WRITE_SLOW_MESSAGE, WRITE_SLOW_MS } from "./lib/write-timeout";
 import "./control-room.css";
@@ -768,6 +769,7 @@ export function ControlRoom({
                   </>
                 )}
               </section>
+              <DriveFiles projectId={p.id} />
               <section ref={repositories} className="cr-repositories">
                 <Repositories o={o} inventory={inventory} run={run} />
               </section>

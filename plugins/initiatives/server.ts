@@ -93,12 +93,17 @@ import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
 import { SLOW_CALL_MS } from "./lib/step-timing";
 import { BUSY_STATUSES, ProjectError, errorMessage } from "./lib/bb";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { basename, dirname, extname, join } from "node:path";
 import { codeReviewSkillMissing } from "./lib/service";
 import { assembleInstructions, clip80 } from "./lib/instructions";
 import { isOwnOrigin } from "./lib/identity";
 import { scopedNativeEvent } from "./lib/native-events";
 import { workerGroup } from "./lib/worker-group";
 import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
+import { DriveError, Drives } from "./lib/drive";
 import {
   readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, agentReadAdvertised, validateSelection, withImpliedDetail,
   readOptionsSchema, isPrRef, readMixedRefs,
@@ -107,6 +112,11 @@ import {
   type ReadOptions,
   type ReadView,
 } from "./lib/read";
+
+const DRIVE_TYPES: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+  ".pdf": "application/pdf", ".txt": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8", ".json": "application/json",
+};
 
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -121,6 +131,9 @@ export default function plugin(bb: BbPluginApi) {
   const preferences = definePreferences(bb, { has: (key) => store.hasFlag(key), set: (key) => store.setFlag(key) },
     skillMissing ? { workerInstructions: `Warning: ${skillMissing}` } : undefined);
   const service = new ProjectsService(bb, store, preferences);
+  // W584: each Adventure's drive, a folder next to this plugin's database.
+  const drives = new Drives(join(dirname(db.name), "drives"));
+  service.drives = drives;
   const runtime = new Runtime(service);
   const changed = (projectId?: string) => {
     const payload: Record<string, string> = projectId ? { projectId } : {};
@@ -632,6 +645,14 @@ export default function plugin(bb: BbPluginApi) {
     warn: (message) => bb.log.warn(message),
   });
   bb.rpc.register(projectsContract, {
+    driveList: ({ projectId }) => (service.requireProject(projectId), drives.list(projectId)),
+    driveRead: ({ projectId, path }) => (service.requireProject(projectId), drives.read(projectId, path)),
+    driveSave: ({ projectId, path, text, base }) => (service.requireProject(projectId), drives.save(projectId, path, text, base)),
+    driveChange: ({ projectId, change }) => {
+      service.requireProject(projectId);
+      drives.change(projectId, change);
+      return { ok: true as const };
+    },
     mergeQueue: async ({ projectId, refresh }) => {
       // W516: the dashboard's read keeps its repositories on the two-minute cadence; agents' reads don't.
       const queue = await mergeQueue.read(projectId, { refresh, viewer: true });
@@ -790,6 +811,29 @@ export default function plugin(bb: BbPluginApi) {
         }),
       );
     },
+  });
+
+  // W584: a drive file's bytes, for the Files view's images and downloads (local auth: the BB app only).
+  bb.http.route("GET", "/drive/raw", async (c) => {
+    const query = new URL(c.req.url).searchParams;
+    const projectId = query.get("projectId") ?? "", path = query.get("path") ?? "";
+    try {
+      if (!store.project(projectId)) throw new DriveError("Unknown Initiative.");
+      const abs = drives.resolve(projectId, path);
+      const size = await stat(abs).then((s) => (s.isFile() ? s.size : Promise.reject(new DriveError(`${path} is not a file.`))));
+      const name = encodeURIComponent(basename(path));
+      // Streamed: agents' files have no size limit. Cancelling the response destroys the stream.
+      return new Response(Readable.toWeb(createReadStream(abs)) as ReadableStream, { headers: {
+        "content-length": String(size),
+        "content-type": DRIVE_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream",
+        "content-disposition": `${query.has("download") ? "attachment" : "inline"}; filename*=UTF-8''${name}`,
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        "cache-control": "no-store",
+      } });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 404);
+    }
   });
 
   // T96: read-only lifecycle and brief/handoff context for other local plugins
@@ -1005,6 +1049,7 @@ export default function plugin(bb: BbPluginApi) {
         skills: ["initiative-coordinator"],
         instructions: assembleInstructions([
           `You are the coordinator of the "${clip80(m.project.name)}" Initiative (${m.project.id}), thread ${ctx.thread.id}.`,
+          `Adventure drive (shared files outside git: notes, plans, reference docs; use your file tools): ${drives.root(m.project.id)}/. initiative_read {} lists its files, and every brief carries that list.`,
         ], guidance().coordinatorInstructions),
       };
     const pending = m?.worker ? null : pendingMember(ctx);
@@ -1463,7 +1508,7 @@ export default function plugin(bb: BbPluginApi) {
       // PR refs (#12, infra#12, a URL) read like view prs refs, durable refs (T/W/A/D/U) as records.
       if (!view && options.refs?.some(isPrRef)) return JSON.stringify(readMixedRefs(store, m.project.id, options, await mergeQueue.read(m.project.id)));
       if (!view && options.refs || view === "records") return JSON.stringify(readRefs(store, m.project.id, options));
-      if (!view || view === "overview") return JSON.stringify(compactOverview(store, m.project.id));
+      if (!view || view === "overview") return JSON.stringify({ ...compactOverview(store, m.project.id), drive: drives.indexLine(m.project.id) });
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
       // A thread without chat memory is told so, not answered with Chat memory's HTTP 500.
@@ -1820,6 +1865,14 @@ export default function plugin(bb: BbPluginApi) {
         });
       }
       prWatcher.stop();
+    },
+  });
+  // W584: a change in a drive, by an agent or the Files view, refreshes that Adventure's Files view.
+  bb.background.service("initiatives-drives", {
+    async start(signal) {
+      const stop = drives.watch((projectId) => bb.realtime.publish("drive-changed", { projectId }), (message) => bb.log.warn(message));
+      await new Promise<void>((resolve) => (signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true })));
+      stop();
     },
   });
   bb.background.service("initiatives-sweep", {

@@ -29,6 +29,7 @@ import { CUTOVER_FLAG, cutoverInstruction, cutoverProjects, preSwitchBlock, preS
 import type { HandStatus } from "./task-status";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import type { Drives } from "./drive";
 import { join } from "node:path";
 import { captureHandoverSnapshot, failureText, latestInput, messagesSince, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
 import { isOwnOrigin } from "./identity";
@@ -397,6 +398,9 @@ export class ProjectsService {
       if ((error as { status?: number }).status !== 404) throw error;
     }
   }
+
+  /** W584: the Adventures' drives; server.ts sets it, so briefs carry the drive's line. */
+  drives: Drives | null = null;
 
   /** W568: the Adventures whose coordinator memory Chat memory was told goes first, this process. */
   private readonly prioritized = new Set<string>();
@@ -4478,6 +4482,7 @@ export class ProjectsService {
       priorReports: embedded.slice(reviewed ? 1 : 0).map((source) => renderPriorReport(this.store, source, "Prior report")),
       text: input.note ?? null,
       appendix: worker.role === "work" ? this.workAppendix(policy, profile, settings.workerInstructions, input.route) : null,
+      drive: this.drives?.indexLine(project.id) ?? null,
       opId,
     });
     this.store.setBriefText(project.id, assignment.num, text);

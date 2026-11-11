@@ -52,6 +52,8 @@ export function renderAssignment(input: {
   priorReports: string[];
   /** The coordinator's own brief text. */
   text: string | null;
+  /** W584: the Adventure drive's line (Drives.indexLine): its path and newest files. */
+  drive?: string | null;
   /** v9: what the brief ends with: the reviewer command, or the whole loop block. */
   appendix?: string | null;
   opId: string;
@@ -66,6 +68,7 @@ export function renderAssignment(input: {
     input.role === "work" && input.access === "read-only"
       ? "Access: read-only. Don't write source or install state, even with full permissions; report the exact source state you checked."
       : null,
+    input.drive ?? null,
     input.profile
       ? `Execution: ${describeProfile(input.profile)}; permissions: ${input.permissionMode ?? "environment default"}.`
       : null,

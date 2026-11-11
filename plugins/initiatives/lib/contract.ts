@@ -7,6 +7,7 @@ import type { PrNote } from "./pr-notes";
 import type { PrDetail } from "./pr-detail";
 import type { PrWatchView } from "./pr-watch";
 import type { Overview, WorkerChild } from "./overview";
+import { UPLOAD_MAX_BYTES, type DriveFile, type DriveList, type DriveSave } from "./drive-types";
 import type { Cached } from "./live-threads";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
 import { readOptionsSchema, READ_VIEWS } from "./read";
@@ -17,6 +18,7 @@ export type ChildPage = { rows: WorkerChild[]; next: number | null };
 export type { Cached };
 
 const id = z.string().min(1).max(80);
+const drivePath = z.string().min(1).max(1024);
 const membershipSchema = z
   .object({
     projectId: id,
@@ -140,6 +142,26 @@ export const projectsContract = defineRpcContract({
   prDetail: {
     input: z.object({ projectId: id, url: z.string().min(1).max(300) }),
     output: z.custom<PrDetail>(),
+  },
+  /** W584: the Adventure's drive (lib/drive.ts): every entry, then one file; `drive-changed` announces a change. */
+  driveList: { input: z.object({ projectId: id }), output: z.custom<DriveList>() },
+  driveRead: { input: z.object({ projectId: id, path: drivePath }), output: z.custom<DriveFile>() },
+  /** Saves over `base`, the version the editor loaded (null: a new file); otherwise answers the conflict. */
+  driveSave: {
+    input: z.object({ projectId: id, path: drivePath, text: z.string(), base: z.string().max(80).nullable() }),
+    output: z.custom<DriveSave>(),
+  },
+  driveChange: {
+    input: z.object({
+      projectId: id,
+      change: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("mkdir"), path: drivePath }),
+        z.object({ kind: z.literal("move"), from: drivePath, to: drivePath }),
+        z.object({ kind: z.literal("delete"), path: drivePath }),
+        z.object({ kind: z.literal("upload"), path: drivePath, base64: z.string().max(Math.ceil(UPLOAD_MAX_BYTES / 3) * 4), replace: z.boolean() }),
+      ]),
+    }),
+    output: z.object({ ok: z.literal(true) }),
   },
   /**
    * A client's read timed out; logged as one warn line. `read` names the view

@@ -383,3 +383,23 @@
 .cr-purpose .cr-context-notes h3:first-child { margin-top: 0; }
 .cr-purpose .cr-link { margin: 8px 0 0 -4px; }
 .cr-inbox, .cr-repositories { max-width: 720px; }
+
+/* W584: the Adventure drive in the Context tab. */
+.cr-drive { max-width: 960px; }
+.cr-drive-tools, .cr-drive-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+.cr-drive-ask label { display: flex; align-items: center; gap: 6px; flex: 1 1 320px; }
+.cr-drive-ask input { flex: 1; min-width: 0; }
+.cr-drive-body { display: grid; grid-template-columns: minmax(180px, 280px) minmax(0, 1fr); gap: 12px; align-items: start; }
+@container (max-width: 640px) { .cr-drive-body { grid-template-columns: 1fr; } }
+.cr-drive-tree { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 9px; background: var(--cr-surface); }
+.cr-drive-tree li { display: flex; align-items: center; gap: 4px; padding-right: 6px; }
+.cr-drive-tree li[data-selected] { background: var(--accent, rgba(127, 127, 127, .12)); }
+.cr-drive-tree li:not(:hover):not(:focus-within) .cr-pm-more { visibility: hidden; }
+.bb-projects .cr .cr-drive-entry { flex: 1; min-width: 0; min-height: 0; padding: 4px 8px; overflow: hidden; border: 0; background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.cr-drive-meta { color: var(--muted-foreground); font-size: 11px; white-space: nowrap; }
+.cr-drive-file { min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--cr-surface); }
+.cr-drive-file-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.cr-drive-file-head strong { overflow-wrap: anywhere; }
+.cr-drive-file-head .project-meta { margin: 0 auto 0 0; }
+.cr-drive-editor { box-sizing: border-box; width: 100%; min-height: 360px; font: 12.5px/1.5 var(--font-mono, ui-monospace, monospace); resize: vertical; }
+.cr-drive-image { max-width: 100%; height: auto; }

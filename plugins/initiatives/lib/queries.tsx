@@ -11,6 +11,10 @@ export const SAFETY_POLL_MS = 60_000;
 export const queryKeys = {
   prWatch: (projectId: string, url: string) => ["pr-watch", projectId, url] as const,
   prWatches: ["pr-watch"] as const,
+  /** W584: everything of one Adventure's drive; a drive-changed signal refreshes it whole. */
+  drive: (projectId: string) => ["drive", projectId] as const,
+  driveList: (projectId: string) => ["drive", projectId, "list"] as const,
+  driveFile: (projectId: string, path: string) => ["drive", projectId, "file", path] as const,
 };
 
 type Api = PluginRpcClient<typeof projectsContract>;
@@ -20,8 +24,45 @@ export const prWatchQuery = (api: Api, projectId: string, url: string) =>
   queryOptions({
     queryKey: queryKeys.prWatch(projectId, url),
     queryFn: () => withReadTimeout(api.call("prWatch", { projectId, url })),
-    refetchInterval: () => (document.visibilityState === "visible" ? SAFETY_POLL_MS : false),
+    refetchInterval: visiblePoll,
   });
+
+const visiblePoll = () => (document.visibilityState === "visible" ? SAFETY_POLL_MS : false);
+
+/** W584: the drive's entries; the server walks the folder on each read (a local readdir, no cache needed). */
+export const driveListQuery = (api: Api, projectId: string) =>
+  queryOptions({
+    queryKey: queryKeys.driveList(projectId),
+    queryFn: () => withReadTimeout(api.call("driveList", { projectId })),
+    refetchInterval: visiblePoll,
+  });
+
+export const driveFileQuery = (api: Api, projectId: string, path: string) =>
+  queryOptions({
+    queryKey: queryKeys.driveFile(projectId, path),
+    queryFn: () => withReadTimeout(api.call("driveRead", { projectId, path })),
+    refetchInterval: visiblePoll,
+  });
+
+/** W584: the server's drive watcher announces each changed drive (coalesced) on drive-changed; reconnects read it again. */
+export function useDriveSync(projectId: string) {
+  const client = useQueryClient();
+  useRealtime("drive-changed", (payload) => {
+    if ((payload as { projectId?: unknown } | null)?.projectId === projectId) refresh(client, queryKeys.drive(projectId));
+  });
+  useReconnect(() => refresh(client, queryKeys.drive(projectId)));
+}
+
+function useReconnect(run: () => void) {
+  const connection = useRealtimeConnectionState();
+  const was = useRef(connection);
+  const latest = useRef(run);
+  latest.current = run;
+  useEffect(() => {
+    if (was.current !== "connected" && connection === "connected") latest.current();
+    was.current = connection;
+  }, [connection]);
+}
 
 /**
  * Routes realtime signals to the keys they concern: a wake or a watch change is announced on
@@ -30,10 +71,5 @@ export const prWatchQuery = (api: Api, projectId: string, url: string) =>
 export function useQuerySync() {
   const client = useQueryClient();
   useRealtime("merge-queue-changed", () => refresh(client, queryKeys.prWatches));
-  const connection = useRealtimeConnectionState();
-  const was = useRef(connection);
-  useEffect(() => {
-    if (was.current !== "connected" && connection === "connected") refresh(client, queryKeys.prWatches);
-    was.current = connection;
-  }, [client, connection]);
+  useReconnect(() => refresh(client, queryKeys.prWatches));
 }

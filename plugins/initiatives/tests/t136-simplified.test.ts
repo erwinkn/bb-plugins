@@ -35,10 +35,11 @@ describe("T136 giving work: spawn or message, tasks optional", () => {
     expect(r).toMatchObject({ worker: "W1", assignment: "A1", state: "running" });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
     // v9: a brief ends with the reviewer command; W578: no standing rules.
-    expect(brief).toMatch(/^W1 "Search index" \(search ranking\) · work\n\nIndex archived records\. Verify with npm test\.\n\nExecution: .*\n\nFinish by calling initiative_report with your full report\.\n\nReviewer command \(code-review skill, other model family\):\nbb thread spawn [^]*\n\n\[initiatives:op_[a-z0-9]+\]$/);
+    expect(brief).toMatch(/^W1 "Search index" \(search ranking\) · work\n\nIndex archived records\. Verify with npm test\.\n\nAdventure drive: \/[^\n]*\/drives\/[^\n]* It is empty so far\.\n\nExecution: .*\n\nFinish by calling initiative_report with your full report\.\n\nReviewer command \(code-review skill, other model family\):\nbb thread spawn [^]*\n\n\[initiatives:op_[a-z0-9]+\]$/);
     expect(brief).not.toMatch(/Standing rules|initiative_rule/);
     // W537: the default fallback reviewer differs from the default reviewer, so its command follows.
-    expect(brief.length).toBeLessThan(1700);
+    // W584: plus the drive's line, about 300 characters while the drive is empty.
+    expect(brief.length).toBeLessThan(2000);
     expect(f.store.assignment(project.id, 1)).toMatchObject({ taskNums: [], role: "work" });
   });
 

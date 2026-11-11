@@ -194,10 +194,11 @@ describe("T96 public context routes", () => {
     return { status: response.status, body: (await response.json()) as any };
   };
 
-  it("registers only token-auth GET routes on exact paths", async () => {
+  it("registers only GET routes on exact paths: token auth for other plugins, local auth for the drive's bytes (W584)", async () => {
     const { f } = await projectFixture();
     const routes = f.harness.registrations.httpRoutes.map((r: any) => ({ method: r.method, path: r.path, auth: r.auth }));
     expect(routes).toEqual([
+      { method: "GET", path: "/drive/raw", auth: "local" },
       { method: "GET", path: "/context/v1/thread", auth: "token" },
       { method: "GET", path: "/context/v1/record", auth: "token" },
       { method: "GET", path: "/context/v1/initiatives", auth: "token" },
