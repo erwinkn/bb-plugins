@@ -28,7 +28,7 @@ const facts = (over: Partial<WatchFacts> = {}): WatchFacts => ({
   checks: [{ name: "tests", outcome: "passed", required: false }, { name: "lint", outcome: "pending", required: false }],
   comments: [], ...over,
 });
-const ctx = (over: Partial<Parameters<typeof diffWatch>[2]> = {}) => ({ now: T0, login: "erwinkn", repoHasChecks: true, fingerprint: "f1", ...over });
+const ctx = (over: Partial<Parameters<typeof diffWatch>[2]> = {}) => ({ now: T0, own: ["erwinkn"], repoHasChecks: true, fingerprint: "f1", ...over });
 /** The state a watch call leaves for `f`. */
 const base = (f = facts()) => baselineState(f, T0, "f1");
 const kinds = (r: { changes: { kind: string }[] }) => r.changes.map((c) => c.kind);
@@ -80,9 +80,18 @@ describe("W548 diffWatch", () => {
     expect(r.changes).toEqual([{ kind: "new-comments", comments: [comments[2]] }]);
     expect(r.state.seenUntil).toBe(T0 - MINUTE);
     // The account not known yet: comments wait for a pass that knows it.
-    const unknown = diffWatch(prev, facts({ comments }), ctx({ login: null }));
+    const unknown = diffWatch(prev, facts({ comments }), ctx({ own: null }));
     expect(unknown.changes).toEqual([]);
     expect(unknown.state.seenUntil).toBe(prev.seenUntil);
+  });
+
+  it("never wakes on comments by the GitHub Apps agents act as (agentGitHubApps), whose GraphQL login is the slug", () => {
+    const comments = [
+      { url: "agent", at: T0 - 2 * MINUTE, author: "equisafe-agents", bot: true, review: null },
+      { url: "bot", at: T0 - MINUTE, author: "coderabbitai", bot: true, review: "changes_requested" },
+    ];
+    const r = diffWatch(base(), facts({ comments }), ctx({ own: ["erwinkn", "Equisafe-Agents"] }));
+    expect(r.changes).toEqual([{ kind: "new-comments", comments: [comments[1]] }]);
   });
 
   it(`stops comment wakes after ${COMMENT_WAKE_CAP} comment-only wakes in a row; checks, conflict or push news resets it`, () => {

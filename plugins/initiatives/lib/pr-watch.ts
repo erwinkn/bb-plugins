@@ -378,8 +378,9 @@ export function baselineState(watch: WatchFacts, now: number, fingerprint: strin
 
 /**
  * The changes from `prev` (the baseline, or the last read's state) to the PR as one watch read saw
- * it: every fact comes from that read, so none of a wake's can be of another head. `login` is the
- * `gh` account, whose comments never wake (null: comments are left for a pass that knows it).
+ * it: every fact comes from that read, so none of a wake's can be of another head. `own`: the `gh`
+ * account's login and the agents' GitHub Apps, whose comments never wake (null: the gh account is not
+ * known yet, and comments are left for a pass that knows it). A Bot's GraphQL login is its slug.
  * `repoHasChecks`: some listed PR of its repository has checks, so a PR without any after a push
  * is news. `fingerprint`: the list facts the read was for (WatchState.fingerprint). `capped`:
  * comments that would have woken past COMMENT_WAKE_CAP.
@@ -387,7 +388,7 @@ export function baselineState(watch: WatchFacts, now: number, fingerprint: strin
 export function diffWatch(
   prev: WatchState,
   watch: WatchFacts,
-  context: { now: number; login: string | null; repoHasChecks: boolean; fingerprint: string },
+  context: { now: number; own: readonly string[] | null; repoHasChecks: boolean; fingerprint: string },
 ): { state: WatchState; changes: Change[]; capped: boolean } {
   const { now, fingerprint } = context;
   if (watch.state !== "OPEN") return { state: { ...prev, fingerprint, readAt: now, ended: watch.state }, changes: [], capped: false };
@@ -401,10 +402,10 @@ export function diffWatch(
   const { quietSince, passed } = settled(gating, pushed ? null : prev, now);
   if (passed && (pushed || !prev.passed)) changes.push({ kind: "checks-passed", checks: gating.names, required: gating.required });
   let cursor = { seenUntil: prev.seenUntil, seenAt: prev.seenAt ?? [] };
-  if (context.login) {
-    const own = context.login.toLowerCase();
+  if (context.own) {
+    const own = new Set(context.own.map((login) => login.toLowerCase()));
     const edge = new Set(cursor.seenAt);
-    const news = watch.comments.filter((c) => (c.at > cursor.seenUntil || (c.at === cursor.seenUntil && !edge.has(c.url))) && c.author.toLowerCase() !== own);
+    const news = watch.comments.filter((c) => (c.at > cursor.seenUntil || (c.at === cursor.seenUntil && !edge.has(c.url))) && !own.has(c.author.toLowerCase()));
     if (news.length) changes.push({ kind: "new-comments", comments: news });
     cursor = seen(prev, watch.comments);
   }
@@ -733,6 +734,8 @@ export interface PrWatchDeps {
     watchQuery(query: string, variables: Record<string, unknown>): Promise<unknown>;
     readonly login: string | null;
   };
+  /** The slugs of the GitHub Apps agents act as (agentGitHubApps): their comments never wake, like the gh account's. */
+  agentApps?(): Promise<readonly string[]>;
   sdk: Sdk;
   /** What resuming this worker would rewrite when its cache is large and cold (cold-cache.ts); null to go ahead. */
   coldCheck(worker: WorkerRecord): Promise<string | null>;
@@ -958,6 +961,7 @@ export class PrWatcher {
 
     const writes: WatchWrite[] = [];
     const login = cache.login ?? this.viewer;
+    const own = login ? [login, ...((await this.deps.agentApps?.()) ?? [])] : null;
     for (const { url, repo } of asks) {
       // null: its read failed and waits for its retry.
       const watch = facts.get(url);
@@ -966,7 +970,7 @@ export class PrWatcher {
       const pr = listed.get(url);
       // Gone from GitHub: read as closed, which ends the watch.
       const { state, changes, capped } = watch
-        ? diffWatch(row.state!, watch, { now, login, repoHasChecks: ciRepos.has(repo), fingerprint: pr ? listFingerprint(pr) : "" })
+        ? diffWatch(row.state!, watch, { now, own, repoHasChecks: ciRepos.has(repo), fingerprint: pr ? listFingerprint(pr) : "" })
         : { state: { ...row.state!, readAt: now, ended: "CLOSED" as const }, changes: [], capped: false };
       const about: WakePr = { repo: pr?.repo ?? repo, number: Number(url.split("/").pop()), title: watch?.title ?? pr?.title ?? "" };
       writes.push({

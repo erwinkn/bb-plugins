@@ -126,6 +126,7 @@ describe("parsing gh pr list", () => {
 
   it("searches several repositories in one query, ORing their qualifiers", () => {
     expect(prSearch(["erwinkn/bb-plugins", "equisafe/infra"])).toBe("is:pr is:open author:@me repo:erwinkn/bb-plugins repo:equisafe/infra");
+    expect(prSearch(["equisafe/infra"], ["equisafe-agents"])).toBe("is:pr is:open author:@me author:app/equisafe-agents repo:equisafe/infra");
   });
 
   it("asks for each PR's state by URL in one query, and reads each answer (W516)", () => {

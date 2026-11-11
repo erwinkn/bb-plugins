@@ -598,6 +598,7 @@ export default function plugin(bb: BbPluginApi) {
     prRecords: (projectId) => store.prRecords(projectId),
     assignedPrs: (projectId) => assignedPrs.read(projectId),
     notes: (projectId) => service.prNotes.summaries(projectId),
+    agentApps: async () => (await preferences.read()).agentGitHubApps,
     owners: (pullRequests) => prOwners.owners(pullRequests),
     prStates: {
       markOpen: (urls, at) => store.markPrsOpen(urls, at),
@@ -624,6 +625,7 @@ export default function plugin(bb: BbPluginApi) {
     store,
     ledger: watchLedger,
     cache: mergeQueue,
+    agentApps: async () => (await preferences.read()).agentGitHubApps,
     sdk: bb.sdk,
     coldCheck: (worker) => service.coldCache.check(worker),
     prepareWorker: (worker) => service.workerMemory.ensure(worker).then(() => {}),

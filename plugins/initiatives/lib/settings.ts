@@ -28,6 +28,12 @@ const profilesTextSchema = z.string().max(16000).superRefine((value, ctx) => {
     });
   }
 });
+/** The slugs in the agentGitHubApps setting: comma- or space-separated, as GitHub writes them. */
+export const parseAgentApps = (value: string): string[] => value.split(/[\s,]+/).filter(Boolean);
+const agentAppsSchema = z.string().max(1000).refine(
+  (value) => parseAgentApps(value).every((slug) => /^[a-z0-9][a-z0-9-]*$/i.test(slug)),
+  "List GitHub App slugs, such as equisafe-agents, separated by commas.",
+);
 export const settingsDescriptors = {
   coordinatorInstructions: {
     type: "string" as const,
@@ -60,12 +66,20 @@ export const settingsDescriptors = {
     default: COLD_RESUME_DEFAULT_TOKENS,
     experimental_schema: z.number().int().min(0),
   },
+  agentGitHubApps: {
+    type: "string" as const,
+    label: "Agents' GitHub Apps",
+    description: "The slugs of the GitHub Apps agents act as on GitHub (equisafe-agents), comma-separated, when they don't use the BB server's own gh account. The PR list also shows the open PRs these Apps authored, and their comments never wake a PR watch, like the gh account's own.",
+    default: "",
+    experimental_schema: agentAppsSchema,
+  },
 };
 export type Preferences = {
   coordinatorInstructions: string;
   workerInstructions: string;
   profiles: Policy["profiles"];
   coldResumeTokens: number;
+  agentGitHubApps: string[];
 };
 export const withProfileDefaults = (
   policy: Policy,
@@ -96,6 +110,7 @@ export function definePreferences(bb: BbPluginApi, flags?: MigrationFlags, extra
     workerInstructions: reset() || isDefault("worker", raw.workerInstructions) ? DEFAULT_WORKER_INSTRUCTIONS : instructionSchema.parse(raw.workerInstructions),
     profiles: parseProfileDefaults(raw.executionProfiles),
     coldResumeTokens: raw.coldResumeTokens,
+    agentGitHubApps: parseAgentApps(raw.agentGitHubApps),
   });
   // configure is synchronous in SDK 0.4.87. Its authoritative snapshot is
   // initialized from persisted settings and advanced on every effective edit.

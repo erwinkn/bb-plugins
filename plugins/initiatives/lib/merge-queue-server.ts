@@ -194,6 +194,8 @@ export interface MergeQueueSources {
   assignedPrs(projectId: string): ReadonlyMap<string, PrWork>;
   /** Each PR's notes summary (D442), by canonical PR URL. */
   notes(projectId: string): ReadonlyMap<string, PrNotesSummary>;
+  /** The slugs of the GitHub Apps agents act as (agentGitHubApps), whose open PRs the list also reads. */
+  agentApps?(): Promise<readonly string[]>;
   /** R2: the owner of each PR that has one, by canonical PR URL (see PrOwners.owners). */
   owners?(pullRequests: readonly { url: string; head: string }[]): ReadonlyMap<string, PrOwner>;
   /** v9 (§7): PR states for computed task status. Every open-list fetch marks what it lists open. */
@@ -500,7 +502,8 @@ export class MergeQueueCache {
   private async fetch(group: RepoEntry[]): Promise<void> {
     let list: { nodes: unknown[]; total: number; complete: boolean; login: string | null };
     try {
-      list = await this.search(GH_LIST_QUERY, prSearch(group.map((entry) => entry.name)), "the PR list query");
+      const apps = (await this.sources.agentApps?.()) ?? [];
+      list = await this.search(GH_LIST_QUERY, prSearch(group.map((entry) => entry.name), apps), "the PR list query");
     } catch (error) {
       for (const entry of group) entry.error = message(error);
       return;

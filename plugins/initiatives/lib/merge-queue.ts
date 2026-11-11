@@ -402,11 +402,13 @@ export function parseDetailsNodes(data: unknown, what: string): unknown[] {
 }
 
 /**
- * The search the list runs: the user's open PRs in these repositories. Repository qualifiers
- * are ORed and don't count toward search's 256-character limit (15 repositories, 353
- * characters, read fine on 2026-10-19).
+ * The search the list runs: the open PRs in these repositories of the user and of the GitHub Apps
+ * agents act as (agentGitHubApps). Repeated author and repository qualifiers are ORed
+ * (author:@me author:app/coderabbitai found 1680 + 1 PRs, 2026-11-11); repository qualifiers don't
+ * count toward search's 256-character limit (15 repositories, 353 characters, read fine on 2026-10-19).
  */
-export const prSearch = (repos: readonly string[]) => `is:pr is:open author:@me ${repos.map((repo) => `repo:${repo}`).join(" ")}`;
+export const prSearch = (repos: readonly string[], apps: readonly string[] = []) =>
+  ["is:pr is:open author:@me", ...apps.map((app) => `author:app/${app}`), ...repos.map((repo) => `repo:${repo}`)].join(" ");
 
 /** The repository of a PR URL, lower case, as the cache keys it. */
 export const prRepoKey = (url: string): string | null => /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i.exec(url)?.[1]?.toLowerCase() ?? null;
