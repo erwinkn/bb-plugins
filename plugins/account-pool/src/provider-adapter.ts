@@ -61,6 +61,9 @@ export type QuotaRejection =
 export interface ProviderAdapter {
   provider: PoolProvider;
   upstreamName: string;
+  // The longest Retry-After a native answer to this provider's CLI carries (the hub lowers any
+  // longer one to it), or null for no cap.
+  retryAfterLimitSeconds: number | null;
   importAccount(): Promise<ImportedProviderAccount>;
   parseRequest(
     body: Uint8Array,

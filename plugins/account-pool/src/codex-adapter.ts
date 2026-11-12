@@ -19,7 +19,7 @@ import {
   mountedUpstreamUrl,
   oauthSecretDueForRefresh,
 } from "./provider-adapter.js";
-import { epochMilliseconds } from "./quota.js";
+import { epochMilliseconds, retryAfterMilliseconds } from "./quota.js";
 
 export const CODEX_AUTH_BASE_URL = "https://auth.openai.com";
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -27,6 +27,13 @@ export const DEFAULT_CODEX_REFRESH_URL = `${CODEX_AUTH_BASE_URL}/oauth/token`;
 export const DEFAULT_CODEX_USAGE_URL =
   "https://chatgpt.com/backend-api/wham/usage";
 const USAGE_REQUEST_TIMEOUT_MS = 15_000;
+// Codex CLI sleeps out the whole Retry-After of an answer it retries (a 429 or a 5xx), silently, up
+// to five times: a Pooler 429 naming a quota reset five days away hung its threads for five days.
+// A wait up to this long stays a retryable 429, which Codex rides out in at most five such sleeps;
+// a longer one is answered the way OpenAI answers a spent quota (usage_limit_reached with
+// resets_at), which Codex 0.167 fails at once, naming the reset (codex-rs/codex-api/src/
+// api_bridge.rs). The hub also caps every native answer's Retry-After to it.
+export const CODEX_RETRY_AFTER_LIMIT_SECONDS = 60;
 const ALLOWED_REQUEST_HEADERS = new Set([
   "accept",
   "content-encoding",
@@ -246,10 +253,13 @@ export function createCodexAdapter(options: {
   refreshUrl: string;
   usageUrl: string;
   importCredentials?: () => Promise<ImportedCodexCredentials>;
+  now?: () => number;
 }): ProviderAdapter {
+  const now = options.now ?? Date.now;
   return {
     provider: "codex",
     upstreamName: "ChatGPT",
+    retryAfterLimitSeconds: CODEX_RETRY_AFTER_LIMIT_SECONDS,
     async importAccount() {
       const imported = await (
         options.importCredentials ?? importCodexCredentials
@@ -362,6 +372,21 @@ export function createCodexAdapter(options: {
       if (quota !== null) context.quotas.put(quota);
     },
     errorResponse(status, message, headers) {
+      const retryAfter = new Headers(headers).get("retry-after");
+      const waitMs =
+        retryAfter === null ? 0 : retryAfterMilliseconds(retryAfter, now());
+      if (status === 429 && waitMs > CODEX_RETRY_AFTER_LIMIT_SECONDS * 1_000)
+        return Response.json(
+          {
+            error: {
+              type: "usage_limit_reached",
+              message,
+              resets_at: Math.ceil((now() + waitMs) / 1_000),
+              resets_in_seconds: Math.ceil(waitMs / 1_000),
+            },
+          },
+          { status, headers },
+        );
       return Response.json(
         {
           error: {

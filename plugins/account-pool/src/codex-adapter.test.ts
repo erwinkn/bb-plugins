@@ -356,3 +356,48 @@ describe("requestHeaders", () => {
     });
   });
 });
+
+describe("Codex error answers", () => {
+  const NOW = 1_800_000_000_000;
+  const clocked = createCodexAdapter({
+    refreshUrl: "https://auth.example/oauth/token",
+    usageUrl: "https://usage.example/usage",
+    now: () => NOW,
+  });
+
+  it("keeps a 429 of up to 60 s, or with no Retry-After, a retryable rate limit", async () => {
+    for (const headers of [{ "retry-after": "60" }, undefined]) {
+      const response = clocked.errorResponse(429, "Wait.", headers);
+      expect(response.headers.get("retry-after")).toBe(headers?.["retry-after"] ?? null);
+      expect(await response.json()).toEqual({
+        error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Wait." },
+      });
+    }
+  });
+
+  it.each([
+    ["seconds", "61"],
+    ["an HTTP date", new Date(NOW + 61_000).toUTCString()],
+  ])("answers a longer 429 given in %s as OpenAI's usage-limit wall", async (_label, retryAfter) => {
+    const response = clocked.errorResponse(429, "Spent.", { "retry-after": retryAfter });
+    expect(response.status).toBe(429);
+    // Codex 0.167 reads type, and resets_at for the time it names; plan_type and
+    // limit_window_minutes are optional, and the Pooler knows neither.
+    expect(await response.json()).toEqual({
+      error: {
+        type: "usage_limit_reached",
+        message: "Spent.",
+        resets_at: NOW / 1_000 + 61,
+        resets_in_seconds: 61,
+      },
+    });
+  });
+
+  it("leaves other statuses as they were, whatever their Retry-After", async () => {
+    const response = clocked.errorResponse(503, "Down.", { "retry-after": "3600" });
+    expect(response.headers.get("retry-after")).toBe("3600");
+    expect(await response.json()).toEqual({
+      error: { type: "api_error", code: null, message: "Down." },
+    });
+  });
+});

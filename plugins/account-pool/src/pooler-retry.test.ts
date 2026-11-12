@@ -148,12 +148,31 @@ describe("handlePoolerTurnFailed", () => {
     expect(d.retry).toHaveBeenCalledTimes(1);
   });
 
+  it("retries a Codex turn that failed on the Pooler's usage-limit answer, which has no status", async () => {
+    const { deps: d } = deps({
+      providerOf: vi.fn(async () => "codex"),
+      turnModel: vi.fn(async () => "gpt-6.1-sol"),
+    });
+    await handlePoolerTurnFailed(
+      d,
+      failure({
+        errorInfo: {
+          category: "rate-limit",
+          httpStatusCode: null,
+          providerCode: "usageLimitExceeded",
+        },
+      }),
+    );
+    expect(d.nextEligibleAt).toHaveBeenCalledWith("codex", "other");
+    expect(d.retry).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
-    ["no error info", { errorInfo: null }, "not a 429"],
+    ["no error info", { errorInfo: null }, "not a 429 or a usage limit"],
     [
       "another status",
       { errorInfo: { category: "overloaded", httpStatusCode: 529, providerCode: null } },
-      "not a 429",
+      "not a 429 or a usage limit",
     ],
     ["the fifth attempt", { attemptNumber: 5 }, "attempt 5 reached"],
   ] as const)("declines %s before reading anything", async (_label, overrides, reason) => {

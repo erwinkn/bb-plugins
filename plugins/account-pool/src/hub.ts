@@ -596,6 +596,15 @@ export class AccountPoolHub {
     const sessionId = sessionIdOf(parsed.affinityId);
     if (response.status === 429 && sessionId !== null)
       this.noteSessionRejection(adapter.provider, sessionId, response);
+    // After the note, which keeps the full wait for the turn's retry.
+    const limit = adapter.retryAfterLimitSeconds;
+    const retryAfter = response.headers.get("retry-after");
+    if (
+      limit !== null &&
+      retryAfter !== null &&
+      retryAfterMilliseconds(retryAfter, this.options.now()) > limit * 1_000
+    )
+      response.headers.set("retry-after", String(limit));
     return response;
   }
 
@@ -1884,6 +1893,7 @@ export function createHub(options: {
         refreshUrl: options.codexRefreshUrl ?? DEFAULT_CODEX_REFRESH_URL,
         usageUrl: options.codexUsageUrl ?? DEFAULT_CODEX_USAGE_URL,
         importCredentials: options.importCodexCredentials,
+        now: options.now,
       }),
     ],
   ]);

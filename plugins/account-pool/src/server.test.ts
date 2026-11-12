@@ -826,8 +826,26 @@ describe("Account Pool plugin", () => {
         body: JSON.stringify({ model: "gpt-5", input: [] }),
       },
     );
+    // The only account left is spent for a day: Codex gets OpenAI's usage-limit wall, which it
+    // fails at once, rather than a Retry-After it would sleep out.
     expect(blocked.status).toBe(429);
-    expect(Number(blocked.headers.get("retry-after"))).toBeGreaterThan(80_000);
+    expect(blocked.headers.get("retry-after")).toBe("60");
+    const wall = z
+      .object({
+        error: z.object({
+          type: z.literal("usage_limit_reached"),
+          resets_at: z.number(),
+          resets_in_seconds: z.number(),
+        }),
+      })
+      .parse(await blocked.json());
+    expect(wall.error.resets_in_seconds).toBeGreaterThan(80_000);
+    expect(
+      Math.abs(
+        wall.error.resets_at -
+          (Date.now() / 1_000 + wall.error.resets_in_seconds),
+      ),
+    ).toBeLessThan(5);
     const secret = accountSecretSchema.parse(
       JSON.parse(
         await fs.readFile(
@@ -3879,7 +3897,10 @@ describe("Account Pool plugin", () => {
         const unavailable = await send();
         expect(unavailable.status).toBe(429);
         expect(unavailable.headers.get("retry-after")).toBe("60");
-        await unavailable.text();
+        // 60 s is still a wait Codex rides out: a retryable 429, not the usage-limit wall.
+        expect(await unavailable.json()).toMatchObject({
+          error: { type: "rate_limit_error" },
+        });
         expect(attempts.slice(5)).toEqual(["sk-second", "sk-first"]);
         const stillUnavailable = await send();
         expect(stillUnavailable.status).toBe(429);
@@ -3901,6 +3922,156 @@ describe("Account Pool plugin", () => {
         ]);
       },
     );
+
+    // Codex sleeps a retryable answer's whole Retry-After: the Pooler answers a wait past 60 s as
+    // OpenAI's usage-limit wall, which Codex fails at once, and never names a longer Retry-After.
+    describe("Codex answers past its 60-second retry limit", () => {
+      const NOW = 1_800_000_000_000;
+
+      function keyOf(init: RequestInit | undefined): string {
+        return new Headers(init?.headers).get("authorization")?.slice(7) ?? "";
+      }
+
+      async function sendCodex(fixture: Fixture, session: string) {
+        const response = await fixture.host.harness.behavior.fetchHttp(
+          "POST",
+          "/v1/responses",
+          {
+            headers: { ...authHeaders(fixture.key), "session-id": session },
+            body: "{}",
+          },
+        );
+        const retryAfter = response.headers.get("retry-after");
+        if (retryAfter !== null)
+          expect(Number(retryAfter)).toBeLessThanOrEqual(60);
+        return {
+          status: response.status,
+          retryAfter,
+          body: (await response.json()) as { error?: Record<string, unknown> },
+        };
+      }
+
+      const wall = (waitSeconds: number) => ({
+        error: {
+          type: "usage_limit_reached",
+          message: expect.any(String),
+          resets_at: NOW / 1_000 + waitSeconds,
+          resets_in_seconds: waitSeconds,
+        },
+      });
+
+      it.each([
+        [600, "a usage-limit wall"],
+        [45, "a retryable 429"],
+      ])(
+        "answers a pinned session whose account is held %i s with %s",
+        async (waitSeconds) => {
+          let limited = false;
+          const attempts: string[] = [];
+          const fixture = await affinityFixture(
+            "codex",
+            async (_input, init) => {
+              attempts.push(keyOf(init));
+              return limited
+                ? Response.json(
+                    { error: { type: "rate_limit_error", message: "Slow down." } },
+                    {
+                      status: 429,
+                      headers: { "retry-after": String(waitSeconds) },
+                    },
+                  )
+                : Response.json({});
+            },
+            () => NOW,
+          );
+          expect((await sendCodex(fixture, "warm")).status).toBe(200);
+          limited = true;
+          // The vendor's own 429, relayed to the pinned session, Retry-After capped.
+          expect(await sendCodex(fixture, "warm")).toEqual({
+            status: 429,
+            retryAfter: String(Math.min(waitSeconds, 60)),
+            body: { error: { type: "rate_limit_error", message: "Slow down." } },
+          });
+          // The hold that 429 left, answered by the Pooler itself.
+          expect(await sendCodex(fixture, "warm")).toEqual({
+            status: 429,
+            retryAfter: String(Math.min(waitSeconds, 60)),
+            body:
+              waitSeconds > 60
+                ? wall(waitSeconds)
+                : {
+                    error: {
+                      type: "rate_limit_error",
+                      code: "rate_limit_exceeded",
+                      message: expect.any(String),
+                    },
+                  },
+          });
+          expect(attempts).toEqual(["sk-first", "sk-first"]);
+        },
+      );
+
+      it.each([
+        [600, "a usage-limit wall"],
+        [30, "a retryable 429"],
+      ])(
+        "answers a new conversation that every account turns away for %i s with %s",
+        async (waitSeconds) => {
+          const attempts: string[] = [];
+          const fixture = await affinityFixture(
+            "codex",
+            async (_input, init) => {
+              attempts.push(keyOf(init));
+              return Response.json(
+                { error: { type: "rate_limit_error", message: "Slow down." } },
+                {
+                  status: 429,
+                  headers: { "retry-after": String(waitSeconds) },
+                },
+              );
+            },
+            () => NOW,
+          );
+          const answer = await sendCodex(fixture, "fresh");
+          expect(attempts).toEqual(["sk-first", "sk-second"]);
+          expect(answer.status).toBe(429);
+          expect(answer.retryAfter).toBe(String(Math.min(waitSeconds, 60)));
+          expect(answer.body).toEqual(
+            waitSeconds > 60
+              ? wall(waitSeconds)
+              : {
+                  error: {
+                    type: "rate_limit_error",
+                    code: "rate_limit_exceeded",
+                    message: expect.any(String),
+                  },
+                },
+          );
+        },
+      );
+
+      it.each([
+        ["seconds", "3600"],
+        ["an HTTP date", new Date(NOW + 3_600_000).toUTCString()],
+      ])(
+        "caps the Retry-After of a 5xx given in %s, which Codex also sleeps out",
+        async (_label, retryAfter) => {
+          const fixture = await affinityFixture(
+            "codex",
+            async () =>
+              Response.json(
+                { error: { message: "Overloaded." } },
+                { status: 503, headers: { "retry-after": retryAfter } },
+              ),
+            () => NOW,
+          );
+          const answer = await sendCodex(fixture, "fresh");
+          expect(answer.status).toBe(503);
+          expect(answer.retryAfter).toBe("60");
+          expect(answer.body.error?.type).toBe("api_error");
+        },
+      );
+    });
 
     describe("parent affinity", () => {
       type Wire =
@@ -6485,6 +6656,70 @@ describe("automatic retry after a Pooler 429", () => {
     await held.text();
     expect(keys).toEqual(["sk-first", "sk-first"]);
     await emitFailure(fixture);
+    expect(sendAtOf(retries)).toBeGreaterThanOrEqual(now + 1_200_000 + 15_000);
+    expect(sendAtOf(retries)).toBeLessThan(now + 1_200_000 + 45_000);
+  });
+
+  it("waits the full hold of a pinned Codex session though Codex was told 60 s", async () => {
+    // As above, on Codex: its CLI is told to come back in 60 s at most, while the Pooler's own retry
+    // of the turn that failed on the usage-limit wall still waits for the 20-minute hold.
+    const now = 1_800_000_000_000;
+    const session = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const keys: string[] = [];
+    let imported = 0;
+    const { sdk, retries } = threadStubs({ session, providerId: "codex", model: "gpt-5.5" });
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      provider: "codex",
+      source: "import",
+      sdk,
+      options: {
+        now: () => now,
+        codexUsageUrl: EMPTY_USAGE_URL,
+        fetch: async (input, init) => {
+          if (String(input) === EMPTY_USAGE_URL) return Response.json({});
+          keys.push(new Headers(init?.headers).get("authorization")?.slice(7) ?? "");
+          return keys.length === 2
+            ? Response.json({}, { status: 429, headers: { "retry-after": "1200" } })
+            : Response.json({});
+        },
+        importCodexCredentials: async () => ({
+          accessToken: ["sk-first", "sk-second"][imported++] ?? "sk-extra",
+          refreshToken: "refresh",
+          idToken: null,
+          accountId: `codex-account-${imported}`,
+          email: null,
+          expiresAt: now + 24 * 60 * 60 * 1_000,
+        }),
+      },
+    });
+    await fixture.host.harness.behavior.callRpc("account.add", {
+      provider: "codex",
+      source: { kind: "import" },
+      label: null,
+      priority: 200,
+    });
+    const send = () =>
+      fixture.host.harness.behavior.fetchHttp("POST", "/v1/responses", {
+        headers: { ...authHeaders(fixture.key), "thread-id": session },
+        body: JSON.stringify({ model: "gpt-5.5", input: [] }),
+      });
+    const first = await send();
+    expect(first.status).toBe(200);
+    await first.text();
+    const held = await send();
+    expect(held.status).toBe(429);
+    expect(held.headers.get("retry-after")).toBe("60");
+    await held.text();
+    // Codex comes back in 60 s and meets the hold itself: the usage-limit wall, which fails the turn.
+    const wall = await send();
+    expect(wall.status).toBe(429);
+    expect(wall.headers.get("retry-after")).toBe("60");
+    expect(await wall.json()).toMatchObject({ error: { type: "usage_limit_reached" } });
+    expect(keys).toEqual(["sk-first", "sk-first"]);
+    await emitFailure(fixture, {
+      errorInfo: { category: "rate-limit", httpStatusCode: null, providerCode: "usageLimitExceeded" },
+    });
     expect(sendAtOf(retries)).toBeGreaterThanOrEqual(now + 1_200_000 + 15_000);
     expect(sendAtOf(retries)).toBeLessThan(now + 1_200_000 + 45_000);
   });

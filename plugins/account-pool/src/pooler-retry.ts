@@ -115,7 +115,13 @@ export async function handlePoolerTurnFailed(
   const decline = (reason: string) =>
     deps.log(`Account Pooler does not retry ${subject}: ${reason}.`);
   try {
-    if (event.errorInfo?.httpStatusCode !== 429) return decline("not a 429");
+    // Codex reports the Pooler's usage-limit answer (a 429 past its 60 s retry limit) by name,
+    // with no status.
+    if (
+      event.errorInfo?.httpStatusCode !== 429 &&
+      event.errorInfo?.providerCode !== "usageLimitExceeded"
+    )
+      return decline("not a 429 or a usage limit");
     if (event.attemptNumber >= MAX_RETRY_ATTEMPTS)
       return decline(`attempt ${MAX_RETRY_ATTEMPTS} reached`);
     const maxWaitMs = deps.maxWaitMs();

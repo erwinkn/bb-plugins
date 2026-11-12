@@ -66,9 +66,28 @@ the hub runs as an API-key session, so it reports no rate-limit window to BB,
 and Codex spends its own five attempts and ends as `too-many-failed-attempts`.
 The thread used to sit in error until someone retried it by hand.
 
+Codex sleeps out the whole `Retry-After` of a 429 or 5xx before each of those
+attempts, silently: a 429 naming a weekly reset five days away hung its thread
+for five days. So a Codex answer never names a `Retry-After` above 60 s, and a
+429 for a longer wait is OpenAI's own quota answer instead, which Codex fails
+at once ("You've hit your usage limit. Try again at …"):
+
+```json
+{"error":{"type":"usage_limit_reached","message":"No Account Pooler account is currently eligible.",
+          "resets_at":1794910016,"resets_in_seconds":431000}}
+```
+
+A wait of 60 s or less stays a plain 429 that Codex rides out. A longer one,
+even 90 s, now fails the turn, and only the Pooler's retry below brings it back:
+with automatic retries Off, or on the 5th attempt, the thread stays failed. A
+5xx is capped the same way, so Codex spends its five attempts within about five
+minutes, not hours. Claude Code fails a 429 at once whatever its `Retry-After`,
+so Claude answers are unchanged.
+
 The Pooler now schedules that retry itself. On `turn.failed` it acts when:
 
-- the error is an HTTP 429 and the failed attempt is earlier than the 5th;
+- the error is an HTTP 429 (or Codex's `usageLimitExceeded`, which carries no
+  status) and the failed attempt is earlier than the 5th;
 - the thread runs `claude-code` or `codex`, and the Pooler routes it now
   (routing on for that provider, the thread not bypassed, an enabled account
   with a readable secret: the test that decides whether the thread gets the
