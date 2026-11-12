@@ -139,8 +139,9 @@ export function mergeDown(view: NodeRef[], T: number, nodes: Nodes, target: numb
 
 /**
  * The two saved views (view.json in the gist: saved, never rebuilt from the log).
- * - chat: what a turn sees. Each message appends a line; past 128 KB one batch merges it down to
- *   64 KB, so between batches it only grows at its end and stays a cached prefix.
+ * - chat: what a turn sees. Each message appends a line; past its bound (128 KB, a worker's 64 KB)
+ *   one batch merges it down to half, so between batches it only grows at its end and stays a
+ *   cached prefix.
  * - compaction: the chat view merged further, on a 32→16 KB sawtooth: the context of every
  *   compaction call, and what memory_read gives.
  */
@@ -148,34 +149,43 @@ export interface Views {
   /** Messages fed into both views (T). */
   fed: number;
   chat: NodeRef[];
-  /** A chat batch is under way: past 128 KB, not yet back under 64 KB. */
+  /** A chat batch is under way: past its bound, not yet back under half of it. */
   merging: boolean;
   compaction: NodeRef[];
 }
-export const VIEW_BYTES = { chat: [128_000, 64_000], compaction: [32_000, 16_000] } as const;
+/** A view's [bound, target]: past the bound, one batch merges it down to the target. */
+export type ViewBounds = readonly [number, number];
+/**
+ * W604: an Initiative worker's chat view (workerChat) is half a coordinator's (chat), whose memory
+ * holds Erwin's decisions: a worker's turns are many and short-lived, and pay for every line of it
+ * on each one. Which scope gets which is chatBounds (store.ts).
+ */
+export const VIEW_BYTES = { chat: [128_000, 64_000], workerChat: [64_000, 32_000], compaction: [32_000, 16_000] } as const;
 export const emptyViews = (): Views => ({ fed: 0, chat: [], merging: false, compaction: [] });
 
 /** Append message `fed` to both views; returns the merges it caused in each. */
-export function feed(v: Views, nodes: Nodes) {
+export function feed(v: Views, nodes: Nodes, chat: ViewBounds = VIEW_BYTES.chat) {
   v.chat.push([0, v.fed]);
   v.compaction.push([0, v.fed]);
   v.fed++;
-  return settleViews(v, nodes);
+  return settleViews(v, nodes, chat);
 }
 
 /**
- * Start a batch past 128 KB, or continue one a missing parent stopped. Merges need built parents,
- * so a batch can stall until the builder catches up; the gist resumes it at the next message, this
- * also resumes it when a node lands, so a quiet chat still reaches 64 KB. A landing node can also
- * start one: its line replaces a shorter placeholder. A chat merge resets the compaction view to
- * the chat view, merged further.
+ * Start a batch past the chat view's bound, or continue one a missing parent stopped. Merges need
+ * built parents, so a batch can stall until the builder catches up; the gist resumes it at the
+ * next message, this also resumes it when a node lands, so a quiet chat still reaches its target.
+ * A landing node can also start one: its line replaces a shorter placeholder. A chat merge resets
+ * the compaction view to the chat view, merged further. A view saved over a bound that has since
+ * shrunk (W604) starts merging down at its first settle, over nodes the tree builds anyway: no call
+ * the scope did not already owe. A scope whose tree lags finishes the batch as those nodes land.
  */
-export function settleViews(v: Views, nodes: Nodes) {
-  if (!v.merging && viewBytes(v.chat, nodes) > VIEW_BYTES.chat[0]) v.merging = true;
+export function settleViews(v: Views, nodes: Nodes, [bound, target]: ViewBounds = VIEW_BYTES.chat) {
+  if (!v.merging && viewBytes(v.chat, nodes) > bound) v.merging = true;
   let chat = 0;
   if (v.merging) {
-    chat = mergeDown(v.chat, v.fed, nodes, VIEW_BYTES.chat[1]);
-    if (viewBytes(v.chat, nodes) <= VIEW_BYTES.chat[1]) v.merging = false;
+    chat = mergeDown(v.chat, v.fed, nodes, target);
+    if (viewBytes(v.chat, nodes) <= target) v.merging = false;
   }
   let compaction = 0;
   if (chat > 0) {

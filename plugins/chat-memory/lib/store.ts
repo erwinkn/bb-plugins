@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { TreeStore } from "./builder";
 import { withSize, type IngestState, type LogEntry, type MemoryKind, type MemoryMessage } from "./log";
 import type { Usage } from "./summarizer";
-import { LIMIT, bytes, emptyViews, type NodeRef, type Views } from "./tree";
+import { LIMIT, VIEW_BYTES, bytes, emptyViews, type NodeRef, type ViewBounds, type Views } from "./tree";
 
 /**
  * Append-only (bb.storage.migrate). A scope is one memory: one log, one tree, one mode (its role's). Its id is
@@ -59,6 +59,15 @@ export type MemoryMode = (typeof MEMORY_MODES)[number];
 export const COORDINATOR_OWNER = "initiatives";
 /** A scope's mode is its role's, never a choice: an Initiatives-owned memory is UniiChat, every other is Regular. */
 export const modeOf = (owner: string): MemoryMode => (owner === COORDINATOR_OWNER ? "optchat" : "regular");
+/**
+ * W604: a scope's chat view bounds are its role's too. An Initiative worker's private scope,
+ * "initiatives:<project>:worker:<n>" (Initiatives' workerMemoryKey), gets a worker's; every other
+ * scope a coordinator's: an Initiative's own ("initiatives:<project>", its coordinators and
+ * discussions) and a thread's personal memory ("chat-memory:<thread id>"). Reviewers and other
+ * child threads have no memory scope.
+ */
+export const chatBounds = (scopeId: string): ViewBounds =>
+  /^initiatives:[^:]+:worker:/.test(scopeId) ? VIEW_BYTES.workerChat : VIEW_BYTES.chat;
 
 export interface Scope {
   id: string;

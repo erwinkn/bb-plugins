@@ -130,8 +130,8 @@ the retry 30 minutes later, so it may enter the frozen prefix, and later turns
 reuse the prefix past it. The prefix is kept only while its text is unchanged:
 when that summary lands, the next turn cuts it again (one cache miss). The short
 wait is skipped while the summarizer is paused past it (rate limit, unavailable
-route). When merges lag, the view goes over its 128 KB
-target as it is, up to a hard ceiling of 256 KB (`CEILING_BYTES`): only a view
+route). When merges lag, the view goes over its bound (128 KB, a worker's 64 KB)
+as it is, up to a hard ceiling of 256 KB (`CEILING_BYTES`): only a view
 past that waits, for the summaries that bring it back under, and fails visibly
 at the 90-second deadline. Replayed on the 69 turns that failed on 2026-11-02
 after waiting up to 90 s, every one would have gone within 3 s: 7 to 465 lines
@@ -306,6 +306,12 @@ As the gist and W216: message i becomes a line requested at 448 bytes (W574) and
 call. The chat view (what an UniiChat turn sees) is a 128→64 KB sawtooth merged
 by due = (T+1)/2^l − i; the memory view (`memory_read`, the context of every
 summarizer call) is it merged further, 32→16 KB. Both are saved, never rebuilt.
+An Initiative worker's chat view is a 64→32 KB sawtooth instead (W604): its many
+short turns pay for every line, where a coordinator's memory holds Erwin's
+decisions. `chatBounds` (store.ts) picks by scope id. A view saved over a bound
+that shrank starts merging down at its scope's first settle, over nodes the tree
+builds anyway: no call the scope did not already owe. A lagging tree finishes the
+batch as those nodes land.
 GPT-6 Luna (`summarizerEffort`, high since D484) writes lines with the gist's
 compaction prompt and its 448-dash ruler; a reply over the 576-byte hard maximum is asked again once,
 in the same conversation, for the same 448 bytes. W574 measured this on 120 real lines (Luna at

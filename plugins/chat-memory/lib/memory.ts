@@ -7,7 +7,7 @@ import { SKIPPED_KEPT, UNAVAILABLE, stableEntries, type EventRow, type MemoryMes
 import { COMPACTION_PROMPT, messageText, stamp, turnMessage, turnSystem } from "./prompt";
 import { FairPermits } from "./permits";
 import type { Settings } from "./settings";
-import { MemoryStore, modeOf, type MemoryMode, type Scope } from "./store";
+import { MemoryStore, chatBounds, modeOf, type MemoryMode, type Scope } from "./store";
 import type { Summarizer } from "./summarizer";
 import { NodeCache, children, end, label, nodeAt, pendingLine, renderLine, start, viewBytes } from "./tree";
 import { CEILING_BYTES, turnBytes, turnView } from "./turn";
@@ -665,6 +665,7 @@ export class ChatMemory {
         effort: () => this.deps.settings().summarizerEffort,
         concurrency: () => this.deps.settings().summarizerConcurrency,
         cacheKey: cacheKey(scopeId),
+        chatBounds: chatBounds(scopeId),
         attribution: () => this.attribution(scopeId),
         now: () => this.store.now(),
         log: (message) => this.deps.log(`${scopeId}: ${message}`),

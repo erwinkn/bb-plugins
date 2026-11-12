@@ -4,9 +4,10 @@ import { VIEW_BYTES, bytes, children, end, key, label, renderLine, start, type N
 export const TAIL_BYTES = 32_000;
 /**
  * R12: the most a turn's view may hold. A turn never waits for merges: when they lag, its view goes
- * over the chat view's 128 KB target and is sent as it is, up to this. Only past it does the turn
- * wait (for the merges that bring it back under), and fail visibly at its deadline: a stalled
- * builder cannot grow a view without bound.
+ * over the chat view's bound (128 KB, a worker's 64 KB) and is sent as it is, up to this. Only past
+ * it does the turn wait (for the merges that bring it back under), and fail visibly at its
+ * deadline: a stalled builder cannot grow a view without bound. One ceiling for every role (W604):
+ * it guards against a stalled build, not the view's size, and a lower one would fail more turns.
  */
 export const CEILING_BYTES = 2 * VIEW_BYTES.chat[0];
 

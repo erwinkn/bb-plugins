@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { MemoryMessage } from "./log";
 import { cleanLine, messageText, task, tooLong } from "./prompt";
 import { usageCost, type Attribution, type InputItem, type ReplyShape, type SummarizerRequest, type SummarizerResult, type Usage } from "./summarizer";
-import { LIMIT, NodeCache, VIEW_BYTES, bytes, capLine, children, contextLines, end, feed, key, label, settleViews, viewBytes, type NodeRef, type Views } from "./tree";
+import { LIMIT, NodeCache, VIEW_BYTES, bytes, capLine, children, contextLines, end, feed, key, label, settleViews, viewBytes, type NodeRef, type ViewBounds, type Views } from "./tree";
 
 /** What the builder reads and writes; the plugin backs it with its database, tests with memory. */
 export interface TreeStore {
@@ -33,6 +33,8 @@ export interface BuilderOptions {
   concurrency: () => number;
   /** The prompt-cache session, one per scope. */
   cacheKey: string;
+  /** The chat view's bounds, its scope's role's (W604, chatBounds); a coordinator's by default. */
+  chatBounds?: ViewBounds;
   /** Who the calls are for, read at each call: a scope's threads change. */
   attribution?: () => Attribution;
   now?: () => number;
@@ -158,6 +160,9 @@ export class TreeBuilder {
     this.notify();
   }
 
+  private get chatBounds() {
+    return this.options.chatBounds ?? VIEW_BYTES.chat;
+  }
   private concurrency() {
     return Math.max(1, this.options.concurrency());
   }
@@ -215,7 +220,7 @@ export class TreeBuilder {
       }
     };
     over(this.views.compaction, VIEW_BYTES.compaction[0]);
-    if (this.views.merging) over(this.views.chat, VIEW_BYTES.chat[1]);
+    if (this.views.merging) over(this.views.chat, this.chatBounds[1]);
     const later = ([l, i]: NodeRef) => (l === 0 ? i < below : merges.has(key(l, i))) ? 0 : 1;
     return (a, b) => later(a) - later(b) || byEnd(a, b);
   }
@@ -257,7 +262,7 @@ export class TreeBuilder {
   /** Go on with any merge the built nodes allow, and save the views if they changed. */
   private saveSettled() {
     const merging = this.views.merging;
-    const merges = settleViews(this.views, this.nodes);
+    const merges = settleViews(this.views, this.nodes, this.chatBounds);
     if (merges.chat || merges.compaction || merging !== this.views.merging) this.store.saveViews(this.views);
   }
 
@@ -372,7 +377,7 @@ export class TreeBuilder {
         const total = this.store.messageCount();
         let fed = false;
         while (this.views.fed < total && this.unbuiltRecent() < this.concurrency()) {
-          feed(this.views, this.nodes);
+          feed(this.views, this.nodes, this.chatBounds);
           this.unbuilt.add(this.views.fed - 1);
           this.enqueue([0, this.views.fed - 1]);
           fed = true;

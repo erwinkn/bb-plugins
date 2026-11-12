@@ -38,6 +38,7 @@ import { compactionInput } from "../lib/builder";
 import type { MemoryKind } from "../lib/log";
 import { cacheKey } from "../lib/memory";
 import { cleanLine, COMPACTION_PROMPT, messageText, task, tooLong } from "../lib/prompt";
+import { chatBounds } from "../lib/store";
 import { responsesSummarizer, usageCost, type InputItem } from "../lib/summarizer";
 import { bytes, capLine, contextLines, emptyViews, end, feed, key, label, LIMIT, type NodeRef, type Nodes } from "../lib/tree";
 
@@ -129,7 +130,7 @@ function sample() {
         for (let k = n[0], j = n[1]; k <= 20; k++, j = Math.floor(j / 2)) hidden.add(key(k, j));
         const without: Nodes = { has: (k) => !hidden.has(k) && nodes.has(k), get: (k) => (hidden.has(k) ? undefined : nodes.get(k)) };
         const fork = structuredClone(views);
-        feed(fork, without);
+        feed(fork, without, chatBounds(scope));
         const message = n[0] === 0 ? log[n[1]]! : undefined;
         const covered = n[0] === 0 ? "" : log.slice(n[1] * 2 ** n[0], end(n) + 1).map((m) => `[${m.i}] ${messageText({ kind: m.kind, text: abridge(m.text, 400) })}`).join("\n");
         samples.push({
@@ -144,7 +145,7 @@ function sample() {
           production: nodes.get(key(...n)) ?? "",
         });
       }
-      feed(views, nodes);
+      feed(views, nodes, chatBounds(scope));
     }
     console.error(`${scope}: ${N} messages, window ${from}..${last}, ${picked.length} samples`);
   }
