@@ -40,9 +40,23 @@ rotation until the later of `anthropic-ratelimit-unified-reset` and
 come from a window the fork does not track. A later rejection extends it, an
 earlier one never shortens it. Native, advisor and cache-warming responses all
 record it; a native request then moves on to the next eligible account.
-Enabling the account again clears it. A 429 that only a weekly window rejects
+Enabling the account again clears it, and so does a usage reading sent after the
+429 that shows room under the 5-hour and weekly limits it reports and, when the
+429 named one, under that limit too (its
+`anthropic-ratelimit-unified-representative-claim`, `rejectedLimit` in status:
+`seven_day` for a weekly limit, so a claimed `/limit-reset` frees the account at
+the next reading). A full window whose reset has passed counts as room. A hold
+that named no limit ignores the per-model limits: each still blocks its own
+model. Two 429s from different limits leave a hold that names none.
+A reading sent before the 429, or one that leaves a named limit out, keeps it.
+A 429 that only a weekly window rejects
 (Claude 7d or per-family, or a Codex window) is held by that window until its
 reset, as before, so a family-only limit still detours only its family.
+
+The settings page and `bb pool-local status` advise when a Claude usage reset is worth claiming by
+hand with `/limit-reset` (`src/reset-advice.ts`), from usage readings alone: once every account is
+at its weekly limit, on the account whose weekly limit resets latest, a Fable reset where it gives
+back at least a quarter of the weekly limit and a full reset otherwise.
 
 ## Automatic retry after a Pooler 429
 

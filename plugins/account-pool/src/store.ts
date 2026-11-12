@@ -551,6 +551,8 @@ const quotaRowSchema = z
 // window.
 const bucketExhaustionSchema = z.object({
   rejectedUntil: z.number().int().nullable().default(null),
+  rejectedAt: z.number().int().nullable().default(null),
+  rejectedLimit: z.string().nullable().default(null),
 });
 
 const EMPTY_QUOTA = {
@@ -563,6 +565,8 @@ const EMPTY_QUOTA = {
   observedAt: null,
   heldUntil: null,
   rejectedUntil: null,
+  rejectedAt: null,
+  rejectedLimit: null,
   error: null,
 };
 
@@ -632,7 +636,11 @@ export class QuotaStore {
         JSON.stringify(
           value.rejectedUntil === null
             ? {}
-            : { rejectedUntil: value.rejectedUntil },
+            : {
+                rejectedUntil: value.rejectedUntil,
+                rejectedAt: value.rejectedAt,
+                rejectedLimit: value.rejectedLimit,
+              },
         ),
         JSON.stringify(value.familyWeekly),
         JSON.stringify(value.limitWindows),

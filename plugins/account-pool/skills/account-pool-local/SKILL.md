@@ -34,6 +34,9 @@ retried automatically once the next account frees up, if that is within the plug
 are debug lines in `bb plugin logs account-pool-local`; see the README's "Automatic retry after a
 Pooler 429".
 
+`bb pool-local status` ends with a read-only "Usage reset:" line for the user to act on by hand with
+`/limit-reset`; never claim a reset for them unless asked.
+
 Advisor routes and cache warming are opt-in and off by default. Inspect them with
 `bb pool-local advisor`, `bb pool-local warming` and `bb pool-local warming status`;
 change them only when the task asks for it. Warming never changes `claudeMainCacheTtl`,

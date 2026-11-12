@@ -124,6 +124,8 @@ function quota(overrides: Partial<AccountQuota> = {}): AccountQuota {
     observedAt: T0,
     heldUntil: null,
     rejectedUntil: null,
+    rejectedAt: null,
+    rejectedLimit: null,
     error: null,
     ...overrides,
   };

@@ -6,6 +6,7 @@ Keep a Claude Code or Codex thread running when one account hits its limit. The 
 - Accounts run one after another in priority order, with ties following the order added. New conversations stay on the current fallback even when an earlier account recovers. Existing conversations keep their own account until it becomes unavailable.
 - Drag handles set the account order within each provider in settings (keyboard: Space to pick up, arrow keys to move, Space to drop, Escape to cancel), with the same operation available through `bb pool-local account reorder <claude|codex> <id>...`.
 - Live limit windows per account and model family in the plugin's settings page, and the same numbers from `bb pool-local status`.
+- A read-only note under the Claude accounts (and a line in `bb pool-local status`) saying whether a Claude usage reset is worth claiming with `/limit-reset`, on which account and which kind; the Pooler never claims one itself.
 - A routing switch per provider and a bypass per thread, so one thread can go straight to its own credentials.
 - A turn that fails because no account is eligible is retried once the next account frees up, up to a maximum wait (6 hours by default, the plugin's "Maximum automatic wait" setting).
 

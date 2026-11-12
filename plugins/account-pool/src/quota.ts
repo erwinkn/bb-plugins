@@ -116,11 +116,13 @@ export function quotaFromHeaders(
     observedAt: observed ? now : previous.observedAt,
     heldUntil: previous.heldUntil,
     rejectedUntil: previous.rejectedUntil,
+    rejectedAt: previous.rejectedAt,
+    rejectedLimit: previous.rejectedLimit,
     error: previous.error,
   };
 }
 
-function activeWindow(
+export function activeWindow(
   utilization: number | null,
   status: string | null,
   resetAt: number | null,
@@ -259,13 +261,22 @@ export function isQuotaExhausted(
 // A 429 is a quota rejection when Anthropic says so, overall or for one of its weekly windows. The
 // overall verdict may come from a window the Pooler does not track (the 5h one) and names no family,
 // so it holds the whole account until its reset. A weekly verdict alone is its window's, which
-// quotaFromHeaders records from the same response.
-export function quotaRejection(headers: Headers): QuotaRejection | null {
-  if (headers.get(`${PREFIX}status`)?.toLowerCase() === "rejected")
+// quotaFromHeaders records from the same response. The limit is the response's representative
+// claim, a scoped weekly one ("seven_day_<bucket>") named by the request's family, as
+// quotaFromHeaders reads the scoped headers: "seven_day_fable". Like SCOPED_HEADER, this assumes
+// every scoped weekly claim is per model.
+export function quotaRejection(
+  headers: Headers,
+  family: ModelFamily,
+): QuotaRejection | null {
+  if (headers.get(`${PREFIX}status`)?.toLowerCase() === "rejected") {
+    const claim = headers.get(`${PREFIX}representative-claim`);
     return {
       tracked: false,
       resetAt: parseReset(headers.get(`${PREFIX}reset`)),
+      limit: claim?.startsWith("seven_day_") ? `seven_day_${family}` : claim,
     };
+  }
   for (const [name, value] of headers) {
     const normalized = name.toLowerCase();
     if (

@@ -89,6 +89,8 @@ function summary(account: CodexDeviceAccount): AccountSummary {
     observedAt: null,
     heldUntil: null,
     rejectedUntil: null,
+    rejectedAt: null,
+    rejectedLimit: null,
     error: null,
     inFlight: 0,
     active: false,

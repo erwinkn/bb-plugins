@@ -226,7 +226,7 @@ describe("QuotaStore", () => {
 
     // A write clears the stale 5h columns and keeps a rejection until its reset.
     const rejectedUntil = now + 2 * 60 * 60_000;
-    quotas.put({ ...stale, rejectedUntil });
+    quotas.put({ ...stale, rejectedUntil, rejectedAt: now, rejectedLimit: "seven_day" });
     expect(
       database
         .prepare(
@@ -236,10 +236,13 @@ describe("QuotaStore", () => {
     ).toEqual({
       five_hour_utilization: null,
       five_hour_status: null,
-      bucket_exhaustion_json: JSON.stringify({ rejectedUntil }),
+      bucket_exhaustion_json: JSON.stringify({ rejectedUntil, rejectedAt: now, rejectedLimit: "seven_day" }),
     });
     const rejected = quotas.get(id);
-    expect(rejected.rejectedUntil).toBe(rejectedUntil);
+    expect(rejected).toMatchObject({ rejectedUntil, rejectedAt: now, rejectedLimit: "seven_day" });
+    // A row an older build wrote has no time or limit for its rejection.
+    database.prepare("UPDATE account_quota SET bucket_exhaustion_json = ?").run(JSON.stringify({ rejectedUntil }));
+    expect(quotas.get(id)).toMatchObject({ rejectedUntil, rejectedAt: null, rejectedLimit: null });
     expect(accountStatus(account, rejected, 0.95, now)).toBe("exhausted");
     expect(isQuotaExhausted(rejected, "sonnet", 0.95, now)).toBe(true);
     expect(usableAt(rejected, "opus", 0.95, now)).toBe(rejectedUntil);

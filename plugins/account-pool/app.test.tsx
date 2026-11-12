@@ -77,6 +77,8 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
     observedAt: 1,
     heldUntil: null,
     rejectedUntil: null,
+    rejectedAt: null,
+    rejectedLimit: null,
     error: null,
     inFlight: 0,
     active: false,
@@ -143,8 +145,10 @@ describe("Account Pool settings", () => {
     expect(slot.getByText(/· refreshing…$/)).toBeTruthy();
     expect(slot.queryByText("Loading…")).toBeNull();
     expect(slot.queryByText("No accounts in the pool")).toBeNull();
+    expect(slot.queryByLabelText("Usage reset advice")).toBeNull();
     live.resolve(status([account({ sevenDayUtilization: 0.6 })]));
     expect(await slot.findByText("60%")).toBeTruthy();
+    expect(slot.getByLabelText("Usage reset advice")).toBeTruthy();
     expect(slot.queryByText("refreshing usage…")).toBeNull();
     expect(slot.queryByText(/· refreshing…$/)).toBeNull();
     const cached = JSON.parse(
@@ -188,6 +192,40 @@ describe("Account Pool settings", () => {
     expect(
       slot.getByText("Hub accepting · 2 in flight · used by bee"),
     ).toBeTruthy();
+  });
+
+  it("advises which usage reset to claim by hand, and when none is needed", async () => {
+    const resetAt = Date.now() + 5 * 24 * 3_600_000;
+    const fable = (utilization: number) => ({
+      fable: { utilization, resetAt, status: null, observedAt: 1, source: "usage" as const },
+      sonnet: null,
+      opus: null,
+      haiku: null,
+      other: null,
+    });
+    const walled = (id: string, label: string, days: number, use: number) =>
+      account({
+        id,
+        label,
+        email: null,
+        sevenDayUtilization: 1,
+        sevenDayResetAt: Date.now() + days * 24 * 3_600_000,
+        familyWeekly: fable(use),
+      });
+    const slot = render([
+      walled("11111111-1111-4111-8111-111111111111", "seven", 6, 0.58),
+      walled("22222222-2222-4222-8222-222222222222", "five", 1.5, 0.16),
+    ]);
+    const note = await slot.findByLabelText("Usage reset advice");
+    expect(note.textContent).toContain("Spend a Fable reset on seven · /limit-reset fable");
+    expect(note.textContent).toContain(
+      "No Fable reset left on seven? Spend its full reset. Neither? Next: five (full).",
+    );
+    cleanup();
+    const idle = render();
+    expect((await idle.findByLabelText("Usage reset advice")).textContent).toContain(
+      "No usage reset needed",
+    );
   });
 
   it("keeps the quota slots visible at mobile widths", async () => {

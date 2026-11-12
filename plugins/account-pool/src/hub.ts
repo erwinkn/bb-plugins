@@ -1760,7 +1760,11 @@ export class AccountPoolHub {
   // Writes what a vendor response says about the account's quota. A quota 429 its own windows do
   // not hold (Claude's overall verdict, which may come from its untracked 5h window) also takes the
   // whole account out of rotation until the later of its reset and Retry-After, never sooner than
-  // a rejection already recorded. The windows hold a tracked one, as they always have.
+  // a rejection already recorded. The windows hold a tracked one, as they always have. A usage
+  // reading taken after the latest such 429 releases it (quotaFromUsage). One that adds to a live
+  // hold from another limit names none, so room under the 5-hour and weekly limits alone releases
+  // both: weaker than either named hold, accepted because a wrong release costs one 429 and a
+  // failover before the hold returns.
   private observeQuota(
     accountId: string,
     adapter: ProviderAdapter,
@@ -1777,7 +1781,7 @@ export class AccountPoolHub {
     );
     const rejection =
       response.status === 429
-        ? adapter.quotaRejection(response.headers)
+        ? adapter.quotaRejection(response.headers, family)
         : null;
     const quota =
       rejection === null || rejection.tracked
@@ -1790,6 +1794,12 @@ export class AccountPoolHub {
               now +
                 retryAfterMilliseconds(response.headers.get("retry-after"), now),
             ),
+            rejectedAt: now,
+            rejectedLimit:
+              (observed.rejectedUntil ?? 0) > now &&
+              observed.rejectedLimit !== rejection.limit
+                ? null
+                : rejection.limit,
           };
     this.options.quotas.put(quota);
     return { quota, quotaRejected: rejection !== null };

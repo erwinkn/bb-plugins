@@ -23,6 +23,8 @@ function emptyQuota(): AccountQuota {
     observedAt: null,
     heldUntil: null,
     rejectedUntil: null,
+    rejectedAt: null,
+    rejectedLimit: null,
     error: null,
   };
 }

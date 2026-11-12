@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { AccountQuota } from "./contracts.js";
 import {
   isQuotaExhausted,
   quotaFromHeaders,
@@ -7,6 +6,9 @@ import {
   usableAt,
 } from "./quota.js";
 import { quotaFromUsage } from "./usage.js";
+import { createClaudeAdapter } from "./claude-adapter.js";
+import type { Account, AccountQuota } from "./contracts.js";
+import type { AccountStore, QuotaStore } from "./store.js";
 
 const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
 const NOW = 1_800_000_000_000;
@@ -30,6 +32,8 @@ function emptyQuota(): AccountQuota {
     observedAt: null,
     heldUntil: null,
     rejectedUntil: null,
+    rejectedAt: null,
+    rejectedLimit: null,
     error: null,
   };
 }
@@ -64,6 +68,7 @@ describe("Claude quota without the 5h window", () => {
       },
       emptyQuota(),
       NOW,
+      NOW,
     );
     expect(quota).not.toHaveProperty("fiveHourUtilization");
     expect(quota?.sevenDayUtilization).toBe(0.62);
@@ -92,8 +97,9 @@ describe("Claude quota without the 5h window", () => {
             "anthropic-ratelimit-unified-reset": at(RESET),
             ...extra,
           }),
+          "fable",
         ),
-      ).toEqual({ tracked: false, resetAt: RESET * 1_000 });
+      ).toEqual({ tracked: false, resetAt: RESET * 1_000, limit: null });
     // A weekly verdict alone is held by the window quotaFromHeaders records from the same response.
     for (const headers of [
       { "anthropic-ratelimit-unified-7d-status": "rejected" },
@@ -104,14 +110,29 @@ describe("Claude quota without the 5h window", () => {
         "anthropic-ratelimit-unified-7d_oi-reset": at(RESET),
       },
     ] as Array<Record<string, string>>)
-      expect(quotaRejection(new Headers(headers))).toEqual({ tracked: true });
+      expect(quotaRejection(new Headers(headers), "fable")).toEqual({ tracked: true });
     // A 429 that names no spent quota is a short rate limit.
-    expect(quotaRejection(new Headers({ "retry-after": "5" }))).toBeNull();
+    expect(quotaRejection(new Headers({ "retry-after": "5" }), "fable")).toBeNull();
     expect(
       quotaRejection(
         new Headers({ "anthropic-ratelimit-unified-status": "allowed" }),
+        "fable",
       ),
     ).toBeNull();
+  });
+
+  it("names the limit an overall verdict came from, a scoped one by the request's family", () => {
+    const limit = (claim: string) =>
+      quotaRejection(
+        new Headers({
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-representative-claim": claim,
+        }),
+        "fable",
+      );
+    expect(limit("seven_day")).toMatchObject({ tracked: false, limit: "seven_day" });
+    expect(limit("five_hour")).toMatchObject({ tracked: false, limit: "five_hour" });
+    expect(limit("seven_day_oi")).toMatchObject({ tracked: false, limit: "seven_day_fable" });
   });
 
   it("blocks every family until rejectedUntil, and nothing after it", () => {
@@ -119,5 +140,111 @@ describe("Claude quota without the 5h window", () => {
     expect(isQuotaExhausted(quota, "sonnet", 0.95, NOW)).toBe(true);
     expect(usableAt(quota, null, 0.95, NOW)).toBe(NOW + 60_000);
     expect(isQuotaExhausted(quota, "sonnet", 0.95, NOW + 60_000)).toBe(false);
+  });
+});
+
+describe("a usage reading ends a quota 429's hold (W586)", () => {
+  const DAY = 24 * 3_600_000;
+  const resetsAt = new Date(NOW + 5 * DAY).toISOString();
+  // A weekly-limit 429 at NOW: the Pooler holds the account until its weekly reset, 5 days out.
+  const held = (limit: string | null, rejectedAt: number | null = NOW): AccountQuota => ({
+    ...emptyQuota(),
+    sevenDayUtilization: 1,
+    sevenDayStatus: "rejected",
+    rejectedUntil: NOW + 5 * DAY,
+    rejectedAt,
+    rejectedLimit: limit,
+  });
+  const read = (
+    previous: AccountQuota,
+    payload: object,
+    requestedAt = NOW + 60_000,
+  ) => {
+    const quota = quotaFromUsage(ACCOUNT_ID, payload, previous, NOW + 61_000, requestedAt);
+    if (quota === null) throw new Error("Expected a quota.");
+    return quota;
+  };
+  const weekly = (seven: number, fable = 0) => ({
+    seven_day: { utilization: seven, resets_at: resetsAt },
+    seven_day_fable: { utilization: fable, resets_at: resetsAt },
+  });
+  const serves = (quota: AccountQuota) => !isQuotaExhausted(quota, "fable", 0.98, NOW + 61_000);
+
+  it("keeps the hold on a reading at the limit, one sent before the 429, or one without the limit", () => {
+    expect(serves(held("seven_day"))).toBe(false);
+    expect(read(held("seven_day"), weekly(100)).rejectedUntil).toBe(NOW + 5 * DAY);
+    // Sent before the 429, or in the same millisecond, the reading may predate the limit.
+    expect(read(held("seven_day"), weekly(0), NOW - 1).rejectedUntil).toBe(NOW + 5 * DAY);
+    expect(read(held("seven_day"), weekly(0), NOW).rejectedUntil).toBe(NOW + 5 * DAY);
+    // A reading that leaves out the weekly limit says nothing about it.
+    expect(read(held("seven_day"), { seven_day_fable: { utilization: 0 } }).rejectedUntil).toBe(NOW + 5 * DAY);
+    // Room under another limit than the one the 429 named releases nothing.
+    expect(read(held("five_hour"), weekly(0)).rejectedUntil).toBe(NOW + 5 * DAY);
+  });
+
+  it("releases it once a later reading shows room again, as after a claimed full reset", () => {
+    const quota = read(held("seven_day"), weekly(0));
+    expect(quota).toMatchObject({ rejectedUntil: null, rejectedAt: null, rejectedLimit: null, sevenDayUtilization: 0 });
+    expect(serves(quota)).toBe(true);
+  });
+
+  it("releases a Fable-limit 429 on room under the Fable limit only", () => {
+    const fable429 = { ...held("seven_day_fable"), sevenDayUtilization: 0.6, sevenDayStatus: "allowed" };
+    expect(read(fable429, weekly(60, 100)).rejectedUntil).toBe(NOW + 5 * DAY);
+    expect(serves(read(fable429, weekly(60, 0)))).toBe(true);
+  });
+
+  it("keeps a named-limit hold while the same reading shows a full 5-hour window", () => {
+    const fiveHourFull = { ...weekly(0), five_hour: { utilization: 100 } };
+    expect(read(held("seven_day"), fiveHourFull).rejectedUntil).toBe(NOW + 5 * DAY);
+    expect(read(held("seven_day"), { ...weekly(0), five_hour: { utilization: 3 } }).rejectedUntil).toBeNull();
+    // A full window whose reset has passed is room, as it is for routing.
+    const expired = { ...weekly(0), five_hour: { utilization: 100, resets_at: new Date(NOW - 7_200_000).toISOString() } };
+    expect(read(held("seven_day"), expired).rejectedUntil).toBeNull();
+  });
+
+  it("releases a 429 that named no limit on room under the account-wide limits the reading reports", () => {
+    const fiveHourFull = { ...weekly(0), five_hour: { utilization: 100 } };
+    expect(read(held(null), fiveHourFull).rejectedUntil).toBe(NOW + 5 * DAY);
+    expect(read(held(null), { ...weekly(0), five_hour: { utilization: 3 } }).rejectedUntil).toBeNull();
+    // A full Fable limit keeps Fable off the account, not Sonnet or Opus.
+    const fableFull = read(held(null), weekly(0, 100));
+    expect(fableFull.rejectedUntil).toBeNull();
+    expect(serves(fableFull)).toBe(false);
+    expect(isQuotaExhausted(fableFull, "sonnet", 0.98, NOW + 61_000)).toBe(false);
+  });
+
+  it("reads a held account whose limits list an empty scoped entry", () => {
+    const empty = { kind: "weekly_scoped", percent: null, resets_at: null, status: null, scope: { model: { display_name: "Fable" } } };
+    const payload = { seven_day: { utilization: 0, resets_at: resetsAt }, limits: [empty] };
+    expect(read(held(null), payload).rejectedUntil).toBeNull();
+    expect(read(held("seven_day_fable"), payload).rejectedUntil).toBe(NOW + 5 * DAY);
+  });
+
+  it("releases a hold an older build recorded, with no time, on any reading that shows room", () => {
+    expect(read(held(null, null), weekly(0)).rejectedUntil).toBeNull();
+  });
+
+  it("keeps a hold a 429 put on while the usage request was in flight", async () => {
+    const adapter = createClaudeAdapter({ refreshUrl: "x:", usageUrl: "https://u.invalid/usage", profileUrl: "x:" });
+    const refresh = async (during: AccountQuota | null) => {
+      let quota = held("seven_day", NOW - 60_000);
+      let clock = NOW;
+      await adapter.refreshUsage({
+        account: { id: ACCOUNT_ID, kind: "oauth", accountUuid: "u" } as Account,
+        freshSecret: async () => ({ kind: "oauth", accessToken: "t", refreshToken: "r", expiresAt: NOW + DAY }),
+        accounts: {} as AccountStore,
+        quotas: { get: () => quota, put: (next: AccountQuota) => (quota = next) } as unknown as QuotaStore,
+        fetch: async () => {
+          clock += 1_000;
+          if (during !== null) quota = during;
+          return Response.json(weekly(0));
+        },
+        now: () => clock,
+      });
+      return quota.rejectedUntil;
+    };
+    expect(await refresh(null)).toBeNull();
+    expect(await refresh(held("seven_day", NOW + 500))).toBe(NOW + 5 * DAY);
   });
 });

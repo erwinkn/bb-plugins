@@ -174,6 +174,8 @@ export class PoolOperations {
       error: null,
       heldUntil: null,
       rejectedUntil: null,
+      rejectedAt: null,
+      rejectedLimit: null,
     });
     this.onAccountsChanged();
     await this.onAccountEnabled(account.id);

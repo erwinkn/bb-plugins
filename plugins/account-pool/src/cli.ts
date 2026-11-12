@@ -31,6 +31,7 @@ import {
   type WarmingConfigView,
 } from "./warming-config.js";
 import type { WarmingStatus } from "./warming.js";
+import { adviseReset, formatResetAdvice, resetAccounts } from "./reset-advice.js";
 import {
   formatUsageReport,
   parseSince,
@@ -769,11 +770,17 @@ export function registerPoolCli(
             ...poolStatus,
             routedThreadsWithoutLocalLogin,
           };
+          // Only Claude OAuth accounts hold usage resets; a pool without one gets no line.
+          const claude = resetAccounts(status.accounts);
+          const resetLine =
+            claude.length === 0
+              ? ""
+              : `${formatResetAdvice(adviseReset(claude, config.get().switchThreshold, usage.now()))}\n`;
           return {
             exitCode: 0,
             stdout: flags.booleans.has("json")
               ? json(status)
-              : `${formatStatus(status)}\n${formatAdvisorStatus(advisor.get())}\n${formatWarmingStatusLine(warming.config.get())}\n`,
+              : `${formatStatus(status)}\n${formatAdvisorStatus(advisor.get())}\n${formatWarmingStatusLine(warming.config.get())}\n${resetLine}`,
           };
         }
         if (argv[0] === "routing") {

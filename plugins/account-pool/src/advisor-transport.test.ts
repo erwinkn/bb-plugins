@@ -14,6 +14,7 @@ import type {
   QuotaStore,
 } from "./store.js";
 import { isQuotaExhausted } from "./quota.js";
+import { quotaFromUsage } from "./usage.js";
 import { dependantsOf } from "./testing/signals.js";
 
 const START = Date.UTC(2026, 9, 4, 12);
@@ -35,6 +36,8 @@ function emptyQuota(accountId: string): AccountQuota {
     observedAt: null,
     heldUntil: null,
     rejectedUntil: null,
+    rejectedAt: null,
+    rejectedLimit: null,
     error: null,
   };
 }
@@ -1224,5 +1227,67 @@ describe("quota rejections the reported windows do not hold (W556)", () => {
     ]);
     // It recovers with its window, as before.
     expect(isQuotaExhausted(quota, "other", 0.98, START + 60_000)).toBe(false);
+  });
+
+  it("a weekly-limit 429 holds the account until a usage reading sent after it shows room (W586)", async () => {
+    const weekEnd = START + 120 * HOUR;
+    const env = pair([
+      {
+        status: 429,
+        headers: {
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-reset": String(weekEnd / 1_000),
+          "anthropic-ratelimit-unified-representative-claim": "seven_day",
+          "anthropic-ratelimit-unified-7d-status": "rejected",
+          "anthropic-ratelimit-unified-7d-utilization": "1",
+          "anthropic-ratelimit-unified-7d-reset": String(weekEnd / 1_000),
+        },
+      },
+      200,
+      200,
+    ]);
+    expect((await native(env)).log).toEqual(["post:429:tok-a", "post:200:tok-b"]);
+    expect(env.quotas.get("A")).toMatchObject({ rejectedUntil: weekEnd, rejectedAt: START, rejectedLimit: "seven_day" });
+    // A full reset claimed by hand: the usage endpoint now reports 0% of the weekly limit.
+    const claimed = { seven_day: { utilization: 0, resets_at: new Date(weekEnd).toISOString() } };
+    const reading = (requestedAt: number) =>
+      quotaFromUsage("A", claimed, env.quotas.get("A")!, START + 2 * HOUR, requestedAt)!;
+    // B runs out too (the router stays on a serving account, so only then would A get traffic).
+    env.quotas.set("B", { ...emptyQuota("B"), sevenDayUtilization: 1, sevenDayResetAt: weekEnd });
+    // A reading sent before the 429 landed is not trusted with it: no account serves.
+    env.quotas.set("A", reading(START - 1));
+    expect(env.quotas.get("A")?.rejectedUntil).toBe(weekEnd);
+    expect((await native(env)).log).toEqual([]);
+    env.quotas.set("A", reading(START + HOUR));
+    expect(env.quotas.get("A")?.rejectedUntil).toBeNull();
+    expect((await native(env)).log).toEqual(["post:200:tok-a"]);
+  });
+
+  it.each([
+    ["another limit on a live hold names none", "five_hour", START + HOUR, null],
+    ["the same limit keeps its name", "seven_day", START + HOUR, "seven_day"],
+    ["another limit on an expired hold names its own", "five_hour", START - 1, "five_hour"],
+  ] as const)("a 429 from a request in flight on a held account: %s (W586)", async (_name, claim, heldUntil, limit) => {
+    const weekEnd = START + 120 * HOUR;
+    const inFlight = gate();
+    const env = pair([
+      {
+        gate: inFlight,
+        status: 429,
+        headers: {
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-reset": String((START + HOUR) / 1_000),
+          "anthropic-ratelimit-unified-representative-claim": claim,
+        },
+      },
+      200,
+    ]);
+    const pending = native(env);
+    await tick();
+    // Another request's seven_day 429 landed while this one was in flight.
+    env.quotas.set("A", { ...env.quotas.get("A")!, rejectedUntil: heldUntil, rejectedAt: START, rejectedLimit: "seven_day" });
+    inFlight.open();
+    expect((await pending).log).toEqual(["post:held", "post:429:tok-a", "post:200:tok-b"]);
+    expect(env.quotas.get("A")?.rejectedLimit).toBe(limit);
   });
 });

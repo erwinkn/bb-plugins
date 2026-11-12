@@ -179,8 +179,12 @@ const quotaFieldsShape = {
   observedAt: z.number().int().nullable(),
   heldUntil: z.number().int().nullable(),
   // A quota rejection (a 429) that none of the windows above explained, such as one from a window
-  // the Pooler does not track: the account serves no family until the reset that response named.
+  // the Pooler does not track: the account serves no family until the reset that response named,
+  // or until a usage reading taken after rejectedAt shows room under rejectedLimit (the limit the
+  // 429 named, as its representative claim: "seven_day"; null when it named none).
   rejectedUntil: z.number().int().nullable(),
+  rejectedAt: z.number().int().nullable(),
+  rejectedLimit: z.string().nullable(),
   error: z.string().nullable(),
 };
 

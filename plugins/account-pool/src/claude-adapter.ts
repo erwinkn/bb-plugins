@@ -135,6 +135,7 @@ export function createClaudeAdapter(options: {
       if (context.account.kind !== "oauth") return;
       const secret = await context.freshSecret();
       if (secret.kind !== "oauth") return;
+      const requestedAt = context.now();
       const response = await context.fetch(options.usageUrl, {
         headers: {
           authorization: `Bearer ${secret.accessToken}`,
@@ -151,6 +152,7 @@ export function createClaudeAdapter(options: {
             payload,
             context.quotas.get(context.account.id),
             context.now(),
+            requestedAt,
           );
           if (quota !== null) context.quotas.put(quota);
         }

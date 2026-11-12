@@ -79,6 +79,13 @@ import {
 } from "./src/contracts.js";
 import { blockingResetAt } from "./src/quota.js";
 import {
+  adviseReset,
+  RESET_NAME,
+  resetAccounts,
+  resetFallback,
+  type ResetAdvice,
+} from "./src/reset-advice.js";
+import {
   ACCOUNT_POOL_ACCOUNTS_CHANGED,
   ACCOUNT_POOL_CONFIG_CHANGED,
 } from "./src/realtime.js";
@@ -471,6 +478,29 @@ function AccountRow({
           <ResourceRowDetailChevron />
         </button>
       </div>
+    </div>
+  );
+}
+
+// What to claim by hand with /limit-reset; the Pooler itself never spends a reset.
+function ResetAdviceNote({ advice }: { advice: ResetAdvice }) {
+  const first = advice.picks[0];
+  return (
+    <div className="space-y-0.5 py-2.5 text-xs" aria-label="Usage reset advice">
+      <p className="font-medium text-foreground">
+        {first === undefined ? (
+          advice.read ? "No usage reset needed" : "No usage reading yet"
+        ) : (
+          <>
+            Spend a {RESET_NAME[first.kind]} on {first.label} ·{" "}
+            <span className="font-mono">/limit-reset {first.kind}</span>
+          </>
+        )}
+      </p>
+      <p className="leading-snug text-subtle-foreground/75">
+        {advice.reason}
+        {first === undefined ? null : ` ${resetFallback(advice)}`}
+      </p>
     </div>
   );
 }
@@ -882,6 +912,7 @@ function AccountPoolSettings() {
     };
   }, [codexStep, loginDone, refresh, rpc]);
   const accounts = status?.accounts ?? [];
+  const claudeResetAccounts = resetAccounts(accounts);
   const selectedAccount =
     dialog?.kind === "account" ||
     dialog?.kind === "priority" ||
@@ -1191,6 +1222,14 @@ function AccountPoolSettings() {
                 </SortableContext>
               </DndContext>
             )}
+            {/* A cached status can be days old: advise only on a fresh read. */}
+            {provider.id === "claude" && !statusIsCached && claudeResetAccounts.length > 0 ? (
+              <div className="border-t border-border">
+                <ResetAdviceNote
+                  advice={adviseReset(claudeResetAccounts, threshold, Date.now())}
+                />
+              </div>
+            ) : null}
           </SettingsSection>
         );
       })}
