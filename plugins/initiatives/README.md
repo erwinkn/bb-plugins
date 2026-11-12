@@ -687,28 +687,30 @@ them up again on a rollback.
   one), required checks passing (the base branch's, from classic protection
   and rulesets: each must have reported and passed, since a required workflow
   skipped by its path filter blocks the merge; every check, where none is
-  required; skipped and neutral runs alone only after 5 minutes, below), new comments and reviews since the
+  required; skipped and neutral runs alone never pass, below), new comments and reviews since the
   last read, a conflict with the base, and no check reported 15 minutes after
   a push (only in a repository where some PR ever reported checks, listed or
   read by a watch; kept across reloads). Past 100 checks on a commit, the rest
   are read 100 a page (up to 1,000); past that, the rollup's overall state
   stands in for the unread ones. A merge or a close only ends the watch,
   waking nobody.
-- **Placeholder runs settle first (W563).** Where no check is required,
-  checks that all passed as skipped or neutral, with nothing pending, pass
-  only once they have held `PLACEHOLDER_SETTLE_MS` (5 min) on a head; a read
-  is due then. A check that registers meanwhile restarts the wait, and passes
-  of its own. Past the checks read (over 1,000), the rollup's success decides
-  as before. On equisafe-market a
-  push first reports two skipped runs (`check`, `tests`); the workflow that
-  does the work registers seconds later. Example, #5393: pushed 13:47:34,
-  watched 13:47:51, `check / Check` started 13:47:56 and passed 13:48:27. The
-  baseline read "all passed (2 checks)", so the real pass woke nobody. That
-  happened to 6 watching workers on 2026-11-01, and 10 of the 140 checks-passed
-  wakes of 48 hours fired on such placeholders (`["CodeRabbit","check","tests"]`,
-  `["CodeRabbit"]`), after which the real pass could not wake. A lone check
-  that runs and ends neutral still wakes, 5 minutes late. A required check
-  skipped by its condition still passes at once, as GitHub reads it.
+- **Skipped or neutral runs alone are no pass (W563, T169).** Where no check
+  is required, checks that all passed as skipped or neutral are placeholders,
+  not a pass: nothing ran, and nobody is woken, however long they hold. A
+  skipped or neutral run next to a real success doesn't mask it (`{success,
+  skipped}` passes; `{skipped, skipped}` and `{neutral}` don't). A check that
+  registers later passes of its own and wakes. Past the checks read (over
+  1,000), the rollup's success decides as before. On equisafe-market a push
+  first reports two skipped runs (`check`, `tests`); the workflow that does
+  the work registers seconds later. Example, #5393: pushed 13:47:34, watched
+  13:47:51, `check / Check` started 13:47:56 and passed 13:48:27. The baseline
+  read "all passed (2 checks)", so the real pass woke nobody. That happened to
+  6 watching workers on 2026-11-01, and 10 of the 140 checks-passed wakes of
+  48 hours fired on such placeholders (`["CodeRabbit","check","tests"]`,
+  `["CodeRabbit"]`). W563 then passed placeholders after a 5-minute settle;
+  T169 dropped that, since a draft PR whose checks are all skipped has no
+  workflow coming and woke its worker with "All checks passed". A required
+  check skipped by its condition still passes at once, as GitHub reads it.
 - **Whose comments.** Never the `gh` account's own. Agents and the user share
   it, and nothing in GitHub's data tells them apart: on Equisafe's last 60
   PRs every one of its ~37 comments and reviews was an agent's (proofs,

@@ -14,7 +14,7 @@ import {
   watchAnswer, type WatchFacts, type WatchState,
 } from "../lib/pr-watch";
 import type { Sdk } from "../lib/bb";
-import { WATCH_RESYNC_MS, CHECKS_PAST_100, CHECKS_PAGE_QUERY, WAKE_REFUSALS, PLACEHOLDER_SETTLE_MS, needsRead } from "../lib/pr-watch";
+import { WATCH_RESYNC_MS, CHECKS_PAST_100, CHECKS_PAGE_QUERY, WAKE_REFUSALS, needsRead } from "../lib/pr-watch";
 import { DEFAULT_WORKER_INSTRUCTIONS, PREVIOUS_DEFAULTS } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
@@ -495,6 +495,23 @@ describe("W548 PrWatcher", () => {
     await t.watcher.check();
     expect(wakeRows(t).map((w) => w.state)).toEqual(["sent"]);
     expect(t.giveWork).toHaveBeenCalledTimes(1);
+  });
+  it("drops a pass wake still pending once the checks no longer all passed (T169: one saved by W563 for skipped-only checks)", async () => {
+    const t = setup({ prs: [fakePr(1)] });
+    await t.start();
+    t.store.updateProject("eq", { paused: true });
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "passed" }];
+    await t.poll();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
+    // The build that saved the wake read the checks as skipped-only and called that a pass; this one doesn't.
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "skipped" }];
+    t.clock.now += MINUTE;
+    await t.poll();
+    t.store.updateProject("eq", { paused: false });
+    t.clock.now += MINUTE;
+    await t.poll();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["stale"]);
+    expect(t.giveWork).not.toHaveBeenCalled();
   });
   it("wakes nobody once unwatched, and starts from the PR as it is when watched again", async () => {
     const t = setup({ prs: [fakePr(1)] });
@@ -1576,43 +1593,36 @@ describe("W563 PR watch wake gaps", () => {
     expect(base(facts({ checks: [{ ...skipped("check"), required: true }] })).passed).toBe(true);
   });
 
-  it("passes placeholders that held PLACEHOLDER_SETTLE_MS on one head, which a read is due for", () => {
-    const placeholders = facts({ checks: [skipped("check"), skipped("CodeRabbit")] });
-    const state = base(placeholders);
-    expect(state).toMatchObject({ passed: false, quietSince: T0 });
-    const early = diffWatch(state, placeholders, ctx({ now: T0 + PLACEHOLDER_SETTLE_MS - 1 }));
-    expect(early.changes).toEqual([]);
-    expect(early.state.quietSince).toBe(T0);
-    expect(needsRead(early.state, null, T0 + PLACEHOLDER_SETTLE_MS - 1, true)).toBe(false);
-    expect(needsRead({ ...early.state, readAt: T0 + PLACEHOLDER_SETTLE_MS - 1 }, null, T0 + PLACEHOLDER_SETTLE_MS, true)).toBe(true);
-    const settledRead = diffWatch(early.state, placeholders, ctx({ now: T0 + PLACEHOLDER_SETTLE_MS }));
-    expect(settledRead.changes).toEqual([{ kind: "checks-passed", checks: ["CodeRabbit", "check"], required: false }]);
-    expect(needsRead({ ...settledRead.state, readAt: T0 + PLACEHOLDER_SETTLE_MS }, null, T0 + 2 * PLACEHOLDER_SETTLE_MS, true)).toBe(false);
-    // A workflow registering after that pass is news again once it passes.
-    const pending = diffWatch(settledRead.state, facts({ checks: [...placeholders.checks, { name: "check / Check", outcome: "pending", required: false }] }), ctx({ now: T0 + 6 * MINUTE }));
-    expect(pending.state).toMatchObject({ passed: false, quietSince: null });
-    expect(kinds(diffWatch(pending.state, facts({ checks: [...placeholders.checks, { name: "check / Check", outcome: "passed", required: false }] }), ctx({ now: T0 + 7 * MINUTE })))).toEqual(["checks-passed"]);
-    // A pending check in between restarts the wait.
-    const restarted = diffWatch(diffWatch(state, facts({ checks: [skipped("check"), { name: "lint", outcome: "pending", required: false }] }), ctx({ now: T0 + MINUTE })).state, placeholders, ctx({ now: T0 + 2 * MINUTE }));
-    expect(restarted.state.quietSince).toBe(T0 + 2 * MINUTE);
+  it("never passes skipped or neutral runs alone, however long they hold (T169)", () => {
+    const neutral = { name: "CodeRabbit", outcome: "passed" as const, required: false, skipped: true as const };
+    // {skipped, skipped} and {neutral}: no pass, no wake, at any age.
+    for (const checks of [[skipped("check"), skipped("tests")], [neutral]]) {
+      const placeholders = facts({ checks });
+      const state = base(placeholders);
+      expect(state.passed).toBe(false);
+      expect(state).not.toHaveProperty("quietSince");
+      for (const later of [MINUTE, 10 * MINUTE, 24 * 60 * MINUTE]) {
+        const read = diffWatch(state, placeholders, ctx({ now: T0 + later }));
+        expect(read.changes).toEqual([]);
+        expect(read.state.passed).toBe(false);
+        expect(needsRead({ ...read.state, readAt: T0 + later }, null, T0 + later, true)).toBe(false);
+      }
+    }
+    // {success, skipped}: the real success passes, the skipped run doesn't mask it.
+    expect(base(facts({ checks: [skipped("check"), { name: "tests", outcome: "passed", required: false }] })).passed).toBe(true);
+    // A pending check keeps the pass away too.
+    expect(base(facts({ checks: [skipped("check"), { name: "lint", outcome: "pending", required: false }] })).passed).toBe(false);
   });
 
-  it("keeps a pass stored before W563 on placeholders, and settles a pending one stored then (review r2)", () => {
+  it("wakes for a pass stored before T169 on placeholders no more, and for the real pass that follows", () => {
     const placeholders = facts({ checks: [skipped("lint")] });
-    // Stored by the previous build: passed on a neutral-only set, no quietSince.
-    const { quietSince: _passedBefore, ...legacyPassed } = { ...base(facts({ checks: [{ name: "lint", outcome: "passed", required: false }] })), passed: true };
-    const unchanged = diffWatch(legacyPassed, placeholders, ctx({ now: T0 + MINUTE }));
-    expect(unchanged.changes).toEqual([]);
-    expect(unchanged.state.passed).toBe(true);
-    expect(needsRead({ ...unchanged.state, readAt: T0 + MINUTE }, null, T0 + MINUTE + PLACEHOLDER_SETTLE_MS, true)).toBe(false);
-    expect(diffWatch(unchanged.state, placeholders, ctx({ now: T0 + MINUTE + PLACEHOLDER_SETTLE_MS })).changes).toEqual([]);
-    // Stored pending (lint running), then lint ends neutral: it settles and wakes once.
-    const { quietSince: _pendingBefore, ...legacyPending } = base(facts({ checks: [{ name: "lint", outcome: "pending", required: false }] }));
-    const ended = diffWatch(legacyPending, placeholders, ctx({ now: T0 + MINUTE }));
-    expect(ended.changes).toEqual([]);
-    const woke = diffWatch(ended.state, placeholders, ctx({ now: T0 + MINUTE + PLACEHOLDER_SETTLE_MS }));
-    expect(kinds(woke)).toEqual(["checks-passed"]);
-    expect(diffWatch(woke.state, placeholders, ctx({ now: T0 + MINUTE + 2 * PLACEHOLDER_SETTLE_MS })).changes).toEqual([]);
+    // Stored by the previous build: passed on a skipped-only set.
+    const legacy = { ...base(facts({ checks: [{ name: "lint", outcome: "passed", required: false }] })), passed: true, quietSince: T0 };
+    const read = diffWatch(legacy, placeholders, ctx({ now: T0 + MINUTE }));
+    expect(read.changes).toEqual([]);
+    expect(read.state.passed).toBe(false);
+    const real = facts({ checks: [skipped("lint"), { name: "tests", outcome: "passed", required: false }] });
+    expect(kinds(diffWatch(read.state, real, ctx({ now: T0 + 2 * MINUTE })))).toEqual(["checks-passed"]);
   });
 
   it("takes the rollup's success for the checks past those read, placeholders or not (review r1)", () => {
@@ -1623,17 +1633,15 @@ describe("W563 PR watch wake gaps", () => {
       .toEqual([{ kind: "checks-passed", checks: many.map((c) => c.name).sort(), required: false }]);
   });
 
-  it("wakes, once settled, for a lone check that runs and ends neutral (review r1)", async () => {
-    const t = setup({ prs: [fakePr(1, { checks: [{ name: "lint", outcome: "pending" }] })] });
+  it("wakes nobody for a lone check that runs and ends neutral, or for a PR whose checks are all skipped (T169)", async () => {
+    const t = setup({ prs: [fakePr(1, { checks: [{ name: "lint", outcome: "pending" }] }), fakePr(2, { checks: [{ name: "check", outcome: "skipped" }, { name: "tests", outcome: "skipped" }] })] });
     await t.start();
     t.prs.get(1)!.checks = [{ name: "lint", outcome: "neutral" }];
     await t.poll();
-    expect(t.giveWork).not.toHaveBeenCalled();
-    await t.poll(PLACEHOLDER_SETTLE_MS);
-    expect(t.giveWork).toHaveBeenCalledTimes(1);
-    expect(t.giveWork.mock.calls[0]![2]).toContain("All checks passed (1 check).");
+    await t.poll(10 * 60_000);
     await t.poll(WATCH_RESYNC_MS);
-    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(t.sent()).toEqual([]);
   });
 
   it("wakes on the real check's pass after a watch that saw only a push's skipped runs (equisafe-market#5393)", async () => {

@@ -53,13 +53,6 @@ export const WAKE_MAX_AGE_MS = 24 * 60 * 60_000;
 /** Sends of a wake BB may refuse (a 4xx: nothing happened), each routed afresh, before it fails. */
 export const WAKE_REFUSALS = 3;
 
-/**
- * W563: checks that are all skipped or neutral, with nothing pending, pass only once they have
- * held this long on a head: a push's placeholder runs report seconds before the workflow that
- * does the work registers (on equisafe-market, ~16 s).
- */
-export const PLACEHOLDER_SETTLE_MS = 5 * 60_000;
-
 /** What wakes a PR's watcher. A merge or a close only ends the watch (Erwin, 2026-10-28). */
 export type ChangeKind = "checks-failed" | "checks-passed" | "new-comments" | "conflicting" | "no-checks";
 
@@ -112,9 +105,10 @@ export interface WatchCheck {
   outcome: "passed" | "failed" | "pending";
   required: boolean;
   /**
-   * W563: passed as skipped or neutral. Alone, such runs may be a push's placeholders (jobs
-   * skipped by their condition, an app's neutral status) reporting before the workflow that does
-   * the work registers: they pass only after PLACEHOLDER_SETTLE_MS.
+   * W563, T169: passed as skipped or neutral. Next to a real success they don't mask it; alone
+   * they are no pass: a push's placeholders (jobs skipped by their condition, an app's neutral
+   * status) report before the workflow that does the work registers, and on a draft PR nothing
+   * ever does.
    */
   skipped?: true;
 }
@@ -263,11 +257,6 @@ export interface WatchState {
   ended: "MERGED" | "CLOSED" | null;
   /** When its last watch read ran: one older than WATCH_RESYNC_MS is read again. */
   readAt: number;
-  /**
-   * W563: since when `head`'s checks have been all skipped or neutral with nothing pending
-   * (placeholders); null or absent otherwise (states stored before W563 lack it).
-   */
-  quietSince?: number | null;
 }
 
 export interface Change {
@@ -298,8 +287,6 @@ export const listFingerprint = (pr: Pick<QueuedPullRequest, "headOid" | "updated
 export function needsRead(state: WatchState, pr: (Parameters<typeof listFingerprint>[0] & Pick<QueuedPullRequest, "mergeable">) | null, now: number, repoHasChecks: boolean): boolean {
   if (pr ? state.fingerprint !== listFingerprint(pr) || now - state.readAt >= WATCH_RESYNC_MS : now - state.readAt >= UNLISTED_READ_MS) return true;
   if (pr && pr.mergeable !== "unknown" && pr.mergeable !== state.mergeable) return true;
-  // W563: placeholders that held PLACEHOLDER_SETTLE_MS pass, which a read finds.
-  if (!state.passed && state.quietSince != null && now - state.quietSince >= PLACEHOLDER_SETTLE_MS) return true;
   return repoHasChecks && !state.noChecksDone && state.pushedAt !== null && now - state.pushedAt >= NO_CHECKS_MS;
 }
 
@@ -315,9 +302,8 @@ const failingNames = (watch: WatchFacts) => {
 /**
  * The checks that gate the PR and whether they all passed: every check the base branch requires
  * (or GitHub marks required), each of which must have reported and passed; else every check.
- * `placeholders` (W563): where none is required, all of them passed as skipped or neutral, all
- * read; that is no pass yet (`settled` decides), since the workflow that does the work may not
- * have registered, and its own pass would then wake nobody.
+ * `placeholders` (W563, T169): where none is required, all of them passed as skipped or neutral,
+ * all read; that is no pass, ever: nothing ran. A check that registers later passes of its own.
  */
 const gate = (watch: WatchFacts) => {
   const names = new Set([...(watch.required ?? []), ...watch.checks.filter((c) => c.required).map((c) => c.name)]);
@@ -334,17 +320,6 @@ const gate = (watch: WatchFacts) => {
   // Past the checks read, the rollup's success speaks for the rest.
   const placeholders = done && !watch.more && watch.checks.every((c) => c.skipped);
   return { names: [...new Set(watch.checks.map((c) => c.name))].sort(), required: false, passed: done && !placeholders, placeholders };
-};
-
-/**
- * W563: when `head`'s placeholders began (`prev`'s time when they held through it on the same
- * head, else now), and whether the checks pass: they passed outright, placeholders held
- * PLACEHOLDER_SETTLE_MS, or `prev` (the same head) already passed with them. That last keeps a
- * pass stored before W563 (no `quietSince`) from waking again once the wait restarts (review r2).
- */
-const settled = (gating: ReturnType<typeof gate>, prev: Pick<WatchState, "quietSince" | "passed"> | null, now: number) => {
-  const quietSince = gating.placeholders ? (prev?.quietSince ?? now) : null;
-  return { quietSince, passed: gating.passed || (quietSince !== null && (prev?.passed === true || now - quietSince >= PLACEHOLDER_SETTLE_MS)) };
 };
 
 /** The comment cursor after seeing `comments`: the newest time, and every URL seen at it. */
@@ -366,8 +341,7 @@ export function baselineState(watch: WatchFacts, now: number, fingerprint: strin
     fingerprint,
     readAt: now,
     failing: failingNames(watch),
-    // A baseline can't tell how long placeholders have held: they settle from the watch.
-    ...settled(gate(watch), null, now),
+    passed: gate(watch).passed,
     mergeable: watch.mergeable,
     ...seen(null, watch.comments),
     pushedAt: unchecked ? now : null,
@@ -398,7 +372,7 @@ export function diffWatch(
   const fresh = failing.filter((name) => !was.includes(name));
   if (fresh.length) changes.push({ kind: "checks-failed", checks: fresh });
   const gating = gate(watch);
-  const { quietSince, passed } = settled(gating, pushed ? null : prev, now);
+  const passed = gating.passed;
   if (passed && (pushed || !prev.passed)) changes.push({ kind: "checks-passed", checks: gating.names, required: gating.required });
   let cursor = { seenUntil: prev.seenUntil, seenAt: prev.seenAt ?? [] };
   if (context.login) {
@@ -426,7 +400,7 @@ export function diffWatch(
     } else commentWakes++;
   }
   return {
-    state: { head: watch.head, fingerprint, failing, passed, quietSince, mergeable, ...cursor, pushedAt, noChecksDone, commentWakes, ended: null, readAt: now },
+    state: { head: watch.head, fingerprint, failing, passed, mergeable, ...cursor, pushedAt, noChecksDone, commentWakes, ended: null, readAt: now },
     changes,
     capped,
   };
@@ -1076,6 +1050,8 @@ export class PrWatcher {
     if (watch.state.ended) return new NotNow("stale", watch.state.ended.toLowerCase());
     if (this.now() - wake.createdAt >= WAKE_MAX_AGE_MS) return new NotNow("stale", "too old");
     if (watch.state.head !== wake.head) return new NotNow("stale", `head moved to ${short(watch.state.head)}`);
+    // T169: a pass wake saved by W563 for skipped-only checks, or for checks that have failed since, no longer holds.
+    if (wake.changes.some((c) => c.kind === "checks-passed") && !watch.state.passed) return new NotNow("stale", "checks no longer all passed");
     if (project.paused) return "hold";
     return confirmed.has(wake.url) ? "send" : "read";
   }
