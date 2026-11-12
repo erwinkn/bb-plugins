@@ -83,21 +83,6 @@ function optChatBody(): string {
   return JSON.stringify(body);
 }
 
-// A keep-alive's answer: a cache read of `read` tokens, nothing written, no output.
-function keepAliveReply(read: number): () => Response {
-  return () =>
-    Response.json(
-      {
-        id: "msg",
-        type: "message",
-        content: [],
-        stop_reason: "max_tokens",
-        usage: { input_tokens: 4, cache_read_input_tokens: read, cache_creation_input_tokens: 0, output_tokens: 0 },
-      },
-      { headers: QUOTA_HEADERS },
-    );
-}
-
 function sseResponse(): Response {
   const start = {
     type: "message_start",
@@ -1430,9 +1415,6 @@ describe("W211 corrections through the hub", () => {
       await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(step));
     }
     expect((await warmingStatus(f.host)).leases[0]).toMatchObject({ waitingOn: "idle", resumeChance: 1, reviewHold: why });
-    // Not an OptChat thread: its next turn goes on in the same session, so the whole body is kept.
-    const { stream: _stream, max_tokens: _max, ...prefix } = JSON.parse(nativeBody()) as Record<string, unknown>;
-    expect(f.upstream.keepAlive.map((call) => call.body)).toEqual([1, 2, 3].map(() => ({ ...prefix, max_tokens: 0 })));
     // The review reported: the odds decide again.
     contexts.thr_coord = WORKER("reported");
     await f.clock.advanceTo(90 * MINUTE);
@@ -1442,58 +1424,22 @@ describe("W211 corrections through the hub", () => {
     );
   });
 
-  it("W594: an idle OptChat thread keeps warm only the prefix its next turn's fresh session reuses", async () => {
-    const contexts: Record<string, Membership> = {
-      thr_coord: WORKER("reported", { review: { ref: "A2", worker: "W2", phase: "active", since: Date.now() } }),
-    };
-    const f = await fixture({ contexts, seed: { "warming-config": { mode: "warm" } } });
+  it("W596: an OptChat thread is warmed mid-turn and on a background task", async () => {
+    const f = await fixture({ contexts: { thr_coord: WORKER("active") }, seed: { "warming-config": { mode: "warm" } } });
     expect(await nativeRequest(f.host, { body: optChatBody() })).toBe(200);
     await leased(f.host);
-    expect((await warmingStatus(f.host)).leases[0]).toMatchObject({ prefixTokens: 100_000, narrowed: false });
     const { stream: _stream, max_tokens: _max, ...prefix } = JSON.parse(optChatBody()) as Record<string, unknown>;
-    // Mid-turn, then on a background task: the turn goes on in the same session, so the whole
-    // body is refreshed.
+    // Mid-turn, then on a background task: the turn goes on in the same session.
     await f.clock.advanceTo(4 * MINUTE);
     await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
     f.rows.set("thr_coord", { status: "idle", activity: { activeBackgroundCommandCount: 1, activeBackgroundAgentCount: 0 } });
     await f.clock.advanceTo(8 * MINUTE);
     await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(2));
     for (const sent of f.upstream.keepAlive) expect(sent.body).toEqual({ ...prefix, max_tokens: 0 });
-    // The turn ended: the next one starts a fresh session that repeats only tools and system.
-    f.rows.set("thr_coord", { status: "idle" });
-    f.upstream.keepAliveReplies.push(keepAliveReply(40_000), keepAliveReply(40_000), keepAliveReply(39_000));
-    const stub = [{ role: "user", content: "." }];
-    for (const step of [3, 4]) {
-      await f.clock.advanceTo(step * 4 * MINUTE);
-      await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(step));
-      expect(f.upstream.keepAlive[step - 1]?.body).toEqual({ ...prefix, max_tokens: 0, messages: stub });
-    }
-    // The first narrowed refresh measured the prefix; the economics count it, not the whole body.
-    await vi.waitFor(async () =>
-      expect((await warmingStatus(f.host)).leases[0]).toMatchObject({ refreshes: 4, prefixTokens: 40_000, narrowed: true }),
-    );
-    const lease = (await warmingStatus(f.host)).leases[0]!;
-    expect(lease.expectedSaving).toBeGreaterThan(0);
-    expect(lease.expectedSaving).toBeLessThan(1.15 * 40_000);
-    const cli = await f.host.harness.behavior.runCli(["warming", "status"]);
-    expect(cli.stdout).toContain("prefix=40000 (shared)");
-    // A narrowed refresh that reads less than the measured prefix ends the lease, as any would.
-    await f.clock.advanceTo(20 * MINUTE);
-    await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
-    expect(await lastMessage(f.host)).toBe("the refresh read 39000 of 40000 cached tokens");
-    await vi.waitFor(() =>
-      expect(rows(f, "usage_warming")).toMatchObject([
-        {
-          prefix_tokens: 40_000,
-          refreshes: 4,
-          kind: "end",
-          reason: "the refresh read 39000 of 40000 cached tokens [narrowed to the shared prefix]",
-        },
-      ]),
-    );
   });
 
-  it("W594: a first narrowed refresh that writes ends the lease: the shared prefix was gone", async () => {
+  it("W596: an idle OptChat wait ends its lease unrefreshed under a review hold, and the ledger says why", async () => {
+    const why = "review of W1 by W2 running (A2)";
     const contexts: Record<string, Membership> = {
       thr_coord: WORKER("reported", { review: { ref: "A2", worker: "W2", phase: "active", since: Date.now() } }),
     };
@@ -1501,23 +1447,16 @@ describe("W211 corrections through the hub", () => {
     f.rows.set("thr_coord", { status: "idle" });
     expect(await nativeRequest(f.host, { body: optChatBody() })).toBe(200);
     await leased(f.host);
-    f.upstream.keepAliveReplies.push(() =>
-      Response.json(
-        {
-          id: "msg",
-          type: "message",
-          content: [],
-          stop_reason: "max_tokens",
-          usage: { input_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 40_000, output_tokens: 0 },
-        },
-        { headers: QUOTA_HEADERS },
-      ),
-    );
     await f.clock.advanceTo(4 * MINUTE);
     await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
-    expect(f.upstream.keepAlive).toHaveLength(1);
-    expect(f.upstream.keepAlive[0]?.body).toMatchObject({ messages: [{ role: "user", content: "." }] });
-    expect(await lastMessage(f.host)).toBe("the entry was already gone: the refresh wrote 40000 tokens");
+    expect(f.upstream.keepAlive).toHaveLength(0);
+    const reason = "stopped (idle): OptChat idle: not warmed (its next turn starts a fresh session)";
+    expect(await lastMessage(f.host)).toBe(reason);
+    await vi.waitFor(() =>
+      expect(rows(f, "usage_warming")).toMatchObject([
+        { role: "worker", state: "idle", review_hold: why, refreshes: 0, kind: "end", reason },
+      ]),
+    );
   });
 
   describe("a refresh is never sent into an expired entry", () => {

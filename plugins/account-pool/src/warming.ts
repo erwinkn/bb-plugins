@@ -78,6 +78,14 @@ const WAIT_STATE_TIMEOUT_MS = 10_000;
 // How long the warmer waits for an Initiatives context read, whatever the reader does, before it
 // counts the context as unknown. The reader's own deadline is 2 seconds.
 const CONTEXT_READ_TIMEOUT_MS = 3_000;
+// OptChat (plugins/chat-memory) answers each turn of a thread with a fresh Claude Code session that
+// shares only tools and system with the last one, and other threads on the account keep that
+// prefix warm: in the week to 2026-11-12, 98% of OptChat coordinator resumes and every worker
+// resume read it from cache unwarmed. So an OptChat lease is warmed mid-turn only (a tool, a
+// background task, a question): it ends the first time it comes due on an idle thread, review hold
+// or not, never takes a slot at the lease limit, and gives up the one it holds to any lease under a
+// review hold (holdPays) (W596, D592).
+const OPTCHAT_IDLE = "OptChat idle: not warmed (its next turn starts a fresh session)";
 const BACKGROUND_ENDED = "stopped: the background task ended without the thread resuming";
 const AMBIGUOUS = Symbol("ambiguous");
 
@@ -224,14 +232,9 @@ interface Lease {
   headers: Headers;
   bodyHash: string;
   bodyBytes: number;
-  // The tokens a refresh keeps warm: the native request's cached prefix, or once narrowed the
-  // shared prefix (estimated, then what the first narrowed refresh read).
+  // An OptChat turn's body (OPTCHAT_IDLE).
+  optChat: boolean;
   prefixTokens: number;
-  // The prefix a fresh session of the thread reuses, when the body has one (an OptChat turn's):
-  // its estimated tokens. An idle wait narrows the lease to it for good: the thread's next turn
-  // starts a fresh session, so refreshes keep only tools and system warm (narrow).
-  shared: { tokens: number } | null;
-  narrowed: null | "estimated" | "measured";
   nativeStartedAt: number;
   // When the wait started.
   nativeCompletedAt: number;
@@ -299,8 +302,6 @@ export const warmingStatusSchema = z
           ttl: z.enum(["5m", "1h"]),
           bodyHash: z.string(),
           prefixTokens: z.number(),
-          // Whether refreshes keep only the shared prefix (narrow).
-          narrowed: z.boolean(),
           nativeStartedAt: z.number().int(),
           nativeCompletedAt: z.number().int(),
           coveredUntil: z.number().int(),
@@ -629,7 +630,6 @@ export class CacheWarmer {
         ttl: lease.ttl,
         bodyHash: lease.bodyHash,
         prefixTokens: lease.prefixTokens,
-        narrowed: lease.narrowed !== null,
         nativeStartedAt: lease.nativeStartedAt,
         nativeCompletedAt: lease.nativeCompletedAt,
         coveredUntil: lease.coveredUntil,
@@ -823,12 +823,8 @@ export class CacheWarmer {
         headers: response.headers,
         bodyHash: shape.bodyHash,
         bodyBytes: response.body.byteLength,
+        optChat: shape.optChat,
         prefixTokens,
-        shared:
-          shape.sharedPrefix === null
-            ? null
-            : { tokens: Math.round(prefixTokens * shape.sharedPrefix.share) },
-        narrowed: null,
         nativeStartedAt: response.startedAt,
         nativeCompletedAt: completedAt,
         coveredUntil,
@@ -961,7 +957,7 @@ export class CacheWarmer {
     admission.timer = null;
     // At the lease limit only a review hold that pays takes a slot, and a review may have started
     // since the cached read.
-    const fresh = this.leases.size >= this.deps.config().maxLeases;
+    const fresh = !lease.optChat && this.leases.size >= this.deps.config().maxLeases;
     const context = await this.readContext(thread, admission.controller.signal, fresh);
     // After every wait: the admission still stands, its entry has not expired, and the thread
     // still qualifies under the current settings and link, its role and hold classified again.
@@ -987,6 +983,7 @@ export class CacheWarmer {
     if (config === null) return;
     if (this.leases.size >= config.maxLeases) {
       const full = `lease limit reached (maxLeases ${config.maxLeases})`;
+      if (lease.optChat) return this.dropAdmission(admission, full);
       const signal = admission.controller.signal;
       const idle = await this.idleLeases([lease, ...this.leases.values()], signal);
       config = settled();
@@ -1010,7 +1007,7 @@ export class CacheWarmer {
     this.recordLease(
       lease,
       "lease",
-      `${lease.dryRun ? "dry-run " : ""}lease on ${lease.prefixTokens} cached tokens${lease.shared === null ? "" : ` (about ${lease.shared.tokens} shared with a fresh session)`}; entry covered until ${new Date(lease.coveredUntil).toISOString()}`,
+      `${lease.dryRun ? "dry-run " : ""}lease on ${lease.prefixTokens} cached tokens; entry covered until ${new Date(lease.coveredUntil).toISOString()}`,
     );
     this.schedule(lease, config);
   }
@@ -1046,7 +1043,9 @@ export class CacheWarmer {
     config: WarmingConfig,
     idle: Set<Lease>,
   ): Promise<void> {
-    const candidates = [...this.leases.values()].filter((other) => !this.holdPays(other, config, idle));
+    const candidates = [...this.leases.values()].filter(
+      (other) => !other.optChat && !this.holdPays(other, config, idle),
+    );
     await Promise.all(
       candidates.map(async (other) => {
         const thread = this.linkedThread(other.sessionId);
@@ -1069,7 +1068,7 @@ export class CacheWarmer {
     await Promise.all(
       leases.map(async (lease) => {
         const thread = this.linkedThread(lease.sessionId);
-        if (lease.reportedGrace === null || thread === null) return;
+        if (lease.optChat || lease.reportedGrace === null || thread === null) return;
         const state = await this.within(
           (linked) => this.deps.waitState(thread, linked),
           signal,
@@ -1089,8 +1088,10 @@ export class CacheWarmer {
 
   // Whether the lease's review hold alone pays for warming it (decideHold), planned from its next
   // refresh decision. Only such a hold takes, or keeps, a slot at the lease limit. The reported
-  // grace bounds the hold of an idle wait only (`idle`: see idleLeases).
+  // grace bounds the hold of an idle wait only (`idle`: see idleLeases). An OptChat lease's hold
+  // never pays: its idle waits are not warmed (OPTCHAT_IDLE).
   private holdPays(lease: Lease, config: WarmingConfig, idle: Set<Lease>): boolean {
+    if (lease.optChat) return false;
     const margin = config.safetyMarginSeconds * 1_000;
     const next = Math.max(this.deps.now(), lease.coveredUntil - margin);
     const wait = this.heldWait(lease, next, config);
@@ -1206,7 +1207,8 @@ export class CacheWarmer {
     // lookup per refresh: a failed one leaves the grace unknown, so not capping, for the send too.
     let turnLookedUp = false;
     const recoverGrace = async (waiting: WaitState, signal: AbortSignal) => {
-      if (waiting !== "idle" || lease.reportedGrace === null || turnLookedUp) return;
+      if (waiting !== "idle" || lease.optChat || lease.reportedGrace === null || turnLookedUp)
+        return;
       turnLookedUp = true;
       await this.recoverTurnStart(thread, signal);
     };
@@ -1215,7 +1217,6 @@ export class CacheWarmer {
     config = this.deps.config();
     const changed = this.gate(lease, config);
     if (changed !== null) return this.endLease(lease, changed);
-    if (state === "idle") this.narrow(lease);
     const now = this.deps.now();
     const decision = this.decide(lease, state, now, config);
     if (!decision.refresh) return this.endLease(lease, `stopped (${state}): ${decision.why}`);
@@ -1302,7 +1303,7 @@ export class CacheWarmer {
           accountId: lease.accountId,
           family: lease.family,
           url: lease.url,
-          body: keepAliveBody(lease.body, lease.narrowed !== null),
+          body: keepAliveBody(lease.body),
           headers: lease.headers,
           reserve: effectiveWarmingQuotaReserve(
             config,
@@ -1438,25 +1439,6 @@ export class CacheWarmer {
     return lease.waitingOn === "background" && state === "idle" && !this.reviewHeld(lease);
   }
 
-  // An idle OptChat thread's next turn starts a fresh session (chat-memory's turn context; the
-  // provider keeps the session only while background work runs, or within a turn), which reads
-  // only the tools and system this body shares with it. From the first idle due time on, refreshes
-  // send just that prefix (keepAliveBody), and the economics count its tokens: the next turn writes
-  // the rest anyway, warm or not. Never undone: the full entry is no longer kept warm. Two idle
-  // waits do go on in the same session and then write the rest once (bounded, rare): the thread
-  // leaves OptChat during the wait (turnContext then keeps the session), or a Claude Code
-  // self-wakeup (ScheduleWakeup, CronCreate) resumes it while BB shows the thread idle.
-  private narrow(lease: Lease): void {
-    if (lease.shared === null || lease.narrowed !== null) return;
-    this.recordLease(
-      lease,
-      "lease",
-      `idle: narrowed to the shared prefix a fresh session reuses (tools and system), about ${lease.shared.tokens} of ${lease.prefixTokens} cached tokens`,
-    );
-    lease.narrowed = "estimated";
-    lease.prefixTokens = lease.shared.tokens;
-  }
-
   // Whether the next refresh is expected to pay, from what the thread waits on now.
   private decide(
     lease: Lease,
@@ -1470,6 +1452,11 @@ export class CacheWarmer {
       lease.firstDecisionAt = now;
     }
     if (this.reviewHeld(lease)) lease.heldFor = lease.reviewHold!.why;
+    if (lease.optChat && state === "idle") {
+      lease.resumeChance = null;
+      lease.expectedSaving = null;
+      return { refresh: false, resumeChance: 0, net: 0, horizonMs: 0, why: OPTCHAT_IDLE };
+    }
     const decision = decideRefresh(this.deps.resumeHistory(), {
       ...this.heldWait(lease, now, config),
       state,
@@ -1505,11 +1492,6 @@ export class CacheWarmer {
         `the entry was already gone: the refresh wrote ${usage.cacheWriteTokens} tokens`,
       );
     }
-    // The first narrowed refresh measures the shared prefix: it wrote nothing, so it read all of it.
-    if (lease.narrowed === "estimated" && usage.cacheReadTokens > 0) {
-      lease.narrowed = "measured";
-      lease.prefixTokens = usage.cacheReadTokens;
-    }
     if (usage.cacheReadTokens < lease.prefixTokens)
       return this.endLease(
         lease,
@@ -1521,7 +1503,7 @@ export class CacheWarmer {
     this.recordLease(
       lease,
       "refresh",
-      `refresh #${lease.refreshes} (${lease.waitingOn}, ${lease.label}) read ${usage.cacheReadTokens} cached tokens${lease.narrowed === null ? "" : " of the shared prefix"}; covered until ${new Date(lease.coveredUntil).toISOString()}`,
+      `refresh #${lease.refreshes} (${lease.waitingOn}, ${lease.label}) read ${usage.cacheReadTokens} cached tokens; covered until ${new Date(lease.coveredUntil).toISOString()}`,
     );
     this.schedule(lease, config);
   }
@@ -1558,8 +1540,7 @@ export class CacheWarmer {
       ttl: lease.ttl,
       refreshes: lease.refreshes,
       kind,
-      // prefix_tokens then counts the shared prefix only (narrow).
-      reason: lease.narrowed === null ? reason : `${reason} [narrowed to the shared prefix]`,
+      reason,
       reviewHold: lease.heldFor,
     });
   }

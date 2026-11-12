@@ -40,6 +40,8 @@ function requestBody(
     model?: string;
     extra?: Record<string, unknown>;
     turn?: string;
+    // An OptChat turn's: the system prompt ends with chat-memory's memory view.
+    optChat?: boolean;
   } = {},
 ): Uint8Array {
   const messageTtl =
@@ -53,7 +55,7 @@ function requestBody(
       system: [
         {
           type: "text",
-          text: "system prompt",
+          text: options.optChat ? "system prompt\n\n# Memory (UniiChat)\n\n<chat>\n</chat>" : "system prompt",
           cache_control: cc(options.systemTtl ?? messageTtl ?? "5m"),
         },
       ],
@@ -2355,5 +2357,114 @@ describe("reported grace: BB reads only where the grace applies, and none outliv
     await retry;
     expect(history.calls).toHaveLength(2);
     expect((h.warmer as any).turnStarts.get("thr_coord")).toBe(T0 - MINUTE);
+  });
+});
+
+describe("W596: an OptChat lease is warmed mid-turn only and never holds a contested slot", () => {
+  const OPTCHAT = "stopped (idle): OptChat idle: not warmed (its next turn starts a fresh session)";
+  const review = (worker: string, by: string, ref: string) => ({ worker, review: { ref, worker: by, since: T0 } });
+  // Reported at T0, so its grace has BB read the wait state and the turn start where it applies.
+  const held = (id: string, by: string, ref: string) => worker("reported", { ...review(id, by, ref), reportedAt: T0 });
+  // Idle threads of every role resume after 12 minutes: the odds alone refresh a non-OptChat wait.
+  const soon = () =>
+    new ResumeHistory(
+      (["coordinator", "worker"] as const).flatMap((role) =>
+        Array.from({ length: 20 }, () => ({ state: "idle" as const, role, waitMs: 12 * MINUTE })),
+      ),
+    );
+  const never = () =>
+    new ResumeHistory(Array.from({ length: 30 }, () => ({ state: "idle" as const, role: "worker" as const, waitMs: null })));
+
+  it("refreshes mid-turn, and ends unrefreshed at its first idle due time though its odds would refresh", async () => {
+    for (const [optChat, wait, sent] of [
+      [true, "tool", [240, 480]],
+      [true, "idle", []],
+      [false, "idle", [240, 480]],
+    ] as const) {
+      const h = harness();
+      h.history = soon();
+      h.waits.set("thr_coord", wait);
+      await h.native({ body: requestBody({ optChat }) });
+      await h.clock.advanceTo(10 * MINUTE);
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual(sent);
+      if (sent.length > 0) continue;
+      expect(h.events().at(-1)).toBe(`end: ${OPTCHAT}`);
+      expect(h.outcomes.at(-1)).toMatchObject({ role: "coordinator", state: "idle", refreshes: 0 });
+    }
+  });
+
+  it("is refused at the send when the wait turns idle after the due-time check", async () => {
+    const h = harness();
+    h.history = soon();
+    let reads = 0;
+    h.waitHook = async () => (++reads === 1 ? "tool" : "idle");
+    await h.native({ body: requestBody({ optChat: true }) });
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(reads).toBe(2);
+    expect(h.sent).toEqual([]);
+    expect(h.events().at(-1)).toBe(`skip: refresh not sent: ${OPTCHAT}`);
+  });
+
+  it("plans no idle refresh in observe mode either", async () => {
+    const h = harness({ mode: "observe" });
+    h.history = soon();
+    h.waits.set("thr_coord", "idle");
+    await h.native({ body: requestBody({ optChat: true }) });
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.warmer.status().totals.refreshesPlanned).toBe(0);
+    expect(h.events().at(-1)).toBe(`end: ${OPTCHAT}`);
+  });
+
+  it("at the lease limit, a held OptChat completion never takes a slot, mid-turn or idle, and reads nothing", async () => {
+    for (const [optChat, wait, taken] of [
+      [true, "tool", false],
+      [true, "idle", false],
+      [false, "tool", true],
+    ] as const) {
+      const h = harness({ maxLeases: 1 });
+      h.history = never();
+      h.context.set("thr_coord", worker("reported", { worker: "W0", reportedAt: T0 }));
+      await h.native();
+      h.context.set("thr_w1", held("W1", "W2", "A2"));
+      const reads: string[] = [];
+      h.waitHook = async (threadId) => (reads.push(threadId), threadId === "thr_w1" ? wait : "tool");
+      const contextReads = h.contextReads.length;
+      await h.native({ threadId: "thr_w1", body: requestBody({ optChat, turn: "w1" }) });
+      expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual([taken ? "thr_w1" : "thr_coord"]);
+      if (taken) continue;
+      expect(h.events().at(-1)).toBe("skip: lease limit reached (maxLeases 1)");
+      // Its own classification read only: no wait state, no re-read of the lease in the slot.
+      expect(reads).toEqual([]);
+      expect(h.contextReads.slice(contextReads).map((read) => read.threadId)).toEqual(["thr_w1"]);
+    }
+  });
+
+  it("a held OptChat lease that got a slot below the limit gives it to a held regular completion", async () => {
+    const h = harness({ maxLeases: 1 });
+    h.history = never();
+    h.context.set("thr_w1", held("W1", "W2", "A2"));
+    await h.native({ threadId: "thr_w1", body: requestBody({ optChat: true, turn: "w1" }) });
+    h.context.set("thr_w3", held("W3", "W4", "A4"));
+    const reads: string[] = [];
+    h.waitHook = async (threadId) => (reads.push(threadId), "tool");
+    const contextReads = h.contextReads.length;
+    await h.native({ threadId: "thr_w3", body: requestBody({ turn: "w3" }) });
+    expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_w3"]);
+    expect(h.events()).toContain("end: lease slot taken by a thread under review (review of W3 by W4 running (A4))");
+    // Nothing is read of the OptChat lease: whatever it waits on, its hold does not protect it.
+    expect(reads).not.toContain("thr_w1");
+    expect(h.contextReads.slice(contextReads).map((read) => read.threadId)).not.toContain("thr_w1");
+  });
+
+  it("an idle OptChat lease with a reported grace ends without looking up the thread's turn start", async () => {
+    const h = harness();
+    h.history = soon();
+    h.context.set("thr_coord", held("W1", "W2", "A2"));
+    h.waits.set("thr_coord", "idle");
+    await h.native({ body: requestBody({ optChat: true }) });
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toEqual([]);
+    expect(h.turnReads).toEqual([]);
+    expect(h.events().at(-1)).toBe(`end: ${OPTCHAT}`);
   });
 });

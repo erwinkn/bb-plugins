@@ -536,9 +536,15 @@ cold rewrite can be traced to the decision behind it.
 
 Keep-alives go only to the lease's account and never mark, hold or repair it. A
 body that `max_tokens: 0` rejects (`thinking.type: enabled`, a forced
-`tool_choice`, `output_config.format`) is not leased. Unknown usage, a cache miss
-on refresh, an ineligible account, or any bound ends the lease with a visible
-reason.
+`tool_choice`, `output_config.format`) is not leased. An OptChat turn's body
+(chat-memory's `# Memory (UniiChat)` heading in its system prompt, W596) is
+warmed mid-turn only: its lease ends the first time it comes due on an idle
+thread, review hold or not, never takes a slot at `maxLeases`, and gives up the
+one it holds to any lease under a review hold. Each OptChat turn starts a fresh
+session that shares only tools and system with the last one, and other threads
+on the account keep those warm (98% of coordinator resumes and every worker
+resume read them from cache in the week to 2026-11-12). Unknown usage, a cache miss on refresh, an ineligible account, or
+any bound ends the lease with a visible reason.
 
 **Subagents and same-session helpers (limitation).** Claude Code 2.1.287 sets
 `metadata.user_id.parent_session_id` from its agent-team context
