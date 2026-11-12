@@ -94,7 +94,11 @@ plugins from that checkout on every reload or restart.
   Use one Claude Opus 5.5 work child (high reasoning) per substantial batch,
   combining related features, plus one independent review child, preferably
   from another model family such as Codex GPT-6.1 Sol. Small fixes get no
-  separate review, and more work children need the user's explicit yes. Keep
+  separate review, and more work children need the user's explicit yes.
+  Exception (Erwin, 2026-11-12): tooling gaps that other coordinators route
+  here (bb-plugins or the BB fork) need no approval. The orchestrator spawns
+  their workers, and lands each fix once its review is clean: commit, push,
+  plugin reload, or a fork deploy. Keep
   the orchestrator in `full` before spawning, or spawn without
   `--parent-thread` — a parent in `auto` silently clamps the child. See
   README.md §"The daily loop" for exact spawn flags.
