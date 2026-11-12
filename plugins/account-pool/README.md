@@ -95,11 +95,20 @@ and nothing would read a claims table.
 
 The Pooler spends a reset by itself, with nothing to opt in (Erwin, 2026-11-12:
 "I expect automatic resets when the last available account reaches 99% modulo
-the condition on Fable"). When a Claude request finds no account to try, the hub
-spends one only when all of these hold: no Claude account can serve any model
-now; none frees up on its own within 60 minutes (a reset is not worth skipping a
-short 5-hour hold); no claim on any account was sent less than 10 minutes ago
-without settling (one older is taken as never applied), and no pending record is
+the condition on Fable"), and slightly ahead of the wall, so requests never
+stall on it (Erwin, 2026-11-12: "This should run ahead of the wall slightly to
+avoid stopping workers"). The automatic reset judges every account at the
+pre-wall mark, `switchThreshold` less 3 points (95% at the default 98%; never
+below 0): an account at or above it counts as walled. When a Claude request
+finds every enabled Claude account past the mark by their cached readings, the
+account it selected serves it as usual, and the decision below runs in the
+background. A request that finds no account to try at all (the run ahead of the
+wall declined, or usage jumped past both marks between responses) waits on the
+same decision, then selects once more. The hub spends a reset only when all of
+these hold: no Claude account can serve any model under the mark now; none frees
+up on its own within 60 minutes (a reset is not worth skipping a short 5-hour
+hold); no claim on any account was sent less than 10 minutes ago without
+settling (one older is taken as never applied), and no pending record is
 unreadable. It then walks `adviseReset`'s ranking of every usable grant, judged
 on the fresh reads (worth spending first, then the account that would wait
 longest, then each account's own order), and claims the first that a read taken
@@ -113,31 +122,48 @@ every enabled Claude OAuth account taken then, not from cached readings (a reset
 claimed by hand on another account would not show yet): a failed read, a 200
 that yields no usage reading, an account in error, or one at a limit with no
 known free-up declines; an unknown free-up never counts as more than an hour
-away, and a read showing an account that can serve sends the request back to
-selection. One claim per wall: until a Claude account serves a native response,
-it claims no further grant. That state is kept in KV (`reset-wall-claimed`),
-written just before the claim is sent (and removed again if nothing left), so a
-reload during the send or the read after it spends no second grant at the same
-wall. Before each grant it tries, and again just before its POST, the hub checks
-the live quotas: if a claim by hand (or anything else) has freed an account
-meanwhile, it spends nothing and selects again. A claim by hand POSTing at the
+away, and a read showing an account under the mark ends the decision. One claim
+per wall: until a Claude account serves a native response while under the mark,
+it claims no further grant. The last account keeps serving above the mark after
+a claim made ahead of the wall; that does not end the wall, so a claim whose
+effect does not show yet (an answer `reset` before the read reflects it, or
+`not_limited`) is followed by no second one until an account serves under the
+mark. So after a claim that never takes effect, an account serving between the
+mark and the wall (a 5-hour window freed it while its week sits at 96%) does not
+end the wall either: when it walls again the fallback spends nothing until some
+account serves under the mark. That state is kept in KV (`reset-wall-claimed`), written just before the
+claim is sent (and removed again if nothing left), so a reload during the send
+or the read after it spends no second grant at the same wall. Before each grant
+it tries, and again just before its POST, the hub checks the live quotas: if a
+claim by hand (or anything else) has freed an account meanwhile, it spends
+nothing (and a waiting request selects again). A claim by hand POSTing at the
 very same instant on another account cannot be seen, so in that race both may
-spend. Walled requests share one decision; after a decline that read usage, or a
-claim sent, walled requests skip the probing for 60 s, as long as the server's
-claim cooldown. Each decision is logged (`bb plugin logs account-pool-local`: a
-claim at info, a decline at debug, each distinct decline once in a row).
+spend. Requests share one decision; after a decline that read usage, or a claim
+sent, requests skip the probing for 60 s, as long as the server's claim
+cooldown. That includes a read showing an account under the mark: its next
+response may put it back past the mark (a usage read at 94%, response headers
+at 96%), and each request would otherwise read every account again. A decline because an account frees up within the hour holds until that
+account does, as long as the cached readings still show some account freeing up
+by then: every request near the wall would otherwise re-read every account each
+minute for up to an hour. A limit hit meanwhile that pushes the free-up later (a
+429, a 5-hour window walled) ends the hold at the next request. A Retry-After
+hold on the last account is not a wall: it starts no run ahead of it. Each
+decision is logged (`bb plugin logs account-pool-local`: a claim at info, a decline at
+debug, each distinct decline once in a row).
 
-A request at a wall waits on these upstream reads (and the claim: profile read,
-POST, read; 10 s timeout each) before its answer, unless no cached reading lists
-a grant an automatic claim could spend (a blocked grant, or a Fable reset under
-40%, never counts): then nothing is read, claimed or logged. A reading older
-than the account's last response counts every grant it holds, since the response
-may have raised the Fable use or lifted a block. A grant waiting for its limit
-to reach its cap counts too: if the server makes it usable only at 100% while
-the pool walls at `switchThreshold` (98%), each walled request after the quiet
-window pays the reads to find it still waiting. A grant the fresh reads rule out
-costs no claim. A client that gives up ends its own wait, not a claim already
-started: the spend serves the pool, not that request.
+A request that finds no account to try waits on these upstream reads (and the
+claim: profile read, POST, read; 10 s timeout each) before its answer; one
+served ahead of the wall never does. Either way, when no cached reading lists a
+grant an automatic claim could spend (a blocked grant, or a Fable reset under
+40%, never counts), nothing is read, claimed or logged. A reading older than the
+account's last response counts every grant it holds, since the response may have
+raised the Fable use or lifted a block. A grant waiting for its limit to reach
+its cap counts too: if the server makes it usable only at 100% while the
+automatic reset judges at the mark (95%), each probe after the quiet window pays
+the reads to find it still waiting. The grants listed on 2026-11-12 are usable
+well below their limits (`use_requires_limit: false`). A grant the fresh reads
+rule out costs no claim. A client that gives up ends its own wait, not a claim
+already started: the spend serves the pool, not that request.
 
 Fable requests prefer one account, derived on each selection from quota and
 grant state: among the accounts that can serve Fable now, those holding a Fable

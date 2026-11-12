@@ -85,9 +85,12 @@ const DEFAULT_USAGE_URL =
   "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1";
 // A reset is spent at a wall by itself only when no account frees up sooner than this on its own.
 const AUTO_RESET_MIN_WAIT_MS = 60 * 60_000;
-// After an automatic-claim decision that probed (fresh reads) or sent a claim, walled requests skip
+// After an automatic-claim decision that probed (fresh reads) or sent a claim, requests skip
 // probing this long: the server's own claim cooldown is about as long.
 const AUTO_RESET_QUIET_MS = 60_000;
+// The automatic reset counts an account this far under switchThreshold as walled (98% → 95%), so
+// it spends a reset while the last account still serves, before any request stalls at the wall.
+const AUTO_RESET_MARGIN = 0.03;
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
@@ -243,9 +246,11 @@ export class AccountPoolHub {
   >();
   // Claims run one at a time per account; an automatic one at a time for the pool.
   private readonly resetClaimFlights = new Map<string, Promise<ClaimResult>>();
-  private autoResetFlight: Promise<boolean> | null = null;
-  // Until when walled requests skip probing for an automatic claim, after a decline or a sent one.
+  private autoResetFlight: Promise<void> | null = null;
+  // Until when requests skip probing for an automatic claim, after a decline or a sent one.
   private autoResetQuietUntil = 0;
+  // After a decline because an account frees up within the hour: when it does.
+  private autoResetHeldUntil = 0;
   private lastAutoResetLog: string | null = null;
 
   constructor(private readonly options: HubOptions) {}
@@ -759,20 +764,22 @@ export class AccountPoolHub {
     return { outcome, delivery: "sent" };
   }
 
-  // At a wall (no Claude account can serve any model), spends one usage reset, once per wall: the
-  // best grant by adviseReset's ranking of fresh reads that autoUseGrant accepts (claimable,
-  // blocked by nothing, a Fable reset only with the Fable weekly limit FABLE_AUTO_USE_MIN used).
-  // Only when those reads of every Claude account show none freeing up within
-  // AUTO_RESET_MIN_WAIT_MS (an unknown free-up never counts as far) and no claim is unsettled. True
-  // when selection should run again: a reset was claimed, or a fresh read shows an account that can
-  // serve. Concurrent walled requests share one run; after a decline or a sent claim, walled
-  // requests skip the probing for AUTO_RESET_QUIET_MS. When no cached reading lists a grant it
+  // At a wall, spends one usage reset, once per wall: the best grant by adviseReset's ranking of
+  // fresh reads that autoUseGrant accepts (claimable, blocked by nothing, a Fable reset only with
+  // the Fable weekly limit FABLE_AUTO_USE_MIN used). The wall is judged at the pre-wall mark
+  // (autoResetMark): no Claude account has headroom under it for any model. A request that finds
+  // the pool there starts this run in the background and is served as selected; one that finds
+  // no account at all waits on it. Only when the fresh reads of every Claude account show none
+  // freeing up within AUTO_RESET_MIN_WAIT_MS (an unknown free-up never counts as far) and no claim
+  // is unsettled. The request waiting on it selects again after: the run's reads or its claim may
+  // have freed an account. Concurrent requests share one run; after one that read usage or sent a
+  // claim, requests skip the probing for AUTO_RESET_QUIET_MS, or, while the cached readings agree,
+  // until the account that frees up within the hour does. When no cached reading lists a grant it
   // could spend it does nothing and logs nothing.
-  private autoReset(accounts: readonly Account[]): Promise<boolean> {
+  private autoReset(accounts: readonly Account[]): Promise<void> {
     this.autoResetFlight ??= this.tryAutoReset(accounts)
       .catch((error: unknown) => {
         this.logAutoReset(`Account Pooler could not auto-claim a usage reset: ${errorMessage(error)}`);
-        return false;
       })
       .finally(() => {
         this.autoResetFlight = null;
@@ -780,7 +787,7 @@ export class AccountPoolHub {
     return this.autoResetFlight;
   }
 
-  private async tryAutoReset(accounts: readonly Account[]): Promise<boolean> {
+  private async tryAutoReset(accounts: readonly Account[]): Promise<void> {
     const store = this.options.resetClaims;
     const claude = accounts.filter((account) => account.provider === "claude" && account.enabled);
     const oauth = claude.filter((account) => account.kind === "oauth");
@@ -794,22 +801,34 @@ export class AccountPoolHub {
       const stale = resets !== null && resets.observedAt < (quota.observedAt ?? -Infinity);
       return resets?.grants.some((grant) => (stale ? holdsGrant(grant, now) : mayAutoUse(resets, grant, quota, now)));
     });
-    if (store === null || !spendable) return false;
-    const decline = (reason: string) => {
+    if (store === null || !spendable) return;
+    const decline = (reason: string) =>
       this.logAutoReset(`Account Pooler does not auto-claim a usage reset: ${reason}.`);
-      return false;
-    };
     const probed = (reason: string) => {
       this.autoResetQuietUntil = this.options.now() + AUTO_RESET_QUIET_MS;
       return decline(reason);
     };
-    const threshold = this.options.getSettings().switchThreshold;
-    const cachedFreeAt = this.usableTimes(claude, null, this.options.now())[0];
-    if (cachedFreeAt !== undefined && cachedFreeAt <= this.options.now())
-      return decline("an account can still serve other models");
-    if (await store.wallClaimed()) return decline("one was claimed at this wall and no account has served since");
+    const freesUp = (at: number) => `an account frees up on its own at ${new Date(at).toISOString()}, within an hour`;
+    const threshold = this.autoResetMark();
+    if (claude.some((account) => this.hasHeadroom(account))) return decline("an account can still serve other models");
+    if (await store.wallClaimed())
+      return decline("one was claimed at this wall and no account has served under the pre-wall mark since");
     if (this.options.now() < this.autoResetQuietUntil)
       return decline(`the last decision was less than ${AUTO_RESET_QUIET_MS / 1_000} s ago`);
+    // That decline holds while the cached readings still show an account freeing up by then:
+    // probing sooner would re-read every account each AUTO_RESET_QUIET_MS for up to an hour near the
+    // wall. A limit hit meanwhile (a 429, a window walled) pushes that account's free-up past it
+    // and ends the hold.
+    const held = this.autoResetHeldUntil;
+    if (
+      this.options.now() < held &&
+      claude.some((account) => {
+        const quota = this.options.quotas.get(account.id);
+        const at = quota.error === null ? usableAt(quota, null, threshold, this.options.now()) : null;
+        return at !== null && at <= held;
+      })
+    )
+      return decline(freesUp(held));
     // Judged from reads taken now: a cached reading misses a reset claimed by hand elsewhere. An
     // account in error is judged before any read.
     const broken = oauth.find((account) => this.options.quotas.get(account.id).error !== null);
@@ -842,14 +861,13 @@ export class AccountPoolHub {
       }
       const at = usableAt(quota, null, threshold, now);
       if (at === null) return probed(`${name} is at a limit with no known free-up time`);
-      if (at <= now) {
-        this.logAutoReset(`Account Pooler does not auto-claim a usage reset: a fresh read shows ${name} can serve.`);
-        return true;
-      }
+      if (at <= now) return probed(`a fresh read shows ${name} can serve`);
       freeAt = Math.min(freeAt, at);
     }
-    if (freeAt - now <= AUTO_RESET_MIN_WAIT_MS)
-      return probed(`an account frees up on its own at ${new Date(freeAt).toISOString()}, within an hour`);
+    if (freeAt - now <= AUTO_RESET_MIN_WAIT_MS) {
+      this.autoResetHeldUntil = freeAt;
+      return probed(freesUp(freeAt));
+    }
     // An unsettled claim anywhere could still land; one past the horizon is taken as never applied
     // (claimNow drops it at that account's next claim).
     for (const { accountId, claim } of await store.allPending()) {
@@ -887,28 +905,17 @@ export class AccountPoolHub {
       // Re-judged before each pick from the live quotas: a claim by hand that landed during the
       // probe or the previous pick's claim frees an account, and then nothing is spent.
       const serving = await this.servingClaudeAccount();
-      if (serving !== undefined) {
-        this.logAutoReset(`Account Pooler does not auto-claim a usage reset: ${serving.email ?? serving.label} can serve now.`);
-        return true;
-      }
+      if (serving !== undefined) return probed(`${serving.email ?? serving.label} can serve now`);
       const { outcome, delivery } = await this.claim(account, { grantId: pick.grantId }, "auto");
-      if (delivery === "pool-serves") {
-        this.logAutoReset(`Account Pooler does not auto-claim a usage reset: ${outcome.status === "refused" ? outcome.reason : "an account can serve now"}.`);
-        return true;
-      }
-      // A reset, sent now or an earlier claim a read shows used, is this wall's success: select
-      // again. An unsent one was spent by hand, so the wall is not marked for it.
-      if (outcome.status === "answered" && outcome.result === "reset") {
+      if (delivery === "pool-serves")
+        return probed(outcome.status === "refused" ? outcome.reason : "an account can serve now");
+      // A reset, sent now or an earlier claim a read shows used, is this wall's success. An unsent
+      // one was spent by hand, so the wall is not marked for it. A sent claim is this wall's one,
+      // whatever its answer and whatever the wall record says by now (a served response may have
+      // cleared it meanwhile).
+      if ((outcome.status === "answered" && outcome.result === "reset") || delivery === "sent") {
         this.autoResetQuietUntil = this.options.now() + AUTO_RESET_QUIET_MS;
-        return true;
-      }
-      // A sent claim is this wall's one, whatever the wall record says by now (a served response
-      // may have cleared it meanwhile). One answered otherwise ("not_limited", say) leaves re-read
-      // quotas that may serve: select once more. Unsettled or refused after the send: the request
-      // waits.
-      if (delivery === "sent") {
-        this.autoResetQuietUntil = this.options.now() + AUTO_RESET_QUIET_MS;
-        return outcome.status === "answered";
+        return;
       }
       declined.push(`${pick.label} ${pick.grantId}: ${outcome.status === "refused" ? outcome.reason : outcome.status}`);
     }
@@ -917,17 +924,25 @@ export class AccountPoolHub {
     );
   }
 
-  // An enabled Claude account that can serve some model now, by its live quota; undefined when none.
+  // An enabled Claude account with headroom now, by its live quota; undefined when none.
   private async servingClaudeAccount(): Promise<Account | undefined> {
+    return (await this.options.accounts.list()).find((account) => this.hasHeadroom(account));
+  }
+
+  // switchThreshold less AUTO_RESET_MARGIN: where the automatic reset counts an account as walled.
+  private autoResetMark(): number {
+    return Math.max(0, this.options.getSettings().switchThreshold - AUTO_RESET_MARGIN);
+  }
+
+  // Whether an enabled Claude account can serve some model now under the pre-wall mark, by its live
+  // quota; by its usage windows alone when ignoreHold (a Retry-After hold is not a wall).
+  private hasHeadroom(account: Account, ignoreHold = false): boolean {
+    if (account.provider !== "claude" || !account.enabled) return false;
+    const quota = this.options.quotas.get(account.id);
+    if (quota.error !== null) return false;
     const now = this.options.now();
-    const threshold = this.options.getSettings().switchThreshold;
-    return (await this.options.accounts.list()).find((account) => {
-      if (account.provider !== "claude" || !account.enabled) return false;
-      const quota = this.options.quotas.get(account.id);
-      if (quota.error !== null) return false;
-      const at = usableAt(quota, null, threshold, now);
-      return at !== null && at <= now;
-    });
+    const at = usableAt(ignoreHold ? { ...quota, heldUntil: null } : quota, null, this.autoResetMark(), now);
+    return at !== null && at <= now;
   }
 
   // Declines repeat on every request at a wall; each distinct one is logged once in a row.
@@ -1109,10 +1124,15 @@ export class AccountPoolHub {
         if (selected === null) {
           if (adapter.provider === "claude" && !autoResetTried) {
             autoResetTried = true;
-            if (await abortable(this.autoReset(accounts), signal)) continue;
+            await abortable(this.autoReset(accounts), signal);
+            continue;
           }
           break;
         }
+        // Past the pre-wall mark everywhere: spend a reset off this request's path, while the
+        // account selected still serves it.
+        if (adapter.provider === "claude" && !accounts.some((account) => this.hasHeadroom(account, true)))
+          void this.autoReset(accounts);
         let pacing: PacingFlight | null = null;
         const heldMs = (selected.quota.heldUntil ?? 0) - this.options.now();
         let activePacing = this.pacingByAccount.get(selected.account.id);
@@ -1350,8 +1370,9 @@ export class AccountPoolHub {
           }
           if (response.ok) {
             selected.accept();
-            // An account served: the wall, if any, is over.
-            if (adapter.provider === "claude")
+            // An account served under the pre-wall mark: the wall, if any, is over. One serving
+            // above it is the last before the wall, which a claim made there has not lifted yet.
+            if (adapter.provider === "claude" && this.hasHeadroom(selected.account))
               void this.options.resetClaims?.setWallClaimed(false).catch(() => undefined);
           }
           respondedToClient = true;

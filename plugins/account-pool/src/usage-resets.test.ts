@@ -129,6 +129,7 @@ async function makePool(
     profileFails?: (index: number) => boolean;
     // The account's credential cannot be read (its OAuth refresh failed, say).
     secretFails?: (index: number) => boolean;
+    switchThreshold?: number;
   } = {},
 ) {
   let clock = NOW;
@@ -189,7 +190,7 @@ async function makePool(
     getSettings: () => ({
       anthropicUpstreamBaseUrl: "https://upstream.test",
       codexUpstreamBaseUrl: "https://upstream.test/codex",
-      switchThreshold: 0.98,
+      switchThreshold: options.switchThreshold ?? 0.98,
       claudeMainCacheTtl: "1h",
       sessionAffinityIdleMinutes: 60,
     }),
@@ -646,7 +647,7 @@ describe("automatic use of a reset at a wall", () => {
     expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
     expect(pool.logs.at(-1)).toEqual([
       "debug",
-      "Account Pooler does not auto-claim a usage reset: one was claimed at this wall and no account has served since.",
+      "Account Pooler does not auto-claim a usage reset: one was claimed at this wall and no account has served under the pre-wall mark since.",
     ]);
     // gmail frees up and serves; at the next wall its reset may be spent.
     pool.setUsage(1, { weekly: 0.2, grants: [fableGrant("launch-2610-fable")] });
@@ -840,7 +841,7 @@ describe("review round 1 regressions", () => {
     expect((await second.send("claude-opus-5")).status).toBe(429);
     expect(second.claims).toEqual([]);
     expect(declines(second)).toEqual([
-      "Account Pooler does not auto-claim a usage reset: one was claimed at this wall and no account has served since.",
+      "Account Pooler does not auto-claim a usage reset: one was claimed at this wall and no account has served under the pre-wall mark since.",
     ]);
   });
 
@@ -1282,5 +1283,253 @@ describe("review round 5 regressions", () => {
     expect(solo.claims).toEqual([]);
     expect(await solo.resetClaims.pending(id)).toBeNull();
     expect(await solo.resetClaims.wallClaimed()).toBe(false);
+  });
+});
+
+describe("a reset spent ahead of the wall", () => {
+  type Pool = Awaited<ReturnType<typeof makePool>>;
+  // tech@ is at its weekly limit with a full reset; gmail still serves, at 96% of its weekly limit:
+  // past the pre-wall mark (95% under the default switchThreshold of 98%).
+  const walledTech = (): Usage => ({ weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611")] });
+  const nearWall = (gmail: Partial<Usage> = {}) => [
+    { email: "tech@equisafe.io", usage: walledTech() },
+    { email: "erwin@gmail.com", usage: { weekly: 0.96, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable")], ...gmail } },
+  ];
+  const usedTech = (): Usage => ({ weekly: 0, grants: [rawGrant("full-reset-2611", { resets_left: 0, usable_now: false })] });
+  const reset: Reply = { status: 200, body: { result: "reset", resets_left: 0, cleared: ["seven_day"] } };
+  const claimed = "Account Pooler auto claim of weekly reset full-reset-2611 on tech@equisafe.io: reset, 0 left, cleared seven_day.";
+  // Lets a background run that was started finish.
+  const settle = (pool: Pool) => pool.hub["autoResetFlight"];
+
+  it("claims in the background once every account is past the mark, without delaying the request", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ref: Pool;
+    const pool = (ref = await makePool(nearWall(), {
+      claim: async () => {
+        await gate;
+        ref.setUsage(0, usedTech());
+        return reset;
+      },
+    }));
+    // Answered while the claim is held: the request never waited on the reads or the claim.
+    expect(await pool.send("claude-opus-5", "s1")).toEqual({ status: 200, servedBy: "erwin@gmail.com" });
+    await expect.poll(() => pool.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["tech@equisafe.io", "full-reset-2611"]]);
+    expect(pool.logs).toEqual([]);
+    release();
+    await expect.poll(() => pool.logs).toEqual([["info", claimed]]);
+  });
+
+  it("makes a request that finds the wall during the run wait on it, with one claim for both", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ref: Pool;
+    const pool = (ref = await makePool(nearWall(), {
+      claim: async () => {
+        await gate;
+        ref.setUsage(0, usedTech());
+        return reset;
+      },
+    }));
+    expect((await pool.send("claude-opus-5")).servedBy).toBe("erwin@gmail.com");
+    await expect.poll(() => pool.claims.length).toBe(1);
+    // gmail reaches the wall while the claim is held.
+    pool.setUsage(1, { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable")] });
+    await pool.refresh();
+    let answered = false;
+    const walled = pool.send("claude-opus-5").then((result) => {
+      answered = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(answered).toBe(false);
+    release();
+    expect(await walled).toEqual({ status: 200, servedBy: "tech@equisafe.io" });
+    expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
+  });
+
+  it("makes one run, one round of reads and one claim for a burst of requests past the mark", async () => {
+    let ref: Pool;
+    const pool = (ref = await makePool(nearWall(), {
+      claim: () => {
+        ref.setUsage(0, usedTech());
+        return reset;
+      },
+    }));
+    const reads = pool.usageReads.length;
+    const results = await Promise.all(Array.from({ length: 5 }, (_, index) => pool.send("claude-opus-5", `s${index}`)));
+    expect(results.every((result) => result.status === 200)).toBe(true);
+    await settle(pool);
+    expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
+    // As many as one request makes: the probe's read of each account, the claim's own reads.
+    const single = await makePool(nearWall(), { claim: () => reset });
+    const singleReads = single.usageReads.length;
+    await single.send("claude-opus-5");
+    await settle(single);
+    expect(pool.usageReads.length - reads).toBe(single.usageReads.length - singleReads);
+  });
+
+  it("leaves the pool alone while one account is under the mark", async () => {
+    const pool = await makePool(nearWall({ weekly: 0.94 }));
+    const reads = pool.usageReads.length;
+    expect((await pool.send("claude-opus-5")).servedBy).toBe("erwin@gmail.com");
+    await settle(pool);
+    expect(pool.usageReads.length).toBe(reads);
+    expect(pool.claims).toEqual([]);
+    expect(pool.logs).toEqual([]);
+  });
+
+  it("takes no short Retry-After hold on the last account for the wall", async () => {
+    // A session bound to gmail is selected there under its short hold (whose wait the frozen test
+    // clock never ends); the hold is not a wall, so nothing is probed.
+    const pool = await makePool(nearWall({ weekly: 0.5 }));
+    expect((await pool.send("claude-opus-5", "s1")).servedBy).toBe("erwin@gmail.com");
+    const gmail = pool.accounts[1]!.id;
+    pool.quotas.put({ ...pool.quotas.get(gmail), heldUntil: NOW + 20 });
+    const reads = pool.usageReads.length;
+    await pool.send("claude-opus-5", "s1");
+    await settle(pool);
+    expect([pool.usageReads.length, pool.claims, pool.logs]).toEqual([reads, [], []]);
+  });
+
+  it("probes once a minute when the response headers and the usage reads disagree about the mark", async () => {
+    // gmail's usage read says 94%, under the mark; each response's headers say 96%, past it.
+    const pool = await makePool(nearWall({ weekly: 0.94 }));
+    const gmail = pool.accounts[1]!.id;
+    const headers = () => pool.quotas.put({ ...pool.quotas.get(gmail), sevenDayUtilization: 0.96 });
+    headers();
+    const reads = pool.usageReads.length;
+    for (let request = 0; request < 5; request++) {
+      expect((await pool.send("claude-opus-5")).servedBy).toBe("erwin@gmail.com");
+      await settle(pool);
+      headers();
+    }
+    const probe = pool.usageReads.length - reads;
+    expect(probe).toBe(2);
+    pool.advance(60_000);
+    await pool.send("claude-opus-5");
+    await settle(pool);
+    expect(pool.usageReads.length - reads).toBe(2 * probe);
+    expect(pool.claims).toEqual([]);
+  });
+
+  it("moves the mark with switchThreshold", async () => {
+    const pool = await makePool(nearWall({ weekly: 0.88 }), { switchThreshold: 0.9 });
+    expect((await pool.send("claude-opus-5")).servedBy).toBe("erwin@gmail.com");
+    await expect.poll(() => pool.logs.map(([, message]) => message)).toEqual([claimed]);
+  });
+
+  it("waits for an account that frees up within the hour, reading nothing until it does", async () => {
+    const pool = await makePool(nearWall({ weeklyResetAt: NOW + 40 * 60_000 }));
+    await pool.send("claude-opus-5");
+    await expect.poll(() => pool.logs).toEqual([
+      ["debug", `Account Pooler does not auto-claim a usage reset: an account frees up on its own at ${iso(NOW + 40 * 60_000)}, within an hour.`],
+    ]);
+    const reads = pool.usageReads.length;
+    for (const minute of [5, 10, 15, 20, 25, 30, 35]) {
+      pool.advance(5 * 60_000);
+      expect((await pool.send("claude-opus-5", `s${minute}`)).servedBy).toBe("erwin@gmail.com");
+    }
+    await settle(pool);
+    expect(pool.usageReads.length).toBe(reads);
+    expect(pool.claims).toEqual([]);
+  });
+
+  it("ends that hold when the account it waits for hits a limit freeing up later", async () => {
+    let ref: Pool;
+    const pool = (ref = await makePool(nearWall({ weeklyResetAt: NOW + 40 * 60_000 }), {
+      claim: () => {
+        ref.setUsage(0, usedTech());
+        return reset;
+      },
+    }));
+    await pool.send("claude-opus-5");
+    await settle(pool);
+    pool.advance(10 * 60_000);
+    // gmail walls with its next free-up 3 hours out: the wall's request claims at once.
+    pool.setUsage(1, { weekly: 1, weeklyResetAt: NOW + 3 * HOUR, grants: [fableGrant("launch-2610-fable")] });
+    await pool.refresh();
+    expect(await pool.send("claude-opus-5")).toEqual({ status: 200, servedBy: "tech@equisafe.io" });
+    expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
+  });
+
+  it("spends a Fable reset ahead of the wall only with the Fable weekly limit at least 40% used", async () => {
+    const fableNearWall = (fable: number) => [
+      { email: "tech@equisafe.io", usage: { ...walledTech(), grants: [] } },
+      { email: "erwin@gmail.com", usage: { weekly: 0.96, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: fable } })] } },
+    ];
+    const low = await makePool(fableNearWall(39));
+    const reads = low.usageReads.length;
+    await low.send("claude-opus-5");
+    await settle(low);
+    expect([low.usageReads.length, low.claims, low.logs]).toEqual([reads, [], []]);
+    const high = await makePool(fableNearWall(40));
+    await high.send("claude-opus-5");
+    await expect.poll(() => high.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["erwin@gmail.com", "launch-2610-fable"]]);
+  });
+
+  it("claims once while the last account keeps serving above the mark, even when the claim shows no effect", async () => {
+    let ref: Pool;
+    const pool = (ref = await makePool(nearWall(), {
+      claim: () => {
+        // Answered reset, but the read after it still shows tech@ at its limit.
+        ref.setUsage(0, { ...walledTech(), grants: [rawGrant("full-reset-2611", { resets_left: 0, usable_now: false })] });
+        return reset;
+      },
+    }));
+    await pool.send("claude-opus-5");
+    await expect.poll(() => pool.logs).toEqual([["info", claimed]]);
+    // gmail serves on, past the quiet window: its reset is not spent.
+    for (let index = 0; index < 3; index += 1) {
+      pool.advance(2 * 60_000);
+      expect((await pool.send("claude-opus-5")).servedBy).toBe("erwin@gmail.com");
+    }
+    await settle(pool);
+    expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
+    expect(pool.logs.at(-1)?.[1]).toBe(
+      "Account Pooler does not auto-claim a usage reset: one was claimed at this wall and no account has served under the pre-wall mark since.",
+    );
+    // An account that serves under the mark ends the wall: gmail's weekly window rolled over.
+    pool.setUsage(1, { weekly: 0.5 });
+    await pool.refresh();
+    expect(await pool.resetClaims.wallClaimed()).toBe(true);
+    expect((await pool.send("claude-opus-5")).servedBy).toBe("erwin@gmail.com");
+    expect(await pool.resetClaims.wallClaimed()).toBe(false);
+  });
+
+  it("still claims at the wall when the run ahead of it declined", async () => {
+    let ref: Pool;
+    const pool = (ref = await makePool(nearWall(), {
+      claim: () => {
+        ref.setUsage(0, usedTech());
+        return reset;
+      },
+    }));
+    pool.setUsage(1, 500);
+    await pool.send("claude-opus-5");
+    await expect.poll(() => pool.logs).toEqual([
+      ["debug", "Account Pooler does not auto-claim a usage reset: the usage read of erwin@gmail.com failed."],
+    ]);
+    // gmail reaches the wall before the next probe.
+    pool.setUsage(1, { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable")] });
+    await pool.refresh();
+    pool.advance(61_000);
+    expect(await pool.send("claude-opus-5")).toEqual({ status: 200, servedBy: "tech@equisafe.io" });
+    expect(pool.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["tech@equisafe.io", "full-reset-2611"]]);
+  });
+
+  it("serves a walled request from an account a fresh read shows under switchThreshold, even past the mark", async () => {
+    // The cached readings wall both; tech@'s fresh read shows it at 96%, free again in 30 minutes.
+    const pool = await makePool([
+      { email: "tech@equisafe.io", usage: walledTech() },
+      { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable")] } },
+    ]);
+    pool.setUsage(0, { ...walledTech(), weekly: 0.96, weeklyResetAt: NOW + 30 * 60_000 });
+    expect(await pool.send("claude-opus-5")).toEqual({ status: 200, servedBy: "tech@equisafe.io" });
+    expect(pool.claims).toEqual([]);
   });
 });

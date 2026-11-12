@@ -4,8 +4,9 @@ import { claimable, fableUse, unusableReason } from "./usage-resets.js";
 
 // Advice on spending a Claude usage reset, from facts: whether an account can serve now (its usage
 // reading and the router's holds), and the grants each account's usage read lists. Besides a
-// claim by hand (bb pool-local account reset), the Pooler spends one by itself at a wall, walking
-// this ranking (Hub.tryAutoReset): when fresh reads show no Claude account serving or freeing up
+// claim by hand (bb pool-local account reset), the Pooler spends one by itself just ahead of a
+// wall, walking this ranking judged at the pre-wall mark, switchThreshold less 3 points
+// (Hub.tryAutoReset): when fresh reads show no Claude account under that mark or freeing up
 // within an hour, no claim unsettled, and, for a Fable reset, the Fable weekly limit at least 40%
 // used.
 
