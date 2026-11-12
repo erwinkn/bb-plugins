@@ -49,6 +49,7 @@ import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHand
 import { canonicalPrUrl } from "./pr-stages";
 import { PrNotes } from "./pr-notes";
 import { WatchLedger } from "./pr-watch";
+import { runningBgjobs, type Bgjobs } from "./bgjobs";
 import { PR_WAIT_MAX_MS } from "./worker-group";
 import { reportNote } from "./pr-records";
 import { prsNamed } from "./pr-refs";
@@ -440,6 +441,9 @@ export class ProjectsService {
   readonly prWatches: WatchLedger;
   /** W564: when the stuck-worker sweep last saw each worker thread's latest input (see prWaits). */
   private readonly inputSeen = new Map<string, number>();
+  /** W606: reads the threads with a running bgjob; tests replace it. */
+  readBgjobs: () => Promise<Bgjobs> = runningBgjobs;
+  private bgjobFailureLogged = false;
 
   constructor(
     readonly bb: BbPluginApi,
@@ -7045,7 +7049,11 @@ export class ProjectsService {
       for (const [bbProjectId, ids] of reads)
         for (const [id, row] of await this.projectListRows(bbProjectId, ids, { rotate: full, onPage: (page, again) => this.closeFailedAssignments(byThread, page, again) }))
           rows.set(id, row);
-      for (const { project, workers } of stuck) await this.flagStuckWorkers(project, workers, rows, failing);
+      // W606: systemd is asked once a sweep, only once a worker gets that far, then again for each
+      // silent candidate before its send (candidates are few, as for the liveDescendants walk).
+      let jobs: Promise<Bgjobs | null> | undefined;
+      const bgjobs = () => (jobs ??= this.bgjobs());
+      for (const { project, workers } of stuck) await this.flagStuckWorkers(project, workers, rows, failing, bgjobs);
     }
     await this.sendFailureNotices();
     await this.redeliverReports();
@@ -7057,11 +7065,12 @@ export class ProjectsService {
    * coordinator is told once per worker input when all of these hold: the worker's thread is idle
    * or failed with nothing queued or running in the background (unknown counts skip it), no
    * descendant of it is live (v9: it is waiting on a child, not stuck; a walk that fails or runs
-   * out of budget claims nothing either way), it watches no open PR (W563: waitingOnPr), and it
-   * has neither messaged its lead nor filed a report since its latest input. Everything is
-   * checked again right before each send; the coordinator's inputs are read once.
+   * out of budget claims nothing either way), it watches no open PR (W563: waitingOnPr), no
+   * bgjob of its runs (W606: waitingOnBgjob), and it has neither messaged its lead nor filed a
+   * report since its latest input. Everything is checked again right before each send; the
+   * coordinator's inputs are read once.
    */
-  private async flagStuckWorkers(project: ProjectRecord, workers: WorkerRecord[], rows: Map<string, ThreadListRow>, failing: Map<string, number>) {
+  private async flagStuckWorkers(project: ProjectRecord, workers: WorkerRecord[], rows: Map<string, ThreadListRow>, failing: Map<string, number>, bgjobs: () => Promise<Bgjobs | null>) {
     const lead = project.coordinatorThreadId;
     if (!lead) return;
     const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[] = [];
@@ -7075,6 +7084,9 @@ export class ProjectsService {
       if (input) this.inputSeen.set(worker.threadId!, input.at);
       if (!input || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
       if (this.waitingOnPr(worker.threadId!, input.at, watchers)) continue;
+      // W606: the sweep's one listing may predate this input; flagStuckFor reads it again.
+      const job = (await bgjobs())?.get(worker.threadId!);
+      if (job !== undefined && this.waitingOnBgjob(job, input.at)) continue;
       candidates.push({ worker, input, status: row.status });
     }
     if (candidates.length) await this.flagStuckFor(project, lead, candidates);
@@ -7093,6 +7105,10 @@ export class ProjectsService {
       if (children === null || children.length) continue;
       try {
         const turn = await latestTurn(this.sdk, threadId);
+        // W606: read after the turn's end, so a job that turn started is listed (it stays listed
+        // until its exit message is sent, a new input).
+        const job = (await this.bgjobs())?.get(threadId);
+        // The last await: an input that lands during the reads above changes its seq.
         const now = await latestInput(this.sdk, threadId);
         if (now) this.inputSeen.set(threadId, now.at);
         // Re-validated with no await before the send: still stopped on the same input, still
@@ -7102,11 +7118,12 @@ export class ProjectsService {
         const watchers = this.prWatches.openWatchers();
         if (!turn || turn.status === "running" || now?.seq !== input.seq || !current || current.threadId !== threadId ||
             !this.mayBeStuck(project.id, current, input.at) || !fresh || fresh.coordinatorThreadId !== lead ||
-            this.waitingOnPr(threadId, input.at, watchers) || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
+            this.waitingOnPr(threadId, input.at, watchers) || (job !== undefined && this.waitingOnBgjob(job, input.at)) || this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
         const text = turn.final?.text ?? "(none)";
         const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
         // W563: past PR_WAIT_MAX_MS, a worker waiting on a PR is flagged after all, saying so.
-        const waited = watchers.has(threadId) ? `, though it watches an open PR: nothing has woken it for ${PR_WAIT_MAX_MS / 3_600_000} h` : "";
+        const waited = watchers.has(threadId) ? `, though it watches an open PR: nothing has woken it for ${PR_WAIT_MAX_MS / 3_600_000} h`
+          : job !== undefined ? `, though a bgjob of its still runs: nothing has woken it for ${BGJOB_WAIT_MAX_MS / 3_600_000} h` : "";
         // W576: the work this worker holds may have an older report on file; say when it has none.
         const latest = this.store.latestAssignment(project.id, current.num);
         const unreported = latest && !latest.report ? ` ${latest.ref} has no report yet.` : "";
@@ -7138,6 +7155,28 @@ export class ProjectsService {
   private waitingOnPr(threadId: string, inputAt: number, watchers: ReadonlyMap<string, number>) {
     const since = watchers.get(threadId);
     return since !== undefined && this.now() - Math.max(since, inputAt) < PR_WAIT_MAX_MS;
+  }
+
+  /**
+   * W606: a worker with a running bgjob waits on it: the job's exit message wakes it. Unless
+   * BGJOB_WAIT_MAX_MS have passed since the job's start or the worker's latest input, whichever
+   * is later: a job that hangs leaves the worker stuck after all.
+   */
+  private waitingOnBgjob(start: number, inputAt: number) {
+    // A start ahead of the clock (a clock step back) counts from now.
+    return this.now() - Math.max(Math.min(start, this.now()), inputAt) < BGJOB_WAIT_MAX_MS;
+  }
+
+  /** W606: the running bgjobs, or null when systemd can't list them (logged once per outage): flag as before. */
+  private bgjobs(): Promise<Bgjobs | null> {
+    return this.readBgjobs().then((jobs) => {
+      this.bgjobFailureLogged = false;
+      return jobs;
+    }, (error) => {
+      if (!this.bgjobFailureLogged) this.bb.log.warn(`Could not list bgjobs; stopped workers are flagged without that check: ${errorMessage(error)}`);
+      this.bgjobFailureLogged = true;
+      return null;
+    });
   }
 
   /** A live worker with delivered work that has filed no report of its own since `since`. */
@@ -7502,13 +7541,15 @@ function blockerChoices(report: Report) {
 
 /** How often the sweep checks for workers that stopped without reporting (D417). */
 const STUCK_CHECK_MS = 3 * 60_000;
+/** W606: how long a running bgjob keeps its stopped worker from being flagged; suites and reviews take minutes. */
+const BGJOB_WAIT_MAX_MS = 3 * 3_600_000;
 /** How long a worker thread stays failed with nothing queued before its open assignment closes (T150). */
 const FAILED_GRACE_MS = 60_000;
 /** How much of a failure's error text the stop reason and notice keep. */
 const FAILURE_TEXT_MAX = 600;
 /** How much of a stuck worker's last message the coordinator's notice quotes. */
 const STUCK_EXCERPT = 1500;
-export { PR_WAIT_MAX_MS };
+export { PR_WAIT_MAX_MS, BGJOB_WAIT_MAX_MS };
 /** How archive names a running descendant; a busy status reads "is <status>". */
 const BLOCKER_WORDS: Partial<Record<Running, string>> = {
   "background work": "has background work running",

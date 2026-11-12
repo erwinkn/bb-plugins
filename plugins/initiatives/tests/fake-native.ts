@@ -509,6 +509,8 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     },
   }, () => intercept);
   const p = plugin(host.bb);
+  // W606: no test asks this host's systemd for bgjobs.
+  p.service.readBgjobs = async () => new Map();
   closers.push(async () => {
     await host.harness.dispose();
   });

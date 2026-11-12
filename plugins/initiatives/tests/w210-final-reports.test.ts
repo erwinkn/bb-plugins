@@ -3,7 +3,8 @@ import type { ThreadDto } from "../lib/bb";
 import { fixture, projectFixture, report } from "./fake-native";
 import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } from "../lib/guidance";
 import { baselineState } from "../lib/pr-watch";
-import { PR_WAIT_MAX_MS } from "../lib/service";
+import { BGJOB_WAIT_MAX_MS, PR_WAIT_MAX_MS } from "../lib/service";
+import { parseBgjobUnits } from "../lib/bgjobs";
 
 // W210 (D417): workers run with "explicit" parent notices (final reports only), so their turn
 // ends never wake the coordinator. initiative_report sends the report once as an ordinary
@@ -334,6 +335,184 @@ describe("W210 stuck workers", () => {
     expect(f.send).not.toHaveBeenCalled();
   });
 
+  // W606: a worker whose ~/.bb/bin/bgjob still runs waits on the job's exit message.
+  describe("W606 waiting on a bgjob", () => {
+    /** The sweep reads these jobs (thread -> start), counting its reads. */
+    function jobs(f: Fx, running: () => Map<string, number>) {
+      const reads = { n: 0 };
+      f.service.readBgjobs = async () => { reads.n++; return running(); };
+      return reads;
+    }
+    const notice = (w: { threadId: string }, waited = "") =>
+      `Initiative · Search · W1\n\nW1 stopped (idle) without reporting since its last input${waited}. A1 has no report yet. Its last message:\n\nWaiting for CI.\n\nRead its thread (${w.threadId}).`;
+
+    it("leaves a worker with a running bgjob alone, sweep after sweep", async () => {
+      const { f, w, check } = await stopped();
+      jobs(f, () => new Map([[w.threadId, Date.now() - 30_000]]));
+      await check();
+      await check();
+      expect(stuckSends(f)).toEqual([]);
+    });
+
+    it("flags it once the job ended and the worker, woken by its exit message, idles again without reporting", async () => {
+      const { f, w, check } = await stopped();
+      let running = true;
+      jobs(f, () => new Map(running ? [[w.threadId, Date.now() - 30_000]] : []));
+      await check();
+      expect(stuckSends(f)).toEqual([]);
+      // The job exits: bgjob tells the thread (a new input), which handles it and stops again.
+      running = false;
+      const wakeAt = Date.now();
+      f.history.push({ type: "client/turn/requested", seq: ++seq, threadId: w.threadId, createdAt: wakeAt, data: { requestId: `creq_${seq}`, input: [] } });
+      f.history.push({ type: "turn/started", seq: ++seq, threadId: w.threadId, createdAt: wakeAt });
+      f.history.push({ type: "turn/completed", seq: ++seq, threadId: w.threadId, createdAt: wakeAt + 1, data: { status: "completed" } });
+      await check();
+      expect(stuckSends(f)).toHaveLength(1);
+      await check();
+      expect(stuckSends(f)).toHaveLength(1);
+    });
+
+    it("flags it on the same input when the job ended but its message never came", async () => {
+      const { f, w, check } = await stopped();
+      let running = true;
+      jobs(f, () => new Map(running ? [[w.threadId, Date.now() - 30_000]] : []));
+      await check();
+      running = false;
+      await check();
+      expect(stuckSends(f)).toEqual([notice(w)]);
+    });
+
+    it("flags as today with nothing pending: no job, another thread's job, or systemd unreadable", async () => {
+      const cases: [() => Map<string, number>, number][] = [
+        [() => new Map(), 0],
+        [() => new Map([["thr_someone_else", Date.now()]]), 0],
+        [() => { throw new Error("spawn systemctl ENOENT"); }, 1],
+      ];
+      for (const [running, logged] of cases) {
+        const { f, w, check } = await stopped();
+        const warn = vi.spyOn(f.service.bb.log, "warn");
+        jobs(f, running);
+        await check();
+        await check();
+        expect(stuckSends(f)).toEqual([notice(w)]);
+        // A failed listing is logged once, not every sweep.
+        expect(warn.mock.calls.filter(([m]) => String(m).includes("bgjobs"))).toHaveLength(logged);
+      }
+    });
+
+    it("reads the jobs again before the send: a job listed only after the sweep's first read still counts", async () => {
+      const { f, w, check } = await stopped();
+      const reads = jobs(f, () => new Map(reads.n > 1 ? [[w.threadId, Date.now()]] : []));
+      await check();
+      expect(reads.n).toBe(2);
+      expect(stuckSends(f)).toEqual([]);
+    });
+
+    it("skips a worker that gets a new input while the jobs are read before the send", async () => {
+      const { f, w, check } = await stopped();
+      const reads = jobs(f, () => {
+        if (reads.n === 2) {
+          const at = Date.now();
+          f.history.push({ type: "client/turn/requested", seq: ++seq, threadId: w.threadId, createdAt: at, data: { requestId: `creq_${seq}`, senderThreadId: "coordinator", input: [] } });
+          f.history.push({ type: "turn/started", seq: ++seq, threadId: w.threadId, createdAt: at });
+        }
+        return new Map();
+      });
+      await check();
+      expect(reads.n).toBe(2);
+      expect(stuckSends(f)).toEqual([]);
+    });
+
+    it("logs a failed listing once per outage", async () => {
+      const { f, w, check } = await stopped();
+      const warn = vi.spyOn(f.service.bb.log, "warn");
+      let up = false;
+      const reads = jobs(f, () => { if (!up) throw new Error("Failed to connect to bus"); return new Map(); });
+      const logged = () => warn.mock.calls.filter(([m]) => String(m).includes("bgjobs")).length;
+      // Each sweep finds the worker stopped on a new input, so each asks systemd.
+      const sweep = async () => {
+        const at = Date.now();
+        f.history.push({ type: "client/turn/requested", seq: ++seq, threadId: w.threadId, createdAt: at, data: { requestId: `creq_${seq}`, input: [] } });
+        f.history.push({ type: "turn/started", seq: ++seq, threadId: w.threadId, createdAt: at });
+        f.history.push({ type: "turn/completed", seq: ++seq, threadId: w.threadId, createdAt: at + 1, data: { status: "completed" } });
+        await check();
+      };
+      await sweep();
+      await sweep();
+      expect(logged()).toBe(1);
+      up = true;
+      await sweep();
+      up = false;
+      await sweep();
+      expect(reads.n).toBe(8);
+      expect(logged()).toBe(2);
+    });
+
+    it("counts the cap from the job's start or the latest input, whichever is later", async () => {
+      // A job started long before the input: the input anchors the window.
+      const early = await stopped();
+      jobs(early.f, () => new Map([[early.w.threadId, early.inputAt - 10 * 3_600_000]]));
+      const sweep = async (f: Fx, at: number) => { vi.spyOn(f.service, "now").mockReturnValue(at); await f.service.checkWorkers(); };
+      await sweep(early.f, early.inputAt + BGJOB_WAIT_MAX_MS - 4 * 60_000);
+      expect(stuckSends(early.f)).toEqual([]);
+      await sweep(early.f, early.inputAt + BGJOB_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(early.f)).toHaveLength(1);
+      // A job started 2 h after the input: its start anchors the window.
+      const late = await stopped();
+      const start = late.inputAt + 2 * 3_600_000;
+      jobs(late.f, () => new Map([[late.w.threadId, start]]));
+      await sweep(late.f, late.inputAt + BGJOB_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(late.f)).toEqual([]);
+      await sweep(late.f, start + BGJOB_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(late.f)).toHaveLength(1);
+      // A start ahead of the clock counts from now, not from the future.
+      const future = await stopped();
+      jobs(future.f, () => new Map([[future.w.threadId, future.inputAt + 100 * 3_600_000]]));
+      await sweep(future.f, future.inputAt + 60_000);
+      await sweep(future.f, future.inputAt + 10 * 60_000);
+      expect(stuckSends(future.f)).toEqual([]);
+      await sweep(future.f, future.inputAt + BGJOB_WAIT_MAX_MS + 20 * 60_000);
+      expect(stuckSends(future.f)).toEqual([]);
+    });
+
+    it("flags it after BGJOB_WAIT_MAX_MS from the job's start or the latest input, whichever is later, saying a job still runs", async () => {
+      const { f, w } = await stopped();
+      const start = Date.now();
+      jobs(f, () => new Map([[w.threadId, start]]));
+      const sweepAt = async (at: number) => { vi.spyOn(f.service, "now").mockReturnValue(at); await f.service.checkWorkers(); };
+      await sweepAt(start + BGJOB_WAIT_MAX_MS - 4 * 60_000);
+      expect(stuckSends(f)).toEqual([]);
+      await sweepAt(start + BGJOB_WAIT_MAX_MS + 60_000);
+      expect(stuckSends(f)).toEqual([notice(w, ", though a bgjob of its still runs: nothing has woken it for 3 h")]);
+    });
+
+    it("asks systemd once a sweep, and only for a worker that got that far", async () => {
+      const { f, w, check } = await stopped();
+      const reads = jobs(f, () => new Map([[w.threadId, Date.now()]]));
+      await check();
+      expect(reads.n).toBe(1);
+      // Reported: nothing to flag, nothing to ask.
+      await tool(f, "initiative_report", { outcome: "done", summary: "Done", report: REPORT }, w.threadId);
+      await check();
+      expect(reads.n).toBe(1);
+    });
+
+    it("reads each thread's newest active unit from systemctl's listing", () => {
+      const out = [
+        // systemctl sorts by unit name, so a thread's older job comes first.
+        "bgjob-thr_38zyerigmt-20261112T160000Z-12.service loaded active running [systemd-run] /home/erwin/.bb/bin/bgjob --run /y",
+        "bgjob-thr_38zyerigmt-20261112T170045Z-303934.service  loaded active running [systemd-run] /home/erwin/.bb/bin/bgjob --run /x",
+        "bgjob-nothread-20261112T165931Z-198881.service loaded deactivating stop-sigterm [systemd-run] bgjob",
+        "bgjob-garbage.service loaded active running x",
+        "",
+      ].join("\n");
+      expect(parseBgjobUnits(out)).toEqual(new Map([
+        ["thr_38zyerigmt", Date.UTC(2026, 10, 12, 17, 0, 45)],
+        ["nothread", Date.UTC(2026, 10, 12, 16, 59, 31)],
+      ]));
+    });
+  });
+
   // W563: a worker that watches an open PR waits on its wake, as one with a live child waits on it.
   describe("W563 waiting on a watched PR", () => {
     const url = "https://github.com/eq/market/pull/7";
@@ -401,8 +580,10 @@ describe("W210 stuck workers", () => {
     it("prWaits lists the open PRs a thread watches, counting the wait from its newest watch or the input the sweep saw", async () => {
       const { f, project, w, inputAt, check } = await stopped();
       expect(f.service.prWaits().size).toBe(0);
-      watch(f, project.id, w.threadId);
+      // The watch's time, held still: a millisecond's tick between the two reads failed this test.
       const watchedAt = f.store.now();
+      vi.spyOn(f.store, "now").mockReturnValue(watchedAt);
+      watch(f, project.id, w.threadId);
       // Before the sweep has read its input, the wait counts from the watch.
       expect(f.service.prWaits().get(w.threadId)).toEqual({ urls: [url], since: watchedAt });
       await check();
