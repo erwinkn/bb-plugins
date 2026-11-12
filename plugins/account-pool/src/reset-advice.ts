@@ -1,6 +1,6 @@
 import type { AccountQuota, AccountSummary, ResetGrant, ResetKind, UsageResets } from "./contracts.js";
 import { usableAt } from "./quota.js";
-import { claimable, unusableReason } from "./usage-resets.js";
+import { claimable, fableUse, unusableReason } from "./usage-resets.js";
 
 // Advice on spending a Claude usage reset, from facts: whether an account can serve now (its usage
 // reading and the router's holds), and the grants each account's usage read lists. The Pooler
@@ -63,12 +63,6 @@ export function resetAccounts(accounts: readonly AccountSummary[]): ResetAccount
       quota: { ...account, accountId: account.id },
       resets: account.resets,
     }));
-}
-
-// The Fable limit's use, from the grant when it reports the limit it refills, else the usage reading.
-function fableUse(grant: ResetGrant, quota: AccountQuota): number {
-  const reported = grant.clears.flatMap((limit) => grant.percentUsed[limit] ?? []);
-  return reported.length > 0 ? Math.max(...reported) : (quota.familyWeekly.fable?.utilization ?? 0);
 }
 
 // The program accepts no claim on the account until its cooldown ends, as pickGrant refuses.

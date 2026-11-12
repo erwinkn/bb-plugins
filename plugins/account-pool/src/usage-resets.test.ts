@@ -541,6 +541,24 @@ describe("automatic use of a flagged grant at a wall", () => {
     ]);
   });
 
+  it("spends a flagged Fable reset only once the Fable weekly limit is at least 40% used", async () => {
+    const fableWall = (fable: number) => [
+      { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR } },
+      { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: fable } })] } },
+    ];
+    const low = await makePool(fableWall(39));
+    await low.resetClaims.setAutoUse(low.accounts[1]!.id, "launch-2610-fable", true);
+    expect((await low.send("claude-opus-5")).status).toBe(429);
+    expect(low.claims).toEqual([]);
+    expect(low.logs.map(([, message]) => message)).toEqual([
+      "Account Pooler does not auto-claim a usage reset: no flagged grant is usable (erwin@gmail.com launch-2610-fable: its Fable weekly use is 39%, under the 40% an automatic Fable reset needs).",
+    ]);
+    const high = await makePool(fableWall(40));
+    await high.resetClaims.setAutoUse(high.accounts[1]!.id, "launch-2610-fable", true);
+    await high.send("claude-opus-5");
+    expect(high.claims.map((claim) => claim.body.grant_id)).toEqual(["launch-2610-fable"]);
+  });
+
   it("declines when an account frees up on its own within the hour", async () => {
     const pool = await makePool(wall(NOW + 40 * 60_000));
     await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);

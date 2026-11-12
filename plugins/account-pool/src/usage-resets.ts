@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import {
   resetGrantSchema,
+  type AccountQuota,
   type ResetGrant,
   type ResetClaimOutcome,
   type ResetKind,
@@ -169,13 +170,28 @@ export function pickGrant(resets: UsageResets, kind: ResetKind, now: number): Gr
   };
 }
 
-// The flagged grant an automatic claim may spend: claimable now and blocked by no limit at its cap.
-export function autoUseGrant(resets: UsageResets, grantId: string, now: number): GrantChoice {
+// The use of the Fable weekly limit a Fable reset clears: as the grant reports it, else the reading.
+export function fableUse(grant: ResetGrant, quota: AccountQuota): number {
+  const reported = grant.clears.flatMap((limit) => grant.percentUsed[limit] ?? []);
+  return reported.length > 0 ? Math.max(...reported) : (quota.familyWeekly.fable?.utilization ?? 0);
+}
+
+// An automatic claim spends a Fable reset only once the Fable weekly limit is at least this used
+// (Erwin, 2026-11-12): below it, the reset gives back too little to spend unattended.
+export const FABLE_AUTO_USE_MIN = 0.4;
+
+// The flagged grant an automatic claim may spend: claimable now, blocked by no limit at its cap,
+// and, for a Fable reset, with the Fable weekly limit at least FABLE_AUTO_USE_MIN used.
+export function autoUseGrant(resets: UsageResets, grantId: string, quota: AccountQuota, now: number): GrantChoice {
   const program = programRefusal(resets, now);
   if (program !== null) return program;
   const grant = resets.grants.find((candidate) => candidate.id === grantId);
   if (grant === undefined) return { refused: "the account no longer holds it" };
   if (!claimable(grant, now) || grant.blocking.length > 0) return { refused: unusableReason(grant, now) };
+  if (grant.kind === "fable" && fableUse(grant, quota) < FABLE_AUTO_USE_MIN)
+    return {
+      refused: `its Fable weekly use is ${Math.round(fableUse(grant, quota) * 100)}%, under the ${FABLE_AUTO_USE_MIN * 100}% an automatic Fable reset needs`,
+    };
   return { grant };
 }
 

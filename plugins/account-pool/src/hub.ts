@@ -671,7 +671,7 @@ export class AccountPoolHub {
         );
       }
     }
-    const chosen = "kind" in target ? pickGrant(resets, target.kind, now) : autoUseGrant(resets, target.grantId, now);
+    const chosen = "kind" in target ? pickGrant(resets, target.kind, now) : autoUseGrant(resets, target.grantId, this.options.quotas.get(account.id), now);
     if ("refused" in chosen) return refused(chosen.refused);
     const { grant } = chosen;
     // The last check before an automatic POST: a claim by hand that landed meanwhile (on this

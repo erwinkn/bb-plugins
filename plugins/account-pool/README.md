@@ -101,7 +101,9 @@ any model now; none frees up on its own within 60 minutes (a reset is not worth
 skipping a short 5-hour hold); no claim on any account was sent less than 10
 minutes ago without settling (one older is taken as never applied), and no
 pending record is unreadable; and a read taken now shows the grant usable, with
-resets left, not paused and blocked by nothing. It claims
+resets left, not paused and blocked by nothing, and, for a Fable reset, the
+Fable weekly limit at least 40% used (`FABLE_AUTO_USE_MIN`; Erwin,
+2026-11-12: less gives back too little to spend unattended). It claims
 through the same path, then selects again, so the request that hit the wall is
 served. The wall is judged from usage reads of every enabled Claude OAuth
 account taken then, not from cached readings (a reset claimed by hand on
