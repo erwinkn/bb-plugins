@@ -335,7 +335,12 @@ their merges, take the next free call before any other scope's backlog (W315).
 After those, a scope of higher priority goes before every scope of lower
 priority (W568): an owner sets it with the `prioritize` RPC, and Initiatives
 gives each Adventure coordinator's memory 1, so coordinators' trees build ahead
-of the workers' (0); scopes of one priority still take turns. Permits are given
+of the workers' (0); scopes of one priority still take turns. An OptChat scope
+(a coordinator's or a worker's) whose view of its whole log is over the history
+ceiling, so its turns would wait and fail, goes before every other scope's backlog, whatever their priority,
+until it is back under; then it has its own priority again (D586). It is read
+from the view itself, kept in memory and read again after each node built or
+copy, so there is nothing to store or reset. Permits are given
 out once per macrotask, after every call asked for in it waits, so a scope whose
 call just ended has its next one in the running.
 A scope whose threads are all archived rests (W568): its log stays whole, but it

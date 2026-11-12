@@ -7,6 +7,8 @@
  * to need a call that is already waiting.
  * W568: after urgent calls, a scope of higher priority (an Adventure coordinator's) goes before
  * every scope of lower priority; scopes of one priority still take turns.
+ * D586: an OptChat scope (a coordinator's or a worker's) whose view is over its ceiling has the
+ * top priority (ChatMemory.priority).
  */
 export class FairPermits {
   private active = 0;

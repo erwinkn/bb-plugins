@@ -7,7 +7,7 @@ import { SKIPPED_KEPT, UNAVAILABLE, stableEntries, type EventRow, type MemoryMes
 import { COMPACTION_PROMPT, messageText, stamp, turnMessage, turnSystem } from "./prompt";
 import { FairPermits } from "./permits";
 import type { Settings } from "./settings";
-import { MemoryStore, type MemoryMode, type Scope } from "./store";
+import { MemoryStore, modeOf, type MemoryMode, type Scope } from "./store";
 import type { Summarizer } from "./summarizer";
 import { NodeCache, children, end, label, nodeAt, pendingLine, renderLine, start, viewBytes } from "./tree";
 import { CEILING_BYTES, turnBytes, turnView } from "./turn";
@@ -210,6 +210,8 @@ export class ChatMemory {
   private resting = new Map<string, boolean | Promise<boolean>>();
   /** W568: scope priorities, as the store holds them, read once each. */
   private priorities = new Map<string, number>();
+  /** D586: by OptChat scope, whether its whole log's view is over the ceiling; dropped when a node lands or the log grows. */
+  private overCeiling = new Map<string, boolean>();
   /** The wait bounds (ms); tests change them. */
   waits = { turn: TURN_WAIT_MS, summaries: SUMMARY_WAIT_MS };
   /** R12: the most a turn's view holds before the turn waits (CEILING_BYTES; tests lower it). */
@@ -300,7 +302,21 @@ export class ChatMemory {
     this.priorities.set(scopeId, priority);
     return scopeId;
   }
+  /**
+   * D586: an OptChat scope (a coordinator's or a worker's) whose view is over the ceiling, so its
+   * turns fail, goes before every other scope (after urgent calls) until it is back under; then it
+   * has its owner's priority again.
+   */
   private priority(scopeId: string) {
+    return this.over(scopeId) ? Infinity : this.ownerPriority(scopeId);
+  }
+  private over(scopeId: string) {
+    if (modeOf(ownerOf(scopeId)) !== "optchat") return false;
+    let over = this.overCeiling.get(scopeId);
+    if (over === undefined) this.overCeiling.set(scopeId, (over = !this.fits(scopeId, this.store.count(scopeId))));
+    return over;
+  }
+  private ownerPriority(scopeId: string) {
     let priority = this.priorities.get(scopeId);
     if (priority === undefined) this.priorities.set(scopeId, (priority = this.store.scope(scopeId)?.priority ?? 0));
     return priority;
@@ -588,6 +604,8 @@ export class ChatMemory {
         this.store.saveIngestion(threadId, t.scope!, state);
         return appended;
       });
+      // D586: the log grew, so whether its view is over the ceiling is read again.
+      if (appended?.appended) this.overCeiling.delete(appended.scope);
       if (through === t.cursor) return { scope: null, more: false };
       return { scope: appended?.appended ? appended.scope : null, more: appended === null ? !!this.store.thread(threadId)?.scope : read.more };
     } catch (error) {
@@ -651,6 +669,7 @@ export class ChatMemory {
         now: () => this.store.now(),
         log: (message) => this.deps.log(`${scopeId}: ${message}`),
       });
+      builder.onBuilt(() => this.overCeiling.delete(scopeId));
       this.builders.set(scopeId, builder);
     }
     return builder;
