@@ -72,6 +72,117 @@ describe("describeClaudeRequest", () => {
   });
 });
 
+// An OptChat turn's request as Claude Code 2.1.321 sends it in BB (captured 2026-11-12 from the CLI
+// against a local server, texts shortened): tools without breakpoints; system with the billing
+// header, then two blocks with breakpoints, the last ending with chat-memory's memory view; then
+// the seed exchange BB forks every fresh session from, and the turn. `turn` varies per session.
+function optChatRequest(turn: Array<Record<string, unknown>>, ttl?: "1h") {
+  const cacheControl = ttl === undefined ? { type: "ephemeral" } : { type: "ephemeral", ttl };
+  return {
+    model: "claude-opus-5-5",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>\nCodebase and user instructions…</system-reminder>" },
+          { type: "text", text: "This opening exchange only prepares the session; … Reply with only: Ready." },
+        ],
+      },
+      { role: "system", content: "# Environment\nYou have been invoked in the following environment: …" },
+      { role: "assistant", content: [{ type: "text", text: "Ready." }] },
+      ...turn,
+    ],
+    system: [
+      { type: "text", text: "x-anthropic-billing-header: cc_version=2.1.321.5b1; cc_entrypoint=sdk-cli;" },
+      { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude.", cache_control: cacheControl },
+      {
+        type: "text",
+        text: "\nYou are an agent…\n\n# Memory (UniiChat)\n\nYou are in a chat with the user that never ends.…\n\n<chat>\n12+4|user: asks for the report\n</chat>",
+        cache_control: cacheControl,
+      },
+    ],
+    tools: [{ name: "Bash", description: "Run a command", input_schema: { type: "object", properties: { command: { type: "string" } } } }],
+    metadata: { user_id: "u" },
+    max_tokens: 64_000,
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+    output_config: { effort: "high" },
+    stream: true,
+  };
+}
+
+const userText = (text: string, cached = false) => ({
+  role: "user",
+  content: [{ type: "text", text, ...(cached ? { cache_control: { type: "ephemeral" } } : {}) }],
+});
+
+// What a request caches up to and including its system's last block, in render order. The next
+// turn's (next, below) is the same by construction: optChatRequest builds both.
+const toolsAndSystem = (body: Record<string, unknown>) => JSON.stringify([body.tools, body.system]);
+
+describe("an OptChat turn's shared prefix", () => {
+  // The last request of one turn's session, after a tool call, and the next turn's first request.
+  const last = optChatRequest([
+    userText("Now: 2026-11-12 11:41Z.\n\nNew message:\nrun the tests"),
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok", cache_control: { type: "ephemeral" } }] },
+  ]);
+  const next = optChatRequest([userText("Now: 2026-11-12 11:58Z.\n\nNew message:\nship it", true)]);
+
+  it("is found in a body whose system carries the memory view and ends on a breakpoint", () => {
+    const shape = describeClaudeRequest(encode(last));
+    const bytes = (value: unknown) => encode(value).length;
+    const shared = bytes(last.tools) + bytes(last.system);
+    expect(shape.sharedPrefix).toEqual({ share: shared / (shared + bytes(last.messages)) });
+    expect(describeClaudeRequest(encode(optChatRequest([userText("t", true)], "1h"))).sharedPrefix).toBeNull();
+    const without = (change: (body: ReturnType<typeof optChatRequest>) => unknown) => {
+      const body = structuredClone(last);
+      change(body);
+      return describeClaudeRequest(encode(body)).sharedPrefix;
+    };
+    // A regular thread: its next turn goes on in the same session.
+    expect(without((body) => (body.system[2]!.text = "You are an agent…"))).toBeNull();
+    // The system's last block has no breakpoint, or another TTL than the entry the lease tracks.
+    expect(without((body) => delete body.system[2]!.cache_control)).toBeNull();
+    expect(without((body) => (body.system[2]!.cache_control = { type: "ephemeral", ttl: "1h" }))).toBeNull();
+    // An automatic breakpoint would move onto the replacement message and write a new entry.
+    expect(without((body) => Object.assign(body, { cache_control: { type: "ephemeral" } }))).toBeNull();
+    // A body that cannot be re-sent at all.
+    expect(without((body) => (body.thinking = { type: "enabled" }))).toBeNull();
+  });
+
+  it("re-sends tools and system byte for byte, ending on the system's breakpoint the next turn reads", () => {
+    const native = encode(last);
+    const resent = keepAliveBody(native, true);
+    const decoded = JSON.parse(new TextDecoder().decode(resent)) as Record<string, unknown>;
+    const { stream: _stream, max_tokens: _max, ...rest } = last;
+    expect(decoded).toEqual({ ...rest, max_tokens: 0, messages: [{ role: "user", content: "." }] });
+    expect(Object.keys(decoded)).toEqual(Object.keys(last).filter((key) => key !== "stream"));
+    // The system array and everything before it in the native body are copied verbatim.
+    const text = new TextDecoder().decode(resent);
+    const nativeText = new TextDecoder().decode(native);
+    for (const key of ["system", "tools"] as const)
+      expect(text).toContain(`"${key}":${JSON.stringify(last[key])}`);
+    expect(nativeText).toContain(`"system":${JSON.stringify(last.system)}`);
+    // Its breakpoints are the system's, in the same place, so the cached entry it reads ends on the
+    // system's last block: the same tools and system the next turn's first request caches there.
+    expect(describeClaudeRequest(resent)).toMatchObject({ tailTtl: "5m", breakpoints: 2, keepAliveBlocker: null });
+    expect(JSON.stringify(decoded.system).includes("cache_control")).toBe(true);
+    expect(JSON.stringify(decoded.messages)).not.toContain("cache_control");
+    // The whole body, by contrast, caches the turn's messages, which the next turn does not repeat.
+    expect(JSON.stringify(last.messages.slice(3))).not.toBe(JSON.stringify(next.messages.slice(3)));
+  });
+
+  it("keeps the same shape when a number forces the body to be re-serialized", () => {
+    const text = JSON.stringify(last).replace('"max_tokens":64000', '"max_tokens":64000,"temperature":1.0');
+    const resent = JSON.parse(new TextDecoder().decode(keepAliveBody(encode(text), true))) as Record<string, unknown>;
+    expect(resent.messages).toEqual([{ role: "user", content: "." }]);
+    expect(resent.max_tokens).toBe(0);
+    expect(resent.stream).toBeUndefined();
+    expect(toolsAndSystem(resent)).toBe(toolsAndSystem(last));
+  });
+});
+
 describe("usage taps", () => {
   const start = {
     type: "message_start",

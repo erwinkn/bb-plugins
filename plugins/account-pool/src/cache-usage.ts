@@ -29,8 +29,28 @@ export interface ClaudeRequestShape {
   breakpoints: number;
   // Why a max_tokens: 0 re-send of this body would be rejected, or null.
   keepAliveBlocker: string | null;
+  // The part a fresh session of the same thread reuses, when the body is an OptChat turn's:
+  // see sharedPrefixOf. null for any other body.
+  sharedPrefix: SharedPrefix | null;
   // First 12 hex digits of the exact body's SHA-256: an identity for status, never the content.
   bodyHash: string;
+}
+
+// OptChat (plugins/chat-memory) answers each new turn of a thread with a fresh Claude Code session
+// whose system prompt ends with the thread's memory view under this heading (its TURN_PROMPT), and
+// BB's provider forks every such session from a seed exchange. The next turn's first request
+// therefore repeats only the tools and the system prompt of this one; what follows (the seed, the
+// turn's messages) is either new or an entry that has usually expired. A body whose system prompt
+// carries the heading and ends on a breakpoint has that shared prefix: the tools and system arrays,
+// cached by the system's last breakpoint, which every request of the session reads again.
+const OPTCHAT_HEADING = new TextEncoder().encode("# Memory (UniiChat)");
+
+export interface SharedPrefix {
+  // The share of the body's tools, system and messages bytes that falls in tools and system: an
+  // estimate of the shared prefix's share of the cached tokens, until a refresh reads it. Base64
+  // media in messages (a screenshot is megabytes but ~1.5k tokens) makes it far too low; a dry-run
+  // lease never measures it, so usage_warming keeps the estimate.
+  share: number;
 }
 
 export interface CacheUsage {
@@ -86,9 +106,13 @@ const MAX_COMPARED_STRING_BYTES = 256;
 // and messages block reduced to its cache_control. Nothing else is decoded, however large (a
 // prompt, an output schema). null when the body is not a JSON object. As with JSON.parse, a
 // repeated key's last value wins.
-function requestSkeleton(body: Uint8Array): JsonObject | null {
+function requestSkeleton(
+  body: Uint8Array,
+): { request: JsonObject; spans: Map<string, Span> } | null {
   const json = new JsonBytes(body);
   const request: JsonObject = {};
+  // Where each tools, system and messages array lies in the body.
+  const spans = new Map<string, Span>();
   // A string short enough to compare, parsed; anything else is false, which matches nothing.
   const comparable = (span: Span): unknown =>
     json.isString(span.start) &&
@@ -132,29 +156,33 @@ function requestSkeleton(body: Uint8Array): JsonObject | null {
           : undefined,
       );
     });
+  const messageList = (at: number, out: unknown[]) =>
+    json.eachElement(at, (message) => {
+      if (!json.isObject(message)) {
+        out.push(null);
+        return undefined;
+      }
+      const kept: JsonObject = { content: null };
+      out.push(kept);
+      return json.eachMember(message, (field, value) => {
+        if (field !== "content") return undefined;
+        const content: unknown[] = [];
+        kept.content = json.isArray(value) ? content : null;
+        return json.isArray(value) ? blocks(value, content) : undefined;
+      });
+    });
   const valid = json.eachTopLevelMember((key, value) => {
     if (BLOCK_LISTS.has(key)) {
+      spans.delete(key);
       if (!json.isArray(value)) {
         request[key] = null;
         return undefined;
       }
       const out: unknown[] = [];
       request[key] = out;
-      if (key !== "messages") return blocks(value, out);
-      return json.eachElement(value, (message) => {
-        if (!json.isObject(message)) {
-          out.push(null);
-          return undefined;
-        }
-        const kept: JsonObject = { content: null };
-        out.push(kept);
-        return json.eachMember(message, (field, at) => {
-          if (field !== "content") return undefined;
-          const content: unknown[] = [];
-          kept.content = json.isArray(at) ? content : null;
-          return json.isArray(at) ? blocks(at, content) : undefined;
-        });
-      });
+      const end = key === "messages" ? messageList(value, out) : blocks(value, out);
+      if (end !== -1) spans.set(key, { start: value, end });
+      return end;
     }
     if (key === "model") {
       const span = json.span(value);
@@ -170,26 +198,28 @@ function requestSkeleton(body: Uint8Array): JsonObject | null {
       return reduce(value, request, key, "format", presence);
     return undefined;
   });
-  return valid ? request : null;
+  return valid ? { request, spans } : null;
 }
 
 function describeOnce(body: Uint8Array): ClaudeRequestShape {
   const hash = bodyHash(body);
-  let request: JsonObject | null;
+  let skeleton: ReturnType<typeof requestSkeleton>;
   try {
-    request = requestSkeleton(body);
+    skeleton = requestSkeleton(body);
   } catch {
-    request = null;
+    skeleton = null;
   }
-  if (request === null)
+  if (skeleton === null)
     return {
       model: null,
       family: "other",
       tailTtl: null,
       breakpoints: 0,
       keepAliveBlocker: "request body is not a JSON object",
+      sharedPrefix: null,
       bodyHash: hash,
     };
+  const { request, spans } = skeleton;
   const model = typeof request.model === "string" ? request.model : null;
   const ttls: CacheTtl[] = [];
   blockBreakpoints(request.tools, ttls);
@@ -218,21 +248,52 @@ function describeOnce(body: Uint8Array): ClaudeRequestShape {
           : toolChoice === "tool" || toolChoice === "any"
             ? "a forced tool_choice cannot be sent with max_tokens 0"
             : null;
+  const tailTtl = ttls.at(-1) ?? null;
   return {
     model,
     family: modelFamily(model),
-    tailTtl: ttls.at(-1) ?? null,
+    tailTtl,
     breakpoints: ttls.length,
     keepAliveBlocker,
+    sharedPrefix:
+      keepAliveBlocker === null && automatic === null
+        ? sharedPrefixOf(body, request, spans, tailTtl)
+        : null,
     bodyHash: hash,
   };
+}
+
+// The shared prefix of an OptChat turn's body (OPTCHAT_HEADING), or null. A re-send that keeps
+// only tools and system must end on the system's last block, which must carry a breakpoint of the
+// body's TTL so the refresh reads exactly the entry the next turn's first request hits. A body
+// with an automatic breakpoint has none: it would move onto the replacement message and write.
+function sharedPrefixOf(
+  body: Uint8Array,
+  request: JsonObject,
+  spans: Map<string, Span>,
+  tailTtl: CacheTtl | null,
+): SharedPrefix | null {
+  const system = spans.get("system");
+  const messages = spans.get("messages");
+  const last = Array.isArray(request.system) ? request.system.at(-1) : undefined;
+  if (system === undefined || messages === undefined) return null;
+  if (!isObject(last) || breakpointTtl(last.cache_control) !== tailTtl) return null;
+  const bytes = Buffer.from(body.buffer, body.byteOffset + system.start, system.end - system.start);
+  if (bytes.indexOf(OPTCHAT_HEADING) === -1) return null;
+  const tools = spans.get("tools");
+  const length = (span: Span | undefined) => (span === undefined ? 0 : span.end - span.start);
+  const shared = length(tools) + length(system);
+  return { share: shared / (shared + length(messages)) };
 }
 
 // The exact native body with only max_tokens set to 0 and stream removed. Neither field is part of
 // the cached prefix, so the re-send reads the same entry. Every other top-level member keeps its
 // bytes; nothing is parsed or re-serialized, unless a number would not survive JSON.parse and
 // JSON.stringify unchanged (1.0, 1e400): that rare body is re-serialized whole, as it always was.
-export function keepAliveBody(body: Uint8Array): Uint8Array {
+// With `sharedPrefix` (a body that has one, describeClaudeRequest), messages are also replaced by
+// a one-character user message with no breakpoint: the request still needs one, and the re-send
+// then reads only the entry its system's last breakpoint ends, tools and system.
+export function keepAliveBody(body: Uint8Array, sharedPrefix = false): Uint8Array {
   const json = new JsonBytes(body);
   const parts: Uint8Array[] = [];
   let maxTokens = false;
@@ -243,7 +304,9 @@ export function keepAliveBody(body: Uint8Array): Uint8Array {
     if (key === "max_tokens") {
       maxTokens = true;
       parts.push(body.subarray(keyStart, value), ZERO);
-    } else parts.push(body.subarray(keyStart, end));
+    } else if (key === "messages" && sharedPrefix)
+      parts.push(body.subarray(keyStart, value), STUB_MESSAGES);
+    else parts.push(body.subarray(keyStart, end));
     return end;
   });
   if (!valid) throw new SyntaxError("request body is not a JSON object");
@@ -251,6 +314,7 @@ export function keepAliveBody(body: Uint8Array): Uint8Array {
     const { stream: _stream, ...rest } = JSON.parse(
       new TextDecoder().decode(body),
     ) as JsonObject;
+    if (sharedPrefix) rest.messages = JSON.parse(new TextDecoder().decode(STUB_MESSAGES));
     return new TextEncoder().encode(JSON.stringify({ ...rest, max_tokens: 0 }));
   }
   if (!maxTokens) {
@@ -274,6 +338,7 @@ export function keepAliveBody(body: Uint8Array): Uint8Array {
 const COMMA = new Uint8Array([0x2c]);
 const ZERO = new Uint8Array([0x30]);
 const MAX_TOKENS_ZERO = new TextEncoder().encode('"max_tokens":0');
+const STUB_MESSAGES = new TextEncoder().encode('[{"role":"user","content":"."}]');
 
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
