@@ -15,7 +15,7 @@ const status = (patch: Partial<MemoryStatus> = {}): MemoryStatus => ({
   threads: [{ threadId: "coord", title: "bb-plugins · coordinator", providerId: "claude-code", compactedAt: null, compactError: null }],
   log: { messages: 6120, bytes: 3_051_433 },
   tree: { ready: true, ingesting: false, summarized: 6120, nodes: 12_189, total: 12_230, fallbacks: 0, failed: 0, viewBytes: 90_000, memoryViewBytes: 24_000, state: "idle", detail: null, until: null },
-  cost: { calls: 3674, tries: 7225, inputTokens: 53_840_761, cachedTokens: 40_000_000, outputTokens: 900_000, usd: 3.46, callSeconds: 43_870 },
+  cost: { calls: 3674, tries: 7225, inputTokens: 53_840_761, cachedTokens: 40_000_000, outputTokens: 900_000, usd: 3.46, directUsd: 0, callSeconds: 43_870 },
   problems: [],
   ...patch,
 });

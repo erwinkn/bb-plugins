@@ -14,7 +14,7 @@ export interface TreeStore {
   built(l: number, from: number, to: number): number[];
   saveNode(l: number, i: number, text: string, how: NodeHow, tries: number): void;
   saveViews(views: Views): void;
-  recordCall(call: { usage: Usage; cost: number; ms: number; tries: number }): void;
+  recordCall(call: { usage: Usage; cost: number; direct?: number; ms: number; tries: number }): void;
 }
 /**
  * model: a summarizer call (ending in CUT when its shortest reply was still too long); free: fits
@@ -472,6 +472,9 @@ export class TreeBuilder {
       if (this.writers.get(prefix) === writing) this.writers.delete(prefix);
     };
     const usage: Usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
+    // Priced per call, at the answering model's rates; direct: what the OpenAI key paid (W587).
+    let cost = 0;
+    let direct = 0;
     let input = compactionInput(lines, task(node, this.nodes, message ?? undefined));
     let best: string | null = null;
     let tries = 0;
@@ -484,7 +487,12 @@ export class TreeBuilder {
         const r = await this.options.summarize(request, () => this.urgent(node));
         started();
         tries++;
-        if (r.usage) addUsage(usage, r.usage);
+        if (r.usage) {
+          addUsage(usage, r.usage);
+          const c = usageCost(r.usage, r.model);
+          cost += c;
+          if (r.direct) direct += c;
+        }
         if (!r.ok) {
           if (r.reason === "aborted") outcome = { kind: "aborted" };
           else if (r.reason === "failed" || r.reason === "timeout") {
@@ -514,7 +522,7 @@ export class TreeBuilder {
     } finally {
       started();
       // Once stopped the store may already be closed: nothing more is written.
-      if (!signal.aborted && (usage.input || usage.output)) this.store.recordCall({ usage, cost: usageCost(usage), ms: this.now() - t0, tries });
+      if (!signal.aborted && (usage.input || usage.output)) this.store.recordCall({ usage, cost, direct, ms: this.now() - t0, tries });
     }
     if (outcome) return outcome;
     if (signal.aborted) return { kind: "aborted" };

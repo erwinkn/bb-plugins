@@ -1,4 +1,5 @@
 import { addAbortListener } from "node:events";
+import { dirname, join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { COMPACT_TRIES, createCompaction } from "./lib/compaction";
@@ -45,7 +46,8 @@ export default function plugin(bb: BbPluginApi) {
       }
     },
     settings: settings.current,
-    summarizer: poolerSummarizer(bb),
+    // W587: the OpenAI key for the direct fallback sits next to the plugin's data.db.
+    summarizer: poolerSummarizer(bb, join(dirname(db.name), "openai.env")),
     log: (message) => bb.log.warn(message),
     changed: (scope) => bb.realtime.publish(CHANGED_CHANNEL, { scope }),
   });

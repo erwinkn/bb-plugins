@@ -3,12 +3,15 @@
  * (POST /advisor/v1/responses, authenticated with the Pooler's plugin token), so it uses the
  * accounts already in the pool and no credential of its own. Codex caches a repeated prefix
  * only with a session_id header (W216: prompt_cache_key alone got 0% cached), so every call of
- * one scope sends the same one.
+ * one scope sends the same one. W587: when no Codex account can run Luna, the same request goes
+ * to OpenAI's public API on a pay-as-you-go key (fallbackSummarizer, lib/pooler.ts).
  */
 export const SUMMARIZER_MODEL = "gpt-6-luna";
 export const POOLER_PLUGIN_ID = "account-pool-local";
-/** Luna list prices, $ per million tokens (W216): input, cached input, output. */
-export const LUNA_PRICES = { input: 0.1, cached: 0.01, output: 0.5 } as const;
+/** List prices, $ per million tokens: input, cached input, output. Luna: W216, on either route. */
+export const PRICES: Record<string, { input: number; cached: number; output: number }> = {
+  [SUMMARIZER_MODEL]: { input: 0.1, cached: 0.01, output: 0.5 },
+};
 
 export type InputItem =
   | { role: "user" | "developer"; content: { type: "input_text"; text: string }[] }
@@ -61,8 +64,9 @@ export interface ReplyShape {
   output: number;
   reasoning: number;
 }
+/** model: the model that answered, which prices its usage; direct: paid on the OpenAI key, outside the Pooler. */
 export type SummarizerResult =
-  | { ok: true; text: string; usage: Usage; latencyMs: number; shape?: ReplyShape }
+  | { ok: true; text: string; usage: Usage; latencyMs: number; shape?: ReplyShape; model?: string; direct?: boolean }
   | {
       ok: false;
       error: string;
@@ -75,11 +79,16 @@ export type SummarizerResult =
       reason: "rate-limited" | "transient" | "unavailable" | "failed" | "timeout" | "aborted";
       retryAfterMs?: number;
       usage?: Usage;
+      model?: string;
+      direct?: boolean;
     };
 export type Summarizer = (request: SummarizerRequest) => Promise<SummarizerResult>;
 
-export const usageCost = (u: Usage) =>
-  ((u.input - u.cached) * LUNA_PRICES.input + u.cached * LUNA_PRICES.cached + u.output * LUNA_PRICES.output) / 1e6;
+/** A model missing from PRICES is priced as Luna. */
+export const usageCost = (u: Usage, model = SUMMARIZER_MODEL) => {
+  const p = PRICES[model] ?? PRICES[SUMMARIZER_MODEL]!;
+  return ((u.input - u.cached) * p.input + u.cached * p.cached + u.output * p.output) / 1e6;
+};
 
 async function* sse(body: ReadableStream<Uint8Array>) {
   const decoder = new TextDecoder();
@@ -109,31 +118,19 @@ const attributionHeaders = (a?: Attribution): Record<string, string> =>
 
 /**
  * A Responses API client. `url` and `headers` come from the caller: the Pooler route in the
- * plugin, the native pool route in the read-only measurement script.
+ * plugin, the native pool route in the read-only measurement script, OpenAI's API (direct: its
+ * calls carry none of the Pooler's headers, session_id and attribution, and say they were direct).
  */
 export function responsesSummarizer(deps: {
   fetch: typeof fetch;
   url: () => string;
   headers: (signal: AbortSignal) => Promise<Record<string, string>>;
   model?: string;
+  direct?: boolean;
 }): Summarizer {
-  return async ({ timeoutMs, ...request }) => {
-    // Stopped before it started (between its permit's grant and now): it never starts.
-    if (request.signal.aborted) return { ok: false, reason: "aborted", error: "stopped" };
-    if (timeoutMs === undefined) return call(request.signal, request);
-    // The call's own signal: the caller's stop, or the bound.
-    const bound = new AbortController();
-    const stop = () => bound.abort();
-    request.signal.addEventListener("abort", stop, { once: true });
-    const timer = setTimeout(stop, timeoutMs);
-    try {
-      const result = await call(bound.signal, request);
-      return !result.ok && result.reason === "aborted" && !request.signal.aborted ? { ok: false, reason: "timeout", error: `no reply within ${timeoutMs / 1000} s` } : result;
-    } finally {
-      clearTimeout(timer);
-      request.signal.removeEventListener("abort", stop);
-    }
-  };
+  const direct = deps.direct ? { direct: true } : {};
+  const summarize = bounded(call);
+  return async (request) => ({ ...(await summarize(request)), ...direct });
 
   async function call(signal: AbortSignal, { instructions, input, effort, cacheKey, attribution, onStart }: Omit<SummarizerRequest, "timeoutMs">): Promise<SummarizerResult> {
     const t0 = Date.now();
@@ -142,28 +139,21 @@ export function responsesSummarizer(deps: {
       // The lookup may not heed the signal (the Pooler's token RPC does not): the call stops with it anyway.
       headers = await untilAborted(deps.headers(signal), signal);
     } catch (error) {
-      return { ok: false, reason: signal.aborted ? "aborted" : "unavailable", error: `Account Pooler token unavailable: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, reason: signal.aborted ? "aborted" : "unavailable", error: `credentials unavailable: ${error instanceof Error ? error.message : String(error)}` };
     }
     const body = { model: deps.model ?? SUMMARIZER_MODEL, instructions, input, stream: true, store: false, reasoning: { effort }, prompt_cache_key: cacheKey };
     let res: Response;
     try {
       res = await deps.fetch(deps.url(), {
         method: "POST",
-        headers: { "content-type": "application/json", accept: "text/event-stream", session_id: cacheKey, ...attributionHeaders(attribution), ...headers },
+        headers: { "content-type": "application/json", accept: "text/event-stream", ...(deps.direct ? {} : { session_id: cacheKey, ...attributionHeaders(attribution) }), ...headers },
         body: JSON.stringify(body),
         signal,
       });
     } catch (error) {
       return { ok: false, reason: signal.aborted ? "aborted" : "transient", error: String(error) };
     }
-    if (!res.ok || !res.body) {
-      const text = (await res.text().catch(() => "")).slice(0, 300);
-      const error = `${res.status} ${text}`;
-      if (res.status === 429) return { ok: false, reason: "rate-limited", error, retryAfterMs: retryAfter(res.headers.get("retry-after")) };
-      if (res.status === 401 || res.status === 403 || res.status === 404) return { ok: false, reason: "unavailable", error };
-      if (res.status >= 500 || res.status === 499) return { ok: false, reason: "transient", error, retryAfterMs: retryAfter(res.headers.get("retry-after")) };
-      return { ok: false, reason: "failed", error };
-    }
+    if (!res.ok || !res.body) return httpFailure(res);
     let started = false;
     let final: Record<string, any> | null = null;
     let finalEvent = "";
@@ -210,12 +200,81 @@ export function responsesSummarizer(deps: {
       output: usage.output,
       reasoning: usage.reasoning,
     };
-    return { ok: true, text, usage, latencyMs: Date.now() - t0, shape };
+    return { ok: true, text, usage, latencyMs: Date.now() - t0, shape, model: body.model };
   }
 }
 
+/**
+ * The call, stopped by the caller's signal or after timeoutMs (reason "timeout"); a request
+ * stopped before it starts (between its permit's grant and now) never starts.
+ */
+export function bounded(call: (signal: AbortSignal, request: Omit<SummarizerRequest, "timeoutMs">) => Promise<SummarizerResult>): Summarizer {
+  return async ({ timeoutMs, ...request }) => {
+    if (request.signal.aborted) return { ok: false, reason: "aborted", error: "stopped" };
+    if (timeoutMs === undefined) return call(request.signal, request);
+    // The call's own signal: the caller's stop, or the bound.
+    const bound = new AbortController();
+    const stop = () => bound.abort();
+    request.signal.addEventListener("abort", stop, { once: true });
+    const timer = setTimeout(stop, timeoutMs);
+    try {
+      const result = await call(bound.signal, request);
+      return !result.ok && result.reason === "aborted" && !request.signal.aborted ? { ok: false, reason: "timeout", error: `no reply within ${timeoutMs / 1000} s` } : result;
+    } finally {
+      clearTimeout(timer);
+      request.signal.removeEventListener("abort", stop);
+    }
+  };
+}
+
+/** A refused HTTP response as a failure: its reason says when to try again. */
+export async function httpFailure(res: Response): Promise<SummarizerResult & { ok: false }> {
+  const text = (await res.text().catch(() => "")).slice(0, 300);
+  const error = `${res.status} ${text}`;
+  if (res.status === 429) return { ok: false, reason: "rate-limited", error, retryAfterMs: retryAfter(res.headers.get("retry-after")) };
+  if (res.status === 401 || res.status === 403 || res.status === 404) return { ok: false, reason: "unavailable", error };
+  if (res.status >= 500 || res.status === 499) return { ok: false, reason: "transient", error, retryAfterMs: retryAfter(res.headers.get("retry-after")) };
+  return { ok: false, reason: "failed", error };
+}
+
+/** How long the Pooler is skipped after a refusal without Retry-After, and at most. */
+export const PRIMARY_BACKOFF = { default: 15 * 60_000, max: 60 * 60_000 };
+
+/**
+ * The primary summarizer (Luna on the Pooler), or the fallback (Luna on OpenAI's API) when the
+ * primary is rate-limited or unavailable. After such a refusal the fallback goes first, with no
+ * primary call, until the refusal's Retry-After (15 minutes without one, an hour at most) has
+ * passed. One timestamp in memory: a restart tries the primary again. A fallback that answers
+ * unavailable (no key, or a key refused) is no fallback: the primary's refusal stands and the next
+ * call tries the primary again. When both refuse otherwise, the fallback's failure is the result,
+ * and the builder backs off on it as before.
+ */
+export function fallbackSummarizer(primary: Summarizer, fallback: Summarizer, options: { now?: () => number; log?: (message: string) => void } = {}): Summarizer {
+  const now = options.now ?? Date.now;
+  let primaryUntil = 0;
+  return async (request) => {
+    let refused: (SummarizerResult & { ok: false }) | null = null;
+    let opened = false;
+    if (now() >= primaryUntil) {
+      const r = await primary(request);
+      if (r.ok || (r.reason !== "rate-limited" && r.reason !== "unavailable")) return r;
+      refused = r;
+      // Calls that were in flight together see the window a first one opened.
+      opened = now() >= primaryUntil;
+      primaryUntil = now() + Math.min(r.retryAfterMs ?? PRIMARY_BACKOFF.default, PRIMARY_BACKOFF.max);
+    }
+    const f = await fallback(request);
+    if (!f.ok && f.reason === "unavailable") {
+      primaryUntil = 0;
+      return refused ?? f;
+    }
+    if (opened && refused) options.log?.(`Memory summarizer: the Pooler's ${SUMMARIZER_MODEL} is ${refused.reason} (${refused.error.slice(0, 120)}); OpenAI's API takes its calls for ${Math.round((primaryUntil - now()) / 60_000)} min.`);
+    return f;
+  };
+}
+
 /** The promise, or its signal's abort as a rejection, whichever comes first. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason);

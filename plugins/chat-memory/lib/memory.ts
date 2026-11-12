@@ -148,7 +148,7 @@ export interface MemoryStatus {
     detail: string | null;
     until: number | null;
   };
-  cost: { calls: number; tries: number; inputTokens: number; cachedTokens: number; outputTokens: number; usd: number; callSeconds: number };
+  cost: { calls: number; tries: number; inputTokens: number; cachedTokens: number; outputTokens: number; usd: number; directUsd: number; callSeconds: number };
   /** D458: why the mode cannot run for one of its threads, shown wherever the mode is. */
   problems: string[];
 }
@@ -779,6 +779,7 @@ export class ChatMemory {
         cachedTokens: totals.cachedTokens,
         outputTokens: totals.outputTokens,
         usd: Math.round(totals.costUsd * 10_000) / 10_000,
+        directUsd: Math.round(totals.directUsd * 10_000) / 10_000,
         callSeconds: Math.round(totals.callMs / 1000),
       },
       problems,

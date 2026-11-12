@@ -46,6 +46,8 @@ export const MIGRATIONS = [
   `ALTER TABLE log ADD COLUMN end_seq INTEGER`,
   // W571: the number of tool uses such a row groups (review r2 P2).
   `ALTER TABLE log ADD COLUMN uses INTEGER`,
+  // W587: of cost_usd, what calls paid on the OpenAI key directly, outside the Pooler.
+  `ALTER TABLE trees ADD COLUMN direct_usd REAL NOT NULL DEFAULT 0`,
 ];
 
 export const MEMORY_MODES = ["regular", "optchat"] as const;
@@ -88,6 +90,8 @@ export interface TreeTotals {
   outputTokens: number;
   reasoningTokens: number;
   costUsd: number;
+  /** W587: of costUsd, paid on the OpenAI key directly. */
+  directUsd: number;
   callMs: number;
   /** Running counts, so the status never reads the history: the log's bytes, built nodes, fallbacks. */
   logBytes: number;
@@ -326,6 +330,7 @@ export class MemoryStore {
       outputTokens: Number(row?.output_tokens ?? 0),
       reasoningTokens: Number(row?.reasoning_tokens ?? 0),
       costUsd: Number(row?.cost_usd ?? 0),
+      directUsd: Number(row?.direct_usd ?? 0),
       callMs: Number(row?.call_ms ?? 0),
       logBytes: Number(row?.log_bytes ?? 0),
       nodes: Number(row?.nodes ?? 0),
@@ -357,10 +362,10 @@ export class MemoryStore {
         ensure();
         this.sql(`UPDATE trees SET views = ?, updated_at = ? WHERE scope = ?`).run(JSON.stringify(views), this.now(), scopeId);
       },
-      recordCall: ({ usage, cost, ms, tries }: { usage: Usage; cost: number; ms: number; tries: number }) => {
+      recordCall: ({ usage, cost, direct = 0, ms, tries }: { usage: Usage; cost: number; direct?: number; ms: number; tries: number }) => {
         ensure();
-        this.sql(`UPDATE trees SET calls = calls + 1, tries = tries + ?, input_tokens = input_tokens + ?, cached_tokens = cached_tokens + ?, output_tokens = output_tokens + ?, reasoning_tokens = reasoning_tokens + ?, cost_usd = cost_usd + ?, call_ms = call_ms + ?, updated_at = ? WHERE scope = ?`)
-          .run(tries, usage.input, usage.cached, usage.output, usage.reasoning, cost, ms, this.now(), scopeId);
+        this.sql(`UPDATE trees SET calls = calls + 1, tries = tries + ?, input_tokens = input_tokens + ?, cached_tokens = cached_tokens + ?, output_tokens = output_tokens + ?, reasoning_tokens = reasoning_tokens + ?, cost_usd = cost_usd + ?, direct_usd = direct_usd + ?, call_ms = call_ms + ?, updated_at = ? WHERE scope = ?`)
+          .run(tries, usage.input, usage.cached, usage.output, usage.reasoning, cost, direct, ms, this.now(), scopeId);
       },
     };
   }
