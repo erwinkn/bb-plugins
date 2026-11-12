@@ -95,6 +95,8 @@ function summary(account: CodexDeviceAccount): AccountSummary {
     inFlight: 0,
     active: false,
     availableAt: null,
+    resets: null,
+    autoUseGrantIds: [],
     status: "ready",
   };
 }

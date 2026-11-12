@@ -80,9 +80,10 @@ import {
 import { blockingResetAt } from "./src/quota.js";
 import {
   adviseReset,
+  nextPicks,
   RESET_NAME,
   resetAccounts,
-  resetFallback,
+  resetCommand,
   type ResetAdvice,
 } from "./src/reset-advice.js";
 import {
@@ -482,24 +483,28 @@ function AccountRow({
   );
 }
 
-// What to claim by hand with /limit-reset; the Pooler itself never spends a reset.
+// Which usage reset to spend, and the command that spends it; the Pooler spends one only when
+// asked, or a grant flagged for automatic use.
 function ResetAdviceNote({ advice }: { advice: ResetAdvice }) {
   const first = advice.picks[0];
+  const next = nextPicks(advice);
   return (
     <div className="space-y-0.5 py-2.5 text-xs" aria-label="Usage reset advice">
       <p className="font-medium text-foreground">
         {first === undefined ? (
-          advice.read ? "No usage reset needed" : "No usage reading yet"
+          { unread: "No usage reading yet", serving: "No usage reset needed", walled: "No usage reset to spend" }[
+            advice.state
+          ]
         ) : (
           <>
-            Spend a {RESET_NAME[first.kind]} on {first.label} ·{" "}
-            <span className="font-mono">/limit-reset {first.kind}</span>
+            Spend the {RESET_NAME[first.kind]} on {first.label} ·{" "}
+            <span className="font-mono break-all">{resetCommand(first)}</span>
           </>
         )}
       </p>
       <p className="leading-snug text-subtle-foreground/75">
         {advice.reason}
-        {first === undefined ? null : ` ${resetFallback(advice)}`}
+        {next === "" ? null : ` ${next}`}
       </p>
     </div>
   );

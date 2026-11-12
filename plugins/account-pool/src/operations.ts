@@ -1,6 +1,8 @@
 import type {
   Account,
   AccountSummary,
+  ResetClaimOutcome,
+  ResetKind,
   HubTokenSummary,
   PoolProvider,
   PoolStatus,
@@ -16,6 +18,7 @@ import type {
 } from "./store.js";
 import type { ClaudeOAuthAccount } from "./oauth-login.js";
 import type { CodexDeviceAccount } from "./codex-device-login.js";
+import type { ResetClaimStore } from "./usage-resets.js";
 
 interface PoolHost {
   id: string;
@@ -46,6 +49,7 @@ export class PoolOperations {
     private readonly onAccountEnabled: (
       accountId: string,
     ) => Promise<void> = async () => {},
+    private readonly resetClaims: ResetClaimStore | null = null,
   ) {}
 
   async add(input: AccountAddInput): Promise<Account> {
@@ -160,6 +164,7 @@ export class PoolOperations {
     const removed = await this.accounts.remove(id);
     if (removed) {
       this.quotas.remove(id);
+      await this.resetClaims?.forget(id);
       this.onAccountsChanged();
     }
     return removed;
@@ -207,6 +212,24 @@ export class PoolOperations {
       (await this.status()).accounts.find((account) => account.id === id) ??
       null
     );
+  }
+
+  // null when the account does not exist.
+  claimReset(id: string, kind: ResetKind): Promise<ResetClaimOutcome | null> {
+    return this.hub.claimReset(id, kind);
+  }
+
+  // Flags (or unflags) one grant for automatic use at a wall. The grant need not be held now: a
+  // flag on a grant id the account no longer lists is never used.
+  async setResetAutoUse(id: string, grantId: string, enabled: boolean): Promise<AccountSummary | null> {
+    const account = await this.accounts.get(id);
+    if (account === null) return null;
+    if (account.provider !== "claude" || account.kind !== "oauth")
+      throw new Error("Only Claude subscription (OAuth) accounts hold usage resets.");
+    if (this.resetClaims === null) throw new Error("Usage resets are unavailable.");
+    await this.resetClaims.setAutoUse(id, grantId, enabled);
+    this.onAccountsChanged();
+    return (await this.list()).find((summary) => summary.id === id) ?? null;
   }
 
   async setRouting(provider: PoolProvider, enabled: boolean): Promise<void> {

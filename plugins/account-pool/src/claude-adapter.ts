@@ -4,7 +4,7 @@ import {
   importClaudeCredentials,
   type ImportedClaudeCredentials,
 } from "./credentials.js";
-import type { ProviderAdapter } from "./provider-adapter.js";
+import type { AdapterUsageContext, ProviderAdapter } from "./provider-adapter.js";
 import {
   fetchOAuthRefresh,
   filterRequestHeaders,
@@ -18,6 +18,12 @@ import {
 } from "./quota.js";
 import { parseRequestBody } from "./request-body.js";
 import { quotaFromUsage } from "./usage.js";
+import {
+  CLAUDE_CLI_HEADERS,
+  claimAnswer,
+  RESET_PROGRAM,
+  resetsFromUsage,
+} from "./usage-resets.js";
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OAUTH_BETA = "oauth-2025-04-20";
@@ -45,15 +51,51 @@ const profileResponseSchema = z
       .object({ uuid: z.string().uuid().nullish() })
       .passthrough()
       .nullish(),
+    organization: z
+      .object({ uuid: z.string().uuid().nullish() })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
+type Profile = z.infer<typeof profileResponseSchema>;
+
+// The organization's claim endpoint; tests pass their own.
+export const DEFAULT_RESET_URL = (organizationUuid: string) =>
+  `https://api.anthropic.com/api/organizations/${organizationUuid}/reset_rate_limits`;
+
 export function createClaudeAdapter(options: {
   refreshUrl: string;
+  // The usage read; the default asks for the reset program block (?cedar_ember=1&skip_spend=1).
   usageUrl: string;
   profileUrl: string;
+  resetUrl?: (organizationUuid: string) => string;
   importCredentials?: () => Promise<ImportedClaudeCredentials>;
 }): ProviderAdapter {
+  // Usage, profile and claim requests carry the CLI's identity: the reset program answers only it.
+  const apiHeaders = (accessToken: string) => ({
+    authorization: `Bearer ${accessToken}`,
+    "anthropic-beta": OAUTH_BETA,
+    accept: "application/json",
+    ...CLAUDE_CLI_HEADERS,
+  });
+  const readProfile = async (
+    context: AdapterUsageContext,
+    accessToken: string,
+  ): Promise<Profile | null> => {
+    const profile = await context.fetch(options.profileUrl, {
+      headers: apiHeaders(accessToken),
+      signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+    });
+    if (!profile.ok) {
+      await profile.body?.cancel();
+      return null;
+    }
+    const parsed = profileResponseSchema.safeParse(
+      await profile.json().catch(() => null),
+    );
+    return parsed.success ? parsed.data : null;
+  };
   return {
     provider: "claude",
     upstreamName: "Anthropic",
@@ -138,50 +180,78 @@ export function createClaudeAdapter(options: {
       if (secret.kind !== "oauth") return;
       const requestedAt = context.now();
       const response = await context.fetch(options.usageUrl, {
-        headers: {
-          authorization: `Bearer ${secret.accessToken}`,
-          "anthropic-beta": OAUTH_BETA,
-          accept: "application/json",
-        },
+        headers: apiHeaders(secret.accessToken),
         signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
       });
       if (response.ok) {
         const payload = await response.json().catch(() => null);
         if (typeof payload === "object" && payload !== null) {
+          const now = context.now();
           const quota = quotaFromUsage(
             context.account.id,
             payload,
             context.quotas.get(context.account.id),
-            context.now(),
+            now,
             requestedAt,
           );
           if (quota !== null) context.quotas.put(quota);
+          const resets = resetsFromUsage(payload, now);
+          if (resets !== null) context.quotas.putResets(context.account.id, resets);
         }
       } else {
         await response.body?.cancel();
       }
-      if (context.account.accountUuid !== null) return;
-      const profile = await context.fetch(options.profileUrl, {
-        headers: {
-          authorization: `Bearer ${secret.accessToken}`,
-          "anthropic-beta": OAUTH_BETA,
-          accept: "application/json",
-        },
-        signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
-      });
-      if (!profile.ok) {
-        await profile.body?.cancel();
-        return;
+      if (context.account.accountUuid === null) {
+        const accountUuid =
+          (await readProfile(context, secret.accessToken))?.account?.uuid ?? null;
+        if (accountUuid !== null) {
+          await context.accounts.setAccountUuid(context.account.id, accountUuid);
+        }
       }
-      const parsed = profileResponseSchema.safeParse(
-        await profile.json().catch(() => null),
-      );
-      const accountUuid = parsed.success
-        ? (parsed.data.account?.uuid ?? null)
-        : null;
-      if (accountUuid !== null) {
-        await context.accounts.setAccountUuid(context.account.id, accountUuid);
+      // A claim judges only from a reading taken now (hub.ts readUsageNow); the usage loop ignores it.
+      if (!response.ok) throw new Error(`The usage read answered HTTP ${response.status}.`);
+    },
+    // The organization comes from a profile read at claim time: claims are rare, and storing it on
+    // the account record would break an older build's strict parse of that record.
+    async claimReset(context, claim) {
+      let secret: AccountSecret;
+      try {
+        secret = await context.freshSecret();
+      } catch (error) {
+        return {
+          kind: "unsent",
+          reason: `its credential could not be prepared (${error instanceof Error ? error.message : String(error)})`,
+        };
       }
+      if (secret.kind !== "oauth")
+        return { kind: "unsent", reason: "the account has no OAuth login" };
+      const organizationUuid =
+        (await readProfile(context, secret.accessToken).catch(() => null))
+          ?.organization?.uuid ?? null;
+      if (organizationUuid === null)
+        return { kind: "unsent", reason: "the profile read named no organization" };
+      let response: Response;
+      try {
+        response = await context.fetch(
+          (options.resetUrl ?? DEFAULT_RESET_URL)(organizationUuid),
+          {
+            method: "POST",
+            headers: { ...apiHeaders(secret.accessToken), "content-type": "application/json" },
+            body: JSON.stringify({
+              program: RESET_PROGRAM,
+              grant_id: claim.grantId,
+              request_id: claim.requestId,
+            }),
+            signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+          },
+        );
+      } catch (error) {
+        return {
+          kind: "ambiguous",
+          reason: `no answer (${error instanceof Error ? error.message : String(error)})`,
+        };
+      }
+      return claimAnswer(response.status, await response.json().catch(() => null));
     },
     errorResponse(status, message, headers) {
       const type =

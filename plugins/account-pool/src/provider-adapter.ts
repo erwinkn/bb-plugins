@@ -7,6 +7,7 @@ import type {
   PoolProvider,
 } from "./contracts.js";
 import { retryAfterMilliseconds } from "./quota.js";
+import type { ClaimAnswer } from "./usage-resets.js";
 import type { AccountStore, QuotaStore } from "./store.js";
 
 const OAUTH_REFRESH_TIMEOUT_MS = 15_000;
@@ -94,6 +95,12 @@ export interface ProviderAdapter {
     context: AdapterSecretContext,
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;
   refreshUsage(context: AdapterUsageContext): Promise<void>;
+  // Claude only: claims one usage-reset grant (usage-resets.ts), with the request id that makes a
+  // resend of the same claim safe.
+  claimReset?(
+    context: AdapterUsageContext,
+    claim: { grantId: string; requestId: string },
+  ): Promise<ClaimAnswer>;
   errorResponse(
     status: number,
     message: string,

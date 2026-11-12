@@ -11,11 +11,13 @@ import {
   hubTokenSummarySchema,
   providerSchema,
   quotaSchema,
+  usageResetsSchema,
   type Account,
   type AccountQuota,
   type AccountSecret,
   type HubTokenSummary,
   type PoolProvider,
+  type UsageResets,
 } from "./contracts.js";
 
 const ACCOUNTS_KEY = "accounts:v1";
@@ -651,9 +653,37 @@ export class QuotaStore {
     this.onPut(value);
   }
 
+  // The latest usage read's reset grants (usage-resets.ts), in a table of their own: a column on
+  // account_quota would break an older build's strict row parse.
+  getResets(accountId: string): UsageResets | null {
+    const row = z
+      .object({ resets_json: z.string() })
+      .optional()
+      .parse(
+        this.db
+          .prepare("SELECT resets_json FROM account_resets WHERE account_id = ?")
+          .get(accountId),
+      );
+    if (row === undefined) return null;
+    const parsed = usageResetsSchema.safeParse(JSON.parse(row.resets_json));
+    return parsed.success ? parsed.data : null;
+  }
+
+  putResets(accountId: string, resets: UsageResets): void {
+    this.db
+      .prepare(
+        `INSERT INTO account_resets (account_id, resets_json) VALUES (?, ?)
+         ON CONFLICT(account_id) DO UPDATE SET resets_json = excluded.resets_json`,
+      )
+      .run(accountId, JSON.stringify(usageResetsSchema.parse(resets)));
+  }
+
   remove(accountId: string): void {
     this.db
       .prepare("DELETE FROM account_quota WHERE account_id = ?")
+      .run(accountId);
+    this.db
+      .prepare("DELETE FROM account_resets WHERE account_id = ?")
       .run(accountId);
   }
 }
@@ -875,4 +905,10 @@ export const QUOTA_MIGRATIONS = [
   // so SQLite sees the index as covering), so the scan never opens the table.
   `CREATE INDEX usage_warming_resume ON usage_warming (wait_started_at, role, state, session_key, model, review_hold)
     WHERE state IS NOT NULL AND role IS NOT NULL AND review_hold IS NULL`,
+  // Each Claude account's latest usage-reset grants (QuotaStore.getResets). An older build never
+  // reads it.
+  `CREATE TABLE account_resets (
+    account_id TEXT PRIMARY KEY,
+    resets_json TEXT NOT NULL
+  )`,
 ];

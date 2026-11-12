@@ -2452,6 +2452,109 @@ describe("Account Pool plugin", () => {
     expect(authorizations).toEqual(["Bearer oauth-b", "Bearer oauth-b"]);
   });
 
+  it("lists usage-reset grants, flags one for automatic use, and spends one only on command", async () => {
+    const urls: string[] = [];
+    const headers: Headers[] = [];
+    const claims: unknown[] = [];
+    let left = 1;
+    const usage = () => ({
+      five_hour: { utilization: 10, resets_at: "2100-01-01T00:00:00Z" },
+      seven_day: { utilization: left === 1 ? 100 : 0, resets_at: "2100-01-03T00:00:00Z" },
+      cedar_ember: {
+        eligible: true,
+        ineligible_reason: null,
+        exhausted: left === 1 ? ["seven_day"] : [],
+        grants: [
+          {
+            id: "full-reset-2611",
+            label: "Full reset",
+            resets_total: 1,
+            resets_left: left,
+            ends_at: "2100-12-10T00:00:00Z",
+            clears: ["seven_day", "seven_day_overage_included"],
+            paused: false,
+            usable_now: left === 1,
+            use_requires_limit: true,
+            percent_used: { seven_day: 100 },
+            blocking: [],
+            type: "weekly",
+          },
+          {
+            id: "launch-2610-fable",
+            resets_left: 1,
+            clears: ["seven_day_overage_included"],
+            usable_now: false,
+            blocking: ["five_hour"],
+            gives_back_weekly: true,
+          },
+        ],
+        cooldown_until: null,
+      },
+    });
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      source: "import",
+      options: {
+        // The production usage, profile and claim URLs, all answered here.
+        usageUrl: undefined,
+        importCredentials: async () => importedCredentials(),
+        fetch: async (input, init) => {
+          const url = String(input);
+          urls.push(url);
+          headers.push(new Headers(init?.headers));
+          if (url.startsWith("https://api.anthropic.com/api/oauth/usage")) return Response.json(usage());
+          if (url === "https://api.anthropic.com/api/oauth/profile")
+            return Response.json({ organization: { uuid: "0c0c0c0c-0000-4000-8000-000000000000" } });
+          if (url === "https://api.anthropic.com/api/organizations/0c0c0c0c-0000-4000-8000-000000000000/reset_rate_limits") {
+            claims.push(JSON.parse(String(init?.body)));
+            left = 0;
+            return Response.json({ result: "reset", resets_left: 0, cleared: ["seven_day", "seven_day_overage_included"] });
+          }
+          return Response.json({});
+        },
+      },
+    });
+    const id = fixture.account.id;
+    expect(urls[0]).toBe("https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1");
+    expect(headers[0]?.get("x-app")).toBe("cli");
+    expect(headers[0]?.get("user-agent")).toMatch(/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/u);
+    const listed = await fixture.host.harness.behavior.runCli(["account", "list"]);
+    expect(listed.stdout).toContain(
+      "weekly full-reset-2611 1/1 left usable; fable launch-2610-fable 1 left blocked by five_hour",
+    );
+    const status = await fixture.host.harness.behavior.runCli(["status"]);
+    expect(status.stdout).toContain(
+      `Usage reset: spend the weekly reset on pool@example.com (bb pool-local account reset ${id} weekly).`,
+    );
+    expect(claims).toEqual([]);
+
+    const missing = await fixture.host.harness.behavior.runCli(["account", "reset-auto", id]);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("bb pool-local account reset-auto <id> <grant-id> [--off]");
+    const flagged = await fixture.host.harness.behavior.runCli(["account", "reset-auto", id, "full-reset-2611"]);
+    expect(flagged).toMatchObject({ exitCode: 0 });
+    expect((await fixture.host.harness.behavior.runCli(["account", "list"])).stdout).toContain(
+      "weekly full-reset-2611 1/1 left usable auto",
+    );
+    const refused = await fixture.host.harness.behavior.runCli(["account", "reset", id, "fable"]);
+    expect(refused).toMatchObject({
+      exitCode: 1,
+      stderr: "No usage reset was spent on pool@example.com: no fable reset is usable: launch-2610-fable blocked by five_hour; it holds weekly (full-reset-2611).\n",
+    });
+    const spent = await fixture.host.harness.behavior.runCli(["account", "reset", id, "weekly"]);
+    expect(spent).toMatchObject({
+      exitCode: 0,
+      stdout: "weekly reset full-reset-2611 on pool@example.com: reset, 0 left, cleared seven_day, seven_day_overage_included.\n",
+    });
+    expect(claims).toEqual([
+      { program: "cedar_ember", grant_id: "full-reset-2611", request_id: expect.stringMatching(/^[0-9a-f]{32}$/u) },
+    ]);
+    expect((await fixture.host.harness.behavior.runCli(["account", "reset-auto", id, "full-reset-2611", "--off"])).exitCode).toBe(0);
+    expect((await fixture.host.harness.behavior.runCli(["account", "list"])).stdout).toContain(
+      "weekly full-reset-2611 0/1 left none left; fable",
+    );
+  });
+
   it("rewrites both known metadata account UUID formats", async () => {
     const bodies: Buffer[] = [];
     const upstream = await startUpstream(async (request, response) => {

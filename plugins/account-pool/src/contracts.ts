@@ -197,6 +197,48 @@ export const quotaSchema = z
 
 export type AccountQuota = z.infer<typeof quotaSchema>;
 
+// A usage-reset grant, from the usage read's cedar_ember program block (usage-resets.ts parses it).
+// Kinds follow Claude Code's /limit-reset: "fable" gives back the Fable share of the weekly limit,
+// "weekly" clears the weekly limits, "session" the 5-hour one, "full" both.
+export const resetKindSchema = z.enum(["fable", "full", "weekly", "session"]);
+export type ResetKind = z.infer<typeof resetKindSchema>;
+
+export const resetGrantSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9_-]{1,40}$/u),
+    kind: resetKindSchema,
+    resetsTotal: z.number().int().nonnegative().nullable(),
+    resetsLeft: z.number().int().nonnegative(),
+    startsAt: z.number().int().nullable(),
+    endsAt: z.number().int().nullable(),
+    // The limits a claim refills ("seven_day", "five_hour", "seven_day_overage_included", ...).
+    clears: z.array(z.string()),
+    paused: z.boolean(),
+    // Whether the server would accept a claim now: authoritative.
+    usableNow: z.boolean(),
+    // The grant becomes usable only once a limit it refills is at its cap.
+    useRequiresLimit: z.boolean(),
+    // Use of each limit the grant covers, 0..1.
+    percentUsed: z.record(z.string(), z.number()),
+    // Limits at their cap that this grant does not refill: why it cannot be used now.
+    blocking: z.array(z.string()),
+    unavailableReason: z.string().nullable(),
+  });
+// Not strict: grants stored by an earlier build carry a label, which parsing drops.
+export type ResetGrant = z.infer<typeof resetGrantSchema>;
+
+export const usageResetsSchema = z
+  .object({
+    eligible: z.boolean(),
+    ineligibleReason: z.string().nullable(),
+    grants: z.array(resetGrantSchema),
+    // A claim starts a program cooldown (about 60 s) during which no other claim is accepted.
+    cooldownUntil: z.number().int().nullable(),
+    observedAt: z.number().int(),
+  });
+// Not strict: rows stored by an earlier build carry the exhausted limits, which parsing drops.
+export type UsageResets = z.infer<typeof usageResetsSchema>;
+
 export const accountSummarySchema = accountSchema.extend({
   lastUsedHostName: z.string().min(1).nullable(),
   ...quotaFieldsShape,
@@ -208,6 +250,10 @@ export const accountSummarySchema = accountSchema.extend({
   // When a held or exhausted account is usable again: the hold's end, or the latest reset of its
   // exhausted windows. null when it is usable now or the reset is unknown.
   availableAt: z.number().int().nullable(),
+  // Claude OAuth accounts: the latest usage read's reset grants (null before the first one), and
+  // the grants flagged for automatic use at a wall (bb pool-local account reset-auto).
+  resets: usageResetsSchema.nullable().default(null),
+  autoUseGrantIds: z.array(z.string()).default([]),
 });
 
 export type AccountSummary = z.infer<typeof accountSummarySchema>;
@@ -339,3 +385,42 @@ export const tokenRotateInputSchema = z
 export const bypassInputSchema = z
   .object({ threadId: z.string().min(1), bypassed: z.boolean() })
   .strict();
+
+export const resetClaimInputSchema = z
+  .object({ accountId: z.string().uuid(), kind: resetKindSchema })
+  .strict();
+
+export const resetAutoUseInputSchema = z
+  .object({
+    accountId: z.string().uuid(),
+    grantId: resetGrantSchema.shape.id,
+    enabled: z.boolean(),
+  })
+  .strict();
+
+// What one claim did. "refused": nothing was sent (why says which grant is missing or blocked).
+// "answered": the server's result. "unsettled": the answer was ambiguous and a status re-read did
+// not show the reset used; the next claim on the account reuses the same request id.
+export const resetClaimOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("refused"), reason: z.string() }).strict(),
+  z
+    .object({
+      status: z.literal("answered"),
+      grantId: z.string(),
+      kind: resetKindSchema,
+      result: z.string(),
+      reason: z.string().nullable(),
+      resetsLeft: z.number().int().nullable(),
+      cleared: z.array(z.string()),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("unsettled"),
+      grantId: z.string(),
+      kind: resetKindSchema,
+      reason: z.string(),
+    })
+    .strict(),
+]);
+export type ResetClaimOutcome = z.infer<typeof resetClaimOutcomeSchema>;

@@ -44,8 +44,8 @@ Enabling the account again clears it, and so does a usage reading sent after the
 429 that shows room under the 5-hour and weekly limits it reports and, when the
 429 named one, under that limit too (its
 `anthropic-ratelimit-unified-representative-claim`, `rejectedLimit` in status:
-`seven_day` for a weekly limit, so a claimed `/limit-reset` frees the account at
-the next reading). A full window whose reset has passed counts as room. A hold
+`seven_day` for a weekly limit, so a claimed reset frees the account at the next
+reading). A full window whose reset has passed counts as room. A hold
 that named no limit ignores the per-model limits: each still blocks its own
 model. Two 429s from different limits leave a hold that names none.
 A reading sent before the 429, or one that leaves a named limit out, keeps it.
@@ -53,10 +53,96 @@ A 429 that only a weekly window rejects
 (Claude 7d or per-family, or a Codex window) is held by that window until its
 reset, as before, so a family-only limit still detours only its family.
 
-The settings page and `bb pool-local status` advise when a Claude usage reset is worth claiming by
-hand with `/limit-reset` (`src/reset-advice.ts`), from usage readings alone: once every account is
-at its weekly limit, on the account whose weekly limit resets latest, a Fable reset where it gives
-back at least a quarter of the weekly limit and a full reset otherwise.
+## Usage resets
+
+Claude Code's `/limit-reset` spends grants of a program the usage endpoint calls
+`cedar_ember` (reverse-engineered from Claude Code 2.1.321 on 2026-11-12,
+`src/usage-resets.ts`). The usage read asks for it
+(`/api/oauth/usage?cedar_ember=1&skip_spend=1`, with the CLI's `user-agent` and
+`x-app: cli`, or the server answers `ineligible_reason: "surface"`) and gets the
+plain usage payload plus a program block: eligibility, the limits at their cap,
+a claim cooldown, and the grants. Each grant has a kind (`fable` gives back the
+Fable share of the weekly limit; else its type, or what it clears: `session`
+the 5-hour limit, `weekly` the weekly ones, `full` both), resets left, and
+`usable_now`, the server's verdict, with `blocking` (limits at their cap it does
+not refill) and `unavailable_reason` saying why not. The grants of the latest
+read are kept per account (table `account_resets`, which an older build never
+reads) and shown in `bb pool-local account list` and status. The user agent's
+version is one constant, `CLAUDE_CLI_USER_AGENT`: when the server stops
+accepting it, status shows `ineligible (cli_version)`.
+
+`bb pool-local account reset <id> <fable|full|weekly|session>` (RPC
+`account.claimReset`) claims as the CLI does: from a read taken now, the first
+usable grant of the kind, POSTed to
+`/api/organizations/<organization>/reset_rate_limits` (the organization from a
+profile read at claim time) with a `request_id`. The request id is kept in KV
+(`reset-claim:<account>`) until the claim settles: an ambiguous answer (5xx,
+429, `unavailable`, no answer) leaves it, and the next claim of that grant
+resends the same id. A read that lists the grant with fewer resets left settles
+it as used, after an ambiguous answer or a rejection (a duplicate request id
+after a send that landed): a claim asking for it again reports it used without
+sending anything, and a claim of another kind proceeds. While a claim is
+unsettled, a claim of a different grant on that account is refused, and so is
+any claim while the read no longer lists the unsettled claim's grant. A resend
+keeps the request id and moves the claim's time, so 10 minutes after its last
+send (Claude Code's own horizon) without a read showing it used, the unsettled
+claim is dropped, with a log line. A pending record that does not parse refuses
+every claim on its account and is left for a person to inspect: its request id
+may be the only safe one to resend. A read after each claim releases the
+holds it lifted (`releasesRejection`). Claims are logged, not recorded in the
+usage ledger: they are rare, the ledger's quota rows already show their effect,
+and nothing would read a claims table.
+
+`bb pool-local account reset-auto <id> <grant-id> [--off]` (RPC
+`account.setResetAutoUse`, KV `reset-auto-use:<account>:<grant>`) flags a grant
+for automatic use. When a Claude request finds no account to try, the hub
+spends a flagged grant only when all of these hold: no Claude account can serve
+any model now; none frees up on its own within 60 minutes (a reset is not worth
+skipping a short 5-hour hold); no claim on any account was sent less than 10
+minutes ago without settling (one older is taken as never applied), and no
+pending record is unreadable; and a read taken now shows the grant usable, with
+resets left, not paused and blocked by nothing. It claims
+through the same path, then selects again, so the request that hit the wall is
+served. The wall is judged from usage reads of every enabled Claude OAuth
+account taken then, not from cached readings (a reset claimed by hand on
+another account would not show yet): a failed read, a 200 that yields no usage
+reading, an account in error, or one at a limit with no known free-up declines; an unknown free-up never counts as
+more than an hour away, and a read showing an account that can serve sends the
+request back to selection. One claim per wall: until a Claude account serves a
+native response, it claims no further flagged grant. That state is kept in KV
+(`reset-wall-claimed`), written just before the claim is sent (and removed again
+if nothing left), so a reload during the send or the read after it spends no
+second grant at the same wall.
+Before each flagged grant, and again just before its POST, the hub checks the
+live quotas: if a claim by hand (or anything else) has freed an account
+meanwhile, it spends nothing and selects again. A claim by hand POSTing at the
+very same instant on another account cannot be seen, so in that race both may
+spend. Walled requests share one decision; after a decline that read usage, or a claim
+sent, walled requests skip the probing for 60 s, as long as the server's claim
+cooldown. Each decision is logged (`bb plugin logs account-pool-local`: a claim
+at info, a decline at debug, each distinct decline once in a row).
+
+Without a flag nothing changes. With one, a request at a wall waits on these
+upstream reads (and the claim: profile read, POST, read; 10 s timeout each)
+before its answer. A client that gives up ends its own wait, not a claim
+already started: the spend serves the pool, not that request.
+
+Fable requests prefer one account, derived on each selection from quota and
+grant state: among the accounts that can serve Fable now, those holding a Fable
+grant with resets left (not paused, not expired), the one whose Fable limit is
+the most used. Filling the fullest Fable bucket first makes its reset, which
+gives back half of that use, worth the most, and keeps Fable traffic on one
+account. The detour never moves the session's pin or the provider cursor, like
+a family detour; when the preferred account is the one selection would pick
+anyway, or no account holds such a grant, selection is unchanged.
+
+The settings page and `bb pool-local status` advise on resets from these facts
+(`src/reset-advice.ts`). An account has room only if it can serve now: weekly
+room and no hold from the router (`rejectedUntil`, `heldUntil`). When none can,
+the advice names when one serves again on its own and the best usable grant to
+spend: a Fable reset where it gives back at least a quarter of the weekly limit
+(half the Fable limit's use the grant reports), else a full or weekly one, else
+a session one; first on the account that would wait longest on its own.
 
 ## Automatic retry after a Pooler 429
 

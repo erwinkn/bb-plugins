@@ -83,6 +83,8 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
     inFlight: 0,
     active: false,
     availableAt: null,
+    resets: null,
+    autoUseGrantIds: [],
     status: "ready",
     ...overrides,
   };
@@ -194,7 +196,7 @@ describe("Account Pool settings", () => {
     ).toBeTruthy();
   });
 
-  it("advises which usage reset to claim by hand, and when none is needed", async () => {
+  it("advises which usage reset to spend from the grants held, and when none is needed", async () => {
     const resetAt = Date.now() + 5 * 24 * 3_600_000;
     const fable = (utilization: number) => ({
       fable: { utilization, resetAt, status: null, observedAt: 1, source: "usage" as const },
@@ -203,7 +205,22 @@ describe("Account Pool settings", () => {
       haiku: null,
       other: null,
     });
-    const walled = (id: string, label: string, days: number, use: number) =>
+    const grant = (id: string, kind: "fable" | "full") => ({
+      id,
+      kind,
+      resetsTotal: 1,
+      resetsLeft: 1,
+      startsAt: null,
+      endsAt: null,
+      clears: kind === "fable" ? ["seven_day_overage_included"] : ["seven_day"],
+      paused: false,
+      usableNow: true,
+      useRequiresLimit: false,
+      percentUsed: {},
+      blocking: [],
+      unavailableReason: null,
+    });
+    const walled = (id: string, label: string, days: number, use: number, kind: "fable" | "full") =>
       account({
         id,
         label,
@@ -211,15 +228,24 @@ describe("Account Pool settings", () => {
         sevenDayUtilization: 1,
         sevenDayResetAt: Date.now() + days * 24 * 3_600_000,
         familyWeekly: fable(use),
+        resets: {
+          eligible: true,
+          ineligibleReason: null,
+          grants: [grant(`${label}-grant`, kind)],
+          cooldownUntil: null,
+          observedAt: 1,
+        },
       });
     const slot = render([
-      walled("11111111-1111-4111-8111-111111111111", "seven", 6, 0.58),
-      walled("22222222-2222-4222-8222-222222222222", "five", 1.5, 0.16),
+      walled("11111111-1111-4111-8111-111111111111", "seven", 6, 0.58, "fable"),
+      walled("22222222-2222-4222-8222-222222222222", "five", 1.5, 0.16, "full"),
     ]);
     const note = await slot.findByLabelText("Usage reset advice");
-    expect(note.textContent).toContain("Spend a Fable reset on seven · /limit-reset fable");
     expect(note.textContent).toContain(
-      "No Fable reset left on seven? Spend its full reset. Neither? Next: five (full).",
+      "Spend the Fable reset on seven · bb pool-local account reset 11111111-1111-4111-8111-111111111111 fable",
+    );
+    expect(note.textContent).toContain(
+      "A Fable reset on seven (seven-grant, 1 left) gives back 29 points of its weekly limit. Next: five (full).",
     );
     cleanup();
     const idle = render();

@@ -10,6 +10,8 @@ import {
   codexLoginPollInputSchema,
   loginCompleteInputSchema,
   modelFamilySchema,
+  resetAutoUseInputSchema,
+  resetClaimInputSchema,
   tokenRotateInputSchema,
   routingSetInputSchema,
   type AccountPoolConfig,
@@ -20,7 +22,9 @@ import {
   type LimitWindow,
   type ModelFamily,
   type PoolStatusReport,
+  type ResetClaimOutcome,
 } from "./contracts.js";
+import { claimable, describeClaimOutcome, unusableReason } from "./usage-resets.js";
 import type {
   AdvisorConfigController,
   AdvisorConfigView,
@@ -64,6 +68,8 @@ const HELP = [
   "  bb pool-local account priority <id> <n>",
   "  bb pool-local account reorder <claude|codex> <id>...",
   "  bb pool-local account refresh <id>",
+  "  bb pool-local account reset <id> <fable|full|weekly|session>  Spends one usage reset.",
+  "  bb pool-local account reset-auto <id> <grant-id> [--off]",
   "  bb pool-local status [--json]",
   "  bb pool-local routing <claude|codex> [--off]",
   "  bb pool-local config",
@@ -155,7 +161,46 @@ function formatFamilyQuota(quota: FamilyQuota | null): string {
   ].join(" ");
 }
 
-function formatAccounts(accounts: readonly AccountSummary[]): string {
+// Each grant's kind, id, resets left, and whether a claim would be accepted now (or why not).
+function formatResets(account: AccountSummary, now: number): string {
+  const { resets } = account;
+  const unheld = account.autoUseGrantIds
+    .filter((id) => !resets?.grants.some((grant) => grant.id === id))
+    .map((id) => `auto ${id} (not held)`);
+  if (resets === null) return unheld.length === 0 ? "-" : unheld.join("; ");
+  if (!resets.eligible) return `ineligible (${resets.ineligibleReason ?? "unknown"})`;
+  const grants = resets.grants.map((grant) =>
+    [
+      grant.kind,
+      grant.id,
+      `${grant.resetsLeft}${grant.resetsTotal === null ? "" : `/${grant.resetsTotal}`} left`,
+      claimable(grant, now) ? "usable" : unusableReason(grant, now),
+      ...(account.autoUseGrantIds.includes(grant.id) ? ["auto"] : []),
+    ].join(" "),
+  );
+  const cooldown =
+    resets.cooldownUntil !== null && resets.cooldownUntil > now
+      ? [`cooldown until ${formatReset(resets.cooldownUntil)}`]
+      : [];
+  const all = [...grants, ...unheld, ...cooldown];
+  return all.length === 0 ? "none" : all.join("; ");
+}
+
+function formatClaim(label: string, outcome: ResetClaimOutcome): PluginCliResult {
+  if (outcome.status === "refused")
+    return { exitCode: 1, stderr: `No usage reset was spent on ${label}: ${outcome.reason}.\n` };
+  if (outcome.status === "unsettled")
+    return {
+      exitCode: 1,
+      stderr: `The claim of ${outcome.kind} reset ${outcome.grantId} on ${label} is unsettled: ${outcome.reason}.\n`,
+    };
+  return {
+    exitCode: outcome.result === "reset" ? 0 : 1,
+    stdout: `${outcome.kind} reset ${outcome.grantId} on ${label}: ${describeClaimOutcome(outcome)}.\n`,
+  };
+}
+
+function formatAccounts(accounts: readonly AccountSummary[], now: number): string {
   if (accounts.length === 0) return "No accounts configured.";
   const families = modelFamilySchema.options.filter((family) =>
     accounts.some((account) => account.familyWeekly[family] !== null),
@@ -174,6 +219,7 @@ function formatAccounts(accounts: readonly AccountSummary[]): string {
       "Windows",
       ...families.map(familyLabel),
       "Status",
+      "Resets",
     ].join("\t"),
     ...accounts.map((account) =>
       [
@@ -191,12 +237,13 @@ function formatAccounts(accounts: readonly AccountSummary[]): string {
           formatFamilyQuota(account.familyWeekly[family]),
         ),
         account.status,
+        formatResets(account, now),
       ].join("\t"),
     ),
   ].join("\n");
 }
 
-function formatStatus(status: PoolStatusReport): string {
+function formatStatus(status: PoolStatusReport, now: number): string {
   return [
     `Route: ${status.route}`,
     `Accepting: ${status.accepting}`,
@@ -219,7 +266,7 @@ function formatStatus(status: PoolStatusReport): string {
             `${thread.threadId}\t${thread.hostName ?? thread.hostId}\t${thread.localClaudeStatus}`,
         )),
     "",
-    formatAccounts(status.accounts),
+    formatAccounts(status.accounts, now),
   ].join("\n");
 }
 
@@ -470,6 +517,18 @@ export function registerPoolCli(
         usage: "bb pool-local account refresh <id>",
       },
       {
+        name: "account-reset",
+        summary:
+          "Spend one usage reset of a kind on an account, as Claude Code's /limit-reset does",
+        usage: "bb pool-local account reset <id> <fable|full|weekly|session>",
+      },
+      {
+        name: "account-reset-auto",
+        summary:
+          "Flag a usage-reset grant for automatic use when the whole Claude pool hits a long wall",
+        usage: "bb pool-local account reset-auto <id> <grant-id> [--off]",
+      },
+      {
         name: "status",
         summary: "Show hub, machine token, routing, and account status",
         usage: "bb pool-local status [--json]",
@@ -585,6 +644,31 @@ export function registerPoolCli(
           if ((await operations.refreshUsage(id)) === null)
             throw new Error("Account not found.");
           return { exitCode: 0, stdout: `Refreshed usage for ${id}.\n` };
+        }
+        if (argv[0] === "account" && argv[1] === "reset") {
+          if (argv.length !== 4) throw new Error(HELP);
+          const input = resetClaimInputSchema.parse({ accountId: argv[2], kind: argv[3] });
+          const outcome = await operations.claimReset(input.accountId, input.kind);
+          if (outcome === null) throw new Error("Account not found.");
+          const account = (await operations.list()).find((item) => item.id === input.accountId);
+          return formatClaim(account?.email ?? account?.label ?? input.accountId, outcome);
+        }
+        if (argv[0] === "account" && argv[1] === "reset-auto") {
+          if (argv.length !== 4 && argv.length !== 5) throw new Error(HELP);
+          const flags = parseFlags(argv.slice(4), ["off"], []);
+          const input = resetAutoUseInputSchema.parse({
+            accountId: argv[2],
+            grantId: argv[3],
+            enabled: !flags.booleans.has("off"),
+          });
+          const account = await operations.setResetAutoUse(input.accountId, input.grantId, input.enabled);
+          if (account === null) throw new Error("Account not found.");
+          return {
+            exitCode: 0,
+            stdout: input.enabled
+              ? `Flagged ${input.grantId} on ${account.email ?? account.label} for automatic use when no Claude account can serve for over an hour.\n`
+              : `Unflagged ${input.grantId} on ${account.email ?? account.label}.\n`,
+          };
         }
         if (argv[0] === "account" && argv[1] === "add") {
           const flags = parseFlags(
@@ -734,7 +818,7 @@ export function registerPoolCli(
             exitCode: 0,
             stdout: flags.booleans.has("json")
               ? json({ accounts })
-              : `${formatAccounts(accounts)}\n`,
+              : `${formatAccounts(accounts, usage.now())}\n`,
           };
         }
         if (
@@ -780,7 +864,7 @@ export function registerPoolCli(
             exitCode: 0,
             stdout: flags.booleans.has("json")
               ? json(status)
-              : `${formatStatus(status)}\n${formatAdvisorStatus(advisor.get())}\n${formatWarmingStatusLine(warming.config.get())}\n${resetLine}`,
+              : `${formatStatus(status, usage.now())}\n${formatAdvisorStatus(advisor.get())}\n${formatWarmingStatusLine(warming.config.get())}\n${resetLine}`,
           };
         }
         if (argv[0] === "routing") {

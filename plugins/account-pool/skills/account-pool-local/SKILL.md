@@ -34,8 +34,12 @@ retried automatically once the next account frees up, if that is within the plug
 are debug lines in `bb plugin logs account-pool-local`; see the README's "Automatic retry after a
 Pooler 429".
 
-`bb pool-local status` ends with a read-only "Usage reset:" line for the user to act on by hand with
-`/limit-reset`; never claim a reset for them unless asked.
+`bb pool-local status` ends with a "Usage reset:" line: whether any Claude account can serve now,
+when one serves again on its own, and which held, usable reset to spend, with its command
+(`bb pool-local account reset <id> <kind>`). The Pooler sees each account's reset grants and can
+spend one, but never claim a reset for the user unless asked; flagging a grant for automatic use
+(`bb pool-local account reset-auto`) is the user's call too. See
+[references/accounts-and-routing.md](references/accounts-and-routing.md#usage-resets).
 
 Advisor routes and cache warming are opt-in and off by default. Inspect them with
 `bb pool-local advisor`, `bb pool-local warming` and `bb pool-local warming status`;

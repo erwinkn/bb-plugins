@@ -15,6 +15,9 @@ import {
   codexLoginPollSchema,
   codexLoginStartSchema,
   hubTokenSummarySchema,
+  resetAutoUseInputSchema,
+  resetClaimInputSchema,
+  resetClaimOutcomeSchema,
   loginCompleteInputSchema,
   loginStartSchema,
   routedThreadStatusListSchema,
@@ -89,6 +92,15 @@ export const accountPoolRpcContract = defineRpcContract({
   },
   "account.refreshUsage": {
     input: z.object({ accountId: z.string().uuid() }).strict(),
+    output: z.object({ account: accountSummarySchema.nullable() }).strict(),
+  },
+  // Spends one usage reset; only on an explicit request (bb pool-local account reset).
+  "account.claimReset": {
+    input: resetClaimInputSchema,
+    output: z.object({ outcome: resetClaimOutcomeSchema.nullable() }).strict(),
+  },
+  "account.setResetAutoUse": {
+    input: resetAutoUseInputSchema,
     output: z.object({ account: accountSummarySchema.nullable() }).strict(),
   },
   "routing.set": {
@@ -213,6 +225,12 @@ export function createRpcHandlers(
     }),
     "account.refreshUsage": async ({ accountId }) => ({
       account: await operations.refreshUsage(accountId),
+    }),
+    "account.claimReset": async ({ accountId, kind }) => ({
+      outcome: await operations.claimReset(accountId, kind),
+    }),
+    "account.setResetAutoUse": async ({ accountId, grantId, enabled }) => ({
+      account: await operations.setResetAutoUse(accountId, grantId, enabled),
     }),
     "account.reorder": async ({ provider, accountIds }) => {
       await operations.reorder(provider, accountIds);

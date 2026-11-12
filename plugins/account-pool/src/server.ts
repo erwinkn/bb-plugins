@@ -83,6 +83,7 @@ import { buildUsageReport } from "./usage-report.js";
 import { applyRelink, planRelink } from "./usage-relink.js";
 import { queryUsageQuota, runUsageRollup, UsageRollup } from "./usage-rollup.js";
 import { parseOrThrow } from "./validation.js";
+import { ResetClaimStore } from "./usage-resets.js";
 
 export interface AccountPoolPluginOptions {
   fetch?: typeof fetch;
@@ -99,6 +100,7 @@ export interface AccountPoolPluginOptions {
   oauthAuthorizeUrl?: string;
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
+  resetUrl?: (organizationUuid: string) => string;
   codexAuthBaseUrl?: string;
   // Loopback fetch for the Initiatives context read; tests stub it.
   projectsFetch?: typeof fetch;
@@ -468,9 +470,15 @@ export function createAccountPoolPlugin(
         }
       });
     }
+    const resetClaims = new ResetClaimStore(bb.storage.kv);
     const hub = createHub({
       accounts,
       quotas,
+      resetClaims,
+      resetUrl: options.resetUrl,
+      // Where pooler-retry logs its decisions; a claim sent is worth an info line.
+      logReset: (message, level) =>
+        level === "info" ? bb.log.info(message) : bb.log.debug(message),
       affinity: new PoolAffinityStore(db),
       hubTokens,
       getSettings: () => currentSettings,
@@ -514,6 +522,7 @@ export function createAccountPoolPlugin(
       now,
       () => bb.realtime.publish(ACCOUNT_POOL_ACCOUNTS_CHANGED, {}),
       (accountId) => hub.refreshUsage(accountId, true),
+      resetClaims,
     );
     const login = new ClaudeOAuthLogin({
       fetch: upstreamFetch,

@@ -6,6 +6,10 @@ import type {
   ModelFamily,
   PoolProvider,
   PoolStatus,
+  ResetClaimOutcome,
+  ResetGrant,
+  ResetKind,
+  UsageResets,
 } from "./contracts.js";
 import {
   advisorRouteEnabled,
@@ -18,6 +22,18 @@ import {
   createUsageTap,
 } from "./cache-usage.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
+import {
+  autoUseGrant,
+  claimLanded,
+  describeClaimOutcome,
+  holdsGrant,
+  newRequestId,
+  pickGrant,
+  UNSETTLED_HORIZON_MS,
+  type ClaimAnswer,
+  type PendingClaim,
+  type ResetClaimStore,
+} from "./usage-resets.js";
 import { StringCheck } from "./json-scan.js";
 import { abortable, linkSignals } from "./signals.js";
 import {
@@ -62,7 +78,14 @@ const ROUTE = "/api/v1/plugins/account-pool-local/http";
 const MAX_SESSION_REJECTIONS = 1_024;
 const SESSION_REJECTION_TTL_MS = 15 * 60_000;
 const DEFAULT_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
-const DEFAULT_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+// With the reset program's block (usage-resets.ts); skip_spend leaves out the spend section.
+const DEFAULT_USAGE_URL =
+  "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1";
+// A flagged reset is spent at a wall only when no account frees up sooner than this on its own.
+const AUTO_RESET_MIN_WAIT_MS = 60 * 60_000;
+// After an automatic-claim decision that probed (fresh reads) or sent a claim, walled requests skip
+// probing this long: the server's own claim cooldown is about as long.
+const AUTO_RESET_QUIET_MS = 60_000;
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
@@ -106,6 +129,9 @@ interface HubOptions {
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
   warming: WarmingHooks | null;
   ledger: LedgerHooks | null;
+  resetClaims: ResetClaimStore | null;
+  // Every reset claim and automatic-claim decision: "info" for a claim sent, "debug" for a decline.
+  logReset: (message: string, level: "info" | "debug") => void;
 }
 
 // The hub's view of the cache warmer: it reports native Claude Messages traffic, and the session of
@@ -131,6 +157,19 @@ interface SelectedAccount {
   quota: AccountQuota;
   keepAffinity: boolean;
   accept: () => void;
+}
+
+// What a claim spends: the first usable grant of a kind (a claim by hand), or one grant (a flag).
+type ClaimTarget = { kind: ResetKind } | { grantId: string };
+
+// A claim's outcome, and what became of its POST. "sent": it left (answered, ambiguous, or
+// rejected after the send). "not-sent": a refusal before it, or the adapter's "unsent".
+// "pool-serves": an automatic claim stopped just before its POST because an account can serve
+// now (a claim by hand landed meanwhile): nothing to spend, select again. Internal: the RPC and
+// CLI see the outcome only.
+interface ClaimResult {
+  outcome: ResetClaimOutcome;
+  delivery: "sent" | "not-sent" | "pool-serves";
 }
 
 interface ActiveAccount {
@@ -200,6 +239,12 @@ export class AccountPoolHub {
     string,
     { answeredAt: number; retryAt: number }
   >();
+  // Claims run one at a time per account; an automatic one at a time for the pool.
+  private readonly resetClaimFlights = new Map<string, Promise<ClaimResult>>();
+  private autoResetFlight: Promise<boolean> | null = null;
+  // Until when walled requests skip probing for an automatic claim, after a decline or a sent one.
+  private autoResetQuietUntil = 0;
+  private lastAutoResetLog: string | null = null;
 
   constructor(private readonly options: HubOptions) {}
 
@@ -213,6 +258,8 @@ export class AccountPoolHub {
       MAX_AFFINITY_BINDINGS,
     );
     this.activeAccounts = this.options.affinity.loadActiveAccounts();
+    // Whether an automatic claim was already sent at the current wall, before a reload.
+    await this.options.resetClaims?.wallClaimed().catch(() => undefined);
     this.pacingByAccount.clear();
     this.stopped = new AbortController();
     this.accepting = true;
@@ -507,19 +554,356 @@ export class AccountPoolHub {
     if (running !== undefined) return running;
     this.lastUsageRefreshAt.set(account.id, now);
     const refresh = adapter
-      .refreshUsage({
-        account,
-        freshSecret: () =>
-          this.freshSecret(account, adapter, { kind: "normal" }),
-        accounts: this.options.accounts,
-        quotas: this.options.quotas,
-        fetch: this.options.fetch,
-        now: this.options.now,
-      })
+      .refreshUsage(this.usageContext(account, adapter))
       .catch(() => undefined)
       .finally(() => this.usageRefreshes.delete(account.id));
     this.usageRefreshes.set(account.id, refresh);
     return refresh;
+  }
+
+  private usageContext(account: Account, adapter: ProviderAdapter) {
+    return {
+      account,
+      freshSecret: () => this.freshSecret(account, adapter, { kind: "normal" }),
+      accounts: this.options.accounts,
+      quotas: this.options.quotas,
+      fetch: this.options.fetch,
+      now: this.options.now,
+    };
+  }
+
+  // A usage read that runs even while the account serves, and fails when it fails: a claim must
+  // judge from a reading taken now.
+  private async readUsageNow(account: Account): Promise<void> {
+    await this.usageRefreshes.get(account.id);
+    const adapter = this.adapter(account.provider);
+    this.lastUsageRefreshAt.set(account.id, this.options.now());
+    const read = adapter.refreshUsage(this.usageContext(account, adapter));
+    const tracked = read
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.usageRefreshes.get(account.id) === tracked)
+          this.usageRefreshes.delete(account.id);
+      });
+    this.usageRefreshes.set(account.id, tracked);
+    await read;
+  }
+
+  // Spends one usage reset of the kind on the account: bb pool-local account reset, never on its own.
+  async claimReset(accountId: string, kind: ResetKind): Promise<ResetClaimOutcome | null> {
+    const account = (await this.options.accounts.list()).find((candidate) => candidate.id === accountId);
+    if (account === undefined) return null;
+    return (await this.claim(account, { kind }, "manual")).outcome;
+  }
+
+  // One claim, as Claude Code makes it: from a status read taken now, with a request id kept until
+  // the claim settles, so a resend after an ambiguous answer can only spend the reset once. A read
+  // after the claim releases the holds it lifted (quotaFromUsage) and settles an ambiguous answer.
+  // Claims on one account run one at a time.
+  private claim(account: Account, target: ClaimTarget, trigger: "manual" | "auto"): Promise<ClaimResult> {
+    const running = this.resetClaimFlights.get(account.id) ?? Promise.resolve(null);
+    const next = running
+      .catch(() => null)
+      .then(() => this.claimNow(account, target, trigger))
+      .finally(() => {
+        if (this.resetClaimFlights.get(account.id) === next) this.resetClaimFlights.delete(account.id);
+      });
+    this.resetClaimFlights.set(account.id, next);
+    return next;
+  }
+
+  private async claimNow(account: Account, target: ClaimTarget, trigger: "manual" | "auto"): Promise<ClaimResult> {
+    const name = account.email ?? account.label;
+    const store = this.options.resetClaims;
+    const adapter = this.adapter(account.provider);
+    // Every refusal before the POST: nothing was sent.
+    const refused = (reason: string): ClaimResult => ({ outcome: { status: "refused", reason }, delivery: "not-sent" });
+    if (store === null || adapter.claimReset === undefined || account.kind !== "oauth")
+      return refused("only Claude subscription (OAuth) accounts hold usage resets");
+    const readAt = this.options.now();
+    const read = await this.readUsageNow(account).then(
+      () => true,
+      () => false,
+    );
+    const resets = this.options.quotas.getResets(account.id);
+    if (!read || resets === null || resets.observedAt < readAt)
+      return refused(`the usage read of ${name} failed; nothing was sent`);
+    const now = this.options.now();
+    // Settle the account's earlier unsettled claim first: one per account, as in Claude Code.
+    const pending = await store.pending(account.id);
+    if (pending === "unreadable")
+      return refused(
+        `its unsettled-claim record (KV reset-claim:${account.id}) does not parse, and its request id may be the only safe one to resend; nothing was sent, and the record is left as it is`,
+      );
+    let resend: PendingClaim | null = null;
+    if (pending !== null) {
+      const listed = resets.grants.find((candidate) => candidate.id === pending.grantId);
+      const until = new Date(pending.at + UNSETTLED_HORIZON_MS).toISOString();
+      if (listed !== undefined && claimLanded(pending, resets)) {
+        await store.clearPending(account.id);
+        this.options.logReset(`Account Pooler found its earlier claim of ${pending.grantId} on ${name} used.`, "info");
+        // The claim asked for again landed: report it and send nothing. A claim of another grant
+        // or kind proceeds.
+        if ("kind" in target ? listed.kind === target.kind : listed.id === target.grantId)
+          return {
+            outcome: {
+              status: "answered",
+              grantId: listed.id,
+              kind: listed.kind,
+              result: "reset",
+              reason: "an earlier claim with an ambiguous answer was used; nothing new was sent",
+              resetsLeft: listed.resetsLeft,
+              cleared: listed.clears,
+            },
+            delivery: "not-sent",
+          };
+      } else if (now - pending.at < UNSETTLED_HORIZON_MS) {
+        if (listed === undefined)
+          return refused(
+            `grant ${pending.grantId} of an earlier unsettled claim is no longer listed; that claim's state is unknown until ${until}`,
+          );
+        resend = pending;
+      } else {
+        await store.clearPending(account.id);
+        this.options.logReset(
+          `Account Pooler dropped its unsettled claim of ${pending.grantId} on ${name}: ${listed === undefined ? "the grant is no longer listed" : "no read showed it used"} within ${UNSETTLED_HORIZON_MS / 60_000} minutes.`,
+          "info",
+        );
+      }
+    }
+    const chosen = "kind" in target ? pickGrant(resets, target.kind, now) : autoUseGrant(resets, target.grantId, now);
+    if ("refused" in chosen) return refused(chosen.refused);
+    const { grant } = chosen;
+    // The last check before an automatic POST: a claim by hand that landed meanwhile (on this
+    // account during this read, or on another) leaves nothing to spend. One POSTing at this same
+    // instant elsewhere cannot be seen, and stays possible.
+    if (trigger === "auto") {
+      const serving = await this.servingClaudeAccount();
+      if (serving !== undefined)
+        return {
+          outcome: { status: "refused", reason: `${serving.email ?? serving.label} can serve now` },
+          delivery: "pool-serves",
+        };
+    }
+    // A new claim on another grant could double-spend if the earlier one landed after all.
+    if (resend !== null && resend.grantId !== grant.id)
+      return refused(
+        `an earlier claim of ${resend.grantId} on ${name} is unsettled; claim it again to resend it, or wait until ${new Date(resend.at + UNSETTLED_HORIZON_MS).toISOString()}`,
+      );
+    // A resend keeps its request id and baseline; its time moves, so the horizon counts from the
+    // last send.
+    const claim: PendingClaim = resend === null
+      ? { grantId: grant.id, requestId: newRequestId(), resetsLeftBefore: grant.resetsLeft, at: now }
+      : { ...resend, at: now };
+    await store.setPending(account.id, claim);
+    // An automatic claim marks the wall before it is sent: a reload during the send or the read
+    // after it must not spend a second flagged grant at the same wall.
+    if (trigger === "auto") await store.setWallClaimed(true);
+    const answer: ClaimAnswer = await adapter
+      .claimReset(this.usageContext(account, adapter), claim)
+      .catch((error: unknown) => ({ kind: "ambiguous" as const, reason: errorMessage(error) }));
+    if (answer.kind === "unsent") {
+      if (resend === null) await store.clearPending(account.id);
+      else await store.setPending(account.id, resend);
+      if (trigger === "auto") await store.setWallClaimed(false);
+      return refused(`${answer.reason}; nothing was sent`);
+    }
+    if (answer.kind === "answered") await store.clearPending(account.id);
+    const reread = await this.readUsageNow(account).then(
+      () => true,
+      () => false,
+    );
+    this.options.onAccountsChanged();
+    const after = reread ? this.options.quotas.getResets(account.id) : null;
+    // A rejection (a duplicate request id after a send that landed, say) or an ambiguous answer
+    // settles as used when the read shows it.
+    const settled = answer.kind !== "answered" && after !== null && claimLanded(claim, after);
+    if (settled || answer.kind === "rejected") await store.clearPending(account.id);
+    const left = after?.grants.find((candidate) => candidate.id === grant.id)?.resetsLeft ?? null;
+    const outcome: ResetClaimOutcome =
+      answer.kind === "answered"
+        ? {
+            status: "answered",
+            grantId: grant.id,
+            kind: grant.kind,
+            result: answer.result,
+            reason: answer.reason,
+            resetsLeft: answer.resetsLeft ?? left,
+            cleared: answer.cleared,
+          }
+        : settled
+          ? {
+              status: "answered",
+              grantId: grant.id,
+              kind: grant.kind,
+              result: "reset",
+              reason: `the claim got ${answer.reason}, and a status read shows the reset used`,
+              resetsLeft: left,
+              cleared: grant.clears,
+              }
+          : answer.kind === "rejected"
+            ? { status: "refused", reason: `the server refused the claim of ${grant.id} (${answer.reason})` }
+            : {
+                status: "unsettled",
+                grantId: grant.id,
+                kind: grant.kind,
+                reason: `the claim got ${answer.reason}; claim again to resend it with the same request id`,
+              };
+    this.options.logReset(
+      `Account Pooler ${trigger} claim of ${grant.kind} reset ${grant.id} on ${name}: ${describeClaimOutcome(outcome)}.`,
+      "info",
+    );
+    return { outcome, delivery: "sent" };
+  }
+
+  // At a wall (no Claude account can serve any model), spends one flagged grant, once per wall:
+  // only when fresh reads of every Claude account show none freeing up within
+  // AUTO_RESET_MIN_WAIT_MS (an unknown free-up never counts as far), no claim is unsettled, and the
+  // grant is claimable and blocked by nothing. True when selection should run again: a reset was
+  // claimed, or a fresh read shows an account that can serve. Concurrent walled requests share one
+  // run; after a decline or a sent claim, walled requests skip the probing for
+  // AUTO_RESET_QUIET_MS. Without a flag it does nothing and logs nothing.
+  private autoReset(accounts: readonly Account[]): Promise<boolean> {
+    this.autoResetFlight ??= this.tryAutoReset(accounts)
+      .catch((error: unknown) => {
+        this.logAutoReset(`Account Pooler could not auto-claim a usage reset: ${errorMessage(error)}`);
+        return false;
+      })
+      .finally(() => {
+        this.autoResetFlight = null;
+      });
+    return this.autoResetFlight;
+  }
+
+  private async tryAutoReset(accounts: readonly Account[]): Promise<boolean> {
+    const store = this.options.resetClaims;
+    const flags = (await store?.autoUse()) ?? [];
+    if (store === null || flags.length === 0) return false;
+    const decline = (reason: string) => {
+      this.logAutoReset(`Account Pooler does not auto-claim a usage reset: ${reason}.`);
+      return false;
+    };
+    const probed = (reason: string) => {
+      this.autoResetQuietUntil = this.options.now() + AUTO_RESET_QUIET_MS;
+      return decline(reason);
+    };
+    const threshold = this.options.getSettings().switchThreshold;
+    const claude = accounts.filter((account) => account.provider === "claude" && account.enabled);
+    const cachedFreeAt = this.usableTimes(claude, null, this.options.now())[0];
+    if (cachedFreeAt !== undefined && cachedFreeAt <= this.options.now())
+      return decline("an account can still serve other models");
+    if (await store.wallClaimed()) return decline("one was claimed at this wall and no account has served since");
+    if (this.options.now() < this.autoResetQuietUntil)
+      return decline(`the last decision was less than ${AUTO_RESET_QUIET_MS / 1_000} s ago`);
+    // Judged from reads taken now: a cached reading misses a reset claimed by hand elsewhere. An
+    // account in error is judged before any read.
+    const oauth = claude.filter((account) => account.kind === "oauth");
+    const broken = oauth.find((account) => this.options.quotas.get(account.id).error !== null);
+    if (broken !== undefined) return probed(`${broken.email ?? broken.label} is in error`);
+    const readAt = this.options.now();
+    const failed = (
+      await Promise.all(oauth.map((account) => this.readUsageNow(account).then(() => null, () => account)))
+    ).find((account) => account !== null);
+    if (failed !== undefined) return probed(`the usage read of ${failed.email ?? failed.label} failed`);
+    // The reads take seconds: judge and claim from the accounts and flags as they are now, so a
+    // flag cleared or an account added meanwhile counts.
+    const current = (await this.options.accounts.list()).filter(
+      (account) => account.provider === "claude" && account.enabled,
+    );
+    const currentOauth = current.filter((account) => account.kind === "oauth");
+    const currentFlags = await store.autoUse();
+    if (currentFlags.length === 0) return probed("no grant is flagged any more");
+    // A read that answered 200 with a payload the parse rejects stores nothing. The reset reading
+    // dates the read: a vendor response landing meanwhile moves the quota's observedAt too.
+    const stale = currentOauth.find(
+      (account) => (this.options.quotas.getResets(account.id)?.observedAt ?? -Infinity) < readAt,
+    );
+    if (stale !== undefined) return probed(`the usage read of ${stale.email ?? stale.label} returned no usage reading`);
+    const now = this.options.now();
+    let freeAt = Number.POSITIVE_INFINITY;
+    for (const account of current) {
+      const quota = this.options.quotas.get(account.id);
+      const name = account.email ?? account.label;
+      if (quota.error !== null) {
+        if (account.kind === "oauth") return probed(`${name} is in error`);
+        continue;
+      }
+      const at = usableAt(quota, null, threshold, now);
+      if (at === null) return probed(`${name} is at a limit with no known free-up time`);
+      if (at <= now) {
+        this.logAutoReset(`Account Pooler does not auto-claim a usage reset: a fresh read shows ${name} can serve.`);
+        return true;
+      }
+      freeAt = Math.min(freeAt, at);
+    }
+    if (freeAt - now <= AUTO_RESET_MIN_WAIT_MS)
+      return probed(`an account frees up on its own at ${new Date(freeAt).toISOString()}, within an hour`);
+    // An unsettled claim anywhere could still land; one past the horizon is taken as never applied
+    // (claimNow drops it at that account's next claim).
+    for (const { accountId, claim } of await store.allPending()) {
+      const owner = current.find((account) => account.id === accountId);
+      const name = owner === undefined ? accountId : (owner.email ?? owner.label);
+      if (claim === "unreadable") return probed(`the unsettled-claim record of ${name} does not parse`);
+      if (now - claim.at < UNSETTLED_HORIZON_MS)
+        return probed(
+          `an earlier claim of ${claim.grantId} on ${name} is unsettled until ${new Date(claim.at + UNSETTLED_HORIZON_MS).toISOString()}`,
+        );
+    }
+    const declined: string[] = [];
+    for (const account of currentOauth) {
+      for (const flag of currentFlags.filter((candidate) => candidate.accountId === account.id)) {
+        // Re-judged before each flag from the live quotas: a claim by hand that landed during the
+        // probe or the previous flag's claim frees an account, and then nothing is spent.
+        const serving = await this.servingClaudeAccount();
+        if (serving !== undefined) {
+          this.logAutoReset(`Account Pooler does not auto-claim a usage reset: ${serving.email ?? serving.label} can serve now.`);
+          return true;
+        }
+        const { outcome, delivery } = await this.claim(account, { grantId: flag.grantId }, "auto");
+        if (delivery === "pool-serves") {
+          this.logAutoReset(`Account Pooler does not auto-claim a usage reset: ${outcome.status === "refused" ? outcome.reason : "an account can serve now"}.`);
+          return true;
+        }
+        // A reset, sent now or an earlier claim a read shows used, is this wall's success: select
+        // again. An unsent one was spent by hand, so the wall is not marked for it.
+        if (outcome.status === "answered" && outcome.result === "reset") {
+          this.autoResetQuietUntil = this.options.now() + AUTO_RESET_QUIET_MS;
+          return true;
+        }
+        // A sent claim is this wall's one, whatever the wall record says by now (a served response
+        // may have cleared it meanwhile). One answered otherwise ("not_limited", say) leaves
+        // re-read quotas that may serve: select once more. Unsettled or refused after the send:
+        // the request waits.
+        if (delivery === "sent") {
+          this.autoResetQuietUntil = this.options.now() + AUTO_RESET_QUIET_MS;
+          return outcome.status === "answered";
+        }
+        declined.push(`${account.email ?? account.label} ${flag.grantId}: ${outcome.status === "refused" ? outcome.reason : outcome.status}`);
+      }
+    }
+    return probed(
+      declined.length === 0 ? "no flagged grant is on an enabled Claude account" : `no flagged grant is usable (${declined.join("; ")})`,
+    );
+  }
+
+  // An enabled Claude account that can serve some model now, by its live quota; undefined when none.
+  private async servingClaudeAccount(): Promise<Account | undefined> {
+    const now = this.options.now();
+    const threshold = this.options.getSettings().switchThreshold;
+    return (await this.options.accounts.list()).find((account) => {
+      if (account.provider !== "claude" || !account.enabled) return false;
+      const quota = this.options.quotas.get(account.id);
+      if (quota.error !== null) return false;
+      const at = usableAt(quota, null, threshold, now);
+      return at !== null && at <= now;
+    });
+  }
+
+  // Declines repeat on every request at a wall; each distinct one is logged once in a row.
+  private logAutoReset(message: string): void {
+    if (message === this.lastAutoResetLog) return;
+    this.lastAutoResetLog = message;
+    this.options.logReset(message, "debug");
   }
 
   async stop(): Promise<void> {
@@ -559,6 +943,7 @@ export class AccountPoolHub {
     const accounts = (await this.options.accounts.list()).sort(
       (left, right) => left.priority - right.priority,
     );
+    const autoUse = (await this.options.resetClaims?.autoUse()) ?? [];
     return {
       route: ROUTE,
       enabledAccountCount: accounts.filter((account) => account.enabled).length,
@@ -580,6 +965,10 @@ export class AccountPoolHub {
             status === "held" || status === "exhausted"
               ? futureOrNull(usableAt(quota, null, settings.switchThreshold, now), now)
               : null,
+          resets: this.options.quotas.getResets(account.id),
+          autoUseGrantIds: autoUse
+            .filter((flag) => flag.accountId === account.id)
+            .map((flag) => flag.grantId),
         };
       }),
     };
@@ -673,6 +1062,7 @@ export class AccountPoolHub {
     const observation = this.observeNative(request, adapter, parsed);
     const ledgerKind = ledgerKindOf(request);
     let respondedToClient = false;
+    let autoResetTried = false;
     const link = linkSignals([request.signal, this.stopped.signal]);
     const signal = link.signal;
     try {
@@ -689,7 +1079,13 @@ export class AccountPoolHub {
           routing,
           signal,
         );
-        if (selected === null) break;
+        if (selected === null) {
+          if (adapter.provider === "claude" && !autoResetTried) {
+            autoResetTried = true;
+            if (await abortable(this.autoReset(accounts), signal)) continue;
+          }
+          break;
+        }
         let pacing: PacingFlight | null = null;
         const heldMs = (selected.quota.heldUntil ?? 0) - this.options.now();
         let activePacing = this.pacingByAccount.get(selected.account.id);
@@ -925,7 +1321,12 @@ export class AccountPoolHub {
             }
             break;
           }
-          if (response.ok) selected.accept();
+          if (response.ok) {
+            selected.accept();
+            // An account served: the wall, if any, is over.
+            if (adapter.provider === "claude")
+              void this.options.resetClaims?.setWallClaimed(false).catch(() => undefined);
+          }
           respondedToClient = true;
           const warmingTap = observation?.responded({
               accountId: selected.account.id,
@@ -1350,7 +1751,7 @@ export class AccountPoolHub {
         candidates.find((candidate) => candidate.account.id === account.id),
       )
       .find((candidate) => candidate !== undefined);
-    const selected =
+    const usual =
       bound !== undefined && unattempted.includes(bound)
         ? bound
         : (inherited ??
@@ -1361,10 +1762,16 @@ export class AccountPoolHub {
             ? activeAccount
             : next) ??
           null);
+    // Fable requests go to one account while it can serve them: the one holding a Fable reset
+    // whose Fable limit is the most used, so the reset, which gives back half of that use, is worth
+    // the most when spent. A detour there never moves the session's pin or the provider's cursor.
+    const preferred = family === "fable" ? this.preferredFableAccount(candidates, now) : undefined;
+    const detour = preferred !== undefined && preferred !== usual;
+    const selected = detour ? preferred : usual;
     if (selected === null) return null;
     if (routing.active === null)
       routing.pinnedAccountId = boundAccountId ?? inherited?.account.id ?? null;
-    if (affinityKey !== null && binding === undefined) {
+    if (affinityKey !== null && binding === undefined && !detour) {
       binding = { accountId: selected.account.id, lastUsedAt: now };
       this.affinityBindings.set(affinityKey, binding);
     }
@@ -1383,7 +1790,7 @@ export class AccountPoolHub {
       }
     }
     if (active === undefined) {
-      active = { accountId: selected.account.id };
+      active = { accountId: (detour ? (usual ?? selected) : selected).account.id };
       this.activeAccounts.set(provider, active);
     }
     routing.binding ??= binding ?? null;
@@ -1392,12 +1799,14 @@ export class AccountPoolHub {
       available.some(({ account }) => account.id === accountId) &&
       !eligible.some(({ account }) => account.id === accountId);
     const rebind =
+      !detour &&
       affinityKey !== null &&
       !familyDetour(boundAccountId) &&
       (bound === undefined ||
         bound.account.id === selected.account.id ||
         (binding === routing.binding && attempted.has(bound.account.id)));
     const advance =
+      !detour &&
       !familyDetour(active.accountId) &&
       (activeAccount === undefined ||
         active.accountId === selected.account.id ||
@@ -1421,6 +1830,22 @@ export class AccountPoolHub {
         }
       },
     };
+  }
+
+  private preferredFableAccount<T extends { account: Account; quota: AccountQuota }>(
+    candidates: readonly T[],
+    now: number,
+  ): T | undefined {
+    const fableUse = ({ quota }: T) => quota.familyWeekly.fable?.utilization ?? -1;
+    let best: T | undefined;
+    for (const candidate of candidates) {
+      const resets = this.options.quotas.getResets(candidate.account.id);
+      const holds =
+        resets?.eligible === true &&
+        resets.grants.some((grant) => grant.kind === "fable" && holdsGrant(grant, now));
+      if (holds === true && (best === undefined || fableUse(candidate) > fableUse(best))) best = candidate;
+    }
+    return best;
   }
 
   private async freshSecret(
@@ -1726,7 +2151,7 @@ export class AccountPoolHub {
   // When each enabled account without an error can serve the family again, earliest first.
   private usableTimes(
     accounts: readonly Account[],
-    family: ModelFamily,
+    family: ModelFamily | null,
     now: number,
   ): number[] {
     const threshold = this.options.getSettings().switchThreshold;
@@ -1876,6 +2301,9 @@ export function createHub(options: {
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   warming?: WarmingHooks;
   ledger?: LedgerHooks;
+  resetClaims?: ResetClaimStore;
+  resetUrl?: (organizationUuid: string) => string;
+  logReset?: (message: string, level: "info" | "debug") => void;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -1884,6 +2312,7 @@ export function createHub(options: {
         refreshUrl: options.refreshUrl ?? DEFAULT_REFRESH_URL,
         usageUrl: options.usageUrl ?? DEFAULT_USAGE_URL,
         profileUrl: options.profileUrl ?? DEFAULT_PROFILE_URL,
+        resetUrl: options.resetUrl,
         importCredentials: options.importClaudeCredentials,
       }),
     ],
@@ -1920,6 +2349,8 @@ export function createHub(options: {
     onUpstreamError: options.onUpstreamError ?? (() => {}),
     warming: options.warming ?? null,
     ledger: options.ledger ?? null,
+    resetClaims: options.resetClaims ?? null,
+    logReset: options.logReset ?? (() => {}),
   });
 }
 

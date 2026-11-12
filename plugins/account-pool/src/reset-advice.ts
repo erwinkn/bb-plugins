@@ -1,92 +1,165 @@
-import type { AccountQuota, AccountSummary } from "./contracts.js";
-import { activeWindow } from "./quota.js";
+import type { AccountQuota, AccountSummary, ResetGrant, ResetKind, UsageResets } from "./contracts.js";
+import { usableAt } from "./quota.js";
+import { claimable, unusableReason } from "./usage-resets.js";
 
-// Advice on spending a Claude usage reset, which Erwin claims himself with /limit-reset in his own
-// Claude Code CLI. The Pooler claims nothing: its usage read does not say which resets an account
-// still holds, so the advice names the kind to spend if the account has one, and a fallback. It
-// reads usage readings only, never the router's holds.
+// Advice on spending a Claude usage reset, from facts: whether an account can serve now (its usage
+// reading and the router's holds), and the grants each account's usage read lists. The Pooler
+// spends a reset only when asked (bb pool-local account reset), or a grant flagged for automatic use.
 
 // The Fable weekly limit is half the weekly limit (allowance_percent_of_weekly 50 on every max_20x
 // account on 2026-11-11), so half of the Fable limit's use is the share of the weekly limit a Fable
-// reset gives back. The Pooler's usage read reports the Fable limit's use, not that share.
+// reset gives back.
 export const FABLE_LIMIT_SHARE_OF_WEEKLY = 0.5;
 // A Fable reset is worth spending only when it gives back at least a quarter of the weekly limit:
-// about 1¾ of the week's 7 days. Less buys hours, and the monthly full reset, which gives back the
-// whole limit, is the better spend.
+// about 1¾ of the week's 7 days. Less buys hours, and a full or weekly reset is the better spend.
 export const FABLE_RESET_WORTH_IT = 0.25;
-export type ResetKind = "full" | "fable";
 
 export interface ResetAccount {
   id: string;
   label: string;
   quota: AccountQuota;
+  resets: UsageResets | null;
 }
 
 export interface ResetPick {
   accountId: string;
   label: string;
   kind: ResetKind;
-  // The kind to spend there instead when the account holds no reset of the first kind.
-  orElse: ResetKind | null;
-  // When the account's weekly limit resets on its own.
-  resetsAt: number | null;
+  grantId: string;
+  resetsLeft: number;
+  // When the account serves again on its own; null when unknown.
+  freeAt: number | null;
+  // False for a Fable reset that gives back less than FABLE_RESET_WORTH_IT: a last resort.
+  worth: boolean;
   why: string;
 }
 
 export interface ResetAdvice {
-  // Best first; empty when no reset is needed or no account has a reading to judge by.
+  // Best first; empty unless the pool cannot serve and some account holds a usable grant.
   picks: ResetPick[];
   reason: string;
-  read: boolean;
+  // "unread": no account has a usage reading to judge by; "serving": one can serve now.
+  state: "unread" | "serving" | "walled";
 }
 
-export const RESET_NAME: Record<ResetKind, string> = { full: "full reset", fable: "Fable reset" };
+export const RESET_NAME: Record<ResetKind, string> = {
+  fable: "Fable reset",
+  full: "full reset",
+  weekly: "weekly reset",
+  session: "session reset",
+};
 const points = (share: number) => `${Math.round(share * 100)} points`;
 const hours = (ms: number) => (ms < 3_600_000 ? "under 1 h" : `${Math.floor(ms / 3_600_000)} h`);
+const label = (account: AccountSummary) => account.email ?? account.label;
 
 // The enabled Claude OAuth accounts of a status read, the only ones a usage reset applies to.
 export function resetAccounts(accounts: readonly AccountSummary[]): ResetAccount[] {
   return accounts
     .filter((account) => account.provider === "claude" && account.kind === "oauth" && account.enabled)
     // Labels repeat across one person's accounts ("Erwin" on five); the email names the login.
-    .map((account) => ({ id: account.id, label: account.email ?? account.label, quota: { ...account, accountId: account.id } }));
+    .map((account) => ({
+      id: account.id,
+      label: label(account),
+      quota: { ...account, accountId: account.id },
+      resets: account.resets,
+    }));
 }
 
-// When every account's latest usage reading is at its weekly limit, spend a reset on the account
-// whose weekly limit resets furthest out: there it buys the most time.
+// The Fable limit's use, from the grant when it reports the limit it refills, else the usage reading.
+function fableUse(grant: ResetGrant, quota: AccountQuota): number {
+  const reported = grant.clears.flatMap((limit) => grant.percentUsed[limit] ?? []);
+  return reported.length > 0 ? Math.max(...reported) : (quota.familyWeekly.fable?.utilization ?? 0);
+}
+
+// The program accepts no claim on the account until its cooldown ends, as pickGrant refuses.
+const coolingDown = (resets: UsageResets, now: number) => resets.cooldownUntil !== null && resets.cooldownUntil > now;
+
+const KIND_ORDER: Record<ResetKind, number> = { fable: 0, full: 1, weekly: 1, session: 2 };
+
+// The grant to spend on one account, if it holds a usable one: a Fable reset worth spending first
+// (it saves the more general resets), then a full or weekly one, then a session one, then a Fable
+// reset that gives back little.
+function accountPick(account: ResetAccount, freeAt: number | null, now: number): ResetPick | null {
+  if (account.resets === null || !account.resets.eligible || coolingDown(account.resets, now)) return null;
+  const picks = account.resets.grants
+    .filter((grant) => claimable(grant, now))
+    .map((grant): ResetPick => {
+      const base = { accountId: account.id, label: account.label, kind: grant.kind, grantId: grant.id, resetsLeft: grant.resetsLeft, freeAt };
+      if (grant.kind === "fable") {
+        const share = fableUse(grant, account.quota) * FABLE_LIMIT_SHARE_OF_WEEKLY;
+        return share >= FABLE_RESET_WORTH_IT
+          ? { ...base, worth: true, why: `gives back ${points(share)} of its weekly limit` }
+          : { ...base, worth: false, why: `gives back only ${points(share)} of its weekly limit` };
+      }
+      return {
+        ...base,
+        worth: true,
+        why: grant.kind === "session" ? "clears its 5-hour limit" : "gives back its whole weekly limit",
+      };
+    })
+    .sort((left, right) => Number(right.worth) - Number(left.worth) || KIND_ORDER[left.kind] - KIND_ORDER[right.kind]);
+  return picks[0] ?? null;
+}
+
+// When no account can serve, names when one serves again on its own and the reset worth spending
+// now: among accounts holding a usable grant, worth spending first, then the account that would
+// wait longest on its own, where a reset buys the most time.
 export function adviseReset(accounts: readonly ResetAccount[], threshold: number, now: number): ResetAdvice {
-  const read = accounts.filter(({ quota }) => quota.error === null && (quota.sevenDayUtilization !== null || quota.sevenDayStatus !== null));
-  if (read.length === 0) return { picks: [], reason: "No Claude account with a weekly usage reading.", read: false };
-  const room = read.find(({ quota }) => !activeWindow(quota.sevenDayUtilization, quota.sevenDayStatus, quota.sevenDayResetAt, threshold, now));
-  if (room !== undefined) return { picks: [], reason: `${room.label} still has weekly room.`, read: true };
-  const picks = [...read]
-    .sort((left, right) => (right.quota.sevenDayResetAt ?? 0) - (left.quota.sevenDayResetAt ?? 0))
-    .map(({ id, label, quota }): ResetPick => {
-      const base = { accountId: id, label, resetsAt: quota.sevenDayResetAt };
-      const share = (quota.familyWeekly.fable?.utilization ?? 0) * FABLE_LIMIT_SHARE_OF_WEEKLY;
-      return share >= FABLE_RESET_WORTH_IT
-        ? { ...base, kind: "fable", orElse: "full", why: `a Fable reset gives back ${points(share)} of its weekly limit` }
-        : { ...base, kind: "full", orElse: null, why: `a Fable reset would give back only ${points(share)}` };
-    });
-  const first = picks[0]!;
-  const when = first.resetsAt === null ? "at an unknown time" : `in ${hours(Math.max(0, first.resetsAt - now))}`;
-  return { picks, reason: `Every account is at its weekly limit; ${first.label}'s resets latest, ${when}, and ${first.why}.`, read: true };
+  const read = accounts.filter(({ quota }) => quota.error === null && quota.observedAt !== null);
+  if (read.length === 0) return { picks: [], reason: "No Claude account has a usage reading.", state: "unread" };
+  const freeAt = new Map(read.map((account) => [account.id, usableAt(account.quota, null, threshold, now)]));
+  const serving = read.find((account) => (freeAt.get(account.id) ?? Infinity) <= now);
+  if (serving !== undefined) return { picks: [], reason: `${serving.label} can serve now.`, state: "serving" };
+  const earliest = [...read]
+    .filter((account) => freeAt.get(account.id) !== null)
+    .sort((left, right) => freeAt.get(left.id)! - freeAt.get(right.id)!)[0];
+  const back =
+    earliest === undefined
+      ? "None is known to serve again on its own"
+      : `${earliest.label} serves again on its own in ${hours(freeAt.get(earliest.id)! - now)}`;
+  const picks = read
+    .flatMap((account) => accountPick(account, freeAt.get(account.id) ?? null, now) ?? [])
+    .sort(
+      (left, right) =>
+        Number(right.worth) - Number(left.worth) || (right.freeAt ?? Infinity) - (left.freeAt ?? Infinity),
+    );
+  const first = picks[0];
+  if (first !== undefined)
+    return {
+      picks,
+      reason: `No Claude account can serve now. ${back}. A ${RESET_NAME[first.kind]} on ${first.label} (${first.grantId}, ${first.resetsLeft} left) ${first.why}.`,
+      state: "walled",
+    };
+  const held = read.flatMap((account) =>
+    (account.resets?.grants ?? [])
+      .filter((grant) => grant.resetsLeft > 0)
+      .map(
+        (grant) =>
+          `${account.label} ${grant.kind} (${account.resets !== null && coolingDown(account.resets, now) ? `claim cooldown until ${new Date(account.resets.cooldownUntil!).toISOString()}` : unusableReason(grant, now)})`,
+      ),
+  );
+  return {
+    picks,
+    reason: `No Claude account can serve now. ${back}. No account holds a usable reset${held.length === 0 ? "" : `; held: ${held.join(", ")}`}.`,
+    state: "walled",
+  };
 }
 
-// What to do when the account holds no reset of the advised kind: Pooler reads cannot tell.
-export function resetFallback(advice: ResetAdvice): string {
-  const [first, ...rest] = advice.picks;
-  if (first === undefined) return "";
-  const missing = `No ${RESET_NAME[first.kind]} left on ${first.label}?`;
-  const orElse = first.orElse === null ? "" : ` Spend its ${RESET_NAME[first.orElse]}.`;
-  const next = rest.length === 0 ? "" : ` ${orElse === "" ? "" : "Neither? "}Next: ${rest.map((pick) => `${pick.label} (${pick.kind})`).join(", ")}.`;
-  return orElse === "" && next === "" ? "" : `${missing}${orElse}${next}`;
+export function resetCommand(pick: ResetPick): string {
+  return `bb pool-local account reset ${pick.accountId} ${pick.kind}`;
+}
+
+// The picks after the first, for when the first is not wanted.
+export function nextPicks(advice: ResetAdvice): string {
+  const rest = advice.picks.slice(1);
+  return rest.length === 0 ? "" : `Next: ${rest.map((pick) => `${pick.label} (${pick.kind})`).join(", ")}.`;
 }
 
 // One line for `bb pool-local status`: the decision and its command, then why.
 export function formatResetAdvice(advice: ResetAdvice): string {
   const first = advice.picks[0];
-  if (first === undefined) return `Usage reset: ${advice.read ? "none needed" : "no reading yet"}. ${advice.reason}`;
-  const fallback = resetFallback(advice);
-  return `Usage reset: spend a ${RESET_NAME[first.kind]} on ${first.label} (/limit-reset ${first.kind}). ${advice.reason}${fallback === "" ? "" : ` ${fallback}`}`;
+  if (first === undefined)
+    return `Usage reset: ${{ unread: "no reading yet", serving: "none needed", walled: "none to spend" }[advice.state]}. ${advice.reason}`;
+  const next = nextPicks(advice);
+  return `Usage reset: spend the ${RESET_NAME[first.kind]} on ${first.label} (${resetCommand(first)}). ${advice.reason}${next === "" ? "" : ` ${next}`}`;
 }
