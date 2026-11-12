@@ -28,7 +28,7 @@ export type PageInput = z.infer<typeof pageInputSchema>;
 const count = z.number().nonnegative();
 
 /** The Account Pooler's additive sums for one slice of requests (its usage.stats metrics). */
-export const metricsSchema = z.object({
+export const poolerMetricsSchema = z.object({
   requests: count,
   errors: count,
   rateLimited: count,
@@ -51,6 +51,22 @@ export const metricsSchema = z.object({
   rewritesAvoided: count,
   rewriteTokensAvoided: count,
   savedInputEquivalent: count,
+});
+export type PoolerMetrics = z.infer<typeof poolerMetricsSchema>;
+
+/** The Pooler's sums with their dollars at API list prices (prices.ts), additive like the rest, except `usdRefresh`. */
+export const metricsSchema = poolerMetricsSchema.extend({
+  usdInput: count,
+  usdOutput: count,
+  usdCacheRead: count,
+  usdCacheWrite5m: count,
+  usdCacheWrite1h: count,
+  // The warming refreshes' cost, and the rewrites they avoided. Only the totals group is read by
+  // kind, so `usdRefresh` is exact on `totals` and 0 on every other row.
+  usdRefresh: count,
+  usdSaved: count,
+  // Tokens of models, or token types, without a list price.
+  unpricedTokens: count,
 });
 export type Metrics = z.infer<typeof metricsSchema>;
 

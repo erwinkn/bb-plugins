@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Usage stats",
-    "description": "Token consumption, cost, cache hit rates and quota history from the Account Pooler's ledger, by time, model, account, role, project and thread.",
+    "description": "Token consumption, API-price dollars, cache hit rates and quota history from the Account Pooler's ledger, by time, model, account, role, project and thread.",
     "branding": {
       "icon": "ChartColumn"
     },

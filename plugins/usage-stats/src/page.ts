@@ -3,6 +3,7 @@ import type { Directory, Membership, ThreadInfo } from "./directory";
 import type { Label, Metrics, OkPage, Page, PageInput, Row } from "./model";
 import { addMetrics, amount, emptyMetrics, OTHER_ID, type FilterDimension, type Measure } from "./shared";
 import type { Pooler, PoolerDimension, PoolerQuota, PoolerStatsInput, PoolerStatsRow } from "./pooler";
+import { priced } from "./prices";
 
 // Builds the Usage page from the Account Pooler's sums and BB's names. Every number comes from
 // one usage.stats call over the filtered slice; a second, unfiltered call lists what the filters
@@ -44,7 +45,7 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
   const filtered = Object.keys(input.filter).length > 0;
   // The reads that need nothing else run together; the quota history is the largest.
   const history = deps.pooler.quota(range).catch(() => null);
-  const unfilteredRead = deps.pooler.stats({
+  const unfilteredRead = pricedStats(deps.pooler, {
     ...range,
     bucket: filtered ? null : bucket,
     filter: {},
@@ -90,7 +91,7 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
     filter.thread = keep;
   }
 
-  const stats = filtered ? await deps.pooler.stats({ ...range, bucket, filter, groups }) : unfiltered;
+  const stats = filtered ? await pricedStats(deps.pooler, { ...range, bucket, filter, groups }) : unfiltered;
   const [totalRows, bucketRows, providers, models, accounts, roles, threadRows, splitRows] =
     stats.results;
   const totals = totalRows?.[0]?.metrics ?? emptyMetrics();
@@ -107,13 +108,18 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
   const rows = (dimension: FilterDimension | "thread", list: Array<{ id: string; metrics: Metrics }>): Row[] =>
     list
       .map(({ id, metrics }) => ({ ...names.label(dimension, id), metrics }))
-      .sort((left, right) => amount(right.metrics, input.measure) - amount(left.metrics, input.measure));
-  const ledgerRows = (dimension: LedgerDimension | "thread", list: PoolerStatsRow[] | undefined) =>
+      // Ties, such as rows without a price in dollars, put the most tokens first.
+      .sort(
+        (left, right) =>
+          amount(right.metrics, input.measure) - amount(left.metrics, input.measure) ||
+          amount(right.metrics, "tokens") - amount(left.metrics, "tokens"),
+      );
+  const ledgerRows = (dimension: LedgerDimension | "thread", list: PricedRow[] | undefined) =>
     rows(
       dimension,
       (list ?? []).map((row) => ({ id: row.key[dimension] ?? "", metrics: row.metrics })),
     );
-  const options = (dimension: LedgerDimension, list: PoolerStatsRow[] | undefined) =>
+  const options = (dimension: LedgerDimension, list: PricedRow[] | undefined) =>
     ledgerRows(dimension, list).map(({ id, label, detail }) => ({ id, label, detail }));
   const unfilteredThreads = (optionThreads ?? []).map((row) => row.key.thread ?? null);
   const derivedOptions = (key: (thread: string | null) => string, dimension: FilterDimension) =>
@@ -156,11 +162,41 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
   };
 }
 
+// Dollars need each row's model: every group is read by model as well, priced, then folded back
+// to the group's own key. The total is also read by kind, since only warming shows a refresh's
+// cost (usdRefresh, 0 in every other row); a group of two dimensions plus model stays within the
+// Pooler's three.
+type PricedRow = { key: PoolerStatsRow["key"]; metrics: Metrics };
+
+function pricedGroup(group: PoolerDimension[]): PoolerDimension[] {
+  const extra: PoolerDimension[] = group.length === 0 ? ["model", "kind"] : ["model"];
+  return [...group, ...extra.filter((dimension) => !group.includes(dimension))];
+}
+
+async function pricedStats(pooler: Pooler, input: PoolerStatsInput) {
+  const stats = await pooler.stats({ ...input, groups: input.groups.map(pricedGroup) });
+  const results = stats.results.map((rows, index) => {
+    const group = input.groups[index] ?? [];
+    const folded = new Map<string, PricedRow>();
+    for (const row of rows) {
+      const id = JSON.stringify(group.map((dimension) => row.key[dimension] ?? null));
+      let entry = folded.get(id);
+      if (entry === undefined) {
+        entry = { key: Object.fromEntries(group.map((dimension) => [dimension, row.key[dimension]])), metrics: emptyMetrics() };
+        folded.set(id, entry);
+      }
+      addMetrics(entry.metrics, priced(row, stats.weights));
+    }
+    return [...folded.values()];
+  });
+  return { ...stats, results };
+}
+
 function series(
   starts: number[],
-  bucketRows: PoolerStatsRow[],
+  bucketRows: PricedRow[],
   dimension: Exclude<PageInput["split"], "type"> | null,
-  splitRows: PoolerStatsRow[],
+  splitRows: PricedRow[],
   names: Namer,
   measure: Measure,
 ): Omit<OkPage["series"], "end"> {
@@ -172,12 +208,16 @@ function series(
   }
   if (dimension === null) return { buckets, keys: [], amounts: [], requests: [] };
   // The top values in the measure keep their own series; the rest is "Other".
-  const totals = new Map<string, number>();
+  // Ties, such as series without a price in dollars, put the most tokens first, as the breakdowns do.
+  const totals = new Map<string, { measure: number; tokens: number }>();
   for (const row of splitRows) {
     const id = row.key[dimension] ?? "";
-    totals.set(id, (totals.get(id) ?? 0) + amount(row.metrics, measure));
+    const sum = totals.get(id) ?? { measure: 0, tokens: 0 };
+    totals.set(id, { measure: sum.measure + amount(row.metrics, measure), tokens: sum.tokens + amount(row.metrics, "tokens") });
   }
-  const ranked = [...totals.entries()].sort((left, right) => right[1] - left[1]).map(([id]) => id);
+  const ranked = [...totals.entries()]
+    .sort(([, left], [, right]) => right.measure - left.measure || right.tokens - left.tokens)
+    .map(([id]) => id);
   const top = ranked.length <= TOP_SERIES ? ranked : ranked.slice(0, TOP_SERIES - 1);
   const keys = [...top, ...(ranked.length > top.length ? [OTHER_ID] : [])];
   const amounts = keys.map(() => starts.map(() => 0));

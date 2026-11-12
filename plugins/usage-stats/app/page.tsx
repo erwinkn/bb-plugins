@@ -1,12 +1,14 @@
 // The Usage page: one row of filters, the headline numbers, usage over time, breakdowns, cache and
-// warming, reliability, and each account's quota. A page-wide measure, raw tokens (the default) or
-// fixed weighted input-equivalents, drives the headline, the chart and the breakdowns' main column. Every number below the filters comes from one
+// warming, reliability, and each account's quota. A page-wide measure, raw tokens (the default),
+// fixed weighted input-equivalents or dollars at API list prices, drives the headline, the chart,
+// the breakdowns' main column and the warming figures. Every number below the filters comes from one
 // `page` call over the same slice, so they always agree.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { Label, Metrics, OkPage, Page, PageInput, Row } from "../src/model";
+import { PRICES_CHECKED, USD_FIELDS, type TokenType } from "../src/prices";
 import { amount, filterDimensions, hitRate, measures, OTHER_ID, splits, type FilterDimension, type Measure, type Split } from "../src/shared";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,7 +22,7 @@ import {
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { LegendItem, StackedBars, TimeLines, type BarSeries, type Line } from "./charts";
-import { bucketLabel, bucketTitle, compact, dateTime, integer, percent, seconds, share } from "./format";
+import { bucketLabel, bucketTitle, compact, dateTime, integer, percent, seconds, share, usd } from "./format";
 
 export const PANEL_PATH = "usage";
 
@@ -40,7 +42,10 @@ const DIMENSION_LABELS: Record<FilterDimension, string> = {
   project: "Project",
   initiative: "Initiative",
 };
-const MEASURE_LABELS: Record<Measure, string> = { tokens: "Tokens", cost: "Input-equivalent" };
+const MEASURE_LABELS: Record<Measure, string> = { tokens: "Tokens", cost: "Input-equivalent", dollars: "API price" };
+// How the page's measure reads: dollars as money, the others as counts.
+const formatOf = (measure: Measure) => (measure === "dollars" ? usd : compact);
+const UNLINKED: Record<Measure, string> = { tokens: "tokens are", cost: "input-equivalent usage is", dollars: "API-price usage is" };
 const SPLIT_LABELS: Record<Split, string> = {
   type: "Token type",
   model: "Model",
@@ -347,7 +352,7 @@ function BreakdownTable({
                     <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-secondary">
                       <div className="h-full rounded-full bg-foreground/70" style={{ width: `${max === 0 ? 0 : Math.max(1, (amount(row.metrics, measure) / max) * 100)}%` }} />
                     </div>
-                    <span className="w-12 shrink-0 text-right tabular-nums text-foreground">{compact(amount(row.metrics, measure))}</span>
+                    <MeasureCell metrics={row.metrics} measure={measure} />
                     <span className="w-10 shrink-0 text-right tabular-nums text-muted-foreground">{share(amount(row.metrics, measure), total)}</span>
                   </div>
                 </td>
@@ -360,6 +365,19 @@ function BreakdownTable({
       )}
       {footer}
     </Card>
+  );
+}
+
+// A row's amount; in dollars, a row with tokens no list price covers says so: "–" when nothing in
+// it has a price, a "+" after the dollars when only part of it has.
+function MeasureCell({ metrics, measure }: { metrics: Metrics; measure: Measure }) {
+  const value = amount(metrics, measure);
+  const unpriced = measure === "dollars" ? metrics.unpricedTokens : 0;
+  return (
+    <span className={`${measure === "dollars" ? "w-16" : "w-12"} shrink-0 text-right tabular-nums text-foreground`} title={unpriced > 0 ? `+ ${compact(unpriced)} tokens unpriced` : undefined}>
+      {unpriced > 0 && value === 0 ? "–" : formatOf(measure)(value)}
+      {unpriced > 0 && value > 0 ? <span className="text-muted-foreground">+</span> : null}
+    </span>
   );
 }
 
@@ -464,19 +482,20 @@ const CHART_METRICS: readonly ChartMetric[] = ["amount", "requests"];
 function chartSeries(page: OkPage, measure: Measure, metric: ChartMetric, split: Split, colorOf: (dimension: FilterDimension, id: string) => string): BarSeries[] {
   const buckets = page.series.buckets;
   if (split === "type") {
-    // Raw tokens weigh 1 each; input-equivalent uses the fixed comparison weights.
+    // Raw tokens weigh 1 each; input-equivalent uses the fixed comparison weights; dollars are priced per model.
     const w = measure === "cost" ? page.weights : { input: 1, output: 1, cacheRead: 1, cacheWrite5m: 1, cacheWrite1h: 1 };
+    const of = (type: TokenType) => (m: Metrics) => (measure === "dollars" ? m[USD_FIELDS[type]] : m[type] * w[type]);
     if (metric === "requests")
       return [
         { id: "native", label: "Requests", color: SERIES[0]!, values: buckets.map((bucket) => bucket.metrics.requests - bucket.metrics.refreshes) },
         { id: "refresh", label: "Warming refreshes", color: SERIES[1]!, values: buckets.map((bucket) => bucket.metrics.refreshes) },
       ];
     const types: Array<[string, string, (metrics: Metrics) => number]> = [
-      ["input", "Uncached input", (m) => m.input * w.input],
-      ["output", "Output", (m) => m.output * w.output],
-      ["cacheRead", "Cache read", (m) => m.cacheRead * w.cacheRead],
-      ["cacheWrite5m", "Cache write 5m", (m) => m.cacheWrite5m * w.cacheWrite5m],
-      ["cacheWrite1h", "Cache write 1h", (m) => m.cacheWrite1h * w.cacheWrite1h],
+      ["input", "Uncached input", of("input")],
+      ["output", "Output", of("output")],
+      ["cacheRead", "Cache read", of("cacheRead")],
+      ["cacheWrite5m", "Cache write 5m", of("cacheWrite5m")],
+      ["cacheWrite1h", "Cache write 1h", of("cacheWrite1h")],
     ];
     return types.map(([id, label, value], index) => ({ id, label, color: SERIES[index]!, values: buckets.map((bucket) => value(bucket.metrics)) }));
   }
@@ -641,12 +660,23 @@ function Body({
   const { bucket, measure } = page.input;
   const starts = page.series.buckets.map((item) => item.at);
   const series = chartSeries(page, measure, metric, page.input.split, colorOf);
-  const format = metric === "amount" ? compact : integer;
+  const format = metric === "amount" ? formatOf(measure) : integer;
   // The page's measure: what the headline, the chart and the breakdowns' main column show.
   const unit = MEASURE_LABELS[measure];
   const total = amount(totals, measure);
   const tokens = amount(totals, "tokens");
-  const warmNet = totals.savedInputEquivalent - totals.refreshInputEquivalent;
+  // Warming in dollars on that measure; in input-equivalents otherwise, as the Pooler weighs it.
+  const warm =
+    measure === "dollars"
+      ? { refresh: totals.usdRefresh, saved: totals.usdSaved, format: usd, unit: "API dollars" }
+      : { refresh: totals.refreshInputEquivalent, saved: totals.savedInputEquivalent, format: compact, unit: "input-eq" };
+  // A refreshed model without a full list price adds no dollars: its figures carry a "+".
+  const warmPartial =
+    measure === "dollars" && page.breakdowns.model.some((row) => row.metrics.refreshes > 0 && row.metrics.unpricedTokens > 0) ? "+" : "";
+  const warmNet = warm.saved - warm.refresh;
+  const signed = (value: number) => `${value >= 0 ? "+" : "−"}${warm.format(Math.abs(value))}${warmPartial}`;
+  // Usage without a list price: counted and named, never as $0.
+  const unpriced = page.breakdowns.model.filter((row) => row.metrics.unpricedTokens > 0).map((row) => row.detail ?? row.label);
   // Where a bucket ends and its middle is: a local day can last 23 or 25 hours.
   const end = (index: number) => starts[index + 1] ?? page.series.end;
   const middle = (index: number) => (starts[index]! + end(index)) / 2;
@@ -683,13 +713,25 @@ function Body({
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {measure === "tokens" ? (
           <Stat label="Tokens processed" value={compact(total)} detail={`${share(totals.cacheRead, tokens)} cache reads`} />
-        ) : (
+        ) : measure === "cost" ? (
           <Stat label="Input-equivalent" value={compact(total)} detail="fixed weighted tokens" />
+        ) : (
+          <Stat
+            label="API-price equivalent"
+            value={usd(total)}
+            detail={
+              totals.unpricedTokens === 0 ? (
+                "at API list prices, not a bill"
+              ) : (
+                <span title={unpriced.join(", ")}>{`+ ${compact(totals.unpricedTokens)} tokens unpriced (${unpriced.join(", ")})`}</span>
+              )
+            }
+          />
         )}
         <Stat label="Requests" value={compact(totals.requests)} detail={`${integer(totals.refreshes)} warming refreshes`} />
         <Stat label="Cache hit rate" value={percent(hitRate(totals))} detail={`${compact(totals.cacheRead)} read · ${compact(totals.cacheWrite5m + totals.cacheWrite1h)} written`} />
         <Stat label="Cold rewrites" value={integer(totals.coldRewrites)} detail={`${compact(totals.coldRewriteTokens)} tokens rewritten`} />
-        <Stat label="Warming" value={`${warmNet >= 0 ? "+" : "−"}${compact(Math.abs(warmNet))}`} detail={`net input-eq saved · ${integer(totals.rewritesAvoided)} rewrites avoided`} />
+        <Stat label="Warming" value={signed(warmNet)} detail={`net ${warm.unit} saved · ${integer(totals.rewritesAvoided)} rewrites avoided`} />
         <Stat label="Errors" value={integer(totals.errors)} detail={`${integer(totals.rateLimited)} × 429 · ${integer(totals.overloaded)} × 529`} />
       </div>
 
@@ -752,7 +794,7 @@ function Body({
           footer={
             <p className="mt-2 text-xs text-muted-foreground">
               {page.breakdowns.threadCount > page.breakdowns.thread.length ? `The top ${page.breakdowns.thread.length} of ${page.breakdowns.threadCount} threads by ${unit.toLowerCase()}. ` : ""}
-              {unlinked === undefined ? "" : `${share(amount(unlinked.metrics, measure), total)} of the ${measure === "tokens" ? "tokens are" : "input-equivalent usage is"} not linked to a thread. `}
+              {unlinked === undefined ? "" : `${share(amount(unlinked.metrics, measure), total)} of the ${UNLINKED[measure]} not linked to a thread. `}
               Open a thread by clicking it.
             </p>
           }
@@ -767,9 +809,9 @@ function Body({
               ["Cold: the prefix was written again", `${integer(totals.coldRewrites)} · ${compact(totals.coldRewriteTokens)} tokens`],
               ["Kept warm by a refresh", `${integer(totals.rewritesAvoided)} · ${compact(totals.rewriteTokensAvoided)} tokens`],
               ["Warm without a refresh", integer(Math.max(0, totals.afterExpiry - totals.coldRewrites - totals.rewritesAvoided))],
-              ["Warming refreshes", `${integer(totals.refreshes)} · input-eq ${compact(totals.refreshInputEquivalent)}`],
-              ["Rewrites they avoided", `saved ${compact(totals.savedInputEquivalent)}`],
-              ["Net", `${warmNet >= 0 ? "+" : "−"}${compact(Math.abs(warmNet))}`],
+              ["Warming refreshes", `${integer(totals.refreshes)} · ${measure === "dollars" ? "" : "input-eq "}${warm.format(warm.refresh)}${warmPartial}`],
+              ["Rewrites they avoided", `saved ${warm.format(warm.saved)}${warmPartial}`],
+              ["Net", signed(warmNet)],
             ]}
           />
         </Card>
@@ -807,6 +849,11 @@ function Body({
         <p>
           Tokens processed counts every token once: uncached input, cache reads, cache writes and output. Input-equivalent uses fixed, model-agnostic comparison weights: input {w.input}×, cache read {w.cacheRead}×, 5-minute cache write {w.cacheWrite5m}×, 1-hour cache write {w.cacheWrite1h}×, output {w.output}×. These weights are retained for historical comparability and measure neither current per-model API prices nor subscription debit.
         </p>
+        {measure === "dollars" ? (
+          <p>
+            API price is what this usage would cost at each provider's public API list prices (standard tier, checked {PRICES_CHECKED}), per model and token type: an equivalent, not the subscription bill. A model without a list price is counted as unpriced tokens, not $0. Haiku 5.5 prompts over 100K tokens and Codex prompts over 272K cost more than the base price used here, so those figures are a floor; Haiku 5.5's can be several times too low.
+          </p>
+        ) : null}
         <p>
           From the Account Pooler's request ledger{page.oldestHour === null ? "" : `, which starts ${dateTime(page.oldestHour)}: nothing before it is counted${page.oldestHour > page.input.from ? ", so this range has no data before then" : ""}`}. The ledger keeps {page.retentionDays} days. Hourly resolution: a range starts at the hour.
         </p>

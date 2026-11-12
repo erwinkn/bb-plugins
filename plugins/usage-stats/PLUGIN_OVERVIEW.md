@@ -3,7 +3,8 @@ account, role, project, Initiative and thread.
 
 ## What you get
 
-- A **Usage** page in the sidebar with totals, cost over time, breakdowns,
+- A **Usage** page in the sidebar with totals, usage over time in tokens,
+  input-equivalents or API-price dollars, breakdowns,
   cache and warming savings, errors, and each account's quota history.
 - Filters for range, provider, model, account, role, project and Initiative;
   click a table row to filter by it, or a thread to open it.

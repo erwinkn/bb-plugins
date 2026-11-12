@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { metricsSchema, weightsSchema } from "./model";
+import { poolerMetricsSchema, weightsSchema } from "./model";
 
 // The Account Pooler's read-only usage RPCs, as far as this plugin reads them. Its ledger is the
 // only source of per-request usage; this plugin never opens the Pooler's database.
@@ -39,7 +39,7 @@ const statsRowSchema = z.object({
     role: z.string().nullable().optional(),
     thread: z.string().nullable().optional(),
   }),
-  metrics: metricsSchema,
+  metrics: poolerMetricsSchema,
 });
 export type PoolerStatsRow = z.infer<typeof statsRowSchema>;
 

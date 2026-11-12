@@ -1,7 +1,7 @@
 // A fake Account Pooler that sums hand-written ledger slices the way usage.stats does, and a fake
 // directory, for building pages without BB.
 import type { Directory, Membership, ThreadInfo } from "../src/directory";
-import type { Metrics } from "../src/model";
+import type { PoolerMetrics } from "../src/model";
 import type { Pooler, PoolerQuota, PoolerStatsInput, PoolerStatsRow, PoolerStatus } from "../src/pooler";
 import { addMetrics, emptyMetrics } from "../src/shared";
 
@@ -17,7 +17,7 @@ export interface Slice {
   account?: string;
   role?: string | null;
   thread?: string | null;
-  metrics: Partial<Metrics>;
+  metrics: Partial<PoolerMetrics>;
 }
 
 const WEIGHTS = { input: 1, cacheRead: 0.1, cacheWrite5m: 1.25, cacheWrite1h: 2, output: 5 };
@@ -43,6 +43,10 @@ export function fakePooler(
     calls,
     async stats(input) {
       calls.push(input);
+      // As the Pooler's input schema (account-pool/src/usage-rollup.ts): 1 to 12 groups of at most 3.
+      if (input.groups.length < 1 || input.groups.length > 12 || input.groups.some((group) => group.length > 3)) {
+        throw new Error("HTTP 400: rpc input validation failed");
+      }
       // As the Pooler: the hour that holds from counts whole, in the first bucket.
       const starts = input.bucket?.starts ?? [input.from];
       const bucketOf = (at: number) => starts.filter((start) => start <= Math.max(at, input.from)).at(-1) ?? starts[0]!;

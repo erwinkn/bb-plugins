@@ -11,6 +11,18 @@ export function compact(value: number): string {
   return Math.abs(value) < 10_000 ? integerFormat.format(value) : compactFormat.format(value);
 }
 
+const usdFormats = [
+  { below: 100, format: new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }) },
+  { below: 10_000, format: new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 }) },
+  { below: Infinity, format: new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }) },
+];
+
+/** <$0.01 / $3.42 / $1,284 / $12.9K: an amount above zero never reads as free. */
+export function usd(value: number): string {
+  if (value !== 0 && Math.abs(value) < 0.01) return `${value < 0 ? "-" : ""}<$0.01`;
+  return usdFormats.find(({ below }) => Math.abs(value) < below)!.format.format(value);
+}
+
 export function integer(value: number): string {
   return integerFormat.format(value);
 }

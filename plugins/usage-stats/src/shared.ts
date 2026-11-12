@@ -1,4 +1,4 @@
-import type { Metrics } from "./model";
+import type { Metrics, PoolerMetrics } from "./model";
 
 // Constants and helpers the server and the page share, kept free of zod so the page bundle
 // stays small.
@@ -17,15 +17,16 @@ export type FilterDimension = (typeof filterDimensions)[number];
 /** The series key that folds the values past the top ones. */
 export const OTHER_ID = "\u0000other";
 
-/** What the page measures usage in: raw tokens, or fixed weighted input-equivalents. */
-export const measures = ["tokens", "cost"] as const;
+/** What the page measures usage in: raw tokens, fixed weighted input-equivalents, or dollars at API list prices. */
+export const measures = ["tokens", "cost", "dollars"] as const;
 export type Measure = (typeof measures)[number];
 
 /** A slice's usage in a measure. Tokens counts every token once: what a provider's counter shows. */
 export function amount(metrics: Metrics, measure: Measure): number {
-  return measure === "cost"
-    ? metrics.inputEquivalent
-    : metrics.input + metrics.cacheRead + metrics.cacheWrite5m + metrics.cacheWrite1h + metrics.output;
+  if (measure === "cost") return metrics.inputEquivalent;
+  if (measure === "dollars")
+    return metrics.usdInput + metrics.usdCacheRead + metrics.usdCacheWrite5m + metrics.usdCacheWrite1h + metrics.usdOutput;
+  return metrics.input + metrics.cacheRead + metrics.cacheWrite5m + metrics.cacheWrite1h + metrics.output;
 }
 
 /** What the time series stacks by: token type, or a dimension's top values. */
@@ -56,11 +57,19 @@ export function emptyMetrics(): Metrics {
     rewritesAvoided: 0,
     rewriteTokensAvoided: 0,
     savedInputEquivalent: 0,
+    usdInput: 0,
+    usdOutput: 0,
+    usdCacheRead: 0,
+    usdCacheWrite5m: 0,
+    usdCacheWrite1h: 0,
+    usdRefresh: 0,
+    usdSaved: 0,
+    unpricedTokens: 0,
   };
 }
 
-export function addMetrics(total: Metrics, add: Metrics): Metrics {
-  for (const name of Object.keys(total) as Array<keyof Metrics>) total[name] += add[name];
+export function addMetrics<M extends PoolerMetrics>(total: M, add: M): M {
+  for (const name of Object.keys(total) as Array<keyof M & string>) (total[name] as number) += add[name] as number;
   return total;
 }
 

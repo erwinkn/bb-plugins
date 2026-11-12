@@ -83,6 +83,46 @@ it("measures in raw tokens by default, switches to fixed weighted input-equivale
   expect(inputs.at(-1)?.measure).toBe("cost");
 });
 
+it("shows dollars at API list prices: the total, what has no price, the breakdowns and warming", async () => {
+  const now = Date.now();
+  const pooler = fakePooler([
+    // Opus 5.5: $4 + $1 + $20 = $25; the refresh reads $0.40; 1M tokens kept warm at 5m saved $4.80.
+    { at: now - 2 * HOUR, model: "claude-opus-5-5", metrics: { requests: 2, input: 1_000_000, cacheRead: 5_000_000, output: 1_000_000, rewritesAvoided: 1, rewriteTokensAvoided: 1_000_000, savedInputEquivalent: 1_150_000 } },
+    { at: now - 2 * HOUR, model: "claude-opus-5-5", kind: "refresh", metrics: { requests: 1, refreshes: 1, cacheRead: 2_000_000 } },
+    { at: now - 2 * HOUR, provider: "codex", model: "codex-auto-review", metrics: { requests: 1, input: 2_100_000 } },
+  ]);
+  const inputs: PageInput[] = [];
+  const slot = await page((input) => {
+    inputs.push(input);
+    return buildPage(input, { pooler, directory: fakeDirectory({}), now: () => now });
+  });
+  await slot.findByText("Tokens processed");
+  fireEvent.click(within(slot.getByRole("radiogroup", { name: "Measure" })).getByRole("radio", { name: "API price" }));
+  expect((await slot.findByText("API-price equivalent")).parentElement!.textContent).toBe("API-price equivalent$25.40+ 2.1M tokens unpriced (codex-auto-review)");
+  expect(inputs.at(-1)?.measure).toBe("dollars");
+  expect(slot.getByRole("heading", { name: "API price over time" })).toBeTruthy();
+  const byModel = slot.getByRole("heading", { name: "By model" }).closest("section")!;
+  expect(within(byModel).getByText("Opus 5.5").closest("tr")!.textContent).toContain("$25.40100%");
+  expect(within(byModel).getAllByText("codex-auto-review")[0]!.closest("tr")!.textContent).toContain("–0.0%");
+  expect(slot.getByText("Warming").parentElement!.textContent).toBe("Warming+$4.40net API dollars saved · 1 rewrites avoided");
+  expect(slot.getByText("Warming refreshes").nextElementSibling!.textContent).toBe("1 · $0.40");
+  expect(slot.getByText(/public API list prices/).textContent).toContain("not the subscription bill");
+});
+
+it("marks warming dollars with a + when a refreshed model has no list price", async () => {
+  const now = Date.now();
+  const pooler = fakePooler([
+    { at: now - 2 * HOUR, model: "claude-opus-5-5", kind: "refresh", metrics: { requests: 1, refreshes: 1, cacheRead: 2_000_000 } },
+    { at: now - 2 * HOUR, model: "claude-sonnet-9-9", kind: "refresh", metrics: { requests: 1, refreshes: 1, cacheRead: 2_000_000 } },
+  ]);
+  const slot = await page((input) => buildPage(input, { pooler, directory: fakeDirectory({}), now: () => now }));
+  await slot.findByText("Tokens processed");
+  fireEvent.click(within(slot.getByRole("radiogroup", { name: "Measure" })).getByRole("radio", { name: "API price" }));
+  await slot.findByText("API-price equivalent");
+  expect(slot.getByText("Warming refreshes").nextElementSibling!.textContent).toBe("2 · $0.40+");
+  expect(slot.getByText("Net").nextElementSibling!.textContent).toBe("−$0.40+");
+});
+
 it("keeps the chart in the measure its data came in until the new measure's data arrives", async () => {
   window.localStorage.setItem("usage-stats.split", JSON.stringify("model"));
   const now = Date.now();
