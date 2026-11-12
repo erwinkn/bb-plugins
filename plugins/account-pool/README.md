@@ -93,41 +93,51 @@ holds it lifted (`releasesRejection`). Claims are logged, not recorded in the
 usage ledger: they are rare, the ledger's quota rows already show their effect,
 and nothing would read a claims table.
 
-`bb pool-local account reset-auto <id> <grant-id> [--off]` (RPC
-`account.setResetAutoUse`, KV `reset-auto-use:<account>:<grant>`) flags a grant
-for automatic use. When a Claude request finds no account to try, the hub
-spends a flagged grant only when all of these hold: no Claude account can serve
-any model now; none frees up on its own within 60 minutes (a reset is not worth
-skipping a short 5-hour hold); no claim on any account was sent less than 10
-minutes ago without settling (one older is taken as never applied), and no
-pending record is unreadable; and a read taken now shows the grant usable, with
-resets left, not paused and blocked by nothing, and, for a Fable reset, the
-Fable weekly limit at least 40% used (`FABLE_AUTO_USE_MIN`; Erwin,
-2026-11-12: less gives back too little to spend unattended). It claims
-through the same path, then selects again, so the request that hit the wall is
-served. The wall is judged from usage reads of every enabled Claude OAuth
-account taken then, not from cached readings (a reset claimed by hand on
-another account would not show yet): a failed read, a 200 that yields no usage
-reading, an account in error, or one at a limit with no known free-up declines; an unknown free-up never counts as
-more than an hour away, and a read showing an account that can serve sends the
-request back to selection. One claim per wall: until a Claude account serves a
-native response, it claims no further flagged grant. That state is kept in KV
-(`reset-wall-claimed`), written just before the claim is sent (and removed again
-if nothing left), so a reload during the send or the read after it spends no
-second grant at the same wall.
-Before each flagged grant, and again just before its POST, the hub checks the
-live quotas: if a claim by hand (or anything else) has freed an account
+The Pooler spends a reset by itself, with nothing to opt in (Erwin, 2026-11-12:
+"I expect automatic resets when the last available account reaches 99% modulo
+the condition on Fable"). When a Claude request finds no account to try, the hub
+spends one only when all of these hold: no Claude account can serve any model
+now; none frees up on its own within 60 minutes (a reset is not worth skipping a
+short 5-hour hold); no claim on any account was sent less than 10 minutes ago
+without settling (one older is taken as never applied), and no pending record is
+unreadable. It then walks `adviseReset`'s ranking of every usable grant, judged
+on the fresh reads (worth spending first, then the account that would wait
+longest, then each account's own order), and claims the first that a read taken
+now shows usable, with resets left, not paused and blocked by nothing, and, for
+a Fable reset, with the Fable weekly limit at least 40% used
+(`FABLE_AUTO_USE_MIN`; Erwin, 2026-11-12: less gives back too little to spend
+unattended). A grant refused for any of these passes the turn to the next one.
+It claims through the same path as a claim by hand, then selects again, so the
+request that hit the wall is served. The wall is judged from usage reads of
+every enabled Claude OAuth account taken then, not from cached readings (a reset
+claimed by hand on another account would not show yet): a failed read, a 200
+that yields no usage reading, an account in error, or one at a limit with no
+known free-up declines; an unknown free-up never counts as more than an hour
+away, and a read showing an account that can serve sends the request back to
+selection. One claim per wall: until a Claude account serves a native response,
+it claims no further grant. That state is kept in KV (`reset-wall-claimed`),
+written just before the claim is sent (and removed again if nothing left), so a
+reload during the send or the read after it spends no second grant at the same
+wall. Before each grant it tries, and again just before its POST, the hub checks
+the live quotas: if a claim by hand (or anything else) has freed an account
 meanwhile, it spends nothing and selects again. A claim by hand POSTing at the
 very same instant on another account cannot be seen, so in that race both may
-spend. Walled requests share one decision; after a decline that read usage, or a claim
-sent, walled requests skip the probing for 60 s, as long as the server's claim
-cooldown. Each decision is logged (`bb plugin logs account-pool-local`: a claim
-at info, a decline at debug, each distinct decline once in a row).
+spend. Walled requests share one decision; after a decline that read usage, or a
+claim sent, walled requests skip the probing for 60 s, as long as the server's
+claim cooldown. Each decision is logged (`bb plugin logs account-pool-local`: a
+claim at info, a decline at debug, each distinct decline once in a row).
 
-Without a flag nothing changes. With one, a request at a wall waits on these
-upstream reads (and the claim: profile read, POST, read; 10 s timeout each)
-before its answer. A client that gives up ends its own wait, not a claim
-already started: the spend serves the pool, not that request.
+A request at a wall waits on these upstream reads (and the claim: profile read,
+POST, read; 10 s timeout each) before its answer, unless no cached reading lists
+a grant an automatic claim could spend (a blocked grant, or a Fable reset under
+40%, never counts): then nothing is read, claimed or logged. A reading older
+than the account's last response counts every grant it holds, since the response
+may have raised the Fable use or lifted a block. A grant waiting for its limit
+to reach its cap counts too: if the server makes it usable only at 100% while
+the pool walls at `switchThreshold` (98%), each walled request after the quiet
+window pays the reads to find it still waiting. A grant the fresh reads rule out
+costs no claim. A client that gives up ends its own wait, not a claim already
+started: the spend serves the pool, not that request.
 
 Fable requests prefer one account, derived on each selection from quota and
 grant state: among the accounts that can serve Fable now, those holding a Fable

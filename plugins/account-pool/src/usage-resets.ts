@@ -180,7 +180,7 @@ export function fableUse(grant: ResetGrant, quota: AccountQuota): number {
 // (Erwin, 2026-11-12): below it, the reset gives back too little to spend unattended.
 export const FABLE_AUTO_USE_MIN = 0.4;
 
-// The flagged grant an automatic claim may spend: claimable now, blocked by no limit at its cap,
+// Whether an automatic claim may spend the grant: claimable now, blocked by no limit at its cap,
 // and, for a Fable reset, with the Fable weekly limit at least FABLE_AUTO_USE_MIN used.
 export function autoUseGrant(resets: UsageResets, grantId: string, quota: AccountQuota, now: number): GrantChoice {
   const program = programRefusal(resets, now);
@@ -193,6 +193,14 @@ export function autoUseGrant(resets: UsageResets, grantId: string, quota: Accoun
       refused: `its Fable weekly use is ${Math.round(fableUse(grant, quota) * 100)}%, under the ${FABLE_AUTO_USE_MIN * 100}% an automatic Fable reset needs`,
     };
   return { grant };
+}
+
+// Whether a reading from before the wall lists a grant an automatic claim could spend at it: one
+// autoUseGrant accepts, or one that only waits for its limit to reach its cap (useRequiresLimit,
+// with no other reason given), which a read at the wall may show usable.
+export function mayAutoUse(resets: UsageResets, grant: ResetGrant, quota: AccountQuota, now: number): boolean {
+  const waits = !grant.usableNow && grant.useRequiresLimit && grant.blocking.length === 0 && grant.unavailableReason === null;
+  return "grant" in autoUseGrant({ ...resets, grants: [waits ? { ...grant, usableNow: true } : grant] }, grant.id, quota, now);
 }
 
 const claimAnswerSchema = z
@@ -250,11 +258,6 @@ const pendingClaimSchema = z
   .strict();
 export type PendingClaim = z.infer<typeof pendingClaimSchema>;
 
-export interface AutoUseFlag {
-  accountId: string;
-  grantId: string;
-}
-
 // How long an unsettled claim stays unsettled, as in Claude Code: until then a read that does not
 // show it used (or no longer lists its grant) leaves its state unknown; after it, the claim is
 // taken as never applied and dropped.
@@ -282,15 +285,12 @@ export function describeClaimOutcome(outcome: ResetClaimOutcome): string {
 }
 
 const PENDING_PREFIX = "reset-claim:";
-const AUTO_USE_PREFIX = "reset-auto-use:";
 const WALL_CLAIMED_KEY = "reset-wall-claimed";
 
 // The reset state the Pooler keeps itself, each in its own KV records (the config record keeps its
-// five keys): the one unsettled claim per account, whose request id a retry reuses; the grants
-// flagged for automatic use at a wall; and whether an automatic claim was sent at the current wall,
-// so a reload at that wall spends no second flagged grant.
+// five keys): the one unsettled claim per account, whose request id a retry reuses; and whether an
+// automatic claim was sent at the current wall, so a reload at that wall spends no second reset.
 export class ResetClaimStore {
-  private flags: AutoUseFlag[] | null = null;
   private wall: boolean | null = null;
 
   constructor(private readonly kv: PluginKvStorage) {}
@@ -323,23 +323,6 @@ export class ResetClaimStore {
     await this.kv.delete(PENDING_PREFIX + accountId);
   }
 
-  // A flag is its key, reset-auto-use:<account>:<grant>, whatever its value (true; an earlier build
-  // wrote an object). Read once, then kept in memory: a wall asks on every request.
-  async autoUse(): Promise<AutoUseFlag[]> {
-    this.flags ??= (await this.kv.list(AUTO_USE_PREFIX)).flatMap((key) => {
-      const [accountId, grantId] = key.slice(AUTO_USE_PREFIX.length).split(":");
-      return accountId && grantId ? [{ accountId, grantId }] : [];
-    });
-    return this.flags;
-  }
-
-  async setAutoUse(accountId: string, grantId: string, enabled: boolean): Promise<void> {
-    const key = `${AUTO_USE_PREFIX}${accountId}:${grantId}`;
-    if (enabled) await this.kv.set(key, true);
-    else await this.kv.delete(key);
-    this.flags = null;
-  }
-
   async wallClaimed(): Promise<boolean> {
     this.wall ??= (await this.kv.get(WALL_CLAIMED_KEY)) !== undefined;
     return this.wall;
@@ -352,11 +335,5 @@ export class ResetClaimStore {
     this.wall = claimed;
     if (claimed) await this.kv.set(WALL_CLAIMED_KEY, true);
     else await this.kv.delete(WALL_CLAIMED_KEY);
-  }
-
-  async forget(accountId: string): Promise<void> {
-    await this.clearPending(accountId);
-    for (const key of await this.kv.list(`${AUTO_USE_PREFIX}${accountId}:`)) await this.kv.delete(key);
-    this.flags = null;
   }
 }

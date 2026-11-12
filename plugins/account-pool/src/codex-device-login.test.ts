@@ -96,7 +96,6 @@ function summary(account: CodexDeviceAccount): AccountSummary {
     active: false,
     availableAt: null,
     resets: null,
-    autoUseGrantIds: [],
     status: "ready",
   };
 }

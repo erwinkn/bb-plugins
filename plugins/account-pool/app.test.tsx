@@ -84,7 +84,6 @@ function account(overrides: Partial<AccountSummary> = {}): AccountSummary {
     active: false,
     availableAt: null,
     resets: null,
-    autoUseGrantIds: [],
     status: "ready",
     ...overrides,
   };

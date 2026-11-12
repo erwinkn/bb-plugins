@@ -132,7 +132,7 @@ describe("adviseReset on the 2026-11-12 wall", () => {
 
   it("needs no reset once hi@'s hold has passed", () => {
     const advice = advise(Object.values(TODAY), FIVE_HOUR_HOLD + 60_000);
-    expect(advice).toEqual({ picks: [], reason: "hi@erwinkn.com can serve now.", state: "serving" });
+    expect(advice).toEqual({ picks: [], ranked: [], reason: "hi@erwinkn.com can serve now.", state: "serving" });
     expect(formatResetAdvice(advice)).toBe("Usage reset: none needed. hi@erwinkn.com can serve now.");
   });
 
@@ -157,6 +157,8 @@ describe("adviseReset rules", () => {
       grant("w", "weekly", 1),
     ]));
     expect(advise([low]).picks[0]).toMatchObject({ kind: "weekly", grantId: "w" });
+    // Every usable grant, ranked: what is worth spending on any account before what gives back little.
+    expect(advise([fable, low]).ranked.map((pick) => `${pick.label} ${pick.grantId}`)).toEqual(["a f", "b w", "b f"]);
   });
 
   it("spends a session reset where only the 5-hour limit holds the account", () => {
@@ -191,7 +193,7 @@ describe("adviseReset rules", () => {
   it("ignores accounts whose usage read failed or that have no reading", () => {
     const broken = account("x", { ...quota(0, "2026-11-30T00:00:00Z", 0.9), error: "401" }, null);
     const unread = account("u", { ...quota(0, "2026-11-30T00:00:00Z", 0), observedAt: null }, null);
-    expect(advise([broken, unread])).toEqual({ picks: [], reason: "No Claude account has a usage reading.", state: "unread" });
+    expect(advise([broken, unread])).toEqual({ picks: [], ranked: [], reason: "No Claude account has a usage reading.", state: "unread" });
     expect(formatResetAdvice(advise([broken, unread]))).toBe("Usage reset: no reading yet. No Claude account has a usage reading.");
     expect(nextPicks(advise([broken]))).toBe("");
   });

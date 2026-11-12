@@ -15,7 +15,6 @@ import {
   codexLoginPollSchema,
   codexLoginStartSchema,
   hubTokenSummarySchema,
-  resetAutoUseInputSchema,
   resetClaimInputSchema,
   resetClaimOutcomeSchema,
   loginCompleteInputSchema,
@@ -98,10 +97,6 @@ export const accountPoolRpcContract = defineRpcContract({
   "account.claimReset": {
     input: resetClaimInputSchema,
     output: z.object({ outcome: resetClaimOutcomeSchema.nullable() }).strict(),
-  },
-  "account.setResetAutoUse": {
-    input: resetAutoUseInputSchema,
-    output: z.object({ account: accountSummarySchema.nullable() }).strict(),
   },
   "routing.set": {
     input: routingSetInputSchema,
@@ -228,9 +223,6 @@ export function createRpcHandlers(
     }),
     "account.claimReset": async ({ accountId, kind }) => ({
       outcome: await operations.claimReset(accountId, kind),
-    }),
-    "account.setResetAutoUse": async ({ accountId, grantId, enabled }) => ({
-      account: await operations.setResetAutoUse(accountId, grantId, enabled),
     }),
     "account.reorder": async ({ provider, accountIds }) => {
       await operations.reorder(provider, accountIds);

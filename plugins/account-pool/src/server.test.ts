@@ -2452,7 +2452,7 @@ describe("Account Pool plugin", () => {
     expect(authorizations).toEqual(["Bearer oauth-b", "Bearer oauth-b"]);
   });
 
-  it("lists usage-reset grants, flags one for automatic use, and spends one only on command", async () => {
+  it("lists usage-reset grants, and spends one on command", async () => {
     const urls: string[] = [];
     const headers: Headers[] = [];
     const claims: unknown[] = [];
@@ -2528,14 +2528,6 @@ describe("Account Pool plugin", () => {
     );
     expect(claims).toEqual([]);
 
-    const missing = await fixture.host.harness.behavior.runCli(["account", "reset-auto", id]);
-    expect(missing.exitCode).toBe(1);
-    expect(missing.stderr).toContain("bb pool-local account reset-auto <id> <grant-id> [--off]");
-    const flagged = await fixture.host.harness.behavior.runCli(["account", "reset-auto", id, "full-reset-2611"]);
-    expect(flagged).toMatchObject({ exitCode: 0 });
-    expect((await fixture.host.harness.behavior.runCli(["account", "list"])).stdout).toContain(
-      "weekly full-reset-2611 1/1 left usable auto",
-    );
     const refused = await fixture.host.harness.behavior.runCli(["account", "reset", id, "fable"]);
     expect(refused).toMatchObject({
       exitCode: 1,
@@ -2549,7 +2541,6 @@ describe("Account Pool plugin", () => {
     expect(claims).toEqual([
       { program: "cedar_ember", grant_id: "full-reset-2611", request_id: expect.stringMatching(/^[0-9a-f]{32}$/u) },
     ]);
-    expect((await fixture.host.harness.behavior.runCli(["account", "reset-auto", id, "full-reset-2611", "--off"])).exitCode).toBe(0);
     expect((await fixture.host.harness.behavior.runCli(["account", "list"])).stdout).toContain(
       "weekly full-reset-2611 0/1 left none left; fable",
     );

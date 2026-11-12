@@ -126,7 +126,7 @@ async function makePool(
     messages?: (index: number) => Response | undefined;
     // A KV shared with an earlier pool: the same plugin after a reload.
     kv?: PluginKvStorage;
-    profileFails?: () => boolean;
+    profileFails?: (index: number) => boolean;
     // The account's credential cannot be read (its OAuth refresh failed, say).
     secretFails?: (index: number) => boolean;
   } = {},
@@ -213,7 +213,7 @@ async function makePool(
           : Response.json(usagePayload(current));
       }
       if (url === "https://api.test/profile")
-        return options.profileFails?.() === true
+        return options.profileFails?.(index) === true
           ? new Response("{}", { status: 500 })
           : Response.json({ account: { uuid: accounts[index]!.accountUuid }, organization: { uuid: ORG } });
       if (url === `https://api.test/organizations/${ORG}/reset_rate_limits`) {
@@ -360,13 +360,14 @@ describe("the program read", () => {
     const [account] = (await pool.hub.status()).accounts;
     expect(account?.sevenDayUtilization).toBe(0.4);
     expect(account?.resets?.grants.map((grant) => [grant.id, grant.kind, grant.resetsLeft])).toEqual([["full-reset-2611", "weekly", 1]]);
-    expect(account?.autoUseGrantIds).toEqual([]);
   });
 });
 
 describe("claiming a reset", () => {
   it("claims the first usable grant of the kind from a fresh read, then releases the hold it lifted", async () => {
-    const pool = await makePool([{ email: "tech@equisafe.io", usage: { weekly: 1, grants: [rawGrant("full-reset-2611")] } }], {
+    // A wall of half an hour: too short for an automatic claim.
+    const freeAt = NOW + 30 * 60_000;
+    const pool = await makePool([{ email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: freeAt, grants: [rawGrant("full-reset-2611")] } }], {
       claim: () => {
         pool.setUsage(0, { weekly: 0, grants: [rawGrant("full-reset-2611", { resets_left: 0, usable_now: false })] });
         return { status: 200, body: { result: "reset", reason: null, resets_left: 0, cleared: ["seven_day", "seven_day_overage_included"], cooldown_until: iso(NOW + 60_000) } };
@@ -374,7 +375,7 @@ describe("claiming a reset", () => {
     });
     const id = pool.accounts[0]!.id;
     // A weekly-limit 429 the Pooler recorded before the claim.
-    pool.quotas.put({ ...pool.quotas.get(id), rejectedUntil: NOW + 3 * 24 * HOUR, rejectedAt: NOW - 1, rejectedLimit: "seven_day" });
+    pool.quotas.put({ ...pool.quotas.get(id), rejectedUntil: freeAt, rejectedAt: NOW - 1, rejectedLimit: "seven_day" });
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     const reads = pool.usageReads.length;
     const outcome = await pool.hub.claimReset(id, "weekly");
@@ -396,6 +397,7 @@ describe("claiming a reset", () => {
     expect(await pool.resetClaims.pending(id)).toBeNull();
     expect((await pool.send("claude-opus-5")).servedBy).toBe("tech@equisafe.io");
     expect(pool.logs).toEqual([
+      ["debug", `Account Pooler does not auto-claim a usage reset: an account frees up on its own at ${iso(freeAt)}, within an hour.`],
       ["info", "Account Pooler manual claim of weekly reset full-reset-2611 on tech@equisafe.io: reset, 0 left, cleared seven_day, seven_day_overage_included."],
     ]);
   });
@@ -518,8 +520,8 @@ describe("the preferred Fable account", () => {
   });
 });
 
-describe("automatic use of a flagged grant at a wall", () => {
-  // Both accounts at their weekly limit; tech@'s weekly reset is flagged.
+describe("automatic use of a reset at a wall", () => {
+  // Both accounts at their weekly limit; tech@ waits longest, so its weekly reset ranks first.
   const wall = (otherFreeAt = NOW + 2 * 24 * HOUR) => [
     { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611")] } },
     { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: otherFreeAt, grants: [fableGrant("launch-2610-fable")] } },
@@ -529,11 +531,9 @@ describe("automatic use of a flagged grant at a wall", () => {
     return { status: 200, body: { result: "reset", resets_left: 0, cleared: ["seven_day", "seven_day_overage_included"] } } as Reply;
   };
 
-  it("claims the flagged grant when no account frees up within an hour, and serves the request", async () => {
+  it("claims the top advised grant with no flag set when no account frees up within an hour, and serves the request", async () => {
     let ref: Awaited<ReturnType<typeof makePool>>;
     const pool = (ref = await makePool(wall(), { claim: landing(() => ref) }));
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
-    expect((await pool.hub.status()).accounts[0]?.autoUseGrantIds).toEqual(["full-reset-2611"]);
     expect(await pool.send("claude-opus-5", "s1")).toEqual({ status: 200, servedBy: "tech@equisafe.io" });
     expect(pool.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["tech@equisafe.io", "full-reset-2611"]]);
     expect(pool.logs).toEqual([
@@ -541,27 +541,64 @@ describe("automatic use of a flagged grant at a wall", () => {
     ]);
   });
 
-  it("spends a flagged Fable reset only once the Fable weekly limit is at least 40% used", async () => {
+  it("spends a Fable reset only once the Fable weekly limit is at least 40% used", async () => {
     const fableWall = (fable: number) => [
       { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR } },
       { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: fable } })] } },
     ];
+    // Under 40% in a reading newer than any response, the wall costs no usage read at all.
     const low = await makePool(fableWall(39));
-    await low.resetClaims.setAutoUse(low.accounts[1]!.id, "launch-2610-fable", true);
-    expect((await low.send("claude-opus-5")).status).toBe(429);
+    const reads = low.usageReads.length;
+    for (let index = 0; index < 3; index += 1) {
+      expect((await low.send("claude-opus-5")).status).toBe(429);
+      low.advance(61_000);
+    }
+    expect(low.usageReads.length).toBe(reads);
     expect(low.claims).toEqual([]);
-    expect(low.logs.map(([, message]) => message)).toEqual([
-      "Account Pooler does not auto-claim a usage reset: no flagged grant is usable (erwin@gmail.com launch-2610-fable: its Fable weekly use is 39%, under the 40% an automatic Fable reset needs).",
-    ]);
+    expect(low.logs).toEqual([]);
     const high = await makePool(fableWall(40));
-    await high.resetClaims.setAutoUse(high.accounts[1]!.id, "launch-2610-fable", true);
     await high.send("claude-opus-5");
     expect(high.claims.map((claim) => claim.body.grant_id)).toEqual(["launch-2610-fable"]);
   });
 
+  it("probes a wall when a response came after the reading: the Fable use may have risen since", async () => {
+    const fableAt = (fable: number) => ({
+      weekly: 1,
+      weeklyResetAt: NOW + 2 * 24 * HOUR,
+      grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: fable } })],
+    });
+    const pool = await makePool([
+      { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR } },
+      { email: "erwin@gmail.com", usage: fableAt(30) },
+    ]);
+    // erwin@ serves after its last reading (busy, the usage loop skips it): only its quota moves.
+    pool.advance(1_000);
+    const erwin = pool.accounts[1]!.id;
+    pool.quotas.put({ ...pool.quotas.get(erwin), observedAt: NOW + 1_000 });
+    pool.setUsage(1, fableAt(45));
+    await pool.send("claude-opus-5");
+    expect(pool.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["erwin@gmail.com", "launch-2610-fable"]]);
+  });
+
+  it("walks past a refused pick: to another account's grant, and to the same account's next one", async () => {
+    // Both Fable resets give back little, so the longest wait ranks first: tech@'s, under 40%.
+    const fables = await makePool([
+      { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [fableGrant("tech-fable", { percent_used: { seven_day_overage_included: 30 } })] } },
+      { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: 45 } })] } },
+    ]);
+    await fables.send("claude-opus-5");
+    expect(fables.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["erwin@gmail.com", "launch-2610-fable"]]);
+    // tech@'s Fable reset ranks before its weekly one, but a limit blocks it.
+    const blocked = await makePool([
+      { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [fableGrant("launch-2610-fable", { blocking: ["seven_day"] }), rawGrant("full-reset-2611")] } },
+      { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR } },
+    ]);
+    await blocked.send("claude-opus-5");
+    expect(blocked.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["tech@equisafe.io", "full-reset-2611"]]);
+  });
+
   it("declines when an account frees up on its own within the hour", async () => {
     const pool = await makePool(wall(NOW + 40 * 60_000));
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect(pool.claims).toEqual([]);
     expect(pool.logs).toEqual([
@@ -569,24 +606,34 @@ describe("automatic use of a flagged grant at a wall", () => {
     ]);
   });
 
-  it("declines a grant that is blocked or paused, and claims nothing else", async () => {
-    const pool = await makePool(wall());
-    pool.setUsage(0, { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, exhausted: ["five_hour", "seven_day"], grants: [rawGrant("full-reset-2611", { usable_now: false, blocking: ["five_hour"] })] });
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
+  it("declines a grant that is blocked, unusable or paused, and stops probing once a reading shows it", async () => {
+    const pool = await makePool([wall()[0]!, { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR } }]);
+    const walledWith = (extra: Record<string, unknown>) =>
+      pool.setUsage(0, { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611", extra)] });
+    // The cached reading still shows the grant usable, so the wall is probed; the fresh read rules
+    // it out before any claim read.
+    walledWith({ blocking: ["five_hour"] });
+    let reads = pool.usageReads.length;
     expect((await pool.send("claude-opus-5")).status).toBe(429);
-    pool.setUsage(0, { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611", { paused: true })] });
-    pool.advance(61_000);
-    expect((await pool.send("claude-opus-5")).status).toBe(429);
+    expect(pool.usageReads.length).toBe(reads + 2);
+    // Once the cached reading shows a grant no automatic claim could spend, a wall reads nothing.
+    for (const extra of [{ blocking: ["five_hour"] }, { usable_now: false, blocking: ["five_hour"] }, { paused: true }]) {
+      walledWith(extra);
+      await pool.refresh();
+      pool.advance(61_000);
+      reads = pool.usageReads.length;
+      expect((await pool.send("claude-opus-5")).status).toBe(429);
+      expect(pool.usageReads.length).toBe(reads);
+    }
     expect(pool.claims).toEqual([]);
     expect(pool.logs.map(([, message]) => message)).toEqual([
-      "Account Pooler does not auto-claim a usage reset: no flagged grant is usable (tech@equisafe.io full-reset-2611: blocked by five_hour).",
-      "Account Pooler does not auto-claim a usage reset: no flagged grant is usable (tech@equisafe.io full-reset-2611: paused).",
+      "Account Pooler does not auto-claim a usage reset: no usable reset could be claimed (tech@equisafe.io full-reset-2611: blocked by five_hour).",
     ]);
   });
 
-  it("claims once per wall: no second flagged grant until an account has served again", async () => {
+  it("claims once per wall: no second grant until an account has served again", async () => {
     // The claim answers reset, but the pool still cannot serve (the read after it shows tech@ at its
-    // limit), so the second flag waits.
+    // limit), so gmail's reset waits.
     let ref: Awaited<ReturnType<typeof makePool>>;
     const pool = (ref = await makePool(wall(), {
       claim: () => {
@@ -594,8 +641,6 @@ describe("automatic use of a flagged grant at a wall", () => {
         return { status: 200, body: { result: "reset", resets_left: 0, cleared: ["seven_day"] } };
       },
     }));
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
-    await pool.resetClaims.setAutoUse(pool.accounts[1]!.id, "launch-2610-fable", true);
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
@@ -603,7 +648,7 @@ describe("automatic use of a flagged grant at a wall", () => {
       "debug",
       "Account Pooler does not auto-claim a usage reset: one was claimed at this wall and no account has served since.",
     ]);
-    // gmail frees up and serves; at the next wall the other flagged grant may be spent.
+    // gmail frees up and serves; at the next wall its reset may be spent.
     pool.setUsage(1, { weekly: 0.2, grants: [fableGrant("launch-2610-fable")] });
     await pool.refresh();
     expect((await pool.send("claude-opus-5")).servedBy).toBe("erwin@gmail.com");
@@ -614,8 +659,8 @@ describe("automatic use of a flagged grant at a wall", () => {
     expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611", "launch-2610-fable"]);
   });
 
-  it("does nothing, and logs nothing, in a pool with no flagged grant", async () => {
-    const pool = await makePool(wall());
+  it("does nothing, and logs nothing, in a pool holding no reset", async () => {
+    const pool = await makePool(wall().map((spec) => ({ ...spec, usage: { ...spec.usage, grants: [] } })));
     const reads = pool.usageReads.length;
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect(pool.claims).toEqual([]);
@@ -625,7 +670,6 @@ describe("automatic use of a flagged grant at a wall", () => {
 
   it("declines while an earlier claim is unsettled", async () => {
     const pool = await makePool(wall());
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
     await pool.resetClaims.setPending(pool.accounts[1]!.id, { grantId: "launch-2610-fable", requestId: "abc", resetsLeftBefore: 1, at: NOW });
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect(pool.claims).toEqual([]);
@@ -731,29 +775,23 @@ describe("review round 1 regressions", () => {
       },
     ));
     const id = pool.accounts[0]!.id;
-    await pool.resetClaims.setAutoUse(id, "full-reset-2611", true);
     const [manual] = await Promise.all([pool.hub.claimReset(id, "weekly"), pool.send("claude-opus-5")]);
     expect(pool.claims).toHaveLength(1);
     expect(manual?.status === "answered" || manual?.status === "refused").toBe(true);
     expect((await pool.send("claude-opus-5")).servedBy).toBe("tech@equisafe.io");
   });
 
-  // tech@'s flagged weekly reset; gmail walled for two days unless a test changes it.
+  // tech@ holds a weekly reset; gmail, none, walled for two days unless a test changes it.
   const wall = () => [
     { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611")] } as Usage },
     { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR } as Usage },
   ];
-  const flagged = async (options: Parameters<typeof makePool>[1] = {}, specs = wall()) => {
-    const pool = await makePool(specs, options);
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
-    return pool;
-  };
   const declines = (pool: Pool) => pool.logs.map(([, message]) => message);
 
   it("declines the wall spend when an account's free-up time is unknown", async () => {
     const specs = wall();
     specs[1]!.usage = { weekly: 1, weeklyResetAt: null };
-    const pool = await flagged({}, specs);
+    const pool = await makePool(specs);
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect(pool.claims).toEqual([]);
     expect(declines(pool)).toEqual([
@@ -762,7 +800,7 @@ describe("review round 1 regressions", () => {
   });
 
   it("declines the wall spend when an account is in error or its fresh read fails", async () => {
-    const pool = await flagged();
+    const pool = await makePool(wall());
     const gmail = pool.accounts[1]!.id;
     pool.quotas.put({ ...pool.quotas.get(gmail), error: "OAuth refresh failed with HTTP 400." });
     expect((await pool.send("claude-opus-5")).status).toBe(429);
@@ -778,7 +816,7 @@ describe("review round 1 regressions", () => {
   });
 
   it("judges the wall from fresh reads: a reset claimed by hand elsewhere serves the request", async () => {
-    const pool = await flagged();
+    const pool = await makePool(wall());
     // Inside the 5-minute refresh window: the cached reading still shows gmail walled.
     pool.setUsage(1, { weekly: 0 });
     expect(await pool.send("claude-opus-5")).toEqual({ status: 200, servedBy: "erwin@gmail.com" });
@@ -787,13 +825,12 @@ describe("review round 1 regressions", () => {
 
   it("keeps the once-per-wall state across a hub restart", async () => {
     let ref: Pool;
-    const first = (ref = await flagged({
+    const first = (ref = await makePool(wall(), {
       claim: () => {
         ref.setUsage(0, { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611", { resets_left: 0, usable_now: false })] });
         return { status: 200, body: { result: "reset", resets_left: 0, cleared: ["seven_day"] } };
       },
     }));
-    await first.resetClaims.setAutoUse(first.accounts[1]!.id, "launch-2610-fable", true);
     expect((await first.send("claude-opus-5")).status).toBe(429);
     expect(first.claims).toHaveLength(1);
     const specs = wall();
@@ -808,9 +845,8 @@ describe("review round 1 regressions", () => {
   });
 
   it("skips probing for a minute after a decline, bounding reads across walled requests", async () => {
-    const specs = wall();
-    specs[0]!.usage = { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611", { usable_now: false, blocking: ["five_hour"] })] };
-    const pool = await flagged({}, specs);
+    // The profile read fails, so each probe ends unsent and the grant still reads usable.
+    const pool = await makePool(wall(), { profileFails: () => true });
     const before = pool.usageReads.length;
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     const probed = pool.usageReads.length;
@@ -829,7 +865,7 @@ describe("review round 1 regressions", () => {
     const started = new Promise<void>((resolve) => {
       sent = resolve;
     });
-    const pool = await flagged({
+    const pool = await makePool(wall(), {
       claim: async () => {
         sent();
         await new Promise<void>((resolve) => {
@@ -874,7 +910,7 @@ describe("review round 1 regressions", () => {
 });
 
 describe("state stored by the first build", () => {
-  it("reads each legacy shape, ignoring the fields no longer kept and dropping no flag", async () => {
+  it("reads each legacy shape, ignoring the fields no longer kept", async () => {
     const db = new Database(":memory:");
     for (const statement of QUOTA_MIGRATIONS) db.exec(statement);
     const quotas = new QuotaStore(db);
@@ -912,23 +948,15 @@ describe("state stored by the first build", () => {
     expect(read?.grants[0]).not.toHaveProperty("label");
     db.close();
 
-    // A flag and a wall record as the first build wrote them: objects, not true.
+    // A wall record as the first build wrote it: an object, not true.
     const kv = memoryKv();
-    await kv.set(`reset-auto-use:${accountId}:full-reset-2611`, { accountId, grantId: "full-reset-2611", since: NOW });
     await kv.set("reset-wall-claimed", { at: NOW });
     const store = new ResetClaimStore(kv);
-    expect(await store.autoUse()).toEqual([{ accountId, grantId: "full-reset-2611" }]);
     expect(await store.wallClaimed()).toBe(true);
     // An account served: the legacy wall record goes.
     await store.setWallClaimed(false);
     expect(await kv.get("reset-wall-claimed")).toBeUndefined();
     expect(await new ResetClaimStore(kv).wallClaimed()).toBe(false);
-    // Unflagging the legacy flag removes it; a new flag is stored as true.
-    await store.setAutoUse(accountId, "full-reset-2611", false);
-    expect(await store.autoUse()).toEqual([]);
-    await store.setAutoUse(accountId, "launch-2610-fable", true);
-    expect(await kv.get(`reset-auto-use:${accountId}:launch-2610-fable`)).toBe(true);
-    expect(await store.autoUse()).toEqual([{ accountId, grantId: "launch-2610-fable" }]);
   });
 });
 
@@ -938,20 +966,15 @@ describe("review round 2 regressions", () => {
     { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611")] } as Usage },
     { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable")] } as Usage },
   ];
-  const flagged = async (options: Parameters<typeof makePool>[1] = {}, specs = wall()) => {
-    const pool = await makePool(specs, options);
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
-    return pool;
-  };
   const messages = (pool: Pool) => pool.logs.map(([, message]) => message);
 
   it("ignores an unsettled claim past the horizon on another account, but not a young one", async () => {
-    const pool = await flagged();
+    const pool = await makePool(wall());
     const gmail = pool.accounts[1]!.id;
     await pool.resetClaims.setPending(gmail, { grantId: "launch-2610-fable", requestId: "old", resetsLeftBefore: 1, at: NOW - 11 * 60_000 });
     await pool.send("claude-opus-5");
     expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
-    const young = await flagged();
+    const young = await makePool(wall());
     await young.resetClaims.setPending(young.accounts[1]!.id, { grantId: "launch-2610-fable", requestId: "young", resetsLeftBefore: 1, at: NOW - 9 * 60_000 });
     expect((await young.send("claude-opus-5")).status).toBe(429);
     expect(young.claims).toEqual([]);
@@ -963,7 +986,7 @@ describe("review round 2 regressions", () => {
   it("marks the wall before an automatic claim is sent, and not for one that never left", async () => {
     let wallAtSend: unknown;
     let ref: Pool;
-    const pool = (ref = await flagged({
+    const pool = (ref = await makePool(wall(), {
       claim: async () => {
         wallAtSend = await ref.kv.get("reset-wall-claimed");
         return { status: 200, body: { result: "not_limited", resets_left: 1, cleared: [] } };
@@ -974,15 +997,33 @@ describe("review round 2 regressions", () => {
     expect(await pool.kv.get("reset-wall-claimed")).toBe(true);
 
     // The profile read fails: nothing is sent, and the wall stays unmarked.
-    const unsent = await flagged({ profileFails: () => true });
+    const unsent = await makePool(wall(), { profileFails: () => true });
     expect((await unsent.send("claude-opus-5")).status).toBe(429);
     expect(unsent.claims).toEqual([]);
     expect(await unsent.kv.get("reset-wall-claimed")).toBeUndefined();
     expect(await unsent.resetClaims.pending(unsent.accounts[0]!.id)).toBeNull();
+    // Only tech@'s profile read fails: its pick never leaves, and gmail's is the wall's one claim.
+    let other: Pool;
+    let wallAtOther: unknown;
+    const spread = wall();
+    spread[1]!.usage = { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [rawGrant("gmail-reset")] };
+    other = await makePool(spread, {
+      profileFails: (index) => index === 0,
+      claim: async () => {
+        wallAtOther = await other.kv.get("reset-wall-claimed");
+        return { status: 200, body: { result: "not_limited", resets_left: 1, cleared: [] } };
+      },
+    });
+    expect((await other.send("claude-opus-5")).status).toBe(429);
+    expect(other.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["erwin@gmail.com", "gmail-reset"]]);
+    expect(wallAtOther).toBe(true);
+    expect(await other.kv.get("reset-wall-claimed")).toBe(true);
+    expect(await other.resetClaims.pending(other.accounts[0]!.id)).toBeNull();
     // A grant refused before any send leaves it unmarked too.
     const blocked = wall();
-    blocked[0]!.usage = { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611", { usable_now: false, blocking: ["five_hour"] })] };
-    const refused = await flagged({}, blocked);
+    blocked[0]!.usage = { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611", { blocking: ["five_hour"] })] };
+    blocked[1]!.usage = { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR };
+    const refused = await makePool(blocked);
     expect((await refused.send("claude-opus-5")).status).toBe(429);
     expect(await refused.kv.get("reset-wall-claimed")).toBeUndefined();
   });
@@ -1005,7 +1046,7 @@ describe("review round 2 regressions", () => {
   });
 
   it("declines an automatic claim while any pending record does not parse", async () => {
-    const pool = await flagged();
+    const pool = await makePool(wall());
     await pool.kv.set(`reset-claim:${pool.accounts[1]!.id}`, { broken: true });
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect(pool.claims).toEqual([]);
@@ -1034,7 +1075,7 @@ describe("review round 2 regressions", () => {
   });
 
   it("declines the wall spend when a fresh read answers 200 without a usage reading", async () => {
-    const pool = await flagged();
+    const pool = await makePool(wall());
     pool.advance(1_000);
     pool.setUsage(1, "malformed");
     expect((await pool.send("claude-opus-5")).status).toBe(429);
@@ -1073,9 +1114,7 @@ describe("review round 3 regressions", () => {
 
   it("takes an earlier claim a read shows used as the wall's success: serves, and spends no second grant", async () => {
     const pool = await makePool(wall());
-    const [tech, gmail] = pool.accounts.map((account) => account.id) as [string, string];
-    await pool.resetClaims.setAutoUse(tech, "full-reset-2611", true);
-    await pool.resetClaims.setAutoUse(gmail, "launch-2610-fable", true);
+    const tech = pool.accounts[0]!.id;
     // Sent 11 minutes ago with no answer: past the horizon, so the pool-wide check lets it through.
     await pool.resetClaims.setPending(tech, { grantId: "full-reset-2611", requestId: "earlier", resetsLeftBefore: 1, at: NOW - 11 * 60_000 });
     // The wall's fresh read still shows tech@ at its limit; the claim's own read shows the reset used.
@@ -1091,7 +1130,6 @@ describe("review round 3 regressions", () => {
 
   it("dates the wall's fresh reads by the reset reading, not a quota a vendor response moved", async () => {
     const pool = await makePool(wall());
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
     pool.advance(1_000);
     const gmail = pool.accounts[1]!.id;
     pool.setUsage(1, () => {
@@ -1103,21 +1141,6 @@ describe("review round 3 regressions", () => {
     expect(pool.claims).toEqual([]);
     expect(pool.logs.map(([, message]) => message)).toEqual([
       "Account Pooler does not auto-claim a usage reset: the usage read of erwin@gmail.com returned no usage reading.",
-    ]);
-  });
-
-  it("spends nothing when the flag is cleared while the wall is probed", async () => {
-    const pool = await makePool(wall());
-    const tech = pool.accounts[0]!.id;
-    await pool.resetClaims.setAutoUse(tech, "full-reset-2611", true);
-    pool.setUsage(1, async () => {
-      await pool.resetClaims.setAutoUse(tech, "full-reset-2611", false);
-      return { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR };
-    });
-    expect((await pool.send("claude-opus-5")).status).toBe(429);
-    expect(pool.claims).toEqual([]);
-    expect(pool.logs.map(([, message]) => message)).toEqual([
-      "Account Pooler does not auto-claim a usage reset: no grant is flagged any more.",
     ]);
   });
 });
@@ -1137,8 +1160,6 @@ describe("review round 4 regressions", () => {
         return { status: 503 };
       },
     }));
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
-    await pool.resetClaims.setAutoUse(pool.accounts[1]!.id, "launch-2610-fable", true);
     expect((await pool.send("claude-opus-5")).status).toBe(429);
     expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
     expect(await pool.resetClaims.pending(pool.accounts[0]!.id)).toMatchObject({ grantId: "full-reset-2611" });
@@ -1153,8 +1174,6 @@ describe("review round 4 regressions", () => {
         return { status: 200, body: { result: "not_limited", reason: "below_limit", resets_left: 1, cleared: [] } };
       },
     }));
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
-    await pool.resetClaims.setAutoUse(pool.accounts[1]!.id, "launch-2610-fable", true);
     expect(await pool.send("claude-opus-5")).toEqual({ status: 200, servedBy: "tech@equisafe.io" });
     expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
   });
@@ -1165,17 +1184,12 @@ describe("review round 5 regressions", () => {
   const walledTech = (): Usage => ({ weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [rawGrant("full-reset-2611")] });
   const walledGmail = (): Usage => ({ weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable")] });
   const usedTech = (): Usage => ({ weekly: 0.1, grants: [rawGrant("full-reset-2611", { resets_left: 0, usable_now: false })] });
-  const flagBoth = async (pool: Pool) => {
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
-    await pool.resetClaims.setAutoUse(pool.accounts[1]!.id, "launch-2610-fable", true);
-  };
 
-  it("spends no next flag when a claim by hand freed the flagged account during the probe", async () => {
+  it("spends no next reset when a claim by hand freed an account during the probe", async () => {
     const pool = await makePool([
       { email: "tech@equisafe.io", usage: walledTech() },
       { email: "erwin@gmail.com", usage: walledGmail() },
     ]);
-    await flagBoth(pool);
     // The wall's read shows tech@ walled; by the automatic claim's own read, a claim by hand has
     // spent its reset (that claim's re-read refreshed tech@'s reading).
     let reads = 0;
@@ -1201,7 +1215,6 @@ describe("review round 5 regressions", () => {
         },
       },
     ));
-    await flagBoth(pool);
     let manual: Promise<unknown> | null = null;
     pool.setUsage(1, () => {
       manual ??= pool.hub.claimReset(pool.accounts[0]!.id, "weekly");
@@ -1219,7 +1232,6 @@ describe("review round 5 regressions", () => {
       { email: "tech@equisafe.io", usage: walledTech() },
       { email: "erwin@gmail.com", usage: walledGmail() },
     ]);
-    await pool.resetClaims.setAutoUse(pool.accounts[0]!.id, "full-reset-2611", true);
     const gmail = pool.accounts[1]!.id;
     let reads = 0;
     pool.setUsage(0, () => {
@@ -1236,7 +1248,7 @@ describe("review round 5 regressions", () => {
     );
   });
 
-  it("treats a credential that cannot be prepared at claim time as unsent, and moves to the next flag", async () => {
+  it("treats a credential that cannot be prepared at claim time as unsent, and moves to the next pick", async () => {
     let failing = false;
     const pool = await makePool(
       [
@@ -1245,7 +1257,6 @@ describe("review round 5 regressions", () => {
       ],
       { secretFails: (index) => index === 0 && failing },
     );
-    await flagBoth(pool);
     let reads = 0;
     pool.setUsage(0, () => {
       // After the automatic claim's own read of tech@, its credential fails.

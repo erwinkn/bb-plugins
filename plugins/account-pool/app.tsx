@@ -483,8 +483,8 @@ function AccountRow({
   );
 }
 
-// Which usage reset to spend, and the command that spends it; the Pooler spends one only when
-// asked, or a grant flagged for automatic use.
+// Which usage reset to spend, and the command that spends it; the Pooler also spends one by itself
+// at a wall longer than an hour (Hub.tryAutoReset).
 function ResetAdviceNote({ advice }: { advice: ResetAdvice }) {
   const first = advice.picks[0];
   const next = nextPicks(advice);

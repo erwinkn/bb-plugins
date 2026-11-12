@@ -250,10 +250,8 @@ export const accountSummarySchema = accountSchema.extend({
   // When a held or exhausted account is usable again: the hold's end, or the latest reset of its
   // exhausted windows. null when it is usable now or the reset is unknown.
   availableAt: z.number().int().nullable(),
-  // Claude OAuth accounts: the latest usage read's reset grants (null before the first one), and
-  // the grants flagged for automatic use at a wall (bb pool-local account reset-auto).
+  // Claude OAuth accounts: the latest usage read's reset grants (null before the first one).
   resets: usageResetsSchema.nullable().default(null),
-  autoUseGrantIds: z.array(z.string()).default([]),
 });
 
 export type AccountSummary = z.infer<typeof accountSummarySchema>;
@@ -388,14 +386,6 @@ export const bypassInputSchema = z
 
 export const resetClaimInputSchema = z
   .object({ accountId: z.string().uuid(), kind: resetKindSchema })
-  .strict();
-
-export const resetAutoUseInputSchema = z
-  .object({
-    accountId: z.string().uuid(),
-    grantId: resetGrantSchema.shape.id,
-    enabled: z.boolean(),
-  })
   .strict();
 
 // What one claim did. "refused": nothing was sent (why says which grant is missing or blocked).

@@ -10,7 +10,6 @@ import {
   codexLoginPollInputSchema,
   loginCompleteInputSchema,
   modelFamilySchema,
-  resetAutoUseInputSchema,
   resetClaimInputSchema,
   tokenRotateInputSchema,
   routingSetInputSchema,
@@ -69,7 +68,6 @@ const HELP = [
   "  bb pool-local account reorder <claude|codex> <id>...",
   "  bb pool-local account refresh <id>",
   "  bb pool-local account reset <id> <fable|full|weekly|session>  Spends one usage reset.",
-  "  bb pool-local account reset-auto <id> <grant-id> [--off]",
   "  bb pool-local status [--json]",
   "  bb pool-local routing <claude|codex> [--off]",
   "  bb pool-local config",
@@ -164,10 +162,7 @@ function formatFamilyQuota(quota: FamilyQuota | null): string {
 // Each grant's kind, id, resets left, and whether a claim would be accepted now (or why not).
 function formatResets(account: AccountSummary, now: number): string {
   const { resets } = account;
-  const unheld = account.autoUseGrantIds
-    .filter((id) => !resets?.grants.some((grant) => grant.id === id))
-    .map((id) => `auto ${id} (not held)`);
-  if (resets === null) return unheld.length === 0 ? "-" : unheld.join("; ");
+  if (resets === null) return "-";
   if (!resets.eligible) return `ineligible (${resets.ineligibleReason ?? "unknown"})`;
   const grants = resets.grants.map((grant) =>
     [
@@ -175,14 +170,13 @@ function formatResets(account: AccountSummary, now: number): string {
       grant.id,
       `${grant.resetsLeft}${grant.resetsTotal === null ? "" : `/${grant.resetsTotal}`} left`,
       claimable(grant, now) ? "usable" : unusableReason(grant, now),
-      ...(account.autoUseGrantIds.includes(grant.id) ? ["auto"] : []),
     ].join(" "),
   );
   const cooldown =
     resets.cooldownUntil !== null && resets.cooldownUntil > now
       ? [`cooldown until ${formatReset(resets.cooldownUntil)}`]
       : [];
-  const all = [...grants, ...unheld, ...cooldown];
+  const all = [...grants, ...cooldown];
   return all.length === 0 ? "none" : all.join("; ");
 }
 
@@ -523,12 +517,6 @@ export function registerPoolCli(
         usage: "bb pool-local account reset <id> <fable|full|weekly|session>",
       },
       {
-        name: "account-reset-auto",
-        summary:
-          "Flag a usage-reset grant for automatic use when the whole Claude pool hits a long wall",
-        usage: "bb pool-local account reset-auto <id> <grant-id> [--off]",
-      },
-      {
         name: "status",
         summary: "Show hub, machine token, routing, and account status",
         usage: "bb pool-local status [--json]",
@@ -652,23 +640,6 @@ export function registerPoolCli(
           if (outcome === null) throw new Error("Account not found.");
           const account = (await operations.list()).find((item) => item.id === input.accountId);
           return formatClaim(account?.email ?? account?.label ?? input.accountId, outcome);
-        }
-        if (argv[0] === "account" && argv[1] === "reset-auto") {
-          if (argv.length !== 4 && argv.length !== 5) throw new Error(HELP);
-          const flags = parseFlags(argv.slice(4), ["off"], []);
-          const input = resetAutoUseInputSchema.parse({
-            accountId: argv[2],
-            grantId: argv[3],
-            enabled: !flags.booleans.has("off"),
-          });
-          const account = await operations.setResetAutoUse(input.accountId, input.grantId, input.enabled);
-          if (account === null) throw new Error("Account not found.");
-          return {
-            exitCode: 0,
-            stdout: input.enabled
-              ? `Flagged ${input.grantId} on ${account.email ?? account.label} for automatic use when no Claude account can serve for over an hour.\n`
-              : `Unflagged ${input.grantId} on ${account.email ?? account.label}.\n`,
-          };
         }
         if (argv[0] === "account" && argv[1] === "add") {
           const flags = parseFlags(

@@ -20,7 +20,6 @@ bb pool-local account priority <id> <n>
 bb pool-local account reorder <claude|codex> <id>...
 bb pool-local account refresh <id>
 bb pool-local account reset <id> <fable|full|weekly|session>
-bb pool-local account reset-auto <id> <grant-id> [--off]
 bb pool-local status [--json]
 bb pool-local routing <claude|codex> [--off]
 bb pool-local config
@@ -99,13 +98,13 @@ lost connection) leaves the claim unsettled; claiming again resends it with the
 same request id, so the reset is spent at most once. Never run it unless the
 user asks.
 
-`bb pool-local account reset-auto <id> <grant-id>` flags one grant for
-automatic use (`--off` clears the flag; status marks it `auto`). The Pooler
-spends a flagged grant itself only when no Claude account can serve any model,
-none frees up on its own within an hour, no claim sent in the last 10 minutes is unsettled, and a fresh read
-shows the grant usable and blocked by nothing; once per wall, until an account
-serves again. Its decisions are lines in `bb plugin logs account-pool-local`.
-Nothing is spent automatically without a flag.
+The Pooler spends a reset itself, with no opt-in, only when no Claude account
+can serve any model, none frees up on its own within an hour, and no claim sent
+in the last 10 minutes is unsettled. It takes the grants in the order the status
+advice ranks them and claims the first a fresh read shows usable and blocked by
+nothing (a Fable reset only with the Fable weekly limit at least 40% used);
+once per wall, until an account serves again. Its decisions are lines in
+`bb plugin logs account-pool-local`.
 
 Fable requests prefer one account while it can serve them: among accounts
 holding a Fable reset with resets left, the one whose Fable limit is the most

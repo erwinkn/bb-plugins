@@ -3,8 +3,11 @@ import { usableAt } from "./quota.js";
 import { claimable, fableUse, unusableReason } from "./usage-resets.js";
 
 // Advice on spending a Claude usage reset, from facts: whether an account can serve now (its usage
-// reading and the router's holds), and the grants each account's usage read lists. The Pooler
-// spends a reset only when asked (bb pool-local account reset), or a grant flagged for automatic use.
+// reading and the router's holds), and the grants each account's usage read lists. Besides a
+// claim by hand (bb pool-local account reset), the Pooler spends one by itself at a wall, walking
+// this ranking (Hub.tryAutoReset): when fresh reads show no Claude account serving or freeing up
+// within an hour, no claim unsettled, and, for a Fable reset, the Fable weekly limit at least 40%
+// used.
 
 // The Fable weekly limit is half the weekly limit (allowance_percent_of_weekly 50 on every max_20x
 // account on 2026-11-11), so half of the Fable limit's use is the share of the weekly limit a Fable
@@ -35,8 +38,12 @@ export interface ResetPick {
 }
 
 export interface ResetAdvice {
-  // Best first; empty unless the pool cannot serve and some account holds a usable grant.
+  // Each account's best grant, best first; empty unless the pool cannot serve and some account
+  // holds a usable grant.
   picks: ResetPick[];
+  // Every usable grant in the same order, each after its account's better ones: what an automatic
+  // claim walks when a pick is refused (a grant blocked by another limit, say).
+  ranked: ResetPick[];
   reason: string;
   // "unread": no account has a usage reading to judge by; "serving": one can serve now.
   state: "unread" | "serving" | "walled";
@@ -70,12 +77,12 @@ const coolingDown = (resets: UsageResets, now: number) => resets.cooldownUntil !
 
 const KIND_ORDER: Record<ResetKind, number> = { fable: 0, full: 1, weekly: 1, session: 2 };
 
-// The grant to spend on one account, if it holds a usable one: a Fable reset worth spending first
-// (it saves the more general resets), then a full or weekly one, then a session one, then a Fable
-// reset that gives back little.
-function accountPick(account: ResetAccount, freeAt: number | null, now: number): ResetPick | null {
-  if (account.resets === null || !account.resets.eligible || coolingDown(account.resets, now)) return null;
-  const picks = account.resets.grants
+// The usable grants of one account, best first: a Fable reset worth spending first (it saves the
+// more general resets), then a full or weekly one, then a session one, then a Fable reset that
+// gives back little.
+function accountPicks(account: ResetAccount, freeAt: number | null, now: number): ResetPick[] {
+  if (account.resets === null || !account.resets.eligible || coolingDown(account.resets, now)) return [];
+  return account.resets.grants
     .filter((grant) => claimable(grant, now))
     .map((grant): ResetPick => {
       const base = { accountId: account.id, label: account.label, kind: grant.kind, grantId: grant.id, resetsLeft: grant.resetsLeft, freeAt };
@@ -92,7 +99,6 @@ function accountPick(account: ResetAccount, freeAt: number | null, now: number):
       };
     })
     .sort((left, right) => Number(right.worth) - Number(left.worth) || KIND_ORDER[left.kind] - KIND_ORDER[right.kind]);
-  return picks[0] ?? null;
 }
 
 // When no account can serve, names when one serves again on its own and the reset worth spending
@@ -100,10 +106,10 @@ function accountPick(account: ResetAccount, freeAt: number | null, now: number):
 // wait longest on its own, where a reset buys the most time.
 export function adviseReset(accounts: readonly ResetAccount[], threshold: number, now: number): ResetAdvice {
   const read = accounts.filter(({ quota }) => quota.error === null && quota.observedAt !== null);
-  if (read.length === 0) return { picks: [], reason: "No Claude account has a usage reading.", state: "unread" };
+  if (read.length === 0) return { picks: [], ranked: [], reason: "No Claude account has a usage reading.", state: "unread" };
   const freeAt = new Map(read.map((account) => [account.id, usableAt(account.quota, null, threshold, now)]));
   const serving = read.find((account) => (freeAt.get(account.id) ?? Infinity) <= now);
-  if (serving !== undefined) return { picks: [], reason: `${serving.label} can serve now.`, state: "serving" };
+  if (serving !== undefined) return { picks: [], ranked: [], reason: `${serving.label} can serve now.`, state: "serving" };
   const earliest = [...read]
     .filter((account) => freeAt.get(account.id) !== null)
     .sort((left, right) => freeAt.get(left.id)! - freeAt.get(right.id)!)[0];
@@ -111,16 +117,19 @@ export function adviseReset(accounts: readonly ResetAccount[], threshold: number
     earliest === undefined
       ? "None is known to serve again on its own"
       : `${earliest.label} serves again on its own in ${hours(freeAt.get(earliest.id)! - now)}`;
-  const picks = read
-    .flatMap((account) => accountPick(account, freeAt.get(account.id) ?? null, now) ?? [])
+  // A stable sort: one account's grants keep their own order.
+  const ranked = read
+    .flatMap((account) => accountPicks(account, freeAt.get(account.id) ?? null, now))
     .sort(
       (left, right) =>
         Number(right.worth) - Number(left.worth) || (right.freeAt ?? Infinity) - (left.freeAt ?? Infinity),
     );
+  const picks = ranked.filter((pick, index) => ranked.findIndex((other) => other.accountId === pick.accountId) === index);
   const first = picks[0];
   if (first !== undefined)
     return {
       picks,
+      ranked,
       reason: `No Claude account can serve now. ${back}. A ${RESET_NAME[first.kind]} on ${first.label} (${first.grantId}, ${first.resetsLeft} left) ${first.why}.`,
       state: "walled",
     };
@@ -134,6 +143,7 @@ export function adviseReset(accounts: readonly ResetAccount[], threshold: number
   );
   return {
     picks,
+    ranked,
     reason: `No Claude account can serve now. ${back}. No account holds a usable reset${held.length === 0 ? "" : `; held: ${held.join(", ")}`}.`,
     state: "walled",
   };
