@@ -178,7 +178,7 @@ export function fableUse(grant: ResetGrant, quota: AccountQuota): number {
 
 // An automatic claim spends a Fable reset only once the Fable weekly limit is at least this used
 // (Erwin, 2026-11-12): below it, the reset gives back too little to spend unattended.
-export const FABLE_AUTO_USE_MIN = 0.4;
+export const FABLE_AUTO_USE_MIN = 0.5;
 
 // Whether an automatic claim may spend the grant: claimable now, blocked by no limit at its cap,
 // and, for a Fable reset, with the Fable weekly limit at least FABLE_AUTO_USE_MIN used.

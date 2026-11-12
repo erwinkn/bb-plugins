@@ -542,13 +542,13 @@ describe("automatic use of a reset at a wall", () => {
     ]);
   });
 
-  it("spends a Fable reset only once the Fable weekly limit is at least 40% used", async () => {
+  it("spends a Fable reset only once the Fable weekly limit is at least 50% used", async () => {
     const fableWall = (fable: number) => [
       { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR } },
       { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: fable } })] } },
     ];
-    // Under 40% in a reading newer than any response, the wall costs no usage read at all.
-    const low = await makePool(fableWall(39));
+    // Under 50% in a reading newer than any response, the wall costs no usage read at all.
+    const low = await makePool(fableWall(49));
     const reads = low.usageReads.length;
     for (let index = 0; index < 3; index += 1) {
       expect((await low.send("claude-opus-5")).status).toBe(429);
@@ -557,7 +557,7 @@ describe("automatic use of a reset at a wall", () => {
     expect(low.usageReads.length).toBe(reads);
     expect(low.claims).toEqual([]);
     expect(low.logs).toEqual([]);
-    const high = await makePool(fableWall(40));
+    const high = await makePool(fableWall(50));
     await high.send("claude-opus-5");
     expect(high.claims.map((claim) => claim.body.grant_id)).toEqual(["launch-2610-fable"]);
   });
@@ -576,16 +576,16 @@ describe("automatic use of a reset at a wall", () => {
     pool.advance(1_000);
     const erwin = pool.accounts[1]!.id;
     pool.quotas.put({ ...pool.quotas.get(erwin), observedAt: NOW + 1_000 });
-    pool.setUsage(1, fableAt(45));
+    pool.setUsage(1, fableAt(55));
     await pool.send("claude-opus-5");
     expect(pool.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["erwin@gmail.com", "launch-2610-fable"]]);
   });
 
   it("walks past a refused pick: to another account's grant, and to the same account's next one", async () => {
-    // Both Fable resets give back little, so the longest wait ranks first: tech@'s, under 40%.
+    // Both Fable resets give back little, so the longest wait ranks first: tech@'s, under 50%.
     const fables = await makePool([
       { email: "tech@equisafe.io", usage: { weekly: 1, weeklyResetAt: NOW + 5 * 24 * HOUR, grants: [fableGrant("tech-fable", { percent_used: { seven_day_overage_included: 30 } })] } },
-      { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: 45 } })] } },
+      { email: "erwin@gmail.com", usage: { weekly: 1, weeklyResetAt: NOW + 2 * 24 * HOUR, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: 55 } })] } },
     ]);
     await fables.send("claude-opus-5");
     expect(fables.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["erwin@gmail.com", "launch-2610-fable"]]);
@@ -1457,17 +1457,17 @@ describe("a reset spent ahead of the wall", () => {
     expect(pool.claims.map((claim) => claim.body.grant_id)).toEqual(["full-reset-2611"]);
   });
 
-  it("spends a Fable reset ahead of the wall only with the Fable weekly limit at least 40% used", async () => {
+  it("spends a Fable reset ahead of the wall only with the Fable weekly limit at least 50% used", async () => {
     const fableNearWall = (fable: number) => [
       { email: "tech@equisafe.io", usage: { ...walledTech(), grants: [] } },
       { email: "erwin@gmail.com", usage: { weekly: 0.96, grants: [fableGrant("launch-2610-fable", { percent_used: { seven_day_overage_included: fable } })] } },
     ];
-    const low = await makePool(fableNearWall(39));
+    const low = await makePool(fableNearWall(49));
     const reads = low.usageReads.length;
     await low.send("claude-opus-5");
     await settle(low);
     expect([low.usageReads.length, low.claims, low.logs]).toEqual([reads, [], []]);
-    const high = await makePool(fableNearWall(40));
+    const high = await makePool(fableNearWall(50));
     await high.send("claude-opus-5");
     await expect.poll(() => high.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["erwin@gmail.com", "launch-2610-fable"]]);
   });

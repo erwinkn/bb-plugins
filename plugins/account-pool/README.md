@@ -113,7 +113,7 @@ unreadable. It then walks `adviseReset`'s ranking of every usable grant, judged
 on the fresh reads (worth spending first, then the account that would wait
 longest, then each account's own order), and claims the first that a read taken
 now shows usable, with resets left, not paused and blocked by nothing, and, for
-a Fable reset, with the Fable weekly limit at least 40% used
+a Fable reset, with the Fable weekly limit at least 50% used
 (`FABLE_AUTO_USE_MIN`; Erwin, 2026-11-12: less gives back too little to spend
 unattended). A grant refused for any of these passes the turn to the next one.
 It claims through the same path as a claim by hand, then selects again, so the
@@ -155,7 +155,7 @@ A request that finds no account to try waits on these upstream reads (and the
 claim: profile read, POST, read; 10 s timeout each) before its answer; one
 served ahead of the wall never does. Either way, when no cached reading lists a
 grant an automatic claim could spend (a blocked grant, or a Fable reset under
-40%, never counts), nothing is read, claimed or logged. A reading older than the
+50%, never counts), nothing is read, claimed or logged. A reading older than the
 account's last response counts every grant it holds, since the response may have
 raised the Fable use or lifted a block. A grant waiting for its limit to reach
 its cap counts too: if the server makes it usable only at 100% while the

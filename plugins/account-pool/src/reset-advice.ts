@@ -7,7 +7,7 @@ import { claimable, fableUse, unusableReason } from "./usage-resets.js";
 // claim by hand (bb pool-local account reset), the Pooler spends one by itself just ahead of a
 // wall, walking this ranking judged at the pre-wall mark, switchThreshold less 3 points
 // (Hub.tryAutoReset): when fresh reads show no Claude account under that mark or freeing up
-// within an hour, no claim unsettled, and, for a Fable reset, the Fable weekly limit at least 40%
+// within an hour, no claim unsettled, and, for a Fable reset, the Fable weekly limit at least 50%
 // used.
 
 // The Fable weekly limit is half the weekly limit (allowance_percent_of_weekly 50 on every max_20x
