@@ -52,7 +52,8 @@ import { CHAT_MEMORY_PLUGIN_ID } from "./lib/memory-scopes";
 import { Store, MIGRATIONS, type WorkerRecord } from "./lib/store";
 import { CHILD_PAGE, ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
-import { ReviewerFallback } from "./lib/reviewer-fallback";
+import { FALLBACK_ROLE, ReviewerFallback } from "./lib/reviewer-fallback";
+import { MAX_WORKER_ANCESTORS, WORKER_CLAUDE_SETTINGS, WORKER_SETTINGS_ENV } from "./lib/worker-session";
 import { withProfileDefaults } from "./lib/settings";
 import {
   buildOverview,
@@ -847,16 +848,17 @@ export default function plugin(bb: BbPluginApi) {
 
   // Metadata is a receipt pointer, never authority by itself. The assignment
   // was recorded before spawn, and its immutable role comes from the store.
-  const pendingMember = (ctx: PluginAgentConfigurationContext) => {
-    const meta = ctx.pluginMetadata;
-    if (!isOwnOrigin(bb.pluginId, ctx.origin.pluginId) || typeof meta.op !== "string")
+  const pendingMember = (ctx: PluginAgentConfigurationContext) =>
+    pendingAssignment(ctx.thread.id, ctx.origin.pluginId, ctx.pluginMetadata);
+  const pendingAssignment = (threadId: string, originPluginId: string | null, meta: Record<string, unknown>) => {
+    if (!isOwnOrigin(bb.pluginId, originPluginId) || typeof meta.op !== "string")
       return null;
     const a = store.assignmentByOp(meta.op);
     if (
       !a ||
       a.projectId !== meta.projectId ||
       a.workerNum !== meta.worker ||
-      (a.threadId !== null && a.threadId !== ctx.thread.id)
+      (a.threadId !== null && a.threadId !== threadId)
     )
       return null;
     const project = store.project(a.projectId);
@@ -959,6 +961,32 @@ export default function plugin(bb: BbPluginApi) {
       return { action: "proceed" };
     } catch (error) {
       return { action: "wait", reason: errorMessage(error), sendAt: Date.now() + 60_000 };
+    }
+  });
+  // W605: the sessions that leave out what workers don't use (lib/worker-session.ts): a current
+  // worker, confirmed or still being confirmed, a fallback reviewer this plugin started, and their
+  // descendants (reviewers, helpers, their helpers). Coordinators, former and retired workers and
+  // user threads keep everything. Decided afresh at each session start from the thread's ancestry; a lookup
+  // that fails leaves the session whole.
+  const workerSession = async (threadId: string, ancestors = 0): Promise<boolean> => {
+    const m = store.membership(threadId);
+    // A worker's descendants join the Initiative as nested threads: those carry kind "adhoc".
+    if (m && m.kind !== "adhoc") return m.kind === "worker" && !m.former && m.worker?.state !== "retired";
+    const thread = await bb.sdk.threads.get({ threadId });
+    if (isOwnOrigin(bb.pluginId, thread.originPluginId)) {
+      const meta = await bb.sdk.threads.getPluginMetadata({ threadId, pluginId: bb.pluginId });
+      if (meta.role === FALLBACK_ROLE || pendingAssignment(threadId, thread.originPluginId, meta)) return true;
+    }
+    const parent = thread.parentThreadId;
+    return !!parent && ancestors < MAX_WORKER_ANCESTORS && workerSession(parent, ancestors + 1);
+  };
+  bb.providers.experimental_contributeEnv("claude-code", async ({ threadId }) => {
+    try {
+      if (!(await workerSession(threadId))) return [];
+      return [{ name: WORKER_SETTINGS_ENV, value: JSON.stringify(WORKER_CLAUDE_SETTINGS), reason: "Initiative worker session: leaves out the tools and skills workers don't use (W605)" }];
+    } catch (error) {
+      bb.log.warn(`W605: kept the full session for ${threadId}: ${errorMessage(error)}`);
+      return [];
     }
   });
   bb.agents.configure((ctx) => {
