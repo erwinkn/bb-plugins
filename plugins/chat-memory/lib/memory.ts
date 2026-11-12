@@ -844,7 +844,9 @@ export class ChatMemory {
    * How a thread's next turn runs, asked before each new turn (TURN_CONTEXT_TOOL). One path per
    * mode (D459): regular answers no session, so the thread's own goes on; optchat answers
    * a fresh session whose system prompt ends with the view's older lines and whose first message
-   * holds its newest lines, the time and the message.
+   * holds its newest lines, the time and the message. The provider may still keep the running
+   * session and send the plain message instead: Claude Code's does while that session runs
+   * background work a fresh session would stop (T170), so an answer is not a promise of a swap.
    *
    * Catch up stable events, exclude the incoming request from history, and wait a few seconds at
    * most for the summaries of earlier messages, never for merges (R12): a message still without one
