@@ -1453,7 +1453,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_pr_watch",
     parameters: jsonSchema(prWatchToolSchema),
-    description: 'Watch a pull request: the plugin wakes this thread when it changes on GitHub (checks failing, required checks passing, new comments or reviews by others, a conflict, no check 15 min after a push) until it merges or closes, or you unwatch it. Call it after you open or push a PR: {pr:"https://github.com/o/r/pull/12"}; then end your turn if you have nothing else to do: a change wakes you. It answers with the PR\'s state now (checks, review decision, conflicts, unresolved threads): only later changes wake, so act on what it shows. One watcher per PR; a new watch replaces the old. A lead may watch for a worker: {pr, worker:"W3"}.',
+    description: 'Watch a pull request: the plugin wakes this thread when it changes on GitHub (checks failing, required checks passing once the PR does not conflict, new comments or reviews by others, a conflict, no check 15 min after a push) until it merges or closes, or you unwatch it. Call it after you open or push a PR: {pr:"https://github.com/o/r/pull/12"}; then end your turn if you have nothing else to do: a change wakes you. It answers with the PR\'s state now (checks, review decision, conflicts, unresolved threads): only later changes wake, so act on what it shows. One watcher per PR; a new watch replaces the old. A lead may watch for a worker: {pr, worker:"W3"}.',
     async execute(raw, { threadId }) {
       const input = parseToolInput(prWatchToolSchema, raw, "initiative_pr_watch");
       const caller = await watchCaller(threadId, input.worker);

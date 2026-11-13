@@ -46,8 +46,8 @@ the reviewer command), which replaces anything earlier.
   names by itself. A PR your thread (or its child) opened belongs to your Adventure;
   `initiative:"<name>"` moves one elsewhere, `initiative:null` unassigns it.
 - `initiative_pr_watch {pr}` after you open or push a PR: the plugin then wakes you when it
-  changes on GitHub (checks failing, required checks passing, new comments or reviews, a
-  conflict, no check 15 minutes after a push), until it merges or closes. End your turn while
+  changes on GitHub (checks failing, required checks passing once the PR does not conflict,
+  new comments or reviews, a conflict, no check 15 minutes after a push), until it merges or closes. End your turn while
   you wait: your lead isn't told you stopped. The answer shows the PR as it is now, which wakes
   nobody later: handle a failure, a conflict or checks that already passed at once.
   `initiative_pr_unwatch {pr}` once you hand the PR off or stop caring. Never wait on CI

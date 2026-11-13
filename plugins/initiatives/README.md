@@ -697,6 +697,12 @@ them up again on a rollback.
   are read 100 a page (up to 1,000); past that, the rollup's overall state
   stands in for the unread ones. A merge or a close only ends the watch,
   waking nobody.
+- **Folded while idle, no pass during a conflict (W614).** Wakes for an idle
+  worker wait 3 minutes from the oldest and go as one message, each PR at its
+  newest state (a failure then a pass on one head says passed; a conflict that
+  cleared is left out). A worker mid-turn hears at once. While a PR conflicts,
+  its checks passing wakes nobody; the pass is sent once the conflict clears,
+  if the checks are still green on that head.
 - **Skipped or neutral runs alone are no pass (W563, T169).** Where no check
   is required, checks that all passed as skipped or neutral are placeholders,
   not a pass: nothing ran, and nobody is woken, however long they hold. A

@@ -10,7 +10,7 @@ import { DETAILS_CONCURRENCY, IDLE_REFRESH_MS, MergeQueueCache, REFRESH_MS, type
 import { PrOwners, ledgerThreads } from "../lib/pr-owners";
 import { AssignedPrs } from "../lib/pr-records";
 import {
-  COMMENT_WAKE_CAP, NOT_A_MERGE, NO_CHECKS_MS, PR_ID_QUERY, PrWatcher, UNLISTED_READ_MS, WATCH_PAGE, WatchLedger, baselineState, diffWatch, parseWatch, readPrWatch,
+  COMMENT_WAKE_CAP, NOT_A_MERGE, NO_CHECKS_MS, PR_ID_QUERY, PrWatcher, UNLISTED_READ_MS, WAKE_FOLD_MS, WATCH_PAGE, WatchLedger, baselineState, diffWatch, liveChanges, parseWatch, readPrWatch,
   watchAnswer, type WatchFacts, type WatchState,
 } from "../lib/pr-watch";
 import type { Sdk } from "../lib/bb";
@@ -236,7 +236,8 @@ const watchNode = (pr: FakePr, baseline: boolean) => ({
 interface Thread { id: string; status: string; archivedAt: number | null; deletedAt: number | null }
 
 /** An Adventure over equisafe/market with W1 (thread thr_w1, whose branches end in thr_w1) and W2. */
-function setup(options: { prs?: FakePr[]; since?: number } = {}) {
+/** `fold`: the watcher's WAKE_FOLD_MS; 0 (no hold) unless a test is about it (W614). */
+function setup(options: { prs?: FakePr[]; since?: number; fold?: number } = {}) {
   const { store, db, clock } = memoryStore(options.since ?? T0);
   store.createProject({ id: "eq", name: "Equisafe", objective: "o", memberProjectIds: ["proj_eq"], coordinatorThreadId: "thr_c" });
   for (const [num, thread] of [[1, "thr_w1"], [2, "thr_w2"]] as const) {
@@ -321,7 +322,7 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
   const make = () => {
     const cache = makeCache();
     const ledger = new WatchLedger(db, () => clock.now);
-    const watcher = new PrWatcher({ store, ledger, cache, sdk, coldCheck, giveWork, changed, warn }, () => clock.now);
+    const watcher = new PrWatcher({ store, ledger, cache, sdk, coldCheck, giveWork, changed, warn }, () => clock.now, options.fold ?? 0);
     return { cache, ledger, watcher };
   };
   let live = make();
@@ -351,7 +352,7 @@ function setup(options: { prs?: FakePr[]; since?: number } = {}) {
     watch, start, rewatch,
     get cache() { return live.cache; }, get ledger() { return live.ledger; }, get watcher() { return live.watcher; },
     /** A plugin reload: a new cache and watcher over the same database. */
-    reload: () => { live = make(); live.watcher.recover(); },
+    reload: () => { live.watcher.stop(); live = make(); live.watcher.recover(); },
   };
 }
 
@@ -1405,7 +1406,7 @@ describe("W554 explicit watches", () => {
       watching: prUrl(1), title: "PR 1", wakes: "you",
       now: { head: "head1a", checks: "failing: tests; 1 check pending", mergeable: "conflicting", review: "changes_requested", unresolvedThreads: "2" },
       attention: "Checks failing: tests. It conflicts with its base branch. Changes are requested. 2 unresolved review threads. The watch wakes only on later changes: handle these now.",
-      note: "Wakes you on newly failing checks, required checks passing, new comments or reviews by others, a conflict, or no check 15 min after a push; ends when the PR merges or closes, or with initiative_pr_unwatch.",
+      note: "Wakes you on newly failing checks, required checks passing (once it doesn't conflict), new comments or reviews by others, a conflict, or no check 15 min after a push; ends when the PR merges or closes, or with initiative_pr_unwatch.",
     });
     expect(t.ledger.row(prUrl(1))).toMatchObject({ watcher: "thr_w1", projectId: "eq", state: { failing: ["tests"], mergeable: "conflicting" } });
     await t.poll();
@@ -1805,5 +1806,144 @@ describe("W608 superseded check runs", () => {
     await t.poll();
     expect(t.giveWork).toHaveBeenCalledTimes(1);
     expect(t.giveWork.mock.calls[0]![2]).toContain("Required checks passed (1 check).");
+  });
+});
+
+describe("W614 fewer PR-watch wakes", () => {
+  it("folds an idle worker's wakes of WAKE_FOLD_MS, any PR, into one message where each PR's newest state wins", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })], fold: WAKE_FOLD_MS });
+    await t.start();
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
+    // Within the window: the failed check passes on a rerun, the other PR conflicts.
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "passed" }];
+    t.prs.get(2)!.mergeable = "CONFLICTING";
+    await t.poll(WAKE_FOLD_MS - MINUTE);
+    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending", "pending", "pending"]);
+    await t.poll(MINUTE);
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    const text = t.giveWork.mock.calls[0]![2];
+    expect(text.match(/equisafe\/market#1 "PR 1"/g)).toHaveLength(1);
+    expect(text).toContain("All checks passed (1 check).");
+    expect(text).not.toContain("Checks failed");
+    expect(text).toContain(`${REPO}#2 "PR 2" at head head2a`);
+    expect(text).toContain("It conflicts with its base branch.");
+    // The failure the pass answered tells nothing more.
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["stale", "sent", "sent"]);
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    t.watcher.stop();
+  });
+
+  it("keeps a held wake's comment when its pass no longer holds", async () => {
+    const t = setup({ prs: [fakePr(1)], fold: WAKE_FOLD_MS });
+    await t.start();
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "passed" }];
+    t.prs.get(1)!.comments = [{ url: "https://c/1", at: t.clock.now + 1, login: "coderabbitai", bot: true }];
+    await t.poll();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll(WAKE_FOLD_MS);
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    const text = t.giveWork.mock.calls[0]![2];
+    expect(text).toContain("https://c/1");
+    expect(text).toContain("Checks failed: tests.");
+    expect(text).not.toContain("passed");
+    t.watcher.stop();
+  });
+
+  it("tells only what still holds when the hold ends: no cleared conflict, no \"no check\" once checks reported", async () => {
+    const t = setup({ prs: [fakePr(1), fakePr(2, { head: "head2a" })], fold: WAKE_FOLD_MS });
+    await t.start();
+    t.prs.get(1)!.mergeable = "CONFLICTING";
+    t.prs.get(2)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending", "pending"]);
+    t.prs.get(1)!.mergeable = "MERGEABLE";
+    await t.poll(WAKE_FOLD_MS);
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    const text = t.giveWork.mock.calls[0]![2];
+    expect(text).not.toContain("conflicts");
+    expect(text).not.toContain(`${REPO}#1 `);
+    expect(text).toContain("Checks failed: tests.");
+    expect(wakeRows(t).map((w) => w.state).sort()).toEqual(["sent", "stale"]);
+    t.watcher.stop();
+  });
+
+  it("drops a held \"no check\" once the checks report", () => {
+    const state = { ...base(facts({ checks: [] })), passed: true };
+    expect(liveChanges([{ kind: "no-checks" }, { kind: "checks-passed", checks: ["tests"], required: false }], state).map((c) => c.kind)).toEqual(["checks-passed"]);
+    expect(liveChanges([{ kind: "no-checks" }], { ...state, passed: false, failing: ["tests"] })).toEqual([]);
+    expect(liveChanges([{ kind: "no-checks" }], { ...state, passed: false })).toEqual([{ kind: "no-checks" }]);
+  });
+
+  it("wakes a busy worker at once, as before", async () => {
+    const t = setup({ prs: [fakePr(1)], fold: WAKE_FOLD_MS });
+    await t.start();
+    t.threads.get("thr_w1")!.status = "active";
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(t.sent()).toEqual([expect.objectContaining({ to: "thr_w1", mode: "steer-if-active" })]);
+    expect(t.sent()[0]!.text).toContain("Checks failed: tests.");
+    t.watcher.stop();
+  });
+
+  it("keeps a held wake across a reload and sends it once its window ends", async () => {
+    const t = setup({ prs: [fakePr(1)], fold: WAKE_FOLD_MS });
+    await t.start();
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(wakeRows(t).map((w) => w.state)).toEqual(["pending"]);
+    t.reload();
+    await t.poll(WAKE_FOLD_MS);
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork.mock.calls[0]![2]).toContain("Checks failed: tests.");
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    t.watcher.stop();
+  });
+
+  it("sends no pass while the PR conflicts, and the pass once the conflict clears on that head", async () => {
+    const t = setup({ prs: [fakePr(1, { mergeable: "CONFLICTING" })] });
+    await t.start();
+    t.prs.get(1)!.checks = [{ name: "tests", outcome: "passed" }];
+    await t.poll();
+    expect(t.giveWork).not.toHaveBeenCalled();
+    expect(t.ledger.row(prUrl(1))?.state).toMatchObject({ passed: true, passOwed: true });
+    t.prs.get(1)!.mergeable = "MERGEABLE";
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork.mock.calls[0]![2]).toContain("All checks passed (1 check).");
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes back a pass when the PR starts conflicting, and owes it until the conflict clears", () => {
+    const passed = facts({ checks: [{ name: "tests", outcome: "passed", required: false }] });
+    const conflict = diffWatch(base(passed), { ...passed, mergeable: "conflicting" }, ctx());
+    expect(kinds(conflict)).toEqual(["conflicting"]);
+    expect(conflict.state.passOwed).toBe(true);
+    expect(kinds(diffWatch(conflict.state, passed, ctx()))).toEqual(["checks-passed"]);
+  });
+
+  it("owes no pass once the head moved or the checks went red during the conflict", async () => {
+    const t = setup({ prs: [fakePr(1, { mergeable: "CONFLICTING" }), fakePr(2, { head: "head2a", mergeable: "CONFLICTING" })] });
+    await t.start();
+    for (const n of [1, 2]) t.prs.get(n)!.checks = [{ name: "tests", outcome: "passed" }];
+    await t.poll();
+    expect(t.giveWork).not.toHaveBeenCalled();
+    // #1 is pushed, its new checks still running; #2's checks fail on a rerun.
+    Object.assign(t.prs.get(1)!, { head: "head1b", checks: [{ name: "tests", outcome: "pending" }] });
+    t.prs.get(2)!.checks = [{ name: "tests", outcome: "failed" }];
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork.mock.calls[0]![2]).not.toContain("checks passed");
+    for (const n of [1, 2]) t.prs.get(n)!.mergeable = "MERGEABLE";
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(wakeRows(t).every((w) => !JSON.parse(w.changes).some((c: { kind: string }) => c.kind === "checks-passed"))).toBe(true);
   });
 });

@@ -17,7 +17,8 @@
 // - A wake goes to its watcher: a worker as more work, or as a message when it is busy; the
 //   coordinator as a message. To the coordinator, with why, when the worker is retired or stopped,
 //   idle with a cold cache (cold-cache.ts), or the thread is no longer the Adventure's. Each
-//   recipient gets one message a pass, whatever it covers.
+//   recipient gets one message a pass, whatever it covers. W614: an idle watcher's wakes wait
+//   WAKE_FOLD_MS and go as one message, one line set per PR; a pass waits out a conflict.
 // - Comments by the `gh` account never wake: agents and the user share it, and nothing in GitHub's
 //   data tells them apart. Bots and other people do.
 import type Database from "better-sqlite3";
@@ -50,6 +51,11 @@ export const WATCH_COMMENTS = 20;
 export const WAKES_KEPT = 20;
 /** A wake still unsent after this (a long pause, a PR no longer listed) is dropped as stale. */
 export const WAKE_MAX_AGE_MS = 24 * 60 * 60_000;
+/**
+ * W614: wakes for an idle watcher wait this long from the oldest, so a burst (checks failing, then
+ * passing, another PR's news) is one message and one turn. A busy watcher hears at once.
+ */
+export const WAKE_FOLD_MS = 3 * 60_000;
 /** Sends of a wake BB may refuse (a 4xx: nothing happened), each routed afresh, before it fails. */
 export const WAKE_REFUSALS = 3;
 
@@ -296,6 +302,11 @@ export interface WatchState {
   passed: boolean;
   /** The last known mergeability; GitHub's "unknown" while it computes doesn't replace it. */
   mergeable: MergeableState;
+  /**
+   * W614: `head` passed while it conflicts, which no checks-passed wake told: one goes once the
+   * conflict clears with the checks still passed on that head. Absent in older states.
+   */
+  passOwed?: boolean;
   /** The newest comment or review seen: later ones are news, and so are others at that time not in `seenAt`. */
   seenUntil: number;
   /** The URLs of those seen at `seenUntil`. */
@@ -396,6 +407,7 @@ export function baselineState(watch: WatchFacts, now: number, fingerprint: strin
     failing: failingNames(watch),
     passed: gate(watch).passed,
     mergeable: watch.mergeable,
+    passOwed: gate(watch).passed && watch.mergeable === "conflicting",
     ...seen(null, watch.comments),
     pushedAt: unchecked ? now : null,
     noChecksDone: !unchecked,
@@ -426,7 +438,13 @@ export function diffWatch(
   if (fresh.length) changes.push({ kind: "checks-failed", checks: fresh });
   const gating = gate(watch);
   const passed = gating.passed;
-  if (passed && (pushed || !prev.passed)) changes.push({ kind: "checks-passed", checks: gating.names, required: gating.required });
+  const mergeable = watch.mergeable === "unknown" ? prev.mergeable : watch.mergeable;
+  const conflicting = mergeable === "conflicting";
+  // W614: no pass wake while it conflicts. A pass is owed (also when a conflict starts on a passed
+  // head: the conflict wake takes it back) until it goes once the conflict clears on this head; a
+  // push or a failure ends the debt.
+  const owed = passed && (pushed || !prev.passed || !!prev.passOwed || (conflicting && prev.mergeable !== "conflicting"));
+  if (owed && !conflicting) changes.push({ kind: "checks-passed", checks: gating.names, required: gating.required });
   let cursor = { seenUntil: prev.seenUntil, seenAt: prev.seenAt ?? [] };
   if (context.login) {
     const own = context.login.toLowerCase();
@@ -436,7 +454,6 @@ export function diffWatch(
     cursor = seen(prev, watch.comments);
   }
   if (watch.mergeable === "conflicting" && prev.mergeable !== "conflicting") changes.push({ kind: "conflicting" });
-  const mergeable = watch.mergeable === "unknown" ? prev.mergeable : watch.mergeable;
   // A head is pushed when the watcher first sees it.
   const pushedAt = pushed ? now : prev.pushedAt;
   let noChecksDone = (pushed ? false : prev.noChecksDone) || watch.checks.length > 0 || !!watch.more;
@@ -453,7 +470,7 @@ export function diffWatch(
     } else commentWakes++;
   }
   return {
-    state: { head: watch.head, fingerprint, failing, passed, mergeable, ...cursor, pushedAt, noChecksDone, commentWakes, ended: null, readAt: now },
+    state: { head: watch.head, fingerprint, failing, passed, mergeable, passOwed: owed && conflicting, ...cursor, pushedAt, noChecksDone, commentWakes, ended: null, readAt: now },
     changes,
     capped,
   };
@@ -491,9 +508,54 @@ export function changeLine(change: Change, head: string): string {
   }
 }
 
-/** The PRs and changes of one wake. */
-export function wakeBody(wakes: readonly { url: string; head: string; pr: WakePr; changes: Change[] }[]): string {
-  return wakes.map((w) => `${w.pr.repo}#${w.pr.number} "${w.pr.title}" at head ${short(w.head)} (${w.url})\n${w.changes.map((c) => `- ${changeLine(c, w.head)}`).join("\n")}`).join("\n\n");
+type WakeItem = { url: string; head: string; pr: WakePr; changes: Change[] };
+
+/**
+ * W614: one item per PR, its changes in order with the newest state winning: checks passing take
+ * back the failures they name and a conflict; a conflict takes back a pass; failures and comments
+ * add up. Every wake of a PR still sendable is of its current head (verdict).
+ */
+export function foldWakes(wakes: readonly WakeItem[]): WakeItem[] {
+  const byUrl = new Map<string, WakeItem>();
+  for (const wake of wakes) {
+    let changes = byUrl.get(wake.url)?.changes ?? [];
+    for (const change of wake.changes) {
+      const prior = changes.find((c) => c.kind === change.kind);
+      changes = changes.flatMap((c): Change[] => {
+        if (c.kind === change.kind) return [];
+        if (change.kind === "conflicting") return c.kind === "checks-passed" ? [] : [c];
+        if (change.kind !== "checks-passed" || (c.kind !== "conflicting" && c.kind !== "checks-failed")) return [c];
+        const still = c.kind === "checks-failed" ? c.checks!.filter((name) => !change.checks!.includes(name)) : [];
+        return still.length ? [{ ...c, checks: still }] : [];
+      });
+      changes.push(
+        change.kind === "checks-failed" && prior ? { ...change, checks: [...new Set([...prior.checks!, ...change.checks!])] }
+        : change.kind === "new-comments" && prior ? { ...change, comments: [...prior.comments!, ...change.comments!] }
+        : change,
+      );
+    }
+    byUrl.set(wake.url, { ...wake, changes });
+  }
+  return [...byUrl.values()];
+}
+
+/**
+ * W614: what of a wake still holds as the watch's state stands, since a held one can go minutes
+ * later: a pass that no longer holds, a conflict that cleared, failures a pass answered and "no
+ * check" once checks reported are dropped; comments always hold.
+ */
+export function liveChanges(changes: readonly Change[], state: WatchState): Change[] {
+  return changes.filter((c) =>
+    c.kind === "checks-passed" ? state.passed
+    : c.kind === "conflicting" ? state.mergeable === "conflicting"
+    : c.kind === "checks-failed" ? !state.passed
+    : c.kind === "no-checks" ? !state.passed && !state.failing.length
+    : true);
+}
+
+/** The PRs and changes of one wake, folded (foldWakes). */
+export function wakeBody(wakes: readonly WakeItem[]): string {
+  return foldWakes(wakes).map((w) => `${w.pr.repo}#${w.pr.number} "${w.pr.title}" at head ${short(w.head)} (${w.url})\n${w.changes.map((c) => `- ${changeLine(c, w.head)}`).join("\n")}`).join("\n\n");
 }
 
 /**
@@ -534,7 +596,7 @@ export function watchAnswer(url: string, facts: WatchFacts, who: string, replace
       ...(unresolved !== null ? { unresolvedThreads: unresolved } : {}),
     },
     ...(attention.length ? { attention: `${attention.join(" ")} The watch wakes only on later changes: handle these now.` } : {}),
-    note: `Wakes ${who === "you" ? "you" : who} on newly failing checks, required checks passing, new comments or reviews by others, a conflict, or no check ${NO_CHECKS_MS / 60_000} min after a push; ends when the PR merges or closes, or with initiative_pr_unwatch.`,
+    note: `Wakes ${who === "you" ? "you" : who} on newly failing checks, required checks passing (once it doesn't conflict), new comments or reviews by others, a conflict, or no check ${NO_CHECKS_MS / 60_000} min after a push; ends when the PR merges or closes, or with initiative_pr_unwatch.`,
   };
 }
 
@@ -827,7 +889,7 @@ class NotNow extends Error {
 type Route =
   | { to: "worker"; how: "work" | "message"; worker: WorkerRecord; open: string | null; busy: boolean }
   /** `why` null: the coordinator watches the PR itself. */
-  | { to: "coordinator"; why: string | null; resumable: boolean; worker: WorkerRecord | null };
+  | { to: "coordinator"; why: string | null; resumable: boolean; worker: WorkerRecord | null; idle?: true };
 
 /**
  * Watches the PRs agents asked to watch. `watch()` starts one from the PR as it is. `check()` runs
@@ -847,8 +909,10 @@ export class PrWatcher {
   private watching = new Map<string, boolean>();
   /** The `gh` account's login as a watch read last saw it, for when no list has run. */
   private viewer: string | null = null;
+  /** W614: the pass that sends the earliest wakes held for an idle watcher (WAKE_FOLD_MS). */
+  private foldTimer: { at: number; timer: ReturnType<typeof setTimeout> } | null = null;
 
-  constructor(private readonly deps: PrWatchDeps, private readonly now: () => number = Date.now) {}
+  constructor(private readonly deps: PrWatchDeps, private readonly now: () => number = Date.now, private readonly foldMs = WAKE_FOLD_MS) {}
 
   /**
    * initiative_pr_watch: `threadId` watches the PR at `url` (canonical) for its Adventure
@@ -921,6 +985,19 @@ export class PrWatcher {
   stop() {
     if (this.settleTimer) clearTimeout(this.settleTimer);
     this.settleTimer = null;
+    if (this.foldTimer) clearTimeout(this.foldTimer.timer);
+    this.foldTimer = null;
+  }
+
+  /** A pass at `at`, unless one is due sooner. A reload loses it; the WATCH_TICK_MS pass stands in. */
+  private passAt(at: number) {
+    if (this.foldTimer && this.foldTimer.at <= at) return;
+    if (this.foldTimer) clearTimeout(this.foldTimer.timer);
+    const timer = setTimeout(() => {
+      this.foldTimer = null;
+      void this.check();
+    }, Math.max(0, at - this.now()));
+    this.foldTimer = { at, timer };
   }
 
   /** On load: a send the last load cut short is never repeated; the activity says so. */
@@ -1093,7 +1170,7 @@ export class PrWatcher {
    * final state with why. Only watch reads move a PR's stored head, so no list decides it. Run
    * before routing and again just before each send, since routing waits on BB.
    */
-  private verdict(wake: WakeRow, confirmed: ReadonlySet<string>): "send" | "read" | "hold" | NotNow {
+  private verdict(wake: WakeRow, confirmed: ReadonlySet<string>, live = true): "send" | "read" | "hold" | NotNow {
     const { ledger, store } = this.deps;
     const watch = ledger.row(wake.url);
     if (!watch?.watcher) return new NotNow("stale", "unwatched");
@@ -1104,7 +1181,9 @@ export class PrWatcher {
     if (this.now() - wake.createdAt >= WAKE_MAX_AGE_MS) return new NotNow("stale", "too old");
     if (watch.state.head !== wake.head) return new NotNow("stale", `head moved to ${short(watch.state.head)}`);
     // T169: a pass wake saved by W563 for skipped-only checks, or for checks that have failed since, no longer holds.
-    if (wake.changes.some((c) => c.kind === "checks-passed") && !watch.state.passed) return new NotNow("stale", "checks no longer all passed");
+    // W614: nor a conflict that cleared; a wake goes with what of it still holds (liveChanges), if any.
+    if (live && !liveChanges(wake.changes, watch.state).length)
+      return new NotNow("stale", wake.changes.some((c) => c.kind === "checks-passed") && !watch.state.passed ? "checks no longer all passed" : "no longer holds");
     if (project.paused) return "hold";
     return confirmed.has(wake.url) ? "send" : "read";
   }
@@ -1118,7 +1197,9 @@ export class PrWatcher {
     const { ledger, store } = this.deps;
     const groups = new Map<string, WakeRow[]>();
     for (const wake of ledger.pending()) {
-      const verdict = this.verdict(wake, confirmed);
+      // W614: one to send is judged on what still holds at its send, so a held one still dates its hold.
+      let verdict = this.verdict(wake, confirmed, false);
+      if (verdict !== "send") verdict = this.verdict(wake, confirmed);
       if (verdict instanceof NotNow) {
         ledger.mark([wake.id], verdict.state, verdict.note);
         continue;
@@ -1136,6 +1217,13 @@ export class PrWatcher {
         route = await this.route(project, wakes[0]!.threadId!);
       } catch (error) {
         this.deps.warn(`PR watch could not route ${wakes.map((w) => `${w.pr.repo}#${w.pr.number}`).join(", ")}: ${errorMessage(error)}`);
+        continue;
+      }
+      // W614: an idle watcher's wakes wait WAKE_FOLD_MS from the oldest, pending (so stored), and go
+      // as one message; a busy one hears at once.
+      const due = Math.min(...wakes.map((w) => w.createdAt)) + this.foldMs;
+      if ((route.to === "worker" ? !route.busy : route.idle) && this.now() < due) {
+        this.passAt(due);
         continue;
       }
       const section = route.to === "worker" ? await this.toWorker(project, route, wakes, confirmed) : { wakes, route };
@@ -1165,7 +1253,7 @@ export class PrWatcher {
     const open = store.openAssignment(project.id, worker.num);
     if (BUSY_STATUSES.has(thread.status)) return { to: "worker", how: "message", worker, open: open?.ref ?? null, busy: true };
     const cold = await this.deps.coldCheck(worker);
-    if (cold) return { to: "coordinator", why: cold.replace(/\.$/, ""), resumable: !cold.startsWith("UniiChat private memory not confirmed"), worker };
+    if (cold) return { to: "coordinator", why: cold.replace(/\.$/, ""), resumable: !cold.startsWith("UniiChat private memory not confirmed"), worker, idle: true };
     return { to: "worker", how: open ? "message" : "work", worker, open: open?.ref ?? null, busy: false };
   }
 
@@ -1189,7 +1277,10 @@ export class PrWatcher {
       throw new NotNow("pending", null);
   }
 
-  /** The wakes that still apply; each that doesn't is marked on its own (or left pending to route again). */
+  /**
+   * The wakes that still apply, each with only its changes that do (W614: the row keeps what was
+   * found); each that doesn't is marked on its own (or left pending to route again).
+   */
   private eligible(wakes: readonly WakeRow[], confirmed: ReadonlySet<string>): WakeRow[] {
     return wakes.filter((wake) => {
       try {
@@ -1200,7 +1291,7 @@ export class PrWatcher {
         else throw error;
         return false;
       }
-    });
+    }).map((wake) => ({ ...wake, changes: liveChanges(wake.changes, this.deps.ledger.row(wake.url)!.state!) }));
   }
 
   /** Marks the wakes sending, runs `send` (its answer says where they went) and marks what came of it. */
