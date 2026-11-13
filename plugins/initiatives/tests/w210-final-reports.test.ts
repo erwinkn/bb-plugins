@@ -372,6 +372,23 @@ describe("W210 stuck workers", () => {
       expect(stuckSends(f)).toHaveLength(1);
     });
 
+    // W610: a reviewer idles while its review runs as a bgjob; the job's exit wakes it, and it
+    // then reports to the worker.
+    it("leaves a worker alone while a descendant's bgjob runs, and flags it once that job ends", async () => {
+      const { f, w, check } = await stopped();
+      const reviewer = "thr_reviewer";
+      f.threads.set(reviewer, { ...f.threads.get(w.threadId)!, id: reviewer, title: "Review r1", parentThreadId: w.threadId });
+      f.idle(reviewer);
+      let running = true;
+      jobs(f, () => new Map(running ? [[reviewer, Date.now() - 30_000]] : []));
+      await check();
+      await check();
+      expect(stuckSends(f)).toEqual([]);
+      running = false;
+      await check();
+      expect(stuckSends(f)).toEqual([notice(w)]);
+    });
+
     it("flags it on the same input when the job ended but its message never came", async () => {
       const { f, w, check } = await stopped();
       let running = true;

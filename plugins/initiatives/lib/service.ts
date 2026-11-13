@@ -7101,13 +7101,16 @@ export class ProjectsService {
       if (input.at < heard.reached || (heard.latest.get(threadId) ?? -Infinity) >= input.at) continue;
       // v9: a worker with a live child is waiting on it, not stuck. Walked only for the silent
       // ones, the few that would be flagged.
-      const children = await this.liveDescendants(threadId).catch(() => null);
-      if (children === null || children.length) continue;
+      const walk = await this.descendants(threadId).catch(() => null);
+      if (!walk || (await this.liveDescendants(threadId, DESCENDANT_BUDGET, walk)).length) continue;
       try {
         const turn = await latestTurn(this.sdk, threadId);
         // W606: read after the turn's end, so a job that turn started is listed (it stays listed
-        // until its exit message is sent, a new input).
-        const job = (await this.bgjobs())?.get(threadId);
+        // until its exit message is sent, a new input). W610: a descendant's job counts too: an
+        // idle reviewer whose review runs as a bgjob wakes on its exit and then reports here.
+        const listed = await this.bgjobs();
+        const starts = [threadId, ...walk.threads.map(t => t.id)].flatMap(id => listed?.get(id) ?? []);
+        const job = starts.length ? Math.max(...starts) : undefined;
         // The last await: an input that lands during the reads above changes its seq.
         const now = await latestInput(this.sdk, threadId);
         if (now) this.inputSeen.set(threadId, now.at);
