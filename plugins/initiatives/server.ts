@@ -53,7 +53,8 @@ import { Store, MIGRATIONS, type WorkerRecord } from "./lib/store";
 import { CHILD_PAGE, ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
 import { FALLBACK_ROLE, ReviewerFallback } from "./lib/reviewer-fallback";
-import { MAX_WORKER_ANCESTORS, WORKER_CLAUDE_SETTINGS, WORKER_SETTINGS_ENV } from "./lib/worker-session";
+import { MAX_WORKER_ANCESTORS, WORKER_SETTINGS_ENV, workerClaudeSettings } from "./lib/worker-session";
+import { installBatchingNudge } from "./lib/batching-nudge";
 import { withProfileDefaults } from "./lib/settings";
 import {
   buildOverview,
@@ -980,10 +981,19 @@ export default function plugin(bb: BbPluginApi) {
     const parent = thread.parentThreadId;
     return !!parent && ancestors < MAX_WORKER_ANCESTORS && workerSession(parent, ancestors + 1);
   };
-  bb.providers.experimental_contributeEnv("claude-code", async ({ threadId }) => {
+  // W615: BB's primary host runs this server, so only there do the hook's node and script exist.
+  let primaryHostId: string | null | undefined;
+  bb.providers.experimental_contributeEnv("claude-code", async ({ threadId, hostId }) => {
     try {
       if (!(await workerSession(threadId))) return [];
-      return [{ name: WORKER_SETTINGS_ENV, value: JSON.stringify(WORKER_CLAUDE_SETTINGS), reason: "Initiative worker session: leaves out the tools and skills workers don't use (W605)" }];
+      let nudge: string | null = null;
+      try {
+        primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
+        if (hostId === primaryHostId) nudge = installBatchingNudge(join(dirname(db.name), "hooks"));
+      } catch (error) {
+        bb.log.warn(`W615: no batching nudge for ${threadId}: ${errorMessage(error)}`);
+      }
+      return [{ name: WORKER_SETTINGS_ENV, value: JSON.stringify(workerClaudeSettings(nudge)), reason: "Initiative worker session: leaves out the tools and skills workers don't use (W605), nudges it to batch reads (W615)" }];
     } catch (error) {
       bb.log.warn(`W605: kept the full session for ${threadId}: ${errorMessage(error)}`);
       return [];

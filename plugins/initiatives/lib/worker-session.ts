@@ -57,3 +57,15 @@ export const WORKER_CLAUDE_SETTINGS = {
     [...HIDDEN_SKILLS, "workflow-authoring"].map((name) => [name, "user-invocable-only"]),
   ),
 };
+
+/**
+ * W615: the worker settings, plus the hook that nudges a worker to batch its reads
+ * (lib/batching-nudge.ts) after each call that may read. Without a command: the trim alone.
+ */
+export const workerClaudeSettings = (nudgeCommand: string | null) =>
+  nudgeCommand === null
+    ? WORKER_CLAUDE_SETTINGS
+    : {
+        ...WORKER_CLAUDE_SETTINGS,
+        hooks: { PostToolUse: [{ matcher: "Read|Grep|Glob|Bash", hooks: [{ type: "command", command: nudgeCommand, timeout: 5 }] }] },
+      };

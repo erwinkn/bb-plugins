@@ -318,6 +318,8 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
         list: async () => [{ id: "proj_a", name: "Repository" }],
       },
       hosts: { list: async () => hosts },
+      // BB's own machine: the server runs there.
+      system: { config: async () => ({ primaryHostId: "host_a" }) },
       environments: {
         get: async ({ environmentId }: { environmentId: string }) =>
           envFor(environmentId),
