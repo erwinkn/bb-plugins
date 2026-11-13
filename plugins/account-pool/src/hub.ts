@@ -94,6 +94,8 @@ const AUTO_RESET_MARGIN = 0.03;
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
+// How long a scoped account sits out after it rejects a request (a gateway with no model for it).
+const SCOPED_REJECTION_HOLD_MS = 15 * 60_000;
 // A declared content-length up to this is trusted to size the request body buffer.
 const MAX_PREALLOCATED_BODY_BYTES = 32 * 1024 * 1024;
 const ADVISOR_MAX_BODY_BYTES = 256 * 1024;
@@ -1378,6 +1380,27 @@ export class AccountPoolHub {
                 signal,
               );
             }
+            break;
+          }
+          // A scoped account (a gateway) that rejects a request with a status not handled above (400,
+          // 404, 422: it may serve no models yet) is not the client's answer: the thread falls back to
+          // the unscoped accounts, and the scoped one sits out a while, so no request pays its round trip.
+          if (!response.ok && response.status !== 429 && selected.account.projects !== undefined) {
+            const detail = await this.discardUpstream(upstream, true);
+            signal.throwIfAborted();
+            this.options.quotas.put({
+              ...observed,
+              heldUntil: this.options.now() + SCOPED_REJECTION_HOLD_MS,
+            });
+            this.options.logReset(
+              `Account Pooler holds ${selected.account.label} for 15 minutes: HTTP ${response.status} ${detail.slice(0, 200)}`,
+              "info",
+            );
+            failure = {
+              status: response.status,
+              message: detail || adapter.upstreamName + " returned HTTP " + response.status + ".",
+              headers: {},
+            };
             break;
           }
           if (response.ok) {

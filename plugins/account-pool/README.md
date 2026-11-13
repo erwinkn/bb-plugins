@@ -49,8 +49,11 @@ For a thread of its project, a scoped account is preferred over the unscoped
 ones, as a detour like the Fable one: it never takes the session's pin or the
 provider's cursor. So while it is held (a 429 holds it until its `Retry-After`,
 like any account) or failing, the thread goes to its usual unscoped account,
-and comes back once the scoped account is usable again. An API-key account has
-no quota readout, so it counts as unlimited until a 429. Scoped accounts are
+and comes back once the scoped account is usable again. A scoped account that
+rejects a request with any other 4xx (a gateway that does not serve the model
+yet answers 400) is held 15 minutes and the thread goes to its usual account,
+so a gateway can be added before it serves models. An API-key account has no
+quota readout, so it counts as unlimited until a 429. Scoped accounts are
 never counted as capacity the rest of the pool waits for, serve no isolated
 (advisor) traffic and do not hold back automatic resets.
 

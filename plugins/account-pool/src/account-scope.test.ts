@@ -56,6 +56,8 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
   const calls: Array<{ url: string; headers: Headers }> = [];
   // What the gateway answers next; 200 when empty.
   const gatewayReplies: Array<() => Response> = [];
+  // What the Anthropic upstream answers next; 200 when empty.
+  const upstreamReplies: Array<() => Response> = [];
   const hub = createHub({
     accounts: {
       list: async () => accounts.map((account) => ({ ...account })),
@@ -89,7 +91,7 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
       calls.push({ url, headers: new Headers(init?.headers) });
       if (url.startsWith("https://api.test/")) return Response.json({});
       if (url.startsWith(GATEWAY_URL)) return gatewayReplies.shift()?.() ?? Response.json({ ok: true });
-      if (url === "https://upstream.test/v1/messages") return Response.json({ ok: true });
+      if (url === "https://upstream.test/v1/messages") return upstreamReplies.shift()?.() ?? Response.json({ ok: true });
       throw new Error(`unexpected fetch ${url}`);
     },
   });
@@ -128,6 +130,7 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
     calls,
     projects,
     gatewayReplies,
+    upstreamReplies,
     send,
     advance: (ms: number) => {
       clock += ms;
@@ -182,6 +185,33 @@ describe("an account scoped to some projects, behind its own base URL", () => {
     pool.projects.set("s1", EQUISAFE);
     pool.gatewayReplies.push(() => new Response('{"error":"upstream"}', { status: 502 }));
     expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway", "Bearer tok-1"] });
+  });
+
+  it("holds a gateway that answers 400 for 15 minutes and serves the request from a normal account", async () => {
+    const pool = await makePool();
+    pool.projects.set("s1", EQUISAFE);
+    pool.gatewayReplies.push(() => Response.json({ error: "unknown provider for model claude-haiku-5-5" }, { status: 400 }));
+    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway", "Bearer tok-1"] });
+    expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBe(NOW + 15 * 60_000);
+    // Held: no request reaches it, however many come.
+    pool.advance(14 * 60_000);
+    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+  });
+
+  it("tries the gateway again once its hold has expired", async () => {
+    const pool = await makePool();
+    pool.projects.set("s1", EQUISAFE);
+    pool.gatewayReplies.push(() => new Response("{}", { status: 422 }));
+    expect((await pool.send("s1")).tried).toEqual(["gateway", "Bearer tok-1"]);
+    pool.advance(15 * 60_000 + 1);
+    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway"] });
+  });
+
+  it("hands a 400 from an unscoped account to the client, with no fallback", async () => {
+    const pool = await makePool();
+    pool.upstreamReplies.push(() => Response.json({ error: "bad request" }, { status: 400 }));
+    expect(await pool.send("other")).toEqual({ status: 400, tried: ["Bearer tok-1"] });
   });
 
   it("resumes the normal rotation where it stood when the gateway fails, not at the first account", async () => {
