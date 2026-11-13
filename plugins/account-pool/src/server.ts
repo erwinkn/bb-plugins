@@ -309,7 +309,7 @@ export function createAccountPoolPlugin(
     // activity and pending questions; the list is narrowed to the thread's environment (its
     // project without one) and to active threads: an archived thread waits on nothing.
     const threadScopes = new Map<string, { environmentId: string | null; projectId: string }>();
-    const waitState = async (threadId: string, signal: AbortSignal) => {
+    const threadScope = async (threadId: string, signal: AbortSignal) => {
       let scope = threadScopes.get(threadId);
       if (scope === undefined) {
         const thread = await bb.sdk.threads.get({ threadId, signal });
@@ -320,6 +320,34 @@ export function createAccountPoolPlugin(
           if (!oldest.done) threadScopes.delete(oldest.value);
         }
       }
+      return scope;
+    };
+    // The project of a request's thread, for the accounts scoped to projects: from the cache only,
+    // so a request never waits on it. A miss reads the thread in the background (one read at a
+    // time per thread, and none for LABEL_RETRY_MS after a failed one) for the next request.
+    const scopeReads = new Map<string, number>();
+    const sessionProject = (session: string): string | null => {
+      const threadId = warmer.threadOf(session);
+      if (threadId === null) return null;
+      const cached = threadScopes.get(threadId);
+      if (cached !== undefined) return cached.projectId;
+      const lastRead = scopeReads.get(threadId);
+      if (lastRead === undefined || now() - lastRead >= LABEL_RETRY_MS) {
+        scopeReads.delete(threadId);
+        scopeReads.set(threadId, now());
+        while (scopeReads.size > MAX_THREAD_SCOPES) {
+          const oldest = scopeReads.keys().next();
+          if (!oldest.done) scopeReads.delete(oldest.value);
+        }
+        void threadScope(threadId, AbortSignal.timeout(LINK_READ_TIMEOUT_MS)).then(
+          () => scopeReads.delete(threadId),
+          () => undefined,
+        );
+      }
+      return null;
+    };
+    const waitState = async (threadId: string, signal: AbortSignal) => {
+      const scope = await threadScope(threadId, signal);
       const rows = await bb.sdk.threads.list({
         ...(scope.environmentId === null
           ? { projectId: scope.projectId }
@@ -502,6 +530,7 @@ export function createAccountPoolPlugin(
         bb.realtime.publish(ACCOUNT_POOL_ACCOUNTS_CHANGED, {}),
       warming: warmer,
       ledger,
+      sessionProject,
     });
     hubRef = hub;
     if (transport !== null) {

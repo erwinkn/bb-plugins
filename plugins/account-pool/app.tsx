@@ -229,10 +229,30 @@ function statusPresentation(
   return { label: "Ready", dot: "bg-success" };
 }
 function tier(account: AccountSummary): string {
-  return (
+  const kind =
     account.subscriptionType ??
-    (account.kind === "api-key" ? "API key" : "OAuth")
+    (account.kind === "api-key" ? "API key" : "OAuth");
+  return account.baseUrl === undefined
+    ? kind
+    : `${kind} · ${new URL(account.baseUrl).host}`;
+}
+// An account scoped to some BB projects serves their threads only.
+function ScopeBadge({ account }: { account: AccountSummary }) {
+  if (account.projects === undefined) return null;
+  return (
+    <span title={account.projects.join(", ")}>
+      <SettingsBadge>
+        {account.projects.length === 1
+          ? account.projects[0]
+          : `${account.projects.length} projects`}
+      </SettingsBadge>
+    </span>
   );
+}
+// "proj_a, proj_b" or "proj_a proj_b"; empty: every project.
+function parseProjects(text: string): string[] | undefined {
+  const ids = text.split(/[\s,]+/u).filter((id) => id !== "");
+  return ids.length === 0 ? undefined : ids;
 }
 function secondaryEmail(account: AccountSummary): string | null {
   return account.email === null || account.email === account.label
@@ -404,6 +424,7 @@ function AccountRow({
                 </span>
               )}
               <SettingsBadge>{tier(account)}</SettingsBadge>
+              <ScopeBadge account={account} />
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-subtle-foreground/75">
               <span className="inline-flex shrink-0 items-center gap-1.5">
@@ -836,6 +857,8 @@ function AccountPoolSettings() {
   const [loginDone, setLoginDone] = useState<string | null>(null);
   const [pastedCode, setPastedCode] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [apiKeyBaseUrl, setApiKeyBaseUrl] = useState("");
+  const [apiKeyProjects, setApiKeyProjects] = useState("");
   const [priority, setPriority] = useState("100");
   const [countdown, setCountdown] = useState(0);
   const mounted = useRef(true);
@@ -1472,13 +1495,22 @@ function AccountPoolSettings() {
                   disabled={apiKey.trim().length === 0 || pending !== null}
                   onClick={() =>
                     void run("api-key", async () => {
+                      const baseUrl = apiKeyBaseUrl.trim();
+                      const projects = parseProjects(apiKeyProjects);
                       await rpc.call("account.add", {
                         provider: "claude",
-                        source: { kind: "api-key", apiKey: apiKey.trim() },
+                        source: {
+                          kind: "api-key",
+                          apiKey: apiKey.trim(),
+                          ...(baseUrl === "" ? {} : { baseUrl }),
+                        },
                         label: null,
                         priority: 100,
+                        ...(projects === undefined ? {} : { projects }),
                       });
                       setApiKey("");
+                      setApiKeyBaseUrl("");
+                      setApiKeyProjects("");
                       setDialog(null);
                     })
                   }
@@ -1499,6 +1531,19 @@ function AccountPoolSettings() {
               placeholder="sk-ant-…"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
+            />
+            <Input
+              type="url"
+              aria-label="Gateway base URL"
+              placeholder="Base URL (optional): https://api.anthropic.com"
+              value={apiKeyBaseUrl}
+              onChange={(event) => setApiKeyBaseUrl(event.target.value)}
+            />
+            <Input
+              aria-label="Projects served"
+              placeholder="BB project IDs (optional): every project when empty"
+              value={apiKeyProjects}
+              onChange={(event) => setApiKeyProjects(event.target.value)}
             />
           </DialogFrame>
         ) : null}
@@ -1635,6 +1680,7 @@ function AccountDialog({
     >
       <div className="flex items-center gap-2">
         <SettingsBadge>{tier(account)}</SettingsBadge>
+        <ScopeBadge account={account} />
         <SettingsBadge>
           {statusPresentation(account, threshold).label}
         </SettingsBadge>

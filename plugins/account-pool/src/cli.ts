@@ -2,6 +2,7 @@ import type { BbPluginApi, PluginCliResult } from "@get-bb/plugin-sdk";
 import { setTimeout as wait } from "node:timers/promises";
 import {
   accountAddInputSchema,
+  accountProjectsInputSchema,
   accountIdInputSchema,
   accountPriorityInputSchema,
   accountReorderInputSchema,
@@ -58,13 +59,14 @@ const HELP = [
   "  bb pool-local account add --provider codex --login",
   "  bb pool-local account login-poll --session <id>",
   "  printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool-local account login-complete --session <id> --code-stdin",
-  "  bb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]",
-  "  bb pool-local account add --provider claude --api-key <key> [--label <text>] [--priority <n>]  Unsafe: exposes the key in process arguments.",
+  "  bb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]",
+  "  bb pool-local account add --provider claude --api-key <key> [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]  Unsafe: exposes the key in process arguments.",
   "  bb pool-local account list [--json]",
   "  bb pool-local account remove <id>",
   "  bb pool-local account enable <id>",
   "  bb pool-local account disable <id>",
   "  bb pool-local account priority <id> <n>",
+  "  bb pool-local account projects <id> [<project-id>...]  Serve only these BB projects' threads; none: every thread.",
   "  bb pool-local account reorder <claude|codex> <id>...",
   "  bb pool-local account refresh <id>",
   "  bb pool-local account reset <id> <fable|full|weekly|session>  Spends one usage reset.",
@@ -214,6 +216,7 @@ function formatAccounts(accounts: readonly AccountSummary[], now: number): strin
       ...families.map(familyLabel),
       "Status",
       "Resets",
+      "Projects",
     ].join("\t"),
     ...accounts.map((account) =>
       [
@@ -221,7 +224,7 @@ function formatAccounts(accounts: readonly AccountSummary[], now: number): strin
         account.label,
         account.email ?? "-",
         account.provider,
-        account.kind,
+        account.baseUrl === undefined ? account.kind : `${account.kind} via ${account.baseUrl}`,
         String(account.enabled),
         String(account.priority),
         formatUtilization(account.sevenDayUtilization),
@@ -232,6 +235,7 @@ function formatAccounts(accounts: readonly AccountSummary[], now: number): strin
         ),
         account.status,
         formatResets(account, now),
+        account.projects?.join(",") ?? "all",
       ].join("\t"),
     ),
   ].join("\n");
@@ -462,7 +466,7 @@ export function registerPoolCli(
         summary:
           "Sign in to Claude or Codex, import credentials, or add an Anthropic API key",
         usage:
-          "bb pool-local account add --provider <claude|codex> --login\nbb pool-local account add --provider <claude|codex> --import [--label <text>] [--priority <n>]\nbb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]\nUnsafe compatibility form: bb pool-local account add --provider claude --api-key <key> [--label <text>] [--priority <n>]",
+          "bb pool-local account add --provider <claude|codex> --login\nbb pool-local account add --provider <claude|codex> --import [--label <text>] [--priority <n>]\nbb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]\nUnsafe compatibility form: bb pool-local account add --provider claude --api-key <key> [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]",
       },
       {
         name: "account-login-poll",
@@ -499,6 +503,11 @@ export function registerPoolCli(
         name: "account-priority",
         summary: "Set an account's position in the failover priority order",
         usage: "bb pool-local account priority <id> <n>",
+      },
+      {
+        name: "account-projects",
+        summary: "Scope an account to the threads of some BB projects, or to every thread",
+        usage: "bb pool-local account projects <id> [<project-id>...]",
       },
       {
         name: "account-reorder",
@@ -615,6 +624,18 @@ export function registerPoolCli(
             stdout: `Set ${account.label} priority to ${account.priority}.\n`,
           };
         }
+        if (argv[0] === "account" && argv[1] === "projects") {
+          const input = accountProjectsInputSchema.parse({
+            accountId: argv[2],
+            projects: argv.slice(3),
+          });
+          const account = await operations.setProjects(input.accountId, input.projects);
+          if (account === null) throw new Error("Account not found.");
+          return {
+            exitCode: 0,
+            stdout: `${account.label} serves ${account.projects === undefined ? "every project" : account.projects.join(", ")}.\n`,
+          };
+        }
         if (argv[0] === "account" && argv[1] === "reorder") {
           const input = accountReorderInputSchema.parse({
             provider: argv[2],
@@ -645,7 +666,7 @@ export function registerPoolCli(
           const flags = parseFlags(
             argv.slice(2),
             ["import", "api-key-stdin", "login"],
-            ["provider", "api-key", "label", "priority"],
+            ["provider", "api-key", "label", "priority", "base-url", "projects"],
           );
           const imported = flags.booleans.has("import");
           const apiKeyStdin = flags.booleans.has("api-key-stdin");
@@ -667,8 +688,8 @@ export function registerPoolCli(
                 "--login requires --provider claude or --provider codex.",
               );
             }
-            if (flags.values.has("label") || flags.values.has("priority")) {
-              throw new Error("--login does not accept --label or --priority.");
+            if (["label", "priority", "base-url", "projects"].some((name) => flags.values.has(name))) {
+              throw new Error("--login does not accept --label, --priority, --base-url or --projects.");
             }
             if (provider === "codex") {
               const started = await codexLogin.start();
@@ -708,12 +729,19 @@ export function registerPoolCli(
           if (!imported && flags.values.get("provider") !== "claude") {
             throw new Error("Anthropic API keys require --provider claude.");
           }
+          const baseUrl = flags.values.get("base-url");
+          if (imported && baseUrl !== undefined)
+            throw new Error("--base-url applies to an API key only.");
+          const projects = flags.values.get("projects")?.split(",").map((id) => id.trim());
           const priorityText = flags.values.get("priority") ?? "100";
           const input = accountAddInputSchema.parse({
             provider: flags.values.get("provider"),
-            source: imported ? { kind: "import" } : { kind: "api-key", apiKey },
+            source: imported
+              ? { kind: "import" }
+              : { kind: "api-key", apiKey, ...(baseUrl === undefined ? {} : { baseUrl }) },
             label: flags.values.get("label") ?? null,
             priority: Number(priorityText),
+            ...(projects === undefined ? {} : { projects }),
           });
           const account = await operations.add(input);
           return {

@@ -68,6 +68,8 @@ export class PoolOperations {
           rateLimitTier: null,
           enabled: true,
           priority: input.priority,
+          ...(input.source.baseUrl === undefined ? {} : { baseUrl: input.source.baseUrl }),
+          ...(input.projects === undefined ? {} : { projects: input.projects }),
         },
         { kind: "api-key", apiKey: input.source.apiKey },
       );
@@ -90,6 +92,7 @@ export class PoolOperations {
         rateLimitTier: imported.rateLimitTier,
         enabled: true,
         priority: input.priority,
+        ...(input.projects === undefined ? {} : { projects: input.projects }),
       },
       imported.secret,
     );
@@ -195,6 +198,13 @@ export class PoolOperations {
 
   async setPriority(id: string, priority: number): Promise<Account | null> {
     const account = await this.accounts.setPriority(id, priority);
+    if (account !== null) this.onAccountsChanged();
+    return account;
+  }
+
+  // The projects an account serves; an empty list serves every project.
+  async setProjects(id: string, projects: string[]): Promise<Account | null> {
+    const account = await this.accounts.setProjects(id, projects);
     if (account !== null) this.onAccountsChanged();
     return account;
   }

@@ -122,6 +122,12 @@ export class AccountStore {
     return this.update(id, (account) => ({ ...account, priority }));
   }
 
+  async setProjects(id: string, projects: string[]): Promise<Account | null> {
+    return this.update(id, ({ projects: _projects, ...account }) =>
+      projects.length === 0 ? account : { ...account, projects: [...new Set(projects)] },
+    );
+  }
+
   async reorder(provider: PoolProvider, accountIds: string[]): Promise<void> {
     return this.serialized(async () => {
       const accounts = await this.list();

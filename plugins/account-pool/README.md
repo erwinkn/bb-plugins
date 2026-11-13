@@ -26,6 +26,45 @@ capacity, OAuth refresh, streaming and retry policies are inherited unchanged.
 Reducing the idle duration takes effect on the next selection and service start.
 Increasing it cannot recover a binding already evicted or pruned.
 
+## Gateway accounts and project scopes
+
+Two optional account fields route some threads to capacity of their own, such
+as a company's LLM gateway that speaks the Anthropic API:
+
+- `baseUrl` (API-key accounts only): where the account's requests go instead
+  of `anthropicUpstreamBaseUrl`. With `https://gateway.example/llm`, a request
+  for `/v1/messages` goes to `https://gateway.example/llm/v1/messages` with the
+  account's `x-api-key` and no OAuth token. OAuth calls (usage, profile, reset
+  claims) never use it, and an OAuth account always goes to Anthropic.
+- `projects`: the BB project IDs whose threads the account serves. An unscoped
+  account serves every thread, as before.
+
+A scoped account serves a request only when its thread's project is known and
+listed. The project comes from the Pooler's cached thread lookup (the one the
+wait-state read uses) and never delays a request: a request without a session,
+without a linked thread, or whose thread has not been read yet goes to the
+unscoped accounts, and the lookup runs in the background for the next one.
+
+For a thread of its project, a scoped account is preferred over the unscoped
+ones, as a detour like the Fable one: it never takes the session's pin or the
+provider's cursor. So while it is held (a 429 holds it until its `Retry-After`,
+like any account) or failing, the thread goes to its usual unscoped account,
+and comes back once the scoped account is usable again. An API-key account has
+no quota readout, so it counts as unlimited until a 429. Scoped accounts are
+never counted as capacity the rest of the pool waits for, serve no isolated
+(advisor) traffic and do not hold back automatic resets.
+
+```sh
+printf '%s\n' "$EQUISAFE_LLM_KEY" | bb pool-local account add --provider claude \
+  --api-key-stdin --label "Equisafe gateway" --base-url https://equisafe.dev/llm \
+  --projects proj_thpyarb96b,proj_e2dqt5avtm,proj_gm8zqz962k,proj_6fyj9w5w6d,proj_iqatsa3m7m
+bb pool-local account projects <id> proj_thpyarb96b proj_e2dqt5avtm  # change the scope
+bb pool-local account projects <id>                                  # serve every thread
+```
+
+The settings page's API-key dialog takes both fields; an account row shows the
+gateway host and its scope.
+
 ## Quota windows
 
 Claude accounts are gated on their 7d and per-family weekly windows. The fork

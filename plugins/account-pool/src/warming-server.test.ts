@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { accountPoolConfigSchema, statusReportSchema } from "./contracts.js";
+import { accountPoolConfigSchema, accountSchema, statusReportSchema } from "./contracts.js";
 import {
   createAccountPoolPlugin,
   type AccountPoolPluginOptions,
@@ -1648,5 +1648,44 @@ describe("W211 corrections through the hub", () => {
       ["native", "thr_coord", "standalone"],
       ["refresh", "thr_coord", "standalone"],
     ]);
+  });
+});
+
+describe("an account scoped to some projects (account.projects), behind its own base URL", () => {
+  it("serves a thread of its project once the thread's project is known, never another project's", async () => {
+    const f = await fixture();
+    const add = async (projects: string[], baseUrl: string) =>
+      accountSchema.parse(
+        await f.host.harness.behavior.callRpc("account.add", {
+          provider: "claude",
+          source: { kind: "api-key", apiKey: `sk-${new URL(baseUrl).host}`, baseUrl },
+          label: baseUrl,
+          priority: 1,
+          projects,
+        }),
+      );
+    const gateway = await add(["project-one"], "https://gateway.example/llm");
+    await add(["project-two"], "https://other.example/llm");
+    // The first request comes before the plugin links its session to a thread: a normal account.
+    expect(await nativeRequest(f.host)).toBe(200);
+    expect(f.upstream.native[0]?.url).toBe(`${UPSTREAM}/v1/messages`);
+    await vi.waitFor(async () => {
+      expect(await nativeRequest(f.host)).toBe(200);
+      expect(f.upstream.native.at(-1)?.url).toBe("https://gateway.example/llm/v1/messages");
+    });
+    expect(f.upstream.native.at(-1)?.headers["x-api-key"]).toBe("sk-gateway.example");
+    expect(f.upstream.native.at(-1)?.headers.authorization).toBeUndefined();
+    expect(f.upstream.native.some(({ url }) => url.startsWith("https://other.example"))).toBe(false);
+    const listed = await f.host.harness.behavior.runCli(["account", "list"]);
+    expect(listed.stdout).toContain("api-key via https://gateway.example/llm");
+    expect(listed.stdout).toContain("project-one");
+    // An empty list unscopes it; a new list applies to the next request.
+    const unscoped = await f.host.harness.behavior.runCli(["account", "projects", gateway.id]);
+    expect(unscoped.stdout).toBe("https://gateway.example/llm serves every project.\n");
+    const rescoped = await f.host.harness.behavior.runCli(["account", "projects", gateway.id, "project-three"]);
+    expect(rescoped.stdout).toBe("https://gateway.example/llm serves project-three.\n");
+    const before = f.upstream.native.length;
+    expect(await nativeRequest(f.host)).toBe(200);
+    expect(f.upstream.native.slice(before).map(({ url }) => url)).toEqual([`${UPSTREAM}/v1/messages`]);
   });
 });

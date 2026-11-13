@@ -130,6 +130,8 @@ async function makePool(
     // The account's credential cannot be read (its OAuth refresh failed, say).
     secretFails?: (index: number) => boolean;
     switchThreshold?: number;
+    // Adds an idle API-key gateway scoped to one project (account.projects), first in priority.
+    scopedGateway?: boolean;
   } = {},
 ) {
   let clock = NOW;
@@ -153,6 +155,22 @@ async function makePool(
     lastUsedAt: null,
     lastUsedHostId: null,
   }));
+  const gateway: Account | null =
+    options.scopedGateway === true
+      ? {
+          ...accounts[0]!,
+          id: "aaaaaaaa-0000-4000-8000-0000000000ff",
+          kind: "api-key",
+          label: "Equisafe gateway",
+          email: null,
+          accountUuid: null,
+          subscriptionType: null,
+          rateLimitTier: null,
+          priority: 0,
+          baseUrl: "https://gateway.test/llm",
+          projects: ["proj_equisafe"],
+        }
+      : null;
   // A number answers with that status; "malformed" answers 200 with a payload the usage parse rejects.
   // A function answers each read afresh (and may act, as a concurrent change would).
   type Answer = Usage | number | "malformed";
@@ -166,9 +184,10 @@ async function makePool(
   const affinity = new PoolAffinityStore(db);
   const hub = createHub({
     accounts: {
-      list: async () => accounts.map((account) => ({ ...account })),
+      list: async () => [...accounts, ...(gateway === null ? [] : [gateway])].map((account) => ({ ...account })),
       recordUsed: async () => false,
       readSecret: async (id: string): Promise<AccountSecret> => {
+        if (id === gateway?.id) return { kind: "api-key", apiKey: "sk-gateway" };
         const index = accounts.findIndex((account) => account.id === id);
         if (options.secretFails?.(index) === true) throw new Error("the secret file is unreadable");
         return {
@@ -540,6 +559,13 @@ describe("automatic use of a reset at a wall", () => {
     expect(pool.logs).toEqual([
       ["info", "Account Pooler auto claim of weekly reset full-reset-2611 on tech@equisafe.io: reset, 0 left, cleared seven_day, seven_day_overage_included."],
     ]);
+  });
+
+  it("claims for a thread the scoped gateway does not serve, though the gateway is idle", async () => {
+    let ref: Awaited<ReturnType<typeof makePool>>;
+    const pool = (ref = await makePool(wall(), { claim: landing(() => ref), scopedGateway: true }));
+    expect(await pool.send("claude-opus-5", "s1")).toEqual({ status: 200, servedBy: "tech@equisafe.io" });
+    expect(pool.claims.map((claim) => [claim.email, claim.body.grant_id])).toEqual([["tech@equisafe.io", "full-reset-2611"]]);
   });
 
   it("spends a Fable reset only once the Fable weekly limit is at least 50% used", async () => {

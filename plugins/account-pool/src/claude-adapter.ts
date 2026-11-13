@@ -130,8 +130,13 @@ export function createClaudeAdapter(options: {
         forAccount: (account) => parsed.forAccount(account.accountUuid),
       };
     },
-    upstreamUrl: (request, settings) =>
-      mountedUpstreamUrl(request, settings.anthropicUpstreamBaseUrl),
+    // An OAuth token only ever goes to Anthropic: a base URL counts on an API-key account alone.
+    upstreamUrl: (request, settings, account) =>
+      mountedUpstreamUrl(
+        request,
+        (account.kind === "api-key" ? account.baseUrl : undefined) ??
+          settings.anthropicUpstreamBaseUrl,
+      ),
     requestHeaders(inbound, _account, secret) {
       const headers = filterRequestHeaders(
         inbound,

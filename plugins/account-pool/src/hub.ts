@@ -137,6 +137,9 @@ interface HubOptions {
   resetClaims: ResetClaimStore | null;
   // Every reset claim and automatic-claim decision: "info" for a claim sent, "debug" for a decline.
   logReset: (message: string, level: "info" | "debug") => void;
+  // The BB project of a session's thread, from what is cached now; null when not known yet. It
+  // never waits: an unknown project goes to the unscoped accounts only.
+  sessionProject: (sessionId: string) => string | null;
 }
 
 // The hub's view of the cache warmer: it reports native Claude Messages traffic, and the session of
@@ -484,7 +487,7 @@ export class AccountPoolHub {
     reserve: number,
     now: number,
   ): boolean {
-    if (!account.enabled || account.kind !== "oauth") return false;
+    if (!account.enabled || account.kind !== "oauth" || account.projects !== undefined) return false;
     const quota = this.options.quotas.get(account.id);
     return (
       quota.error === null &&
@@ -789,7 +792,11 @@ export class AccountPoolHub {
 
   private async tryAutoReset(accounts: readonly Account[]): Promise<void> {
     const store = this.options.resetClaims;
-    const claude = accounts.filter((account) => account.provider === "claude" && account.enabled);
+    // A scoped account (account.projects) is no part of the wall: its capacity serves its projects
+    // only, so it neither stops a claim for everyone else nor has a grant of its spent.
+    const claude = accounts.filter(
+      (account) => account.provider === "claude" && account.enabled && account.projects === undefined,
+    );
     const oauth = claude.filter((account) => account.kind === "oauth");
     // Without a grant an automatic claim could spend, a wall costs no fresh reads. A response since
     // the reading (it moves quota.observedAt, a usage read moves both) may have raised the Fable use
@@ -841,7 +848,7 @@ export class AccountPoolHub {
     // The reads take seconds: judge and claim from the accounts as they are now, so an account
     // disabled or added meanwhile counts.
     const current = (await this.options.accounts.list()).filter(
-      (account) => account.provider === "claude" && account.enabled,
+      (account) => account.provider === "claude" && account.enabled && account.projects === undefined,
     );
     const currentOauth = current.filter((account) => account.kind === "oauth");
     // A read that answered 200 with a payload the parse rejects stores nothing. The reset reading
@@ -937,7 +944,7 @@ export class AccountPoolHub {
   // Whether an enabled Claude account can serve some model now under the pre-wall mark, by its live
   // quota; by its usage windows alone when ignoreHold (a Retry-After hold is not a wall).
   private hasHeadroom(account: Account, ignoreHold = false): boolean {
-    if (account.provider !== "claude" || !account.enabled) return false;
+    if (account.provider !== "claude" || !account.enabled || account.projects !== undefined) return false;
     const quota = this.options.quotas.get(account.id);
     if (quota.error !== null) return false;
     const now = this.options.now();
@@ -1088,8 +1095,13 @@ export class AccountPoolHub {
     };
     let previousAccountId: string | null = null;
     let failure: FailureSummary | null = null;
+    const sessionId = sessionIdOf(parsed.affinityId);
+    const project = sessionId === null ? null : this.options.sessionProject(sessionId);
     const accounts = (await this.options.accounts.list()).filter(
-      (account) => account.provider === adapter.provider,
+      (account) =>
+        account.provider === adapter.provider &&
+        (account.projects === undefined ||
+          (project !== null && account.projects.includes(project))),
     );
     const candidateIds = new Set(accounts.map((account) => account.id));
     const family = parsed.family;
@@ -1379,7 +1391,7 @@ export class AccountPoolHub {
           const warmingTap = observation?.responded({
               accountId: selected.account.id,
               url: adapter
-                .upstreamUrl(request, this.options.getSettings())
+                .upstreamUrl(request, this.options.getSettings(), selected.account)
                 .toString(),
               body: upstreamBody,
               headers: replayableHeaders(request.headers),
@@ -1735,12 +1747,35 @@ export class AccountPoolHub {
     routing: RoutingAttempt,
     signal: AbortSignal,
   ): Promise<SelectedAccount | null> {
-    const accounts = (await this.options.accounts.list()).sort(
+    const listed = (await this.options.accounts.list()).sort(
       (left, right) => left.priority - right.priority,
     );
     signal.throwIfAborted();
     const now = this.options.now();
     const threshold = this.options.getSettings().switchThreshold;
+    // A scoped account (account.projects) that serves this request (route put it in candidateIds)
+    // takes it whenever it can, as a detour: it never holds the session's pin or the provider's
+    // cursor, so a scoped account held or failing leaves the request to the accounts below.
+    const scoped = listed
+      .filter(
+        (account) =>
+          account.projects !== undefined &&
+          account.enabled &&
+          candidateIds.has(account.id) &&
+          !attempted.has(account.id),
+      )
+      .map((account) => ({ account, quota: this.options.quotas.get(account.id) }))
+      .find(
+        ({ quota }) =>
+          quota.error === null &&
+          (quota.heldUntil === null || quota.heldUntil <= now) &&
+          !isSharedQuotaExhausted(quota, threshold, now) &&
+          !isQuotaExhausted(quota, family, threshold, now),
+      );
+    const accounts = listed.filter((account) => account.projects === undefined);
+    // A scoped account that just failed is no position in the rotation: the fallback picks as if
+    // it had not been tried (the session's pin, else the active account).
+    const previousId = accounts.some((account) => account.id === previousAccountId) ? previousAccountId : null;
     const available = accounts
       .filter((account) => account.provider === provider && account.enabled)
       .map((account) => ({
@@ -1761,6 +1796,13 @@ export class AccountPoolHub {
     );
     let binding =
       affinityKey === null ? undefined : this.affinityBindings.get(affinityKey);
+    // A pin to an account scoped since (account projects) is no pin: a scoped account only ever
+    // serves as a detour, so the session picks, and on acceptance pins, an ordinary account again.
+    if (
+      binding !== undefined &&
+      listed.some((account) => account.id === binding?.accountId && account.projects !== undefined)
+    )
+      binding = undefined;
     const boundAccountId =
       binding !== undefined &&
       now - binding.lastUsedAt < this.affinityIdleTtlMs()
@@ -1786,7 +1828,7 @@ export class AccountPoolHub {
     const activeAccount = eligible.find(
       ({ account }) => account.id === active?.accountId,
     );
-    const anchorId = previousAccountId ?? boundAccountId ?? active?.accountId;
+    const anchorId = previousId ?? boundAccountId ?? active?.accountId;
     const anchorIndex = accounts.findIndex(
       (account) => account.id === anchorId,
     );
@@ -1804,7 +1846,7 @@ export class AccountPoolHub {
         ? bound
         : (inherited ??
           (boundAccountId === null &&
-          previousAccountId === null &&
+          previousId === null &&
           activeAccount !== undefined &&
           unattempted.includes(activeAccount)
             ? activeAccount
@@ -1813,7 +1855,8 @@ export class AccountPoolHub {
     // Fable requests go to one account while it can serve them: the one holding a Fable reset
     // whose Fable limit is the most used, so the reset, which gives back half of that use, is worth
     // the most when spent. A detour there never moves the session's pin or the provider's cursor.
-    const preferred = family === "fable" ? this.preferredFableAccount(candidates, now) : undefined;
+    const preferred =
+      scoped ?? (family === "fable" ? this.preferredFableAccount(candidates, now) : undefined);
     const detour = preferred !== undefined && preferred !== usual;
     const selected = detour ? preferred : usual;
     if (selected === null) return null;
@@ -2089,7 +2132,7 @@ export class AccountPoolHub {
       this.decrement(account.id);
     };
     try {
-      const url = adapter.upstreamUrl(request, this.options.getSettings());
+      const url = adapter.upstreamUrl(request, this.options.getSettings(), account);
       const headers = adapter.requestHeaders(request.headers, account, secret);
       isolatedHeaders?.(headers);
       const response = await this.options
@@ -2191,7 +2234,7 @@ export class AccountPoolHub {
     family: ModelFamily,
   ): Promise<number | null> {
     const accounts = (await this.options.accounts.list()).filter(
-      (account) => account.provider === provider,
+      (account) => account.provider === provider && account.projects === undefined,
     );
     return this.usableTimes(accounts, family, this.options.now())[0] ?? null;
   }
@@ -2352,6 +2395,7 @@ export function createHub(options: {
   resetClaims?: ResetClaimStore;
   resetUrl?: (organizationUuid: string) => string;
   logReset?: (message: string, level: "info" | "debug") => void;
+  sessionProject?: (sessionId: string) => string | null;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2399,6 +2443,7 @@ export function createHub(options: {
     ledger: options.ledger ?? null,
     resetClaims: options.resetClaims ?? null,
     logReset: options.logReset ?? (() => {}),
+    sessionProject: options.sessionProject ?? (() => null),
   });
 }
 

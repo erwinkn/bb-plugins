@@ -124,6 +124,10 @@ export const limitWindowSchema = z
 
 export type LimitWindow = z.infer<typeof limitWindowSchema>;
 
+const accountProjectsSchema = z
+  .array(z.string().regex(/^\S+$/u, "A project ID has no spaces."))
+  .min(1);
+
 export const accountSchema = z
   .object({
     id: z.string().uuid(),
@@ -140,6 +144,12 @@ export const accountSchema = z
     createdAt: z.number().int().nonnegative(),
     lastUsedAt: z.number().int().nonnegative().nullable().default(null),
     lastUsedHostId: z.string().min(1).nullable().default(null),
+    // API-key accounts only: where its requests go instead of anthropicUpstreamBaseUrl (a gateway
+    // that speaks the Anthropic API). OAuth calls never use it.
+    baseUrl: httpUrlSchema.optional(),
+    // The BB projects whose threads this account serves, and only them; unset, it serves every
+    // thread. For a thread of one of them it is preferred over the unscoped accounts.
+    projects: accountProjectsSchema.optional(),
   })
   .strict();
 
@@ -307,11 +317,16 @@ export const accountAddInputSchema = z
     source: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("import") }).strict(),
       z
-        .object({ kind: z.literal("api-key"), apiKey: z.string().min(1) })
+        .object({
+          kind: z.literal("api-key"),
+          apiKey: z.string().min(1),
+          baseUrl: httpUrlSchema.optional(),
+        })
         .strict(),
     ]),
     label: z.string().min(1).nullable(),
     priority: z.number().int(),
+    projects: accountProjectsSchema.optional(),
   })
   .strict();
 
@@ -363,6 +378,11 @@ export const accountIdInputSchema = z
 
 export const accountPriorityInputSchema = z
   .object({ accountId: z.string().uuid(), priority: z.number().int() })
+  .strict();
+
+// An empty list serves every project again.
+export const accountProjectsInputSchema = z
+  .object({ accountId: z.string().uuid(), projects: z.array(z.string().regex(/^\S+$/u)) })
   .strict();
 
 export const accountReorderInputSchema = z
