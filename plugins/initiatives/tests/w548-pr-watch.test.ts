@@ -192,7 +192,8 @@ interface FakePr {
   updatedAt: number;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   state: "OPEN" | "MERGED" | "CLOSED";
-  checks: { name: string; outcome: "passed" | "failed" | "pending" | "skipped" | "neutral"; required?: boolean }[];
+  /** `run`: the check run's workflow and check suite (W608), where GitHub lists them. */
+  checks: { name: string; outcome: "passed" | "failed" | "pending" | "skipped" | "neutral"; required?: boolean; run?: { workflow: number; suite: number } }[];
   comments: { url: string; at: number; login: string; bot?: boolean; review?: string }[];
   /** GitHub's review decision, and whether each review thread is resolved: only a watch call reads them. */
   decision?: string;
@@ -218,6 +219,7 @@ const contextPage = (pr: FakePr, start: number) => ({
   nodes: pr.checks.slice(start, start + 100).map((c) => ({
     __typename: "CheckRun", name: c.name, status: c.outcome === "pending" ? "IN_PROGRESS" : "COMPLETED",
     conclusion: c.outcome === "pending" ? null : ({ passed: "SUCCESS", failed: "FAILURE", skipped: "SKIPPED", neutral: "NEUTRAL" } as const)[c.outcome], isRequired: c.required ?? false,
+    ...(c.run ? { checkSuite: { databaseId: c.run.suite, app: { databaseId: 15368 }, workflowRun: { event: "pull_request", workflow: { databaseId: c.run.workflow } } } } : {}),
   })),
 });
 const watchNode = (pr: FakePr, baseline: boolean) => ({
@@ -1685,5 +1687,123 @@ describe("W563 PR watch wake gaps", () => {
     expect(t.sent().map((m) => m.to)).toEqual(["thr_w1", "thr_w1"]);
     expect(t.sent()[1]!.text).toContain("All checks passed (1 check).");
     expect(wakeRows(t)).toEqual([expect.objectContaining({ state: "sent" })]);
+  });
+});
+
+// W608: equisafe-market#7845. Marking the draft ready for review ran CI again on the same head;
+// the run before was cancelled, and its cancelled "Draft" job stayed in the rollup next to the
+// new run's. Read as failing for good, it kept the pass of check / Check and tooling / Tooling
+// from waking W2652 for 6 h.
+describe("W608 superseded check runs", () => {
+  const CI = 212989777;
+  const CONTRACT = 415284520;
+  /** A check run of check suite `suite` (a workflow run of CI on pull_request unless `source` says otherwise: another workflow, or an app outside Actions). */
+  const run = (name: string, conclusion: string | null, suite: number, source: { workflow: number } | { app: number } = { workflow: CI }, isRequired = false) => ({
+    __typename: "CheckRun", name, status: conclusion ? "COMPLETED" : "IN_PROGRESS", conclusion, isRequired,
+    checkSuite: { databaseId: suite, ...("workflow" in source
+      ? { app: { databaseId: 15368 }, workflowRun: { event: "pull_request", workflow: { databaseId: source.workflow } } }
+      : { app: { databaseId: source.app }, workflowRun: null }) },
+  });
+  const node = (contexts: unknown[], required: string[] = []) => ({
+    id: "PR_7845", number: 7845, state: "OPEN", headRefOid: "e62302998ff", mergeable: "MERGEABLE", createdAt: "2026-11-12T16:30:00Z",
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes: contexts } } } }] },
+    ...(required.length ? { baseRef: { rules: { pageInfo: { hasNextPage: false }, nodes: [{ type: "REQUIRED_STATUS_CHECKS", parameters: { requiredStatusChecks: required.map((context) => ({ context })) } }] } } } : {}),
+  });
+  // #7845's rollup on e62302998ff, as GitHub listed it: CI's first run (suite 1) cancelled, its
+  // second (suite 2) green, the first run's skipped jobs named apart from the second's ("check",
+  // "check / Check"). Contract ran twice too (suites 3 and 4).
+  const first = [run("Draft", "CANCELLED", 1), run("tooling", "SKIPPED", 1), run("tests", "SKIPPED", 1), run("check", "SKIPPED", 1)];
+  const contract = (newer = "SKIPPED") => [run("Expand in prod", "SKIPPED", 3, { workflow: CONTRACT }), run("Expand in prod", newer, 4, { workflow: CONTRACT })];
+  const coderabbit = run("CodeRabbit", "NEUTRAL", 5, { app: 347564 });
+  const second = (outcome: string | null) => [run("Draft", "SKIPPED", 2), run("tests", "SKIPPED", 2), run("check / Check", outcome, 2), run("tooling / Tooling", outcome, 2)];
+  const all = ["CodeRabbit", "Draft", "Expand in prod", "check / Check", "tests", "tooling / Tooling"];
+  const parse = (contexts: unknown[], required?: string[]) => baselineState(parseWatch(node(contexts, required))!, T0, "f1");
+
+  it("reads only the latest run of each workflow: a cancelled run it superseded fails nothing", () => {
+    const read = parseWatch(node([...first, ...contract(), ...second("SUCCESS"), coderabbit]))!;
+    expect(read.checks.filter((c) => c.name === "Draft")).toEqual([expect.objectContaining({ outcome: "passed", skipped: true })]);
+    expect(read.checks.filter((c) => c.name === "Expand in prod")).toEqual([expect.objectContaining({ run: { source: `pull_request workflow ${CONTRACT}`, suite: 4 } })]);
+    expect(read.checks.map((c) => c.name).sort()).toEqual(all);
+    expect(parse([...first, ...contract("FAILURE"), ...second("SUCCESS"), coderabbit]).failing).toEqual(["Expand in prod"]);
+  });
+
+  it("wakes on the pass after the run that a draft's ready-for-review cancelled", () => {
+    const watched = parse([...first, ...contract(), ...second(null), coderabbit]);
+    expect(watched).toMatchObject({ failing: [], passed: false });
+    const green = diffWatch(watched, parseWatch(node([...first, ...contract(), ...second("SUCCESS"), coderabbit]))!, ctx());
+    expect(green.changes).toEqual([{ kind: "checks-passed", checks: all, required: false }]);
+  });
+
+  it("drops a superseded run's job that the newer run names otherwise or hasn't listed yet", () => {
+    // Cancelled during "check / Check"; the newer run skips that job, which it then lists as "check".
+    expect(parse([run("check / Check", "CANCELLED", 1), run("check", "SKIPPED", 2), run("tooling / Tooling", "SUCCESS", 2)])).toMatchObject({ failing: [], passed: true });
+    // Required, the renamed job is expected under its old name, which the newer run never reports: no pass on this head.
+    expect(parse([run("check / Check", "CANCELLED", 1, { workflow: CI }, true), run("check", "SKIPPED", 2, { workflow: CI }, true), run("tooling / Tooling", "SUCCESS", 2)])).toMatchObject({ failing: [], passed: false });
+    // The newer run has listed only its first jobs: the old cancelled one neither fails nor passes.
+    expect(parse([run("check / Check", "CANCELLED", 1), run("Draft", "SKIPPED", 2), run("tooling / Tooling", null, 2)])).toMatchObject({ failing: [], passed: false });
+  });
+
+  it("still fails a cancelled run nothing superseded, a same-named job of another workflow or app, and a job beside a same-named one", () => {
+    expect(parse([run("Draft", "CANCELLED", 1), run("tests", "SUCCESS", 1)]).failing).toEqual(["Draft"]);
+    expect(parse([run("tests", "FAILURE", 1, { workflow: 7 }), run("tests", "SUCCESS", 2)]).failing).toEqual(["tests"]);
+    expect(parse([run("build", "FAILURE", 10, { app: 1 }), run("build", "SUCCESS", 11, { app: 2 })]).failing).toEqual(["build"]);
+    // An app's newer suite replaces only the checks it names again.
+    expect(parse([run("build", "FAILURE", 10, { app: 1 }), run("lint", "SUCCESS", 11, { app: 1 })]).failing).toEqual(["build"]);
+    // An app's own runs again on one head do supersede each other.
+    expect(parse([run("build", "FAILURE", 10, { app: 1 }), run("build", "SUCCESS", 11, { app: 1 })])).toMatchObject({ failing: [], passed: true });
+    // Two jobs of one run that share a name (a matrix with a fixed name): both count.
+    expect(parse([run("tests", "FAILURE", 1), run("tests", "SUCCESS", 1)]).failing).toEqual(["tests"]);
+  });
+
+  it("gates on the latest run of a required check, whether the base branch or GitHub requires it", () => {
+    // Required by the base branch: cancelled in the first run, passed in the second.
+    const watched = parse([run("check", "CANCELLED", 1), run("check", null, 2), run("lint", "SUCCESS", 2)], ["check"]);
+    expect(watched).toMatchObject({ failing: [], passed: false });
+    const green = diffWatch(watched, parseWatch(node([run("check", "CANCELLED", 1), run("check", "SUCCESS", 2), run("lint", "SUCCESS", 2)], ["check"]))!, ctx());
+    expect(green.changes).toEqual([{ kind: "checks-passed", checks: ["check"], required: true }]);
+    // Marked required by GitHub: an old pass does not hide the latest run's failure.
+    expect(parse([run("check", "SUCCESS", 1, { workflow: CI }, true), run("check", "FAILURE", 2, { workflow: CI }, true)])).toMatchObject({ failing: ["check"], passed: false });
+  });
+
+  it("keeps a run GitHub lists without its workflow, event or app", () => {
+    const bare = (workflowRun: unknown, app: unknown) => ({ ...run("tests", "FAILURE", 1), checkSuite: { databaseId: 1, app, workflowRun } });
+    for (const failed of [bare({ event: "pull_request", workflow: null }, { databaseId: 15368 }), bare({ workflow: { databaseId: CI } }, { databaseId: 15368 }), bare(null, null)])
+      expect(parse([failed, run("tests", "SUCCESS", 2)]).failing).toEqual(["tests"]);
+  });
+
+  it("still expects a required check its superseded run alone named, where the base branch's are unknown", () => {
+    // GitHub marked "check" required; the newer run hasn't listed it yet, and the base branch's required names went unread.
+    const old = run("check", "FAILURE", 1, { workflow: CI }, true);
+    const watched = parse([old, run("Draft", "SKIPPED", 2), run("lint", "SUCCESS", 2)]);
+    expect(watched).toMatchObject({ failing: [], passed: false });
+    const green = diffWatch(watched, parseWatch(node([old, run("Draft", "SKIPPED", 2), run("lint", "SUCCESS", 2), run("check", "SUCCESS", 2, { workflow: CI }, true)]))!, ctx());
+    expect(green.changes).toEqual([{ kind: "checks-passed", checks: ["check"], required: true }]);
+  });
+
+  it("drops a superseded run listed a page before its replacement", async () => {
+    const checks: FakePr["checks"] = Array.from({ length: 150 }, (_, i) => ({ name: `c${i}`, outcome: "passed" as const, run: { workflow: CI, suite: 2 } }));
+    checks[0] = { name: "Draft", outcome: "failed", run: { workflow: CI, suite: 1 } };
+    checks[120] = { name: "Draft", outcome: "pending", run: { workflow: CI, suite: 2 } };
+    const t = setup({ prs: [fakePr(1, { checks })] });
+    await t.start();
+    expect(t.ledger.row(prUrl(1))?.state).toMatchObject({ failing: [], passed: false });
+    t.prs.get(1)!.checks = checks.map((c, i) => (i === 120 ? { ...c, outcome: "passed" as const } : c));
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork.mock.calls[0]![2]).toContain("All checks passed (149 checks).");
+  });
+
+  // The later page's report comes from the same workflow, another one, or a status context.
+  it.each([{ workflow: CI, suite: 2 }, { workflow: 7, suite: 5 }, undefined])("lets a required check expected from a superseded run pass once a later page reports it (%o)", async (reporter) => {
+    const checks: FakePr["checks"] = Array.from({ length: 150 }, (_, i) => ({ name: `c${i}`, outcome: "passed" as const, run: { workflow: CI, suite: 2 } }));
+    checks[0] = { name: "check / Check", outcome: "failed", required: true, run: { workflow: CI, suite: 1 } };
+    checks[120] = { name: "check / Check", outcome: "pending", required: true, ...(reporter ? { run: reporter } : {}) };
+    const t = setup({ prs: [fakePr(1, { checks })] });
+    await t.start();
+    expect(t.ledger.row(prUrl(1))?.state).toMatchObject({ failing: [], passed: false });
+    t.prs.get(1)!.checks = checks.map((c, i) => (i === 120 ? { ...c, outcome: "passed" as const } : c));
+    await t.poll();
+    expect(t.giveWork).toHaveBeenCalledTimes(1);
+    expect(t.giveWork.mock.calls[0]![2]).toContain("Required checks passed (1 check).");
   });
 });

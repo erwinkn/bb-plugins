@@ -60,7 +60,7 @@ export type ChangeKind = "checks-failed" | "checks-passed" | "new-comments" | "c
 
 /** The fields of a page of check contexts; `id` is the variable holding the PR's id, which `isRequired` needs. */
 const contextFields = (id: string) => `pageInfo { hasNextPage endCursor } nodes { __typename
-      ... on CheckRun { name status conclusion isRequired(pullRequestId: ${id}) }
+      ... on CheckRun { name status conclusion isRequired(pullRequestId: ${id}) checkSuite { databaseId app { databaseId } workflowRun { event workflow { databaseId } } } }
       ... on StatusContext { context state isRequired(pullRequestId: ${id}) }
     }`;
 
@@ -111,6 +111,11 @@ export interface WatchCheck {
    * ever does.
    */
   skipped?: true;
+  /**
+   * W608: what makes a check run one of a series (its workflow and event, or for a run outside
+   * Actions its app), and its check suite (workflow run), the newest of which counts (latestRuns).
+   */
+  run?: { source: string; suite: number };
 }
 
 export interface WatchComment {
@@ -132,6 +137,7 @@ export interface WatchFacts {
   mergeable: MergeableState;
   /** When the PR was opened. */
   createdAt: number;
+  /** The latest run of each check (latestRuns). */
   checks: WatchCheck[];
   /**
    * More checks than were read: `checks` is only part of them, and the rollup's overall state
@@ -165,7 +171,7 @@ export function parseWatch(node: unknown): WatchFacts | null {
   const state = n.state === "OPEN" || n.state === "MERGED" || n.state === "CLOSED" ? n.state : null;
   if (!state) return null;
   const rollup = nodes(n.commits)[0]?.commit?.statusCheckRollup;
-  const checks = parseChecks(rollup?.contexts);
+  const checks = latestRuns(parseChecks(rollup?.contexts));
   const comments: WatchComment[] = [];
   for (const [list, field] of [[n.comments, "createdAt"], [n.reviews, "submittedAt"]] as const)
     for (const c of nodes(list)) {
@@ -219,9 +225,56 @@ export function parseChecks(contexts: unknown): WatchCheck[] {
     checks.push({
       name, outcome: PASSED.has(value) ? "passed" : FAILED.has(value) ? "failed" : "pending", required: context.isRequired === true,
       ...(value === "SKIPPED" || value === "NEUTRAL" ? { skipped: true as const } : {}),
+      ...(context.__typename === "CheckRun" ? runOf(context) : {}),
     });
   }
   return checks;
+}
+
+type CheckSuite = { databaseId?: unknown; app?: { databaseId?: unknown } | null; workflowRun?: { event?: unknown; workflow?: { databaseId?: unknown } | null } | null };
+
+/** An app's series key (WatchCheck.run.source) starts with this; a workflow's, with its event, which has no NUL. */
+const APP = "app\0";
+
+/** A check run's series and suite (WatchCheck.run), or nothing where GitHub left one out. */
+function runOf(context: { checkSuite?: CheckSuite | null }): Pick<WatchCheck, "run"> {
+  const suite = context.checkSuite;
+  if (typeof suite?.databaseId !== "number") return {};
+  const source = suite.workflowRun ? workflowSource(suite.workflowRun) : typeof suite.app?.databaseId === "number" ? `${APP}${suite.app.databaseId}` : null;
+  return source ? { run: { source, suite: suite.databaseId } } : {};
+}
+
+const workflowSource = ({ event, workflow }: NonNullable<CheckSuite["workflowRun"]>) =>
+  typeof event === "string" && typeof workflow?.databaseId === "number" ? `${event} workflow ${workflow.databaseId}` : null;
+
+/**
+ * W608: the checks of the latest run of each workflow (on one event): its newest check suite
+ * replaces the ones before it whole. A workflow that runs again on the same head (marking a draft
+ * ready for review) cancels the run before it, whose cancelled jobs stay in the rollup next to the
+ * new run's; they no longer gate the PR. Whole runs, not one job name at a time: a job named one
+ * way in the old run can be named another in the new one (a reusable workflow's job is "check"
+ * when skipped, "check / Check" when it ran), or not exist there yet (a job that waits on others is
+ * listed once it starts). Every check of the newest suite counts, jobs sharing a name included:
+ * the rollup lists only the latest attempt of each. An app outside Actions has no such evidence,
+ * so its newer suite replaces only the checks it names again.
+ * A required check dropped this way, which no check kept reports under its name, stays as pending:
+ * expected, not yet reported, so it blocks a pass without failing (where the base branch's
+ * required names are unknown, it is the only witness that the name is required).
+ * The cost: a job re-run by hand in a superseded run stays hidden behind the newer run. And past
+ * CHECK_PAGES the rollup's own state, which still counts superseded runs, speaks for the rest.
+ * Status contexts, and runs without a suite, are kept as they are.
+ */
+export function latestRuns(checks: readonly WatchCheck[]): WatchCheck[] {
+  const series = (name: string, { source }: NonNullable<WatchCheck["run"]>) => (source.startsWith(APP) ? `${source}\0${name}` : source);
+  const newest = new Map<string, number>();
+  for (const { name, run } of checks) if (run && run.suite > (newest.get(series(name, run)) ?? -Infinity)) newest.set(series(name, run), run.suite);
+  const kept = checks.filter(({ name, run }) => !run || run.suite === newest.get(series(name, run)));
+  const reported = new Set(kept.map((c) => c.name));
+  const expected = new Map<string, WatchCheck>();
+  // Each keeps its own `run`, so a later page's read (morePages) drops it again once its name reports.
+  for (const { name, required, run } of checks)
+    if (run && required && !reported.has(name) && !expected.has(name)) expected.set(name, { name, outcome: "pending", required, run });
+  return [...kept, ...expected.values()];
 }
 
 const nextCursor = (contexts: unknown): string | null => {
@@ -1025,7 +1078,7 @@ export class PrWatcher {
       // (against the new head) rather than waking anyone about the old one.
       if (!node || node.headRefOid !== facts.head) throw new Error(`its head moved from ${short(facts.head)} while its checks were read`);
       const contexts = nodes(node.commits)[0]?.commit?.statusCheckRollup?.contexts;
-      checks = [...checks, ...parseChecks(contexts)];
+      checks = latestRuns([...checks, ...parseChecks(contexts)]);
       const cursor = nextCursor(contexts);
       more = cursor ? { rollup: more.rollup, cursor } : undefined;
     }
