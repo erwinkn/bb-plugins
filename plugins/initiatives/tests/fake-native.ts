@@ -306,6 +306,10 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
   );
   const stop = vi.fn(async () => ({}));
   let intercept: Intercept | undefined;
+  /** Files sessions' checkouts hold, by absolute path: what sdk.files.read finds. */
+  const files = new Map<string, string>();
+  /** Reads that fail (with a 500) or never answer, by absolute path. */
+  const fileFaults = new Map<string, "error" | "stall">();
   const host = createInterceptableHost({
     pluginId: "initiatives",
     settings,
@@ -320,6 +324,16 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
       hosts: { list: async () => hosts },
       // BB's own machine: the server runs there.
       system: { config: async () => ({ primaryHostId: "host_a" }) },
+      files: {
+        read: async ({ path }: { path: string }) => {
+          const fault = fileFaults.get(path);
+          if (fault === "stall") return new Promise<never>(() => {});
+          if (fault === "error") throw Object.assign(new Error("Host unreachable"), { status: 500 });
+          const content = files.get(path);
+          if (content === undefined) throw Object.assign(new Error("Not found"), { status: 404 });
+          return { content, contentEncoding: "utf8" };
+        },
+      },
       environments: {
         get: async ({ environmentId }: { environmentId: string }) =>
           envFor(environmentId),
@@ -560,6 +574,8 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     sendQueued,
     envs,
     envUpdate,
+    files,
+    fileFaults,
     hosts,
     sources,
     spawn,

@@ -53,7 +53,7 @@ import { Store, MIGRATIONS, type WorkerRecord } from "./lib/store";
 import { CHILD_PAGE, ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
 import { FALLBACK_ROLE, ReviewerFallback } from "./lib/reviewer-fallback";
-import { MAX_WORKER_ANCESTORS, WORKER_SETTINGS_ENV, workerClaudeSettings } from "./lib/worker-session";
+import { CHECKOUT_INSTRUCTIONS, CHECKOUT_READ_MS, MAX_WORKER_ANCESTORS, WORKER_SETTINGS_ENV, workerClaudeSettings } from "./lib/worker-session";
 import { installBatchingNudge } from "./lib/batching-nudge";
 import { withProfileDefaults } from "./lib/settings";
 import {
@@ -968,24 +968,66 @@ export default function plugin(bb: BbPluginApi) {
   // worker, confirmed or still being confirmed, a fallback reviewer this plugin started, and their
   // descendants (reviewers, helpers, their helpers). Coordinators, former and retired workers and
   // user threads keep everything. Decided afresh at each session start from the thread's ancestry; a lookup
-  // that fails leaves the session whole.
-  const workerSession = async (threadId: string, ancestors = 0): Promise<boolean> => {
+  // that fails leaves the session whole. The answer is that worker's latest brief (W617), or null.
+  const workerBrief = async (threadId: string, ancestors = 0): Promise<string | null> => {
+    const briefOf = (projectId: string, num: number) => store.latestAssignment(projectId, num)?.briefText ?? "";
     const m = store.membership(threadId);
     // A worker's descendants join the Initiative as nested threads: those carry kind "adhoc".
-    if (m && m.kind !== "adhoc") return m.kind === "worker" && !m.former && m.worker?.state !== "retired";
+    if (m && m.kind !== "adhoc")
+      return m.kind === "worker" && !m.former && m.worker?.state !== "retired" ? briefOf(m.project.id, m.workerNum) : null;
     const thread = await bb.sdk.threads.get({ threadId });
     if (isOwnOrigin(bb.pluginId, thread.originPluginId)) {
       const meta = await bb.sdk.threads.getPluginMetadata({ threadId, pluginId: bb.pluginId });
-      if (meta.role === FALLBACK_ROLE || pendingAssignment(threadId, thread.originPluginId, meta)) return true;
+      if (meta.role === FALLBACK_ROLE) return briefOf(String(meta.projectId), Number(meta.worker));
+      const pending = pendingAssignment(threadId, thread.originPluginId, meta);
+      if (pending) return pending.assignment.briefText;
     }
     const parent = thread.parentThreadId;
-    return !!parent && ancestors < MAX_WORKER_ANCESTORS && workerSession(parent, ancestors + 1);
+    return parent && ancestors < MAX_WORKER_ANCESTORS ? workerBrief(parent, ancestors + 1) : null;
+  };
+  // W617: the instruction files Claude Code loads from the session's checkout. Only a 404 means
+  // no file. A read that fails or takes over CHECKOUT_READ_MS answers with that checkout's last
+  // good read, so a flaky host neither flips a session's servers nor holds its start; with none,
+  // it throws. A late answer still lands for the next session start.
+  const checkoutTexts = new Map<string, string>();
+  const checkoutReads = new Map<string, Promise<string>>();
+  const checkoutInstructions = async (threadId: string): Promise<string> => {
+    const { environmentId } = await bb.sdk.threads.get({ threadId });
+    const environment = environmentId ? await bb.sdk.environments.get({ environmentId }) : null;
+    const root = environment?.path;
+    if (!root) return "";
+    const key = `${environment.hostId}\0${root}`;
+    let read = checkoutReads.get(key);
+    if (!read) {
+      read = Promise.all(CHECKOUT_INSTRUCTIONS.map((name) =>
+        bb.sdk.files.read({ path: join(root, name), rootPath: root, hostId: environment.hostId }).then(
+          (file) => (file.contentEncoding === "utf8" ? file.content : ""),
+          (error) => { if ((error as { status?: unknown }).status === 404) return ""; throw error; })))
+        .then((texts) => { const text = texts.join("\n"); checkoutTexts.set(key, text); return text; })
+        .finally(() => { if (checkoutReads.get(key) === read) checkoutReads.delete(key); });
+      checkoutReads.set(key, read);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer in ${CHECKOUT_READ_MS} ms`)), CHECKOUT_READ_MS); });
+    try {
+      return await Promise.race([read, late]);
+    } catch (error) {
+      // The next start reads afresh instead of joining a read that may never answer.
+      if (checkoutReads.get(key) === read) checkoutReads.delete(key);
+      const known = checkoutTexts.get(key);
+      if (known === undefined) throw error;
+      bb.log.warn(`W617: used the last instructions read from ${root}: ${errorMessage(error)}`);
+      return known;
+    } finally {
+      clearTimeout(timer);
+    }
   };
   // W615: BB's primary host runs this server, so only there do the hook's node and script exist.
   let primaryHostId: string | null | undefined;
   bb.providers.experimental_contributeEnv("claude-code", async ({ threadId, hostId }) => {
     try {
-      if (!(await workerSession(threadId))) return [];
+      const brief = await workerBrief(threadId);
+      if (brief === null) return [];
       let nudge: string | null = null;
       try {
         primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
@@ -993,7 +1035,12 @@ export default function plugin(bb: BbPluginApi) {
       } catch (error) {
         bb.log.warn(`W615: no batching nudge for ${threadId}: ${errorMessage(error)}`);
       }
-      return [{ name: WORKER_SETTINGS_ENV, value: JSON.stringify(workerClaudeSettings(nudge)), reason: "Initiative worker session: leaves out the tools and skills workers don't use (W605), nudges it to batch reads (W615)" }];
+      const instructions = await checkoutInstructions(threadId).catch((error) => {
+        bb.log.warn(`W617: kept the optional servers and skills for ${threadId}: ${errorMessage(error)}`);
+        return null;
+      });
+      const settings = workerClaudeSettings(brief, instructions, nudge);
+      return [{ name: WORKER_SETTINGS_ENV, value: JSON.stringify(settings), reason: "Initiative worker session: leaves out the tools, skills and MCP servers workers don't use (W605, W617), nudges it to batch reads (W615)" }];
     } catch (error) {
       bb.log.warn(`W605: kept the full session for ${threadId}: ${errorMessage(error)}`);
       return [];

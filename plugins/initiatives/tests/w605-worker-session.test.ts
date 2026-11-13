@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FALLBACK_ROLE } from "../lib/reviewer-fallback";
-import { MAX_WORKER_ANCESTORS, WORKER_SETTINGS_ENV } from "../lib/worker-session";
+import { CHECKOUT_READ_MS, MAX_WORKER_ANCESTORS, WORKER_SETTINGS_ENV, workerClaudeSettings } from "../lib/worker-session";
 import { projectFixture } from "./fake-native";
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
@@ -23,10 +23,11 @@ describe("W605 worker sessions leave out unused tools and skills", () => {
     const [d] = await f.service.delegate(project.id, workerInput(f.task(project.id).ref));
 
     const worker = await settingsOf(f, d.threadId!);
-    expect(worker.permissions.deny).toEqual(["Workflow", "ReportFindings", "AskUserQuestion", "ListAgents", "ScheduleWakeup"]);
+    expect(worker.permissions.deny).toEqual(expect.arrayContaining(["Workflow", "ReportFindings", "AskUserQuestion", "ListAgents", "ScheduleWakeup", "CronCreate", "Agent(statusline-setup)"]));
+    expect(worker.permissions.deny).not.toContain("Agent");
     // Hidden from the model, still typable; workflow-authoring goes with the Workflow tool.
     expect(worker.skillOverrides).toMatchObject({ "workflow-authoring": "user-invocable-only", "bb-global-skills:thread-list": "user-invocable-only" });
-    for (const kept of ["code-review", "principles", "simplify", "bb-global-skills:initiative-worker", "bb-global-skills:chat-memory"])
+    for (const kept of ["code-review", "principles", "agent-browser", "bb-global-skills:provider-retry"])
       expect(worker.skillOverrides).not.toHaveProperty([kept]);
 
     // Its reviewer, and a helper that reviewer spawns.
@@ -92,5 +93,95 @@ describe("W605 worker sessions leave out unused tools and skills", () => {
     const [r] = await f.service.delegate(project.id, workerInput(f.task(project.id).ref));
     f.store.updateWorker(project.id, f.store.membership(r.threadId!)!.workerNum, { state: "retired" });
     expect(await sessionEnv(f, r.threadId!)).toEqual([]);
+  });
+
+  it("W617: keeps the optional MCP servers and skills a worker's brief or checkout instructions name", async () => {
+    const { f, project } = await projectFixture();
+    const [d] = await f.service.delegate(project.id, workerInput(f.task(project.id).ref));
+    const { workerNum } = f.store.membership(d.threadId!)!;
+    const brief = (text: string) => f.store.setBriefText(project.id, f.store.latestAssignment(project.id, workerNum)!.num, text);
+    const servers = (settings: { deniedMcpServers?: { serverName: string }[] }) => settings.deniedMcpServers?.map((s) => s.serverName) ?? [];
+
+    // Named nowhere: every optional server and skill leaves the session.
+    brief("Fix the vault fee rows. The simplify-review skill may help.");
+    const bare = await settingsOf(f, d.threadId!);
+    expect(servers(bare)).toEqual(["axiom", "equisafe-dev", "sentry"]);
+    for (const hidden of ["claude-api", "simplify", "run", "bb-global-skills:chat-memory", "bb-global-skills:initiative-worker"])
+      expect(bare.skillOverrides[hidden]).toBe("user-invocable-only");
+
+    // The brief names Sentry and /run; the checkout's CLAUDE.md names Axiom, its AGENTS.md equisafe.dev.
+    brief("Find the error in Sentry, then /run the app.");
+    const { environmentId } = f.threads.get(d.threadId!)!;
+    const root = f.envs.get(environmentId!)?.path ?? `/code/${environmentId}`;
+    f.files.set(`${root}/CLAUDE.md`, "Logs live in Axiom.");
+    const named = await settingsOf(f, d.threadId!);
+    expect(servers(named)).toEqual(["equisafe-dev"]);
+    expect(named.skillOverrides).not.toHaveProperty(["run"]);
+    f.files.set(`${root}/AGENTS.md`, "Publish documents on equisafe.dev.");
+    const all = await settingsOf(f, d.threadId!);
+    // Nothing to deny: the key stays out, so a provider older than W617 still takes the value.
+    expect(all).not.toHaveProperty("deniedMcpServers");
+
+    // Its reviewer reads the worker's brief, through its own checkout.
+    child(f, "review", d.threadId!);
+    expect(await settingsOf(f, "review")).toEqual(all);
+  });
+
+  it("W617: Sentry loads when the brief names it, not when only the checkout's instructions do", async () => {
+    const { f, project } = await projectFixture();
+    const [d] = await f.service.delegate(project.id, workerInput(f.task(project.id).ref));
+    const { workerNum } = f.store.membership(d.threadId!)!;
+    const brief = (text: string) => f.store.setBriefText(project.id, f.store.latestAssignment(project.id, workerNum)!.num, text);
+    const root = f.envs.get(f.threads.get(d.threadId!)!.environmentId!)!.path;
+    const servers = async () => (await settingsOf(f, d.threadId!)).deniedMcpServers?.map((s: { serverName: string }) => s.serverName) ?? [];
+    f.files.set(`${root}/CLAUDE.md`, "Logs and traces live in Axiom, errors in Sentry, documents on equisafe.dev.");
+
+    brief("Fix the vault fee rows.");
+    expect(await servers()).toEqual(["sentry"]);
+    brief("Fix the vault fee rows Sentry issue EQS-4XY reports.");
+    expect(await servers()).toEqual([]);
+  });
+
+  it("W617: a qualified MCP tool name names its server", () => {
+    const denied = (text: string) => workerClaudeSettings(text, "", null).deniedMcpServers?.map((s) => s.serverName) ?? [];
+    expect(denied("Query mcp__axiom__queryDataset, then mcp__sentry__search_issues.")).toEqual(["equisafe-dev"]);
+    expect(denied("Publish with mcp__equisafe-dev__create_artifact.")).toEqual(["axiom", "sentry"]);
+    expect(denied("Not axiomatic, nor sentry-like.")).toEqual(["axiom", "equisafe-dev", "sentry"]);
+  });
+
+  it("W617: a checkout read that fails or stalls keeps its last good read, or every optional server and skill", async () => {
+    const { f, project } = await projectFixture();
+    const [d] = await f.service.delegate(project.id, workerInput(f.task(project.id).ref));
+    const { workerNum } = f.store.membership(d.threadId!)!;
+    f.store.setBriefText(project.id, f.store.latestAssignment(project.id, workerNum)!.num, "Fix the vault fee rows.");
+    const root = f.envs.get(f.threads.get(d.threadId!)!.environmentId!)!.path;
+    const servers = async () => (await settingsOf(f, d.threadId!)).deniedMcpServers?.map((s: { serverName: string }) => s.serverName) ?? [];
+
+    // Never read: the session keeps everything the checkout could name. Only the brief names Sentry.
+    f.fileFaults.set(`${root}/CLAUDE.md`, "error");
+    const unknown = await settingsOf(f, d.threadId!);
+    expect(unknown.deniedMcpServers).toEqual([{ serverName: "sentry" }]);
+    expect(unknown.skillOverrides).not.toHaveProperty(["run"]);
+    expect(unknown.permissions.deny).toContain("Workflow");
+
+    // Read once, then failing or stalling: the last good read stands.
+    f.fileFaults.clear();
+    f.files.set(`${root}/CLAUDE.md`, "Logs live in Axiom.");
+    expect(await servers()).toEqual(["equisafe-dev", "sentry"]);
+    f.files.delete(`${root}/CLAUDE.md`);
+    f.fileFaults.set(`${root}/CLAUDE.md`, "error");
+    expect(await servers()).toEqual(["equisafe-dev", "sentry"]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      f.fileFaults.set(`${root}/CLAUDE.md`, "stall");
+      const stalled = servers();
+      await vi.advanceTimersByTimeAsync(CHECKOUT_READ_MS);
+      expect(await stalled).toEqual(["equisafe-dev", "sentry"]);
+    } finally {
+      vi.useRealTimers();
+    }
+    // A file that is gone (404) is read as gone.
+    f.fileFaults.clear();
+    expect(await servers()).toEqual(["axiom", "equisafe-dev", "sentry"]);
   });
 });
