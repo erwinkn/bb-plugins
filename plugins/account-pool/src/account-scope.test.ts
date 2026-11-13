@@ -103,14 +103,14 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
     db.close();
   });
   // Who served a Messages request: "gateway", or the OAuth account's token.
-  const send = async (session?: string) => {
+  const send = async (session?: string, model: string | null = "claude-opus-5-5") => {
     const before = calls.length;
     const response = await hub.handle(
       new Request("https://hub.test/api/v1/plugins/account-pool-local/http/v1/messages", {
         method: "POST",
         headers: { authorization: "Bearer hub", "content-type": "application/json" },
         body: JSON.stringify({
-          model: "claude-opus-5-5",
+          ...(model === null ? {} : { model }),
           ...(session === undefined ? {} : { metadata: { user_id: JSON.stringify({ session_id: session }) } }),
         }),
       }),
@@ -187,16 +187,31 @@ describe("an account scoped to some projects, behind its own base URL", () => {
     expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway", "Bearer tok-1"] });
   });
 
-  it("holds a gateway that answers 400 for 15 minutes and serves the request from a normal account", async () => {
+  it("holds a gateway that answers 400 for a request with no model for 15 minutes, whatever the model", async () => {
     const pool = await makePool();
     pool.projects.set("s1", EQUISAFE);
-    pool.gatewayReplies.push(() => Response.json({ error: "unknown provider for model claude-haiku-5-5" }, { status: 400 }));
-    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway", "Bearer tok-1"] });
+    pool.gatewayReplies.push(() => Response.json({ error: "bad request" }, { status: 400 }));
+    expect(await pool.send("s1", null)).toEqual({ status: 200, tried: ["gateway", "Bearer tok-1"] });
     expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBe(NOW + 15 * 60_000);
     // Held: no request reaches it, however many come.
     pool.advance(14 * 60_000);
     expect(await pool.send("s1")).toEqual({ status: 200, tried: ["Bearer tok-1"] });
     expect(await pool.send("s1")).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+  });
+
+  it("holds a model the gateway rejects, not the gateway: other models keep using it", async () => {
+    const pool = await makePool();
+    pool.projects.set("s1", EQUISAFE);
+    const fable = "claude-fable-5-2";
+    pool.gatewayReplies.push(() => Response.json({ error: `unknown provider for model ${fable}` }, { status: 400 }));
+    expect(await pool.send("s1", fable)).toEqual({ status: 200, tried: ["gateway", "Bearer tok-1"] });
+    expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBeNull();
+    // The next Fable request skips the gateway; Opus still goes to it.
+    expect(await pool.send("s1", fable)).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway"] });
+    // The hold expires after 15 minutes: the gateway is tried for Fable again.
+    pool.advance(15 * 60_000 + 1);
+    expect(await pool.send("s1", fable)).toEqual({ status: 200, tried: ["gateway"] });
   });
 
   it("tries the gateway again once its hold has expired", async () => {

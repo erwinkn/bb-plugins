@@ -94,7 +94,8 @@ const AUTO_RESET_MARGIN = 0.03;
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
-// How long a scoped account sits out after it rejects a request (a gateway with no model for it).
+// How long a scoped account sits out after it rejects a request (a gateway with no model for it):
+// for that model only when the request names one, else for every model.
 const SCOPED_REJECTION_HOLD_MS = 15 * 60_000;
 // A declared content-length up to this is trusted to size the request body buffer.
 const MAX_PREALLOCATED_BODY_BYTES = 32 * 1024 * 1024;
@@ -186,6 +187,10 @@ interface ActiveAccount {
   accountId: string;
 }
 
+function modelHoldKey(accountId: string, model: string | null): string {
+  return JSON.stringify([accountId, model]);
+}
+
 interface PacingFlight {
   heldUntil: number;
   result: Promise<void>;
@@ -240,6 +245,8 @@ export class AccountPoolHub {
   private readonly refreshes = new Map<string, SecretFlight>();
   private readonly refreshBackoffs = new Map<string, RefreshBackoff>();
   private readonly pacingByAccount = new Map<string, PacingFlight>();
+  // Until when a scoped account sits out one model it rejected, by [account id, model]; memory only.
+  private readonly modelHolds = new Map<string, number>();
   private affinityBindings = new Map<string, AccountBinding>();
   private activeAccounts = new Map<PoolProvider, ActiveAccount>();
   private readonly usageRefreshes = new Map<string, Promise<void>>();
@@ -1099,11 +1106,14 @@ export class AccountPoolHub {
     let failure: FailureSummary | null = null;
     const sessionId = sessionIdOf(parsed.affinityId);
     const project = sessionId === null ? null : this.options.sessionProject(sessionId);
+    const routeNow = this.options.now();
     const accounts = (await this.options.accounts.list()).filter(
       (account) =>
         account.provider === adapter.provider &&
         (account.projects === undefined ||
-          (project !== null && account.projects.includes(project))),
+          (project !== null &&
+            account.projects.includes(project) &&
+            (this.modelHolds.get(modelHoldKey(account.id, parsed.model)) ?? 0) <= routeNow)),
     );
     const candidateIds = new Set(accounts.map((account) => account.id));
     const family = parsed.family;
@@ -1388,12 +1398,11 @@ export class AccountPoolHub {
           if (!response.ok && response.status !== 429 && selected.account.projects !== undefined) {
             const detail = await this.discardUpstream(upstream, true);
             signal.throwIfAborted();
-            this.options.quotas.put({
-              ...observed,
-              heldUntil: this.options.now() + SCOPED_REJECTION_HOLD_MS,
-            });
+            const heldUntil = this.options.now() + SCOPED_REJECTION_HOLD_MS;
+            if (parsed.model) this.modelHolds.set(modelHoldKey(selected.account.id, parsed.model), heldUntil);
+            else this.options.quotas.put({ ...observed, heldUntil });
             this.options.logReset(
-              `Account Pooler holds ${selected.account.label} for 15 minutes: HTTP ${response.status} ${detail.slice(0, 200)}`,
+              `Account Pooler holds ${selected.account.label}${parsed.model ? ` for ${parsed.model}` : ""} for 15 minutes: HTTP ${response.status} ${detail.slice(0, 200)}`,
               "info",
             );
             failure = {
