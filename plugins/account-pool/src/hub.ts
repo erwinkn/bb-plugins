@@ -191,6 +191,12 @@ function modelHoldKey(accountId: string, model: string | null): string {
   return JSON.stringify([accountId, model]);
 }
 
+// What a manual retry lifted from an API-key account: its account-wide hold, and the models held.
+export interface ClearedHolds {
+  accountWide: boolean;
+  models: string[];
+}
+
 interface PacingFlight {
   heldUntil: number;
   result: Promise<void>;
@@ -553,6 +559,24 @@ export class AccountPoolHub {
     await Promise.all(
       accounts.map((account) => this.refreshAccountUsage(account, force)),
     );
+  }
+
+  // Lifts the holds a scoped gateway earned by rejecting requests (the per-model ones in memory and
+  // the persisted account-wide one), so the next request tries it again. By hand only: neither the
+  // periodic usage refresh nor an OAuth account's hold goes through here.
+  clearHolds(accountId: string): ClearedHolds {
+    const now = this.options.now();
+    const models: string[] = [];
+    for (const [key, heldUntil] of this.modelHolds) {
+      const [holdAccountId, model] = JSON.parse(key) as [string, string | null];
+      if (holdAccountId !== accountId) continue;
+      this.modelHolds.delete(key);
+      if (heldUntil > now && model !== null) models.push(model);
+    }
+    const quota = this.options.quotas.get(accountId);
+    const accountWide = quota.heldUntil !== null && quota.heldUntil > now;
+    if (quota.heldUntil !== null) this.options.quotas.put({ ...quota, heldUntil: null });
+    return { accountWide, models: models.sort() };
   }
 
   private async refreshAccountUsage(

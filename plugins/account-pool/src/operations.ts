@@ -9,7 +9,7 @@ import type {
   RoutedThreadStatus,
 } from "./contracts.js";
 import type { AccountAddInput } from "./contracts.js";
-import type { AccountPoolHub } from "./hub.js";
+import type { AccountPoolHub, ClearedHolds } from "./hub.js";
 import type {
   AccountStore,
   HubTokenStore,
@@ -214,14 +214,19 @@ export class PoolOperations {
     this.onAccountsChanged();
   }
 
-  async refreshUsage(id: string): Promise<AccountSummary | null> {
-    if ((await this.accounts.get(id)) === null) return null;
+  // The manual refresh: an OAuth account's usage is read again; an API-key account has no usage to
+  // read, so it is retried instead: its holds are lifted (`cleared`, null for OAuth).
+  async refreshUsage(
+    id: string,
+  ): Promise<{ account: AccountSummary | null; cleared: ClearedHolds | null } | null> {
+    const found = await this.accounts.get(id);
+    if (found === null) return null;
+    const cleared = found.kind === "api-key" ? this.hub.clearHolds(id) : null;
     await this.hub.refreshUsage(id, true);
     this.onAccountsChanged();
-    return (
-      (await this.status()).accounts.find((account) => account.id === id) ??
-      null
-    );
+    const account =
+      (await this.status()).accounts.find((item) => item.id === id) ?? null;
+    return { account, cleared };
   }
 
   // null when the account does not exist.

@@ -68,7 +68,7 @@ const HELP = [
   "  bb pool-local account priority <id> <n>",
   "  bb pool-local account projects <id> [<project-id>...]  Serve only these BB projects' threads; none: every thread.",
   "  bb pool-local account reorder <claude|codex> <id>...",
-  "  bb pool-local account refresh <id>",
+  "  bb pool-local account refresh <id>  OAuth: reads usage again. API key (a gateway): clears its holds, to retry it at once.",
   "  bb pool-local account reset <id> <fable|full|weekly|session>  Spends one usage reset.",
   "  bb pool-local status [--json]",
   "  bb pool-local routing <claude|codex> [--off]",
@@ -650,9 +650,17 @@ export function registerPoolCli(
         if (argv[0] === "account" && argv[1] === "refresh") {
           if (argv.length !== 3) throw new Error(HELP);
           const { id } = accountIdInputSchema.parse({ id: argv[2] });
-          if ((await operations.refreshUsage(id)) === null)
-            throw new Error("Account not found.");
-          return { exitCode: 0, stdout: `Refreshed usage for ${id}.\n` };
+          const refreshed = await operations.refreshUsage(id);
+          if (refreshed === null) throw new Error("Account not found.");
+          if (refreshed.cleared === null)
+            return { exitCode: 0, stdout: `Refreshed usage for ${id}.\n` };
+          const { accountWide, models } = refreshed.cleared;
+          const held = [...(accountWide ? ["account-wide"] : []), ...(models.length > 0 ? [`models: ${models.join(", ")}`] : [])];
+          const name = refreshed.account?.label ?? id;
+          return {
+            exitCode: 0,
+            stdout: held.length === 0 ? `No holds on ${name}.\n` : `Cleared holds on ${name}: ${held.join(", ")}.\n`,
+          };
         }
         if (argv[0] === "account" && argv[1] === "reset") {
           if (argv.length !== 4) throw new Error(HELP);

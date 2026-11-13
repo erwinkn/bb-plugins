@@ -55,7 +55,9 @@ yet answers 400) is held 15 minutes for that model, and the thread goes to its
 usual account; the gateway keeps serving the other models. A request with no
 readable model holds the whole account instead. The model hold is kept in
 memory, so a restart forgets it. A gateway can thus be added before it serves
-every model. An API-key account has no
+every model. To retry a held gateway at once, run `bb pool-local account refresh <id>`
+or choose "Retry now" in its settings row: it clears the model holds and any
+account-wide hold, and the next request tries the gateway again. An API-key account has no
 quota readout, so it counts as unlimited until a 429. Scoped accounts are
 never counted as capacity the rest of the pool waits for, serve no isolated
 (advisor) traffic and do not hold back automatic resets.

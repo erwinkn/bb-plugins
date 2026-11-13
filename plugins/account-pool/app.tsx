@@ -236,6 +236,10 @@ function tier(account: AccountSummary): string {
     ? kind
     : `${kind} · ${new URL(account.baseUrl).host}`;
 }
+// An API-key account has no usage to read: its refresh lifts the holds a rejecting gateway earned.
+function refreshLabel(account: AccountSummary): string {
+  return account.kind === "api-key" ? "Retry now" : "Refresh usage";
+}
 // An account scoped to some BB projects serves their threads only.
 function ScopeBadge({ account }: { account: AccountSummary }) {
   if (account.projects === undefined) return null;
@@ -479,7 +483,7 @@ function AccountRow({
               onSelect={() => onAction("refresh")}
             >
               <Icon name="RotateCcw" />
-              Refresh usage
+              {refreshLabel(account)}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -1664,7 +1668,7 @@ function AccountDialog({
             {account.enabled ? "Disable" : "Enable"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => act("refresh")}>
-            Refresh usage
+            {refreshLabel(account)}
           </Button>
           <span className="flex-1" />
           <Button

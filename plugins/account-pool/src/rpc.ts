@@ -96,7 +96,16 @@ export const accountPoolRpcContract = defineRpcContract({
   },
   "account.refreshUsage": {
     input: z.object({ accountId: z.string().uuid() }).strict(),
-    output: z.object({ account: accountSummarySchema.nullable() }).strict(),
+    // `cleared`: the holds a retry lifted from an API-key account; null for an OAuth one.
+    output: z
+      .object({
+        account: accountSummarySchema.nullable(),
+        cleared: z
+          .object({ accountWide: z.boolean(), models: z.array(z.string()) })
+          .strict()
+          .nullable(),
+      })
+      .strict(),
   },
   // Spends one usage reset; only on an explicit request (bb pool-local account reset).
   "account.claimReset": {
@@ -226,9 +235,10 @@ export function createRpcHandlers(
     "account.setProjects": async ({ accountId, projects }) => ({
       account: await operations.setProjects(accountId, projects),
     }),
-    "account.refreshUsage": async ({ accountId }) => ({
-      account: await operations.refreshUsage(accountId),
-    }),
+    "account.refreshUsage": async ({ accountId }) => {
+      const refreshed = await operations.refreshUsage(accountId);
+      return { account: refreshed?.account ?? null, cleared: refreshed?.cleared ?? null };
+    },
     "account.claimReset": async ({ accountId, kind }) => ({
       outcome: await operations.claimReset(accountId, kind),
     }),

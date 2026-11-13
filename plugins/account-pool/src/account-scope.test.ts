@@ -180,6 +180,46 @@ describe("an account scoped to some projects, behind its own base URL", () => {
     expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway"] });
   });
 
+  it("retries a gateway at once when its holds are cleared by hand: per model and account-wide", async () => {
+    const pool = await makePool();
+    pool.projects.set("s1", EQUISAFE);
+    const fable = "claude-fable-5-2";
+    pool.gatewayReplies.push(() => Response.json({ error: "no such model" }, { status: 400 }));
+    pool.gatewayReplies.push(() => Response.json({ error: "bad request" }, { status: 400 }));
+    expect((await pool.send("s1", fable)).tried).toEqual(["gateway", "Bearer tok-1"]);
+    expect((await pool.send("s1", null)).tried).toEqual(["gateway", "Bearer tok-1"]);
+    expect(await pool.send("s1", fable)).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+    pool.advance(60_000);
+    expect(pool.hub.clearHolds(GATEWAY.id)).toEqual({ accountWide: true, models: [fable] });
+    expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBeNull();
+    expect(await pool.send("s1", fable)).toEqual({ status: 200, tried: ["gateway"] });
+    expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway"] });
+    // Nothing left to clear.
+    expect(pool.hub.clearHolds(GATEWAY.id)).toEqual({ accountWide: false, models: [] });
+  });
+
+  it("leaves a gateway's holds alone on a refresh with no account, and clears only the account asked", async () => {
+    const pool = await makePool();
+    pool.projects.set("s1", EQUISAFE);
+    const fable = "claude-fable-5-2";
+    pool.gatewayReplies.push(() => Response.json({ error: "no such model" }, { status: 400 }));
+    await pool.send("s1", fable);
+    await pool.hub.refreshUsage(undefined, true);
+    await pool.hub.refreshUsage(GATEWAY.id, true);
+    expect(await pool.send("s1", fable)).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+    expect(pool.hub.clearHolds(oauthAccount(1).id)).toEqual({ accountWide: false, models: [] });
+    expect(await pool.send("s1", fable)).toEqual({ status: 200, tried: ["Bearer tok-1"] });
+  });
+
+  it("does not touch an OAuth account's hold when its usage is refreshed", async () => {
+    const pool = await makePool();
+    const first = oauthAccount(1).id;
+    pool.quotas.put({ ...pool.quotas.get(first), heldUntil: NOW + 600_000 });
+    await pool.hub.refreshUsage(first, true);
+    expect(pool.quotas.get(first)?.heldUntil).toBe(NOW + 600_000);
+  });
+
   it("falls back to the normal accounts when the gateway fails", async () => {
     const pool = await makePool();
     pool.projects.set("s1", EQUISAFE);

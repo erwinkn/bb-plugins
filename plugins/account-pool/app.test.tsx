@@ -326,6 +326,22 @@ describe("Account Pool settings", () => {
     },
   );
 
+  it("labels an API-key account's refresh as a retry, and dispatches the same RPC", async () => {
+    const gateway = account({ kind: "api-key", label: "Equisafe gateway" });
+    const slot = render([gateway], {
+      "account.refreshUsage": () => ({ account: null, cleared: null }),
+    });
+    fireEvent.pointerDown(
+      await slot.findByRole("button", { name: "Equisafe gateway actions" }),
+    );
+    expect(slot.queryByText("Refresh usage")).toBeNull();
+    fireEvent.click(await slot.findByText("Retry now"));
+    expect(slot.rpcCalls).toContainEqual({
+      method: "account.refreshUsage",
+      input: { accountId: gateway.id },
+    });
+  });
+
   it("confirms Remove before dispatching its RPC contract", async () => {
     const slot = render([account()], {
       "account.remove": () => ({ removed: true }),
