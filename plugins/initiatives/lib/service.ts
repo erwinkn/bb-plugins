@@ -3352,22 +3352,10 @@ export class ProjectsService {
       throw new ProjectError(
         "A coordinator handover is pending; cancel it or let it finish before archiving.",
       );
-    if (
-      this.store
-        .assignmentsForOverview(projectId, false)
-        .some((a) =>
-          [
-            "dispatching",
-            "queued",
-            "running",
-            "stopped",
-            "idle_no_report",
-            "reported",
-          ].includes(a.state),
-        )
-    )
+    // Reported, stopped, failed and cancelled work is finished: only live work blocks archiving.
+    if (this.store.assignmentsIn(projectId, OPEN_WORK).length)
       throw new ProjectError(
-        "Accept or cancel the remaining assignments before archiving this Initiative.",
+        "Stop the running work (Stop all work) before archiving this Initiative.",
       );
     const archived = this.store.updateProject(projectId, { archivedAt: this.now() });
     return archived;
