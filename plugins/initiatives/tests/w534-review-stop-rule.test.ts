@@ -17,15 +17,15 @@ describe("W534 review stop rule", () => {
     expect(worker).toContain("Once only P3s remain, fix the cheap ones, list the rest in your PR notes (initiative_pr) and report done: no re-review to confirm P3 fixes.");
     expect(worker).toContain("no round cap");
     expect(worker).toContain("whack-a-mole (P1s, or P2s reappearing in the same area round after round) or scope creep");
-    expect(worker).toContain("If your brief asks for an expert second reviewer (Fable 5.2, or Muse Wonder Full: muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Done when the last verdict is clean.");
+    expect(worker).toContain("If your brief asks for an expert second reviewer (Fable 5.2, or Muse Wonder Full: muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Its prompt is the question your brief names. Never pick Fable or another expert yourself, for any round or fallback. Done when the last verdict is clean.");
   });
 
-  it("coordinator: done means verdict correct with no P1 or P2; a second reviewer (Fable 5.2) only for high-risk changes, once, in sequence", () => {
+  it("coordinator: done means verdict correct with no P1 or P2; a rare expert second reviewer, named by its question, once, in sequence", () => {
     const coordinator = flat(DEFAULT_COORDINATOR_INSTRUCTIONS);
     expect(coordinator).toContain("done (clean review: verdict correct, no P1 or P2)");
     expect(coordinator).toContain("Each review round uses one reviewer.");
-    expect(coordinator).toContain("high-risk change (auth, locking, migrations, crypto, concurrency)");
-    expect(coordinator).toContain("Fable 5.2 or Muse Wonder Full, asked once, after the first reviewer has passed the head");
+    expect(coordinator).toContain("An expert second reviewer (Fable 5.2 or Muse Wonder Full) is rare");
+    expect(coordinator).toContain("it is the expert's prompt, asked once, after the first reviewer has passed the head");
     expect(coordinator).toContain("Never require both clean on the same head.");
   });
 

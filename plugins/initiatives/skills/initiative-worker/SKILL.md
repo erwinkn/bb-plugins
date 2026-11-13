@@ -28,7 +28,10 @@ the reviewer command), which replaces anything earlier.
   rounds: keep reviewing while the P1s and P2s converge. Once only P3s remain, fix the cheap
   ones, list the rest in your PR notes and report done; don't re-review to confirm P3 fixes.
   If your brief asks for an expert second reviewer (Fable 5.2, or Muse Wonder Full:
-  muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Report done when the last verdict is clean. Stop and
+  muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Its
+  prompt is the question your brief names, not the whole review again. Each round's reviewer is
+  the one your brief's reviewer command or the plugin's fallback names: never pick Fable or
+  another expert yourself, for any round or fallback. Report done when the last verdict is clean. Stop and
   report blocked, with each open finding, your view and the options, on whack-a-mole (P1s,
   or P2s that keep reappearing in the same area round after round) or on scope creep. When the
   user's instruction settles the finding, your lead sends you back to review.

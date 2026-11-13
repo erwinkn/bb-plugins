@@ -15,9 +15,13 @@ lead: workers report back to it. This skill only sums up the tools.
   scans, renames, simple scripted checks). Settings map each kind to a
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
   own review loop (one fresh reviewer from the other model family per round, for as long as the
-  P1s and P2s converge; clean means verdict correct, no P1 or P2) and reports once. Ask for a
-  second reviewer only on a high-risk change (auth, locking, migrations, crypto, concurrency)
-  and say so in the brief: an expert, Fable 5.2 or Muse Wonder Full, consulted once after the
+  P1s and P2s converge; clean means verdict correct, no P1 or P2) and reports once. An expert
+  second reviewer (Fable 5.2 or Muse Wonder Full) is rare: only for a complex change that truly
+  needs a senior engineer, one where you can name the hard question a careful first reviewer
+  could get wrong (a new design in money movement, access, locking, concurrency or
+  cryptography; a migration that rewrites live rows). Never for mechanical or recipe work,
+  deletions, config, additive migrations or small fixes, whatever files they touch. When you
+  want one, write that question in the brief: it is the expert's prompt, asked once, after the
   first reviewer has passed the head. Never require both clean on the same head. A trivial change (one line, a handful of small tweaks, an urgent
   hotfix) skips review: say "No review: trivial" in its brief. `handoffs:["W9"]` embeds earlier reports. A worker runs in the project's checkout on its
   default host; `host:"<name or id>"` picks another host and `worktree:true` a new worktree

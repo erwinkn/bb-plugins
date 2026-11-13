@@ -70,8 +70,11 @@ An example, in the Equisafe Initiative:
 3. No fixed round cap (Erwin 2026-10-17, in the worker guidance; the plugin counts
    nothing): it keeps reviewing while the P1s and P2s converge. Clean (Erwin 2026-10-20) means the reviewer's verdict is correct with no P1 or P2; P3s left are fixed
    if cheap and listed in the PR notes, with no re-review. One reviewer per round; an expert (Fable 5.2
-   or Muse Wonder Full) is a second one only when the brief asks for it on a high-risk change (auth, locking,
-   migrations, crypto, concurrency), consulted once after the first has passed the head. On
+   or Muse Wonder Full) is a rare second one, only when the brief asks for it on a complex change that needs a
+   senior engineer and names the hard question a careful first reviewer could get wrong (a new design in money
+   movement, access, locking, concurrency or cryptography; a migration that rewrites live rows), never for
+   mechanical work, deletions, config, additive migrations or small fixes. That question is the expert's prompt;
+   it is consulted once after the first has passed the head, and a worker never picks an expert on its own. On
    a clean review the worker sets the PR to `ready-for-erwin` and reports done once. Whack-a-mole (P1s, or P2s that keep reappearing
    in the same area round after round) or scope creep: it reports blocked with the open
    findings and options. The lead sends it back to review (`initiative_message work:true`)
@@ -406,7 +409,7 @@ records that upstream candidate; no issue was filed.
 | Fast worker (small, well-specified)       | Sonnet 5.5 High        |
 | Very fast worker (mechanical)             | Haiku 5.5 High         |
 | Review of Claude work                     | GPT-6 Astra Extra High |
-| Review of GPT work                        | Fable 5.2 Extra High   |
+| Review of GPT work                        | Opus 5.5 High          |
 
 Review substantial milestones. A reviewer remains a reviewer across messages and
 adoption. Each review starts as a fresh, read-only thread with the reviewed

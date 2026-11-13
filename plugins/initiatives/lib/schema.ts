@@ -111,10 +111,11 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
     model: "gpt-6-astra",
     reasoningLevel: "xhigh",
   },
+  // Opus, not Fable: an ordinary review round is general work (Erwin, 2026-11-13).
   reviewOfGpt: {
     providerId: "claude-code",
-    model: "claude-fable-5-2",
-    reasoningLevel: "xhigh",
+    model: "claude-opus-5-5",
+    reasoningLevel: "high",
   },
   // When the reviewer above can't run (usage limit, model unavailable), for either family (W537).
   reviewFallback: {

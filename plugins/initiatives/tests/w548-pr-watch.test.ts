@@ -1559,7 +1559,7 @@ describe("W548 wiring", () => {
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child, background job or watched PR is pending, end your turn; it wakes you.");
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     // W548's text is a legacy default (behind W554's, W555's, W560's, W563's, the Sol-default one, W578's, W579's and W581's): saved unedited, it upgrades to this one.
-    expect(PREVIOUS_DEFAULTS.worker[7]).toContain("the plugin wakes you when your PR changes.");
+    expect(PREVIOUS_DEFAULTS.worker[8]).toContain("the plugin wakes you when your PR changes.");
   });
 });
 
