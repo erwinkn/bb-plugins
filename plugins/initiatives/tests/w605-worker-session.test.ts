@@ -143,7 +143,7 @@ describe("W605 worker sessions leave out unused tools and skills", () => {
   });
 
   it("W617: a qualified MCP tool name names its server", () => {
-    const denied = (text: string) => workerClaudeSettings(text, "", null).deniedMcpServers?.map((s) => s.serverName) ?? [];
+    const denied = (text: string) => workerClaudeSettings(text, "").deniedMcpServers?.map((s) => s.serverName) ?? [];
     expect(denied("Query mcp__axiom__queryDataset, then mcp__sentry__search_issues.")).toEqual(["equisafe-dev"]);
     expect(denied("Publish with mcp__equisafe-dev__create_artifact.")).toEqual(["axiom", "sentry"]);
     expect(denied("Not axiomatic, nor sentry-like.")).toEqual(["axiom", "equisafe-dev", "sentry"]);

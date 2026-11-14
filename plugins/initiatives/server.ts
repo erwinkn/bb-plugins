@@ -54,7 +54,6 @@ import { CHILD_PAGE, ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
 import { FALLBACK_ROLE, ReviewerFallback } from "./lib/reviewer-fallback";
 import { CHECKOUT_INSTRUCTIONS, CHECKOUT_READ_MS, MAX_WORKER_ANCESTORS, WORKER_SETTINGS_ENV, workerClaudeSettings } from "./lib/worker-session";
-import { installBatchingNudge } from "./lib/batching-nudge";
 import { withProfileDefaults } from "./lib/settings";
 import {
   buildOverview,
@@ -1022,25 +1021,16 @@ export default function plugin(bb: BbPluginApi) {
       clearTimeout(timer);
     }
   };
-  // W615: BB's primary host runs this server, so only there do the hook's node and script exist.
-  let primaryHostId: string | null | undefined;
-  bb.providers.experimental_contributeEnv("claude-code", async ({ threadId, hostId }) => {
+  bb.providers.experimental_contributeEnv("claude-code", async ({ threadId }) => {
     try {
       const brief = await workerBrief(threadId);
       if (brief === null) return [];
-      let nudge: string | null = null;
-      try {
-        primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
-        if (hostId === primaryHostId) nudge = installBatchingNudge(join(dirname(db.name), "hooks"));
-      } catch (error) {
-        bb.log.warn(`W615: no batching nudge for ${threadId}: ${errorMessage(error)}`);
-      }
       const instructions = await checkoutInstructions(threadId).catch((error) => {
         bb.log.warn(`W617: kept the optional servers and skills for ${threadId}: ${errorMessage(error)}`);
         return null;
       });
-      const settings = workerClaudeSettings(brief, instructions, nudge);
-      return [{ name: WORKER_SETTINGS_ENV, value: JSON.stringify(settings), reason: "Initiative worker session: leaves out the tools, skills and MCP servers workers don't use (W605, W617), nudges it to batch reads (W615)" }];
+      const settings = workerClaudeSettings(brief, instructions);
+      return [{ name: WORKER_SETTINGS_ENV, value: JSON.stringify(settings), reason: "Initiative worker session: leaves out the tools, skills and MCP servers workers don't use (W605, W617)" }];
     } catch (error) {
       bb.log.warn(`W605: kept the full session for ${threadId}: ${errorMessage(error)}`);
       return [];

@@ -103,10 +103,9 @@ const BRIEF_MCP_SERVERS: Record<string, RegExp> = {
  * The settings for a worker session with this brief and checkout instructions; `checkout` is
  * null when they could not be read, which keeps every optional server and skill they could name.
  * workflow-authoring goes with the Workflow tool: hidden alone, Claude Code inlines that skill
- * into Workflow's description (+4.9k tokens). W615: with a command, the hook that nudges a
- * worker to batch its reads (lib/batching-nudge.ts) after each call that may read.
+ * into Workflow's description (+4.9k tokens).
  */
-export function workerClaudeSettings(brief: string, checkout: string | null, nudgeCommand: string | null) {
+export function workerClaudeSettings(brief: string, checkout: string | null) {
   const text = checkout === null ? null : `${brief}\n${checkout}`;
   const unnamed = (optional: Record<string, RegExp>, text: string | null) =>
     text === null ? [] : Object.keys(optional).filter((name) => !optional[name]!.test(text));
@@ -118,9 +117,6 @@ export function workerClaudeSettings(brief: string, checkout: string | null, nud
       [...HIDDEN_SKILLS, "workflow-authoring", ...unnamed(OPTIONAL_SKILLS, text)].map((name) => [name, "user-invocable-only"]),
     ),
     ...(deniedMcpServers.length ? { deniedMcpServers } : {}),
-    ...(nudgeCommand === null
-      ? {}
-      : { hooks: { PostToolUse: [{ matcher: "Read|Grep|Glob|Bash", hooks: [{ type: "command", command: nudgeCommand, timeout: 5 }] }] } }),
   };
 }
 
