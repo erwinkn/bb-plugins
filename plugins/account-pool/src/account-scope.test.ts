@@ -58,6 +58,9 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
   const gatewayReplies: Array<() => Response> = [];
   // What the Anthropic upstream answers next; 200 when empty.
   const upstreamReplies: Array<() => Response> = [];
+  // Every account-level refusal the hub reported, as [account label, message].
+  const rejections: Array<[string, string]> = [];
+  const last = { body: "", retryAfter: null as string | null };
   const hub = createHub({
     accounts: {
       list: async () => accounts.map((account) => ({ ...account })),
@@ -86,6 +89,7 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
     usageUrl: "https://api.test/usage",
     profileUrl: "https://api.test/profile",
     sessionProject: (session) => projects.get(session) ?? null,
+    onAccountRejected: (account, message) => rejections.push([account.label, message]),
     fetch: async (input, init) => {
       const url = String(input);
       calls.push({ url, headers: new Headers(init?.headers) });
@@ -116,7 +120,8 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
       }),
       "claude",
     );
-    await response.text();
+    last.body = await response.text();
+    last.retryAfter = response.headers.get("retry-after");
     const tried = calls
       .slice(before)
       .filter(({ url }) => url.endsWith("/v1/messages"))
@@ -131,6 +136,8 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
     projects,
     gatewayReplies,
     upstreamReplies,
+    rejections,
+    last,
     send,
     advance: (ms: number) => {
       clock += ms;
@@ -321,9 +328,248 @@ describe("an account scoped to some projects, behind its own base URL", () => {
       const id = oauthAccount(index).id;
       pool.quotas.put({ ...pool.quotas.get(id), heldUntil: NOW + 600_000 });
     }
-    expect(await pool.hub.nextEligibleAt("claude", "opus")).toBe(NOW + 600_000);
+    expect(await pool.hub.nextEligibleAt("claude", "claude-opus-5-5")).toEqual({ at: NOW + 600_000, probing: false });
+    expect(await pool.hub.nextEligibleAt("claude", "claude-opus-5-5", "proj_other")).toEqual({
+      at: NOW + 600_000,
+      probing: false,
+    });
+    // For its own project's threads, it is.
+    expect((await pool.hub.nextEligibleAt("claude", "claude-opus-5-5", EQUISAFE))?.at).toBeLessThanOrEqual(NOW);
     pool.projects.set("s1", EQUISAFE);
     expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway"] });
     expect((await pool.send("other")).status).toBe(429);
+  });
+
+  describe("a refusal about the account (terms to accept), the 01:08Z night of 2026-11-14", () => {
+    const TERMS =
+      "We've updated our Consumer Terms and Privacy Policy. You'll need to accept them in claude.ai with the email in /status to continue.";
+    const terms = () =>
+      Response.json(
+        {
+          type: "error",
+          error: { type: "invalid_request_error", message: TERMS },
+        },
+        { status: 400 },
+      );
+    const OPUS = "claude-opus-5-5";
+    const MINUTE = 60_000;
+    // Both OAuth accounts out until their reset, two hours away: past their limit (a quota 429, as
+    // on the night), or held by a 429's Retry-After.
+    const exhaustOAuth = (
+      pool: Awaited<ReturnType<typeof makePool>>,
+      how: "limit" | "held" = "limit",
+    ) => {
+      for (const index of [1, 2]) {
+        const id = oauthAccount(index).id;
+        pool.quotas.put({
+          ...pool.quotas.get(id),
+          ...(how === "limit"
+            ? {
+                rejectedUntil: NOW + 120 * MINUTE,
+                rejectedAt: NOW,
+                rejectedLimit: null,
+              }
+            : { heldUntil: NOW + 120 * MINUTE }),
+        });
+      }
+    };
+
+    it("holds the whole gateway, persisted, fails over like a 429 and reports the message", async () => {
+      const pool = await makePool();
+      pool.projects.set("s1", EQUISAFE);
+      pool.gatewayReplies.push(terms);
+      expect(await pool.send("s1")).toEqual({
+        status: 200,
+        tried: ["gateway", "Bearer tok-1"],
+      });
+      expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBe(NOW + 15 * MINUTE);
+      expect(pool.rejections).toEqual([["Equisafe gateway", TERMS]]);
+      // Every model sits it out, not just the one asked.
+      expect(await pool.send("s1", "claude-sonnet-5-5")).toEqual({
+        status: 200,
+        tried: ["Bearer tok-1"],
+      });
+      expect(await pool.send("s1", null)).toEqual({
+        status: 200,
+        tried: ["Bearer tok-1"],
+      });
+    });
+
+    it.each(["limit", "held"] as const)(
+      "never hands the refusal to the client when no other account can serve (OAuth %s): it answers 429 until the hold ends",
+      async (how) => {
+        const pool = await makePool();
+        // Another thread made oauth 1 the provider's active account, which the request then tries.
+        expect((await pool.send("other")).tried).toEqual(["Bearer tok-1"]);
+        exhaustOAuth(pool, how);
+        pool.projects.set("s1", EQUISAFE);
+        pool.gatewayReplies.push(terms);
+        expect(await pool.send("s1")).toEqual({
+          status: 429,
+          tried: ["gateway"],
+        });
+        if (how === "limit") expect(pool.last.body).toContain("Consumer Terms");
+        // The session is told to come back at the gateway's hold end, not at the OAuth reset.
+        expect(pool.hub.sessionRetryAt("claude", "s1")).toBe(NOW + 15 * MINUTE);
+      },
+    );
+
+    it("retries a waiting thread when the gateway's hold ends, not at the OAuth reset", async () => {
+      const pool = await makePool();
+      pool.projects.set("s1", EQUISAFE);
+      pool.gatewayReplies.push(terms);
+      await pool.send("s1");
+      exhaustOAuth(pool);
+      pool.advance(5 * MINUTE);
+      // The gateway is held and not tried; the answer names its hold's end, ten minutes away.
+      expect(await pool.send("s1")).toEqual({ status: 429, tried: [] });
+      expect(pool.last.retryAfter).not.toBeNull();
+      expect(pool.hub.sessionRetryAt("claude", "s1")).toBe(NOW + 15 * MINUTE);
+      expect(await pool.hub.nextEligibleAt("claude", OPUS, EQUISAFE)).toEqual({
+        at: NOW + 15 * MINUTE,
+        probing: true,
+      });
+      // Another project's thread cannot use the gateway: it waits for the OAuth reset.
+      expect(
+        await pool.hub.nextEligibleAt("claude", OPUS, "proj_other"),
+      ).toEqual({
+        at: NOW + 120 * MINUTE,
+        probing: false,
+      });
+    });
+
+    it("re-holds the gateway when the probe at the hold's end fails, and names the next hold's end", async () => {
+      const pool = await makePool();
+      exhaustOAuth(pool);
+      pool.projects.set("s1", EQUISAFE);
+      pool.gatewayReplies.push(terms, terms);
+      await pool.send("s1");
+      pool.advance(15 * MINUTE + 1);
+      expect(await pool.send("s1")).toEqual({
+        status: 429,
+        tried: ["gateway"],
+      });
+      expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBe(
+        NOW + 30 * MINUTE + 1,
+      );
+      expect(pool.hub.sessionRetryAt("claude", "s1")).toBe(
+        NOW + 30 * MINUTE + 1,
+      );
+      expect(await pool.hub.nextEligibleAt("claude", OPUS, EQUISAFE)).toEqual({
+        at: NOW + 30 * MINUTE + 1,
+        probing: true,
+      });
+      // The hub reports each refusal; telling a person once per message is the alerts' job.
+      expect(pool.rejections).toHaveLength(2);
+      // Accepted upstream: the next probe serves.
+      pool.advance(15 * MINUTE);
+      expect(await pool.send("s1")).toEqual({
+        status: 200,
+        tried: ["gateway"],
+      });
+    });
+
+    it("tells a session pinned to a held OAuth account to come back when the gateway's new hold ends", async () => {
+      const pool = await makePool();
+      pool.projects.set("s1", EQUISAFE);
+      pool.gatewayReplies.push(terms);
+      // The gateway refuses; the session falls back to oauth 1 and is pinned there.
+      expect((await pool.send("s1")).tried).toEqual(["gateway", "Bearer tok-1"]);
+      exhaustOAuth(pool, "held");
+      pool.advance(15 * MINUTE);
+      pool.gatewayReplies.push(terms);
+      expect(await pool.send("s1")).toEqual({ status: 429, tried: ["gateway"] });
+      // Not the pin's 105 minutes left: the gateway may serve again in 15.
+      expect(pool.hub.sessionRetryAt("claude", "s1")).toBe(NOW + 30 * MINUTE);
+    });
+
+    it.each([
+      [401, "authentication_error", "invalid x-api-key"],
+      [403, "permission_error", TERMS],
+    ])(
+      "holds a gateway refusing with a %i about the account, instead of marking it in error for good",
+      async (status, type, message) => {
+        const pool = await makePool();
+        exhaustOAuth(pool);
+        pool.projects.set("s1", EQUISAFE);
+        pool.gatewayReplies.push(() =>
+          Response.json({ type: "error", error: { type, message } }, { status }),
+        );
+        expect(await pool.send("s1")).toEqual({ status: 429, tried: ["gateway"] });
+        expect(pool.quotas.get(GATEWAY.id)).toMatchObject({
+          error: null,
+          heldUntil: NOW + 15 * MINUTE,
+        });
+        expect(pool.rejections).toEqual([["Equisafe gateway", message]]);
+        expect(pool.hub.sessionRetryAt("claude", "s1")).toBe(NOW + 15 * MINUTE);
+      },
+    );
+
+    it("leaves a request-level refusal on the per-model path, out of the retry time for that model", async () => {
+      const pool = await makePool();
+      exhaustOAuth(pool);
+      pool.projects.set("s1", EQUISAFE);
+      const fable = "claude-fable-5-2";
+      pool.gatewayReplies.push(() =>
+        Response.json(
+          { error: `unknown provider for model ${fable}` },
+          { status: 400 },
+        ),
+      );
+      expect(await pool.send("s1", fable)).toEqual({
+        status: 400,
+        tried: ["gateway"],
+      });
+      expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBeNull();
+      expect(pool.rejections).toEqual([]);
+      // A probe would only repeat the refusal: a Fable thread waits for the OAuth reset.
+      expect(await pool.hub.nextEligibleAt("claude", fable, EQUISAFE)).toEqual({
+        at: NOW + 120 * MINUTE,
+        probing: false,
+      });
+      expect(
+        (await pool.hub.nextEligibleAt("claude", OPUS, EQUISAFE))?.at,
+      ).toBeLessThanOrEqual(NOW);
+    });
+
+    it("holds an unscoped API-key account the same way, and still hands it its request-level 400s", async () => {
+      const { projects: _projects, ...unscoped } = GATEWAY;
+      const pool = await makePool(unscoped);
+      const badRequest = {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "max_tokens: field required",
+        },
+      };
+      pool.gatewayReplies.push(() =>
+        Response.json(badRequest, { status: 400 }),
+      );
+      expect(await pool.send("s1")).toEqual({
+        status: 400,
+        tried: ["gateway"],
+      });
+      expect(JSON.parse(pool.last.body)).toEqual(badRequest);
+      expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBeNull();
+      pool.gatewayReplies.push(terms);
+      expect(await pool.send("s2")).toEqual({
+        status: 200,
+        tried: ["gateway", "Bearer tok-1"],
+      });
+      expect(pool.quotas.get(GATEWAY.id)?.heldUntil).toBe(NOW + 15 * MINUTE);
+      expect(pool.rejections).toEqual([["Equisafe gateway", TERMS]]);
+    });
+
+    it("hands the same refusal from an OAuth account to the client, as before", async () => {
+      const pool = await makePool();
+      pool.upstreamReplies.push(terms);
+      expect(await pool.send("other")).toEqual({
+        status: 400,
+        tried: ["Bearer tok-1"],
+      });
+      expect(pool.last.body).toContain("Consumer Terms");
+      expect(pool.quotas.get(oauthAccount(1).id)?.heldUntil).toBeNull();
+      expect(pool.rejections).toEqual([]);
+    });
   });
 });

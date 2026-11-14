@@ -58,7 +58,33 @@ memory, so a restart forgets it. A gateway can thus be added before it serves
 every model. To retry a held gateway at once, run `bb pool-local account refresh <id>`
 or choose "Retry now" in its settings row: it clears the model holds and any
 account-wide hold, and the next request tries the gateway again. An API-key account has no
-quota readout, so it counts as unlimited until a 429. Scoped accounts are
+quota readout, so it counts as unlimited until a 429.
+
+A refusal about the account rather than the request is another matter. When an
+API-key account, scoped or not, answers a 4xx whose message is about the
+account (any 401 or 402; an `authentication_error` or `billing_error`; terms or
+a policy to accept, a credit balance too low, a quota or spending limit reached,
+a key or organization disabled or revoked; `src/account-rejection.ts`), the
+whole account is held 15 minutes, persisted, and the request fails over like on
+a 429; it never reaches the client as its answer. A 401 thus no longer marks an
+API-key account in error for good: it is probed again every 15 minutes. The
+classifier matches phrases, never a bare word, so a malformed request naming a
+field `payment` stays a request-level refusal. With no other account to serve,
+the client gets a 429 whose `Retry-After` is the earliest moment any of its
+accounts may serve, the gateway's hold end included; a session pinned to a held
+OAuth account is told the earlier of its pin's and the gateway's hold end. The Pooler's turn retry
+uses the same time, counting the scoped accounts of the thread's project: the
+retry probes the gateway, and a refusal again holds it 15 more minutes and
+reschedules. While a held API-key account is among them, a thread may retry up
+to 30 times instead of 5, so a few failed probes do not spend the budget the
+wait for an OAuth reset needs. A request-level refusal from a scoped account
+(no such model) keeps the per-model hold above and does not set a retry time
+for that model: a probe would only repeat it. The first time an account gives
+a refusal message, the Pooler logs a warning and shows a toast in every open BB
+window, until dismissed; the messages already shown are kept per account in the
+plugin's store, so a reload does not repeat them. BB offers a plugin server no
+notification of its own (see "Plugin notifications" under the repository's
+desired upstream changes). Scoped accounts are
 never counted as capacity the rest of the pool waits for, serve no isolated
 (advisor) traffic and do not hold back automatic resets.
 

@@ -1,5 +1,5 @@
 import type { PluginTurnFailedEvent } from "@get-bb/plugin-sdk";
-import type { ModelFamily, PoolProvider } from "./contracts.js";
+import type { PoolProvider } from "./contracts.js";
 import { modelFamily } from "./quota.js";
 
 // Retries for turns that fail on a Pooler 429. BB's own provider-retry cannot schedule them: Claude
@@ -9,6 +9,11 @@ import { modelFamily } from "./quota.js";
 
 // The same attempt cap, reset buffer and jitter as BB's provider-retry.
 const MAX_RETRY_ATTEMPTS = 5;
+// The cap while a held API-key account (a gateway) is among the thread's accounts: its hold ends
+// every 15 minutes while it keeps refusing, and each retry there probes it, so a few failed probes
+// must not use up the budget the wait for an OAuth reset needs. 30 attempts is about 7 hours of
+// probes, past the default maximum wait.
+const MAX_PROBE_ATTEMPTS = 30;
 const RESET_BUFFER_MS = 15_000;
 const RESET_JITTER_MS = 30_000;
 // When an account can already serve (it freed up between the 429 and the failure), a short pause
@@ -86,13 +91,19 @@ export interface PoolerRetryDeps {
   now: () => number;
   random: () => number;
   maxWaitMs: () => number;
-  providerOf: (threadId: string) => Promise<string>;
+  // The thread's provider and BB project (an account scoped to projects serves only theirs).
+  threadOf: (threadId: string) => Promise<{ providerId: string; projectId: string | null }>;
   // Whether the Pooler routes this provider's sessions for the thread: the same test that decides
   // whether it contributes its URL and token to the thread's environment.
   routes: (provider: PoolProvider, threadId: string) => Promise<boolean>;
   // The model the failed turn ran on, or null when its request is not found.
   turnModel: (threadId: string, requestId: string) => Promise<string | null>;
-  nextEligibleAt: (provider: PoolProvider, family: ModelFamily) => Promise<number | null>;
+  // When an account that may serve the thread can next serve the model (hub.nextEligibleAt).
+  nextEligibleAt: (
+    provider: PoolProvider,
+    model: string,
+    project: string | null,
+  ) => Promise<{ at: number; probing: boolean } | null>;
   // When the hub's latest 429 told the thread's session to come back, or null when it answered
   // none recently (or the session is unknown). A session pinned to a held account waits for that
   // account even while another one could serve.
@@ -122,11 +133,11 @@ export async function handlePoolerTurnFailed(
       event.errorInfo?.providerCode !== "usageLimitExceeded"
     )
       return decline("not a 429 or a usage limit");
-    if (event.attemptNumber >= MAX_RETRY_ATTEMPTS)
-      return decline(`attempt ${MAX_RETRY_ATTEMPTS} reached`);
+    if (event.attemptNumber >= MAX_PROBE_ATTEMPTS)
+      return decline(`attempt ${MAX_PROBE_ATTEMPTS} reached`);
     const maxWaitMs = deps.maxWaitMs();
     if (maxWaitMs === 0) return decline("automatic retries are off");
-    const providerId = await deps.providerOf(event.threadId);
+    const { providerId, projectId } = await deps.threadOf(event.threadId);
     const provider = POOLED_PROVIDERS[providerId];
     if (provider === undefined)
       return decline(`provider ${providerId} is not pooled`);
@@ -135,7 +146,10 @@ export async function handlePoolerTurnFailed(
     const model = await deps.turnModel(event.threadId, event.requestId);
     if (model === null) return decline("the failed turn's model is unknown");
     const family = modelFamily(model);
-    const nextEligibleAt = await deps.nextEligibleAt(provider, family);
+    const next = await deps.nextEligibleAt(provider, model, projectId);
+    if (next?.probing !== true && event.attemptNumber >= MAX_RETRY_ATTEMPTS)
+      return decline(`attempt ${MAX_RETRY_ATTEMPTS} reached`);
+    const nextEligibleAt = next?.at ?? null;
     const sessionRetryAt =
       nextEligibleAt === null ? null : await deps.sessionRetryAt(provider, event.threadId);
     const now = deps.now();

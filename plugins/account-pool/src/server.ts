@@ -45,6 +45,7 @@ import { ClaudeOAuthLogin } from "./oauth-login.js";
 import { CodexDeviceLogin } from "./codex-device-login.js";
 import {
   ACCOUNT_POOL_ACCOUNTS_CHANGED,
+  ACCOUNT_POOL_ACCOUNT_REJECTED,
   ACCOUNT_POOL_CONFIG_CHANGED,
 } from "./realtime.js";
 import {
@@ -84,6 +85,7 @@ import { applyRelink, planRelink } from "./usage-relink.js";
 import { queryUsageQuota, runUsageRollup, UsageRollup } from "./usage-rollup.js";
 import { parseOrThrow } from "./validation.js";
 import { ResetClaimStore } from "./usage-resets.js";
+import { AccountAlerts } from "./account-alerts.js";
 
 export interface AccountPoolPluginOptions {
   fetch?: typeof fetch;
@@ -499,6 +501,18 @@ export function createAccountPoolPlugin(
       });
     }
     const resetClaims = new ResetClaimStore(bb.storage.kv);
+    // BB gives a plugin server no way to notify a person directly: the alert goes to the log and to
+    // every open BB window, where the app shows it as a toast that stays until dismissed.
+    const accountAlerts = new AccountAlerts(
+      bb.storage.kv,
+      (alert) => {
+        bb.log.warn(
+          `Account Pooler holds ${alert.label} until someone acts upstream: ${alert.message}`,
+        );
+        bb.realtime.publish(ACCOUNT_POOL_ACCOUNT_REJECTED, alert);
+      },
+      (message) => bb.log.warn(message),
+    );
     const hub = createHub({
       accounts,
       quotas,
@@ -531,6 +545,7 @@ export function createAccountPoolPlugin(
       warming: warmer,
       ledger,
       sessionProject,
+      onAccountRejected: (account, message) => void accountAlerts.rejected(account, message),
     });
     hubRef = hub;
     if (transport !== null) {
@@ -685,9 +700,13 @@ export function createAccountPoolPlugin(
           now,
           random: Math.random,
           maxWaitMs: () => retryMaximumWaitMs,
-          providerOf: async (threadId) =>
-            (await bb.sdk.threads.get({ threadId, signal: AbortSignal.timeout(LINK_READ_TIMEOUT_MS) }))
-              .providerId,
+          threadOf: async (threadId) => {
+            const thread = await bb.sdk.threads.get({
+              threadId,
+              signal: AbortSignal.timeout(LINK_READ_TIMEOUT_MS),
+            });
+            return { providerId: thread.providerId, projectId: thread.projectId };
+          },
           routes: routesThread,
           turnModel: async (threadId, requestId) => {
             const events = await bb.sdk.threads.events.list({
@@ -702,7 +721,7 @@ export function createAccountPoolPlugin(
                 return event.data.execution.model;
             return null;
           },
-          nextEligibleAt: (provider, family) => hub.nextEligibleAt(provider, family),
+          nextEligibleAt: (provider, model, project) => hub.nextEligibleAt(provider, model, project),
           sessionRetryAt: async (provider, threadId) => {
             try {
               const session = await threadIdentity(

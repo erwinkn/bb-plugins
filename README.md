@@ -313,6 +313,19 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Plugin notifications (2026-11-14)
+
+A plugin server has no way to notify a person: the SDK exposes no
+`notifications` area, and the built-in Push notifications plugin sends only
+core's own events. The Account Pooler needs one when a gateway refuses requests
+for a reason only a person can fix (terms to accept, billing): on 2026-11-14 it
+held the Equisafe gateway for hours with nobody told. It now publishes a
+realtime event that its app overlay shows as a toast, which only reaches an
+open BB window and is lost otherwise. Proposed core change: a server-side
+`bb.notifications.send({ title, body, severity, dedupeKey? })` that goes through
+the push channels (web, desktop, mobile) and the notifications list. Status:
+recorded here; no upstream issue filed.
+
 ### Parent system notices bypass message admission (2026-11-02)
 
 W566 confirmed that core child-completed notices start turns without running

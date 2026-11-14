@@ -56,9 +56,11 @@ import {
   governingWeeklyResetAt,
   isQuotaExhausted,
   isSharedQuotaExhausted,
+  modelFamily,
   retryAfterMilliseconds,
   usableAt,
 } from "./quota.js";
+import { accountRejection } from "./account-rejection.js";
 import type {
   AccountBinding,
   AccountStore,
@@ -94,9 +96,11 @@ const AUTO_RESET_MARGIN = 0.03;
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
-// How long a scoped account sits out after it rejects a request (a gateway with no model for it):
-// for that model only when the request names one, else for every model.
-const SCOPED_REJECTION_HOLD_MS = 15 * 60_000;
+// How long a gateway sits out after it refuses a request, before the next request probes it: a
+// scoped account that rejects a request (a gateway with no model for it) sits out that model only
+// when the request names one, else every model; an API-key account that refuses for a reason about
+// the account itself (accountRejection: terms to accept, billing) sits out every model.
+const REJECTION_HOLD_MS = 15 * 60_000;
 // A declared content-length up to this is trusted to size the request body buffer.
 const MAX_PREALLOCATED_BODY_BYTES = 32 * 1024 * 1024;
 const ADVISOR_MAX_BODY_BYTES = 256 * 1024;
@@ -143,6 +147,9 @@ interface HubOptions {
   // The BB project of a session's thread, from what is cached now; null when not known yet. It
   // never waits: an unknown project goes to the unscoped accounts only.
   sessionProject: (sessionId: string) => string | null;
+  // An API-key account refused a request for a reason about the account (terms to accept, billing)
+  // and is held: someone has to act. Called on every such refusal; it must not throw.
+  onAccountRejected: (account: Account, message: string) => void;
 }
 
 // The hub's view of the cache warmer: it reports native Claude Messages traffic, and the session of
@@ -1131,13 +1138,8 @@ export class AccountPoolHub {
     const sessionId = sessionIdOf(parsed.affinityId);
     const project = sessionId === null ? null : this.options.sessionProject(sessionId);
     const routeNow = this.options.now();
-    const accounts = (await this.options.accounts.list()).filter(
-      (account) =>
-        account.provider === adapter.provider &&
-        (account.projects === undefined ||
-          (project !== null &&
-            account.projects.includes(project) &&
-            (this.modelHolds.get(modelHoldKey(account.id, parsed.model)) ?? 0) <= routeNow)),
+    const accounts = (await this.options.accounts.list()).filter((account) =>
+      this.mayServe(account, adapter.provider, project, parsed.model, routeNow),
     );
     const candidateIds = new Set(accounts.map((account) => account.id));
     const family = parsed.family;
@@ -1206,12 +1208,13 @@ export class AccountPoolHub {
                 "The current Account Pooler account is temporarily rate limited.",
               headers: { "retry-after": String(Math.ceil(heldMs / 1_000)) },
             };
+            // The session waits for its pin, unless a gateway that serves it frees up first.
             if (selected.keepAffinity)
-              return adapter.errorResponse(
-                failure.status,
-                failure.message,
-                failure.headers,
-              );
+              return adapter.errorResponse(failure.status, failure.message, {
+                "retry-after": String(
+                  Math.ceil(this.pinnedWaitMs(accounts, family, heldMs) / 1_000),
+                ),
+              });
             attempted.add(selected.account.id);
             previousAccountId = selected.account.id;
             continue;
@@ -1349,6 +1352,35 @@ export class AccountPoolHub {
               break;
             }
           }
+          // A refusal from an API-key account (a gateway) about the account itself (terms to accept,
+          // a key revoked, billing: accountRejection) holds the whole account, persisted, and the
+          // request fails over like on a 429; a thread left with no account waits for the hold's
+          // end (nextEligibleAt), when the next request probes the gateway again. It comes before
+          // the 401/403 handling below, which would mark the account in error for good.
+          if (
+            secret.kind === "api-key" &&
+            response.status >= 400 &&
+            response.status < 500 &&
+            response.status !== 429
+          ) {
+            const rejection = accountRejection(response.status, await peekDetail(response));
+            signal.throwIfAborted();
+            if (rejection !== null) {
+              await this.discardUpstream(upstream, false);
+              this.options.quotas.put({ ...observed, heldUntil: this.options.now() + REJECTION_HOLD_MS });
+              this.options.logReset(
+                `Account Pooler holds ${selected.account.label} for 15 minutes, until a request probes it again: HTTP ${response.status} ${rejection.slice(0, 300)}`,
+                "info",
+              );
+              this.options.onAccountRejected(selected.account, rejection);
+              failure = {
+                status: 429,
+                message: `${selected.account.label} refused the request: ${rejection}`,
+                headers: { "retry-after": String(REJECTION_HOLD_MS / 1_000) },
+              };
+              break;
+            }
+          }
           if (
             response.status === 401 ||
             response.status === 403 ||
@@ -1416,13 +1448,13 @@ export class AccountPoolHub {
             }
             break;
           }
-          // A scoped account (a gateway) that rejects a request with a status not handled above (400,
-          // 404, 422: it may serve no models yet) is not the client's answer: the thread falls back to
-          // the unscoped accounts, and the scoped one sits out a while, so no request pays its round trip.
+          // Any other refusal from a scoped account (400, 404, 422: no such model there) is not the
+          // client's answer either: that model sits out, and the thread falls back to the unscoped
+          // accounts. An unscoped account's request-level refusal goes to the client as before.
           if (!response.ok && response.status !== 429 && selected.account.projects !== undefined) {
             const detail = await this.discardUpstream(upstream, true);
             signal.throwIfAborted();
-            const heldUntil = this.options.now() + SCOPED_REJECTION_HOLD_MS;
+            const heldUntil = this.options.now() + REJECTION_HOLD_MS;
             if (parsed.model) this.modelHolds.set(modelHoldKey(selected.account.id, parsed.model), heldUntil);
             else this.options.quotas.put({ ...observed, heldUntil });
             this.options.logReset(
@@ -1462,8 +1494,10 @@ export class AccountPoolHub {
         }
       }
       signal.throwIfAborted();
-      return failure === null
-        ? this.noEligibleResponse(accounts, family, adapter)
+      // A 429 names when the earliest of the accounts may serve again (a gateway's hold included),
+      // not when the last one tried does: the session's retry waits that long (sessionRetryAt).
+      return failure === null || failure.status === 429
+        ? this.noEligibleResponse(accounts, family, adapter, failure?.message)
         : adapter.errorResponse(
             failure.status,
             failure.message,
@@ -1699,7 +1733,7 @@ export class AccountPoolHub {
 
   private async discardUpstream(
     upstream: UpstreamResult,
-    readDetail: boolean,
+    withDetail: boolean,
   ): Promise<string> {
     const reader = upstream.response.body?.getReader();
     if (reader === undefined) {
@@ -1711,27 +1745,9 @@ export class AccountPoolHub {
     const deadline = new Promise<string>((resolve) => {
       timeout = setTimeout(() => resolve(""), FAILURE_DISPOSAL_TIMEOUT_MS);
     });
-    let detail = "";
     try {
-      if (!readDetail) return detail;
-      return await Promise.race([
-        (async () => {
-          const decoder = new TextDecoder();
-          let bytes = 0;
-          while (bytes < MAX_FAILURE_DETAIL_BYTES) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            const part = chunk.value.subarray(
-              0,
-              MAX_FAILURE_DETAIL_BYTES - bytes,
-            );
-            bytes += part.byteLength;
-            detail += decoder.decode(part, { stream: true });
-          }
-          return (detail + decoder.decode()).trim();
-        })().catch(() => detail.trim()),
-        deadline,
-      ]);
+      if (!withDetail) return "";
+      return await Promise.race([readDetail(reader), deadline]);
     } finally {
       upstream.controller.abort();
       await Promise.race([reader.cancel().catch(() => undefined), deadline]);
@@ -2282,17 +2298,62 @@ export class AccountPoolHub {
     });
   }
 
-  // When an enabled account of the provider can next serve the family: at or before now when one
-  // can already, null when none can and no reset is known (no enabled account, or only accounts in
-  // error or with an exhausted window of unknown reset).
+  // When an enabled account that may serve a thread of `project` can next serve `model`: at or
+  // before now when one can already; null when none can and no reset is known (no enabled account,
+  // or only accounts in error or with an exhausted window of unknown reset). A held account counts
+  // from its hold's end: a gateway held after a refusal is probed then. `probing` says one of those
+  // is an API-key account, whose hold ends every 15 minutes while the refusal lasts: a retry there
+  // may fail again, so the caller gives such waits a larger attempt budget. A scoped account counts
+  // only for its projects, and not for a model it rejected (a request-level refusal, which a probe
+  // would only repeat).
   async nextEligibleAt(
     provider: PoolProvider,
-    family: ModelFamily,
-  ): Promise<number | null> {
-    const accounts = (await this.options.accounts.list()).filter(
-      (account) => account.provider === provider && account.projects === undefined,
+    model: string,
+    project: string | null = null,
+  ): Promise<{ at: number; probing: boolean } | null> {
+    const now = this.options.now();
+    const accounts = (await this.options.accounts.list()).filter((account) =>
+      this.mayServe(account, provider, project, model, now),
     );
-    return this.usableTimes(accounts, family, this.options.now())[0] ?? null;
+    const at = this.usableTimes(accounts, modelFamily(model), now)[0];
+    if (at === undefined) return null;
+    const probing = accounts.some((account) => {
+      if (account.kind !== "api-key" || !account.enabled) return false;
+      const quota = this.options.quotas.get(account.id);
+      return quota.error === null && (quota.heldUntil ?? 0) > now;
+    });
+    return { at, probing };
+  }
+
+  // Whether the account may take a request of this provider, from a thread of `project` (null:
+  // unknown), for `model`: any unscoped account; a scoped one only for its projects, and not for a
+  // model it rejected in the last 15 minutes.
+  private mayServe(
+    account: Account,
+    provider: PoolProvider,
+    project: string | null,
+    model: string | null,
+    now: number,
+  ): boolean {
+    if (account.provider !== provider) return false;
+    if (account.projects === undefined) return true;
+    return (
+      project !== null &&
+      account.projects.includes(project) &&
+      (this.modelHolds.get(modelHoldKey(account.id, model)) ?? 0) <= now
+    );
+  }
+
+  // How long a session pinned to an account held `heldMs` more waits: until the pin frees up, or a
+  // gateway serving the session (a scoped account among `accounts`) does, if sooner.
+  private pinnedWaitMs(accounts: readonly Account[], family: ModelFamily, heldMs: number): number {
+    const now = this.options.now();
+    const gateway = this.usableTimes(
+      accounts.filter((account) => account.projects !== undefined),
+      family,
+      now,
+    ).find((at) => at > now);
+    return gateway === undefined ? heldMs : Math.min(heldMs, gateway - now);
   }
 
   // When each enabled account without an error can serve the family again, earliest first.
@@ -2317,6 +2378,7 @@ export class AccountPoolHub {
     accounts: readonly Account[],
     family: ModelFamily,
     adapter: ProviderAdapter,
+    message = "No Account Pooler account is currently eligible.",
   ): Response {
     if (!accounts.some((account) => account.enabled)) {
       return adapter.errorResponse(
@@ -2331,11 +2393,9 @@ export class AccountPoolHub {
       1,
       Math.ceil(((next ?? now + 1_000) - now) / 1_000),
     );
-    return adapter.errorResponse(
-      429,
-      "No Account Pooler account is currently eligible.",
-      { "retry-after": String(retryAfter) },
-    );
+    return adapter.errorResponse(429, message, {
+      "retry-after": String(retryAfter),
+    });
   }
 
   // Writes what a vendor response says about the account's quota. A quota 429 its own windows do
@@ -2452,6 +2512,7 @@ export function createHub(options: {
   resetUrl?: (organizationUuid: string) => string;
   logReset?: (message: string, level: "info" | "debug") => void;
   sessionProject?: (sessionId: string) => string | null;
+  onAccountRejected?: (account: Account, message: string) => void;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2500,6 +2561,7 @@ export function createHub(options: {
     resetClaims: options.resetClaims ?? null,
     logReset: options.logReset ?? (() => {}),
     sessionProject: options.sessionProject ?? (() => null),
+    onAccountRejected: options.onAccountRejected ?? (() => {}),
   });
 }
 
@@ -2510,6 +2572,41 @@ function readBearer(value: string | null): string | null {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// The start of a failure's body, up to MAX_FAILURE_DETAIL_BYTES; what was read so far on an error.
+async function readDetail(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let detail = "";
+  try {
+    while (bytes < MAX_FAILURE_DETAIL_BYTES) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      const part = chunk.value.subarray(0, MAX_FAILURE_DETAIL_BYTES - bytes);
+      bytes += part.byteLength;
+      detail += decoder.decode(part, { stream: true });
+    }
+    return (detail + decoder.decode()).trim();
+  } catch {
+    return detail.trim();
+  }
+}
+
+// The start of a failure's body, read from a copy: the response itself can still go to the client.
+async function peekDetail(response: Response): Promise<string> {
+  const reader = response.clone().body?.getReader();
+  if (reader === undefined) return "";
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<string>((resolve) => {
+    timeout = setTimeout(() => resolve(""), FAILURE_DISPOSAL_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([readDetail(reader), deadline]);
+  } finally {
+    clearTimeout(timeout);
+    void reader.cancel().catch(() => undefined);
+  }
 }
 
 function waitForDelay(

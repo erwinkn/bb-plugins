@@ -28,10 +28,10 @@ function deps(overrides: Partial<PoolerRetryDeps> = {}) {
     now: () => NOW,
     random: () => 0.5,
     maxWaitMs: () => 6 * HOUR,
-    providerOf: vi.fn(async () => "claude-code"),
+    threadOf: vi.fn(async () => ({ providerId: "claude-code", projectId: "proj_one" })),
     routes: vi.fn(async () => true),
     turnModel: vi.fn(async () => "claude-opus-5-5"),
-    nextEligibleAt: vi.fn(async () => NOW + HOUR),
+    nextEligibleAt: vi.fn(async () => ({ at: NOW + HOUR, probing: false })),
     sessionRetryAt: vi.fn(async () => null),
     retry: vi.fn(async () => ({ ok: true })),
     log: (message) => logs.push(message),
@@ -105,7 +105,7 @@ describe("handlePoolerTurnFailed", () => {
   it("schedules one retry of the failed request when the next account frees up", async () => {
     const { deps: d, logs } = deps();
     await handlePoolerTurnFailed(d, failure());
-    expect(d.nextEligibleAt).toHaveBeenCalledWith("claude", "opus");
+    expect(d.nextEligibleAt).toHaveBeenCalledWith("claude", "claude-opus-5-5", "proj_one");
     expect(d.turnModel).toHaveBeenCalledWith("thr_one", "creq_one");
     expect(d.retry).toHaveBeenCalledTimes(1);
     expect(d.retry).toHaveBeenCalledWith({
@@ -121,7 +121,7 @@ describe("handlePoolerTurnFailed", () => {
 
   it("waits until the session's own Retry-After when that is later", async () => {
     const later = deps({
-      nextEligibleAt: vi.fn(async () => NOW - HOUR),
+      nextEligibleAt: vi.fn(async () => ({ at: NOW - HOUR, probing: false })),
       sessionRetryAt: vi.fn(async () => NOW + 20 * 60_000),
     });
     await handlePoolerTurnFailed(later.deps, failure());
@@ -139,18 +139,18 @@ describe("handlePoolerTurnFailed", () => {
 
   it("takes a Codex thread's family from its model", async () => {
     const { deps: d } = deps({
-      providerOf: vi.fn(async () => "codex"),
+      threadOf: vi.fn(async () => ({ providerId: "codex", projectId: "proj_one" })),
       turnModel: vi.fn(async () => "gpt-6.1-sol"),
     });
     await handlePoolerTurnFailed(d, failure({ attemptNumber: 4 }));
     expect(d.routes).toHaveBeenCalledWith("codex", "thr_one");
-    expect(d.nextEligibleAt).toHaveBeenCalledWith("codex", "other");
+    expect(d.nextEligibleAt).toHaveBeenCalledWith("codex", "gpt-6.1-sol", "proj_one");
     expect(d.retry).toHaveBeenCalledTimes(1);
   });
 
   it("retries a Codex turn that failed on the Pooler's usage-limit answer, which has no status", async () => {
     const { deps: d } = deps({
-      providerOf: vi.fn(async () => "codex"),
+      threadOf: vi.fn(async () => ({ providerId: "codex", projectId: "proj_one" })),
       turnModel: vi.fn(async () => "gpt-6.1-sol"),
     });
     await handlePoolerTurnFailed(
@@ -163,7 +163,7 @@ describe("handlePoolerTurnFailed", () => {
         },
       }),
     );
-    expect(d.nextEligibleAt).toHaveBeenCalledWith("codex", "other");
+    expect(d.nextEligibleAt).toHaveBeenCalledWith("codex", "gpt-6.1-sol", "proj_one");
     expect(d.retry).toHaveBeenCalledTimes(1);
   });
 
@@ -174,24 +174,28 @@ describe("handlePoolerTurnFailed", () => {
       { errorInfo: { category: "overloaded", httpStatusCode: 529, providerCode: null } },
       "not a 429 or a usage limit",
     ],
-    ["the fifth attempt", { attemptNumber: 5 }, "attempt 5 reached"],
+    ["the thirtieth attempt", { attemptNumber: 30 }, "attempt 30 reached"],
   ] as const)("declines %s before reading anything", async (_label, overrides, reason) => {
     const { deps: d, logs } = deps();
     await handlePoolerTurnFailed(d, failure(overrides));
-    expect(d.providerOf).not.toHaveBeenCalled();
+    expect(d.threadOf).not.toHaveBeenCalled();
     expect(d.retry).not.toHaveBeenCalled();
     expect(logs).toEqual([expect.stringContaining(reason)]);
   });
 
   it.each([
     ["retries are off", { maxWaitMs: () => 0 }, "automatic retries are off"],
-    ["the provider is not pooled", { providerOf: async () => "muse" }, "provider muse is not pooled"],
+    [
+      "the provider is not pooled",
+      { threadOf: async () => ({ providerId: "muse", projectId: "proj_one" }) },
+      "provider muse is not pooled",
+    ],
     ["the Pooler does not route the thread", { routes: async () => false }, "does not route"],
     ["the model is unknown", { turnModel: async () => null }, "model is unknown"],
     ["no account is known to free up", { nextEligibleAt: async () => null }, "no account is known"],
     [
       "the wait exceeds the maximum",
-      { nextEligibleAt: async () => NOW + 6 * HOUR + 60_000 },
+      { nextEligibleAt: async () => ({ at: NOW + 6 * HOUR + 60_000, probing: false }) },
       "beyond the maximum wait of 360 minutes",
     ],
   ] satisfies Array<[string, Partial<PoolerRetryDeps>, string]>)(
@@ -203,6 +207,22 @@ describe("handlePoolerTurnFailed", () => {
       expect(logs).toEqual([expect.stringContaining(reason)]);
     },
   );
+
+  it("stops at the fifth attempt, unless a held gateway is probed: then at the thirtieth", async () => {
+    const plain = deps();
+    await handlePoolerTurnFailed(plain.deps, failure({ attemptNumber: 5 }));
+    expect(plain.deps.retry).not.toHaveBeenCalled();
+    expect(plain.logs).toEqual([expect.stringContaining("attempt 5 reached")]);
+    // A gateway held after a refusal is probed at its hold's end, every 15 minutes while it lasts:
+    // those failed probes must not use up the budget the wait for an OAuth reset needs.
+    const probing = deps({
+      nextEligibleAt: vi.fn(async () => ({ at: NOW + 15 * 60_000, probing: true })),
+    });
+    await handlePoolerTurnFailed(probing.deps, failure({ attemptNumber: 29 }));
+    expect(probing.deps.retry).toHaveBeenCalledWith(
+      expect.objectContaining({ sendAt: NOW + 15 * 60_000 + 30_000 }),
+    );
+  });
 
   it("counts a retry already queued as scheduled", async () => {
     const conflict = Object.assign(new Error("HTTP 409: already queued"), {
@@ -225,7 +245,7 @@ describe("handlePoolerTurnFailed", () => {
     await expect(handlePoolerTurnFailed(d, failure())).resolves.toBeUndefined();
     expect(logs).toEqual([expect.stringContaining("could not schedule a retry of thr_one")]);
     const { deps: unreadable, logs: unreadableLogs } = deps({
-      providerOf: async () => Promise.reject(new Error("timed out")),
+      threadOf: async () => Promise.reject(new Error("timed out")),
     });
     await handlePoolerTurnFailed(unreadable, failure());
     expect(unreadableLogs).toEqual([expect.stringContaining("timed out")]);

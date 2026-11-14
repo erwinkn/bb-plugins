@@ -2709,7 +2709,13 @@ describe("Account Pool plugin", () => {
         );
       expect(
         accounts.find((account) => account.id === fixture.account.id)?.error,
-      ).toEqual(failure === 401 || failure === 403 ? expect.any(String) : null);
+      ).toEqual(failure === 403 ? expect.any(String) : null);
+      // A 401 from an API-key account is about the key: the account sits out 15 minutes and is
+      // probed again, rather than marked in error for good.
+      if (failure === 401)
+        expect(
+          accounts.find((account) => account.id === fixture.account.id)?.status,
+        ).toBe("held");
     },
   );
 
@@ -5664,15 +5670,17 @@ describe("Account Pool plugin", () => {
       "/v1/messages",
       { headers: authHeaders(authFixture.key), body: "{}" },
     );
-    expect(authResponse.status).toBe(401);
-    await authResponse.text();
+    // An API-key account's 401 holds it and is retried later, like a 429; only an OAuth account's
+    // refusal marks it in error.
+    expect(authResponse.status).toBe(429);
+    expect(await authResponse.text()).toContain("bad account");
     const authAccounts = z
       .array(accountSummarySchema)
       .parse(
         await authFixture.host.harness.behavior.callRpc("account.list", null),
       );
-    expect(authAccounts[0]?.status).toBe("error");
-    expect(authAccounts[0]?.error).toContain("bad account");
+    expect(authAccounts[0]?.status).toBe("held");
+    expect(authAccounts[0]?.error).toBeNull();
   });
 
   it("suppresses env and health only for the provider whose routing is off", async () => {

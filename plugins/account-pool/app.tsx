@@ -29,6 +29,7 @@ import {
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import { Button } from "./ui/components/ui/button";
 import {
   Collapsible,
@@ -87,6 +88,7 @@ import {
   type ResetAdvice,
 } from "./src/reset-advice.js";
 import {
+  ACCOUNT_POOL_ACCOUNT_REJECTED,
   ACCOUNT_POOL_ACCOUNTS_CHANGED,
   ACCOUNT_POOL_CONFIG_CHANGED,
 } from "./src/realtime.js";
@@ -1880,9 +1882,27 @@ function LoginDialog({
   );
 }
 
+// An API-key account (a gateway) refuses requests for a reason about the account: the Pooler holds
+// it and probes it every 15 minutes, but someone has to act upstream. The server sends each message
+// once; the toast stays until dismissed.
+function AccountAlertToasts() {
+  useRealtime(ACCOUNT_POOL_ACCOUNT_REJECTED, (payload) => {
+    const alert = payload as { label?: unknown; message?: unknown };
+    toast.warning(`Account Pooler: ${String(alert.label ?? "an account")} refuses requests`, {
+      description: `${String(alert.message ?? "").slice(0, 400)} It is held and retried every 15 minutes.`,
+      duration: Number.POSITIVE_INFINITY,
+    });
+  });
+  return null;
+}
+
 export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "accounts",
     component: AccountPoolSettings,
+  });
+  app.slots.experimental_appOverlay({
+    id: "account-alerts",
+    component: AccountAlertToasts,
   });
 });
