@@ -61,6 +61,7 @@ const HELP = [
   "  printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool-local account login-complete --session <id> --code-stdin",
   "  bb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]",
   "  bb pool-local account add --provider claude --api-key <key> [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]  Unsafe: exposes the key in process arguments.",
+  "  bb pool-local account add --provider codex --api-key-stdin --base-url <url> [--label <text>] [--priority <n>] [--projects <id,id...>]  A gateway that speaks the OpenAI Responses API.",
   "  bb pool-local account list [--json]",
   "  bb pool-local account remove <id>",
   "  bb pool-local account enable <id>",
@@ -464,9 +465,9 @@ export function registerPoolCli(
       {
         name: "account-add",
         summary:
-          "Sign in to Claude or Codex, import credentials, or add an Anthropic API key",
+          "Sign in to Claude or Codex, import credentials, or add an API key (Anthropic, or a Codex gateway)",
         usage:
-          "bb pool-local account add --provider <claude|codex> --login\nbb pool-local account add --provider <claude|codex> --import [--label <text>] [--priority <n>]\nbb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]\nUnsafe compatibility form: bb pool-local account add --provider claude --api-key <key> [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]",
+          "bb pool-local account add --provider <claude|codex> --login\nbb pool-local account add --provider <claude|codex> --import [--label <text>] [--priority <n>]\nbb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]\nbb pool-local account add --provider codex --api-key-stdin --base-url <url> [--label <text>] [--priority <n>] [--projects <id,id...>]\nUnsafe compatibility form: bb pool-local account add --provider <claude|codex> --api-key <key> [--label <text>] [--priority <n>] [--base-url <url>] [--projects <id,id...>]",
       },
       {
         name: "account-login-poll",
@@ -734,16 +735,22 @@ export function registerPoolCli(
               "--api-key-stdin must be invoked through the bb CLI so it can read stdin safely.",
             );
           }
-          if (!imported && flags.values.get("provider") !== "claude") {
-            throw new Error("Anthropic API keys require --provider claude.");
+          const provider = flags.values.get("provider");
+          if (!imported && provider !== "claude" && provider !== "codex") {
+            throw new Error("An API key requires --provider claude or --provider codex.");
           }
           const baseUrl = flags.values.get("base-url");
           if (imported && baseUrl !== undefined)
             throw new Error("--base-url applies to an API key only.");
+          if (!imported && provider === "codex" && baseUrl === undefined) {
+            throw new Error(
+              "A Codex API key needs --base-url, a gateway that speaks the OpenAI Responses API: ChatGPT takes no API key.",
+            );
+          }
           const projects = flags.values.get("projects")?.split(",").map((id) => id.trim());
           const priorityText = flags.values.get("priority") ?? "100";
           const input = accountAddInputSchema.parse({
-            provider: flags.values.get("provider"),
+            provider,
             source: imported
               ? { kind: "import" }
               : { kind: "api-key", apiKey, ...(baseUrl === undefined ? {} : { baseUrl }) },

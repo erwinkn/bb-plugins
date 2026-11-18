@@ -1318,6 +1318,36 @@ export class AccountPoolHub {
             this.releasePacing(selected.account.id, pacing);
             pacing = null;
           }
+          // A refusal from an API-key account (a gateway) about the account itself (terms to accept,
+          // a key revoked, billing: accountRejection) holds the whole account, persisted, and the
+          // request fails over like on a 429; a thread left with no account waits for the hold's
+          // end (nextEligibleAt), when the next request probes the gateway again. It comes before
+          // the 401/403 handling below, which would mark the account in error for good, and before
+          // the 429 one: a 429 that says the quota is spent (OpenAI's insufficient_quota) is no
+          // rate limit to pace out, while any other 429 is (accountRejection).
+          if (
+            secret.kind === "api-key" &&
+            response.status >= 400 &&
+            response.status < 500
+          ) {
+            const rejection = accountRejection(response.status, await peekDetail(response));
+            signal.throwIfAborted();
+            if (rejection !== null) {
+              await this.discardUpstream(upstream, false);
+              this.options.quotas.put({ ...observed, heldUntil: this.options.now() + REJECTION_HOLD_MS });
+              this.options.logReset(
+                `Account Pooler holds ${selected.account.label} for 15 minutes, until a request probes it again: HTTP ${response.status} ${rejection.slice(0, 300)}`,
+                "info",
+              );
+              this.options.onAccountRejected(selected.account, rejection);
+              failure = {
+                status: 429,
+                message: `${selected.account.label} refused the request: ${rejection}`,
+                headers: { "retry-after": String(REJECTION_HOLD_MS / 1_000) },
+              };
+              break;
+            }
+          }
           if (response.status === 429) {
             if (quotaRejected) {
               await this.discardUpstream(upstream, false);
@@ -1348,35 +1378,6 @@ export class AccountPoolHub {
                 status: 429,
                 message: await this.discardUpstream(upstream, true),
                 headers: { "retry-after": String(Math.ceil(waitMs / 1_000)) },
-              };
-              break;
-            }
-          }
-          // A refusal from an API-key account (a gateway) about the account itself (terms to accept,
-          // a key revoked, billing: accountRejection) holds the whole account, persisted, and the
-          // request fails over like on a 429; a thread left with no account waits for the hold's
-          // end (nextEligibleAt), when the next request probes the gateway again. It comes before
-          // the 401/403 handling below, which would mark the account in error for good.
-          if (
-            secret.kind === "api-key" &&
-            response.status >= 400 &&
-            response.status < 500 &&
-            response.status !== 429
-          ) {
-            const rejection = accountRejection(response.status, await peekDetail(response));
-            signal.throwIfAborted();
-            if (rejection !== null) {
-              await this.discardUpstream(upstream, false);
-              this.options.quotas.put({ ...observed, heldUntil: this.options.now() + REJECTION_HOLD_MS });
-              this.options.logReset(
-                `Account Pooler holds ${selected.account.label} for 15 minutes, until a request probes it again: HTTP ${response.status} ${rejection.slice(0, 300)}`,
-                "info",
-              );
-              this.options.onAccountRejected(selected.account, rejection);
-              failure = {
-                status: 429,
-                message: `${selected.account.label} refused the request: ${rejection}`,
-                headers: { "retry-after": String(REJECTION_HOLD_MS / 1_000) },
               };
               break;
             }

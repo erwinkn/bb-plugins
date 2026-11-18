@@ -12,6 +12,7 @@ bb pool-local account add --provider claude --import
 bb pool-local account add --provider codex --import
 printf '%s\n' "$ANTHROPIC_API_KEY" | bb pool-local account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]
 bb pool-local account add --provider claude --api-key <key> [--label <text>] [--priority <n>]
+printf '%s\n' "$GATEWAY_API_KEY" | bb pool-local account add --provider codex --api-key-stdin --base-url <url> [--label <text>] [--priority <n>] [--projects <id,id...>]
 bb pool-local account list [--json]
 bb pool-local account remove <id>
 bb pool-local account enable <id>

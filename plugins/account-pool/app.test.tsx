@@ -395,6 +395,35 @@ describe("Account Pool settings", () => {
     ).toContain("ABCD-1234");
   });
 
+  it("adds a Codex gateway API key, base URL required, from the Codex Add account menu", async () => {
+    const slot = render([], { "account.add": () => account({ provider: "codex", kind: "api-key" }) });
+    const addButtons = await slot.findAllByRole("button", { name: "Add account" });
+    fireEvent.pointerDown(addButtons[1]!);
+    fireEvent.click(await slot.findByText("Add API key…", { selector: "span.block" }));
+    await slot.findByRole("dialog", { name: "Add a Codex gateway API key" });
+    fireEvent.change(slot.getByLabelText("Gateway API key"), { target: { value: "gw-key" } });
+    const add = slot.getByRole("button", { name: "Add API key" }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    fireEvent.change(slot.getByLabelText("Gateway base URL"), {
+      target: { value: "https://gateway.example/llm" },
+    });
+    fireEvent.change(slot.getByLabelText("Projects served"), { target: { value: "proj_a, proj_b" } });
+    expect(add.disabled).toBe(false);
+    fireEvent.click(add);
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "account.add",
+        input: {
+          provider: "codex",
+          source: { kind: "api-key", apiKey: "gw-key", baseUrl: "https://gateway.example/llm" },
+          label: null,
+          priority: 100,
+          projects: ["proj_a", "proj_b"],
+        },
+      }),
+    );
+  });
+
   it("persists provider routing from the section switch", async () => {
     const slot = render([account()], {
       "routing.set": () => ({ provider: "claude", enabled: false }),

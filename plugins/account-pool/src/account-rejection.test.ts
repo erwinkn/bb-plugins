@@ -58,6 +58,47 @@ describe("accountRejection", () => {
     ).toBeNull();
   });
 
+  describe("OpenAI's shapes", () => {
+    const openai = (code: string | null, message: string, type = "invalid_request_error") =>
+      JSON.stringify({ error: { message, type, param: null, code } });
+
+    it.each([
+      [401, openai("invalid_api_key", "Incorrect API key provided: sk-…abcd.")],
+      [401, openai("account_deactivated", "This key is associated with a deactivated account.")],
+      [400, openai("billing_not_active", "Your account is not active, please check your billing details on our website.")],
+      [429, openai("insufficient_quota", "You exceeded your current quota, please check your plan and billing details.", "insufficient_quota")],
+      [429, openai("billing_hard_limit_reached", "Billing hard limit has been reached.")],
+      [429, JSON.stringify({ error: { type: "usage_limit_reached", message: "The usage limit has been reached", resets_in_seconds: 3600 } })],
+    ])("names a refusal about the account: HTTP %i %s", (status, body) => {
+      expect(accountRejection(status, body)).toBe(JSON.parse(body).error.message);
+    });
+
+    it("names an account the message calls deactivated or not active, whatever the code", () => {
+      expect(accountRejection(400, openai(null, "This key is associated with a deactivated account."))).not.toBeNull();
+      expect(accountRejection(403, openai(null, "Your organization is not active."))).not.toBeNull();
+    });
+
+    it("leaves a 429 rate limit alone, whatever its message says", () => {
+      expect(
+        accountRejection(429, openai("rate_limit_exceeded", "Rate limit reached for gpt-6.1-sol in organization org-x on tokens per min (TPM): Limit 30000, Used 29000, Requested 2000.", "requests")),
+      ).toBeNull();
+      // A phrase that would name the account in a 400 does not in a 429: only a quota code does.
+      expect(accountRejection(429, openai(null, "You exceeded your current quota for requests per minute."))).toBeNull();
+      expect(accountRejection(429, "")).toBeNull();
+      // Anthropic's own 429, which Claude API-key accounts now pass through here too.
+      expect(accountRejection(429, '{"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}')).toBeNull();
+    });
+
+    it.each([
+      openai("model_not_found", "unknown provider for model gpt-9-nova"),
+      openai("invalid_encrypted_content", "The encrypted content for item rs_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed."),
+      openai("context_length_exceeded", "Your input exceeds the context window of this model."),
+      openai(null, "Invalid value for 'reasoning.effort': 'extreme' is not one of 'low', 'medium', 'high'."),
+    ])("leaves a request-level refusal alone: %s", (body) => {
+      expect(accountRejection(400, body)).toBeNull();
+    });
+  });
+
   it("only reads 4xx", () => {
     expect(accountRejection(500, TERMS)).toBeNull();
     expect(accountRejection(302, TERMS)).toBeNull();

@@ -54,14 +54,15 @@ export class PoolOperations {
 
   async add(input: AccountAddInput): Promise<Account> {
     if (input.source.kind === "api-key") {
-      if (input.provider !== "claude") {
-        throw new Error("Codex accounts can only be added with --import.");
+      // ChatGPT takes no API key: a Codex key serves through a gateway that speaks the OpenAI API.
+      if (input.provider === "codex" && input.source.baseUrl === undefined) {
+        throw new Error("A Codex API key needs a base URL: the gateway that serves it.");
       }
       const account = await this.accounts.add(
         {
           provider: input.provider,
           kind: "api-key",
-          label: input.label ?? "Claude API key",
+          label: input.label ?? (input.provider === "claude" ? "Claude API key" : "Codex API key"),
           email: null,
           accountUuid: null,
           subscriptionType: null,

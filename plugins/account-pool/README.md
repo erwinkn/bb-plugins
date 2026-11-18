@@ -29,13 +29,20 @@ Increasing it cannot recover a binding already evicted or pruned.
 ## Gateway accounts and project scopes
 
 Two optional account fields route some threads to capacity of their own, such
-as a company's LLM gateway that speaks the Anthropic API:
+as a company's LLM gateway that speaks the Anthropic API (for Claude) or
+OpenAI's Responses API (for Codex):
 
 - `baseUrl` (API-key accounts only): where the account's requests go instead
   of `anthropicUpstreamBaseUrl`. With `https://gateway.example/llm`, a request
   for `/v1/messages` goes to `https://gateway.example/llm/v1/messages` with the
   account's `x-api-key` and no OAuth token. OAuth calls (usage, profile, reset
-  claims) never use it, and an OAuth account always goes to Anthropic.
+  claims) never use it, and an OAuth account always goes to Anthropic. A Codex
+  API-key account needs one, since ChatGPT takes no API key: Codex's
+  `/v1/responses` goes to `https://gateway.example/llm/v1/responses` with
+  `authorization: Bearer <key>`, without the `chatgpt-account-id` and
+  `x-openai-internal-*` headers ChatGPT reads, and with the body as Codex sent
+  it (zstd-compressed, with its `content-encoding`). A Codex OAuth account
+  always goes to `codexUpstreamBaseUrl`.
 - `projects`: the BB project IDs whose threads the account serves. An unscoped
   account serves every thread, as before.
 
@@ -58,18 +65,38 @@ memory, so a restart forgets it. A gateway can thus be added before it serves
 every model. To retry a held gateway at once, run `bb pool-local account refresh <id>`
 or choose "Retry now" in its settings row: it clears the model holds and any
 account-wide hold, and the next request tries the gateway again. An API-key account has no
-quota readout, so it counts as unlimited until a 429.
+quota readout, so it counts as unlimited until a 429 (the Equisafe gateway
+sends none of ChatGPT's `x-codex-*` quota headers, checked 2026-11-18).
+
+A Codex session can move between the gateway and ChatGPT this way
+mid-conversation. Codex carries its reasoning from turn to turn as
+`reasoning.encrypted_content` items in the body it resends each turn
+(`store: false`: the backend keeps nothing), and the backend verifies them.
+Probed on 2026-11-18: a turn ChatGPT answered, carried to the Equisafe gateway,
+gets 200, and the other way round too, while a tampered item gets a 400 on
+either side (`invalid_encrypted_content` from ChatGPT,
+`thinking_signature_invalid` from the gateway). So each side reads the other's
+reasoning, and the Pooler forwards every turn unchanged to whichever side
+serves it. That includes Codex CLI's zstd-compressed bodies, which the
+gateway decodes (200 on the same day). A switch costs only the prompt cache:
+the first turn on the other side reads none of it. As for Claude, the first one or two requests of a cold
+session go to the subscription while the project lookup runs.
 
 A refusal about the account rather than the request is another matter. When an
 API-key account, scoped or not, answers a 4xx whose message is about the
-account (any 401 or 402; an `authentication_error` or `billing_error`; terms or
-a policy to accept, a credit balance too low, a quota or spending limit reached,
-a key or organization disabled or revoked; `src/account-rejection.ts`), the
-whole account is held 15 minutes, persisted, and the request fails over like on
-a 429; it never reaches the client as its answer. A 401 thus no longer marks an
-API-key account in error for good: it is probed again every 15 minutes. The
-classifier matches phrases, never a bare word, so a malformed request naming a
-field `payment` stays a request-level refusal. With no other account to serve,
+account (any 401 or 402; Anthropic's `authentication_error` or `billing_error`;
+OpenAI's `invalid_api_key`, `account_deactivated` or `billing_not_active`; terms
+or a policy to accept, a credit balance too low, a quota or spending limit
+reached, a key, account or organization disabled, deactivated or revoked;
+`src/account-rejection.ts`), the whole account is held 15 minutes, persisted,
+and the request fails over like on a 429; it never reaches the client as its
+answer. A 429 counts only when its type or code says the quota is spent
+(`insufficient_quota`, `billing_hard_limit_reached`, or ChatGPT's
+`usage_limit_reached` from a gateway that pools subscriptions); any other 429 is
+a rate limit, paced out up to its `Retry-After` as before. A 401 no longer
+marks an API-key account in error for good: it is probed again every 15
+minutes. The classifier matches phrases and codes, never a bare word, so a
+malformed request naming a field `payment` stays a request-level refusal. With no other account to serve,
 the client gets a 429 whose `Retry-After` is the earliest moment any of its
 accounts may serve, the gateway's hold end included; a session pinned to a held
 OAuth account is told the earlier of its pin's and the gateway's hold end. The Pooler's turn retry
@@ -92,12 +119,17 @@ never counted as capacity the rest of the pool waits for, serve no isolated
 printf '%s\n' "$EQUISAFE_LLM_KEY" | bb pool-local account add --provider claude \
   --api-key-stdin --label "Equisafe gateway" --base-url https://equisafe.dev/llm \
   --projects proj_thpyarb96b,proj_e2dqt5avtm,proj_gm8zqz962k,proj_6fyj9w5w6d,proj_iqatsa3m7m
+printf '%s\n' "$EQUISAFE_LLM_KEY" | bb pool-local account add --provider codex \
+  --api-key-stdin --label "Equisafe gateway" --base-url https://equisafe.dev/llm \
+  --projects proj_thpyarb96b,proj_e2dqt5avtm,proj_gm8zqz962k,proj_6fyj9w5w6d,proj_iqatsa3m7m
 bb pool-local account projects <id> proj_thpyarb96b proj_e2dqt5avtm  # change the scope
 bb pool-local account projects <id>                                  # serve every thread
 ```
 
-The settings page's API-key dialog takes both fields; an account row shows the
-gateway host and its scope.
+The settings page's API-key dialog, under either provider's Add account menu,
+takes both fields (the base URL is required for Codex); an account row shows
+the gateway host and its scope. A Codex gateway's answers keep the 60 s
+`Retry-After` cap below, like ChatGPT's.
 
 ## Quota windows
 

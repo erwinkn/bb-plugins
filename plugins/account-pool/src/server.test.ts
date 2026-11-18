@@ -1129,6 +1129,34 @@ describe("Account Pool plugin", () => {
     expect(forwarded).toBe(1);
   });
 
+  it("adds a Codex API key through a gateway base URL only", async () => {
+    const fixture = await createFixture({ upstreamUrl: "https://upstream.example" });
+    const add = (...extra: string[]) =>
+      fixture.host.harness.behavior.runCli(["account", "add", "--provider", "codex", "--api-key", "gw-secret", ...extra]);
+    const refused = await add();
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain("A Codex API key needs --base-url");
+    expect(refused.stderr).not.toContain("gw-secret");
+    const added = await add("--base-url", "https://gateway.example/llm", "--projects", "proj_a,proj_b");
+    expect(added.exitCode).toBe(0);
+    expect(added.stdout).not.toContain("gw-secret");
+    const listed = z
+      .object({ accounts: z.array(accountSummarySchema) })
+      .strict()
+      .parse(JSON.parse((await fixture.host.harness.behavior.runCli(["account", "list", "--json"])).stdout));
+    expect(listed.accounts).toContainEqual(
+      expect.objectContaining({
+        provider: "codex",
+        kind: "api-key",
+        label: "Codex API key",
+        baseUrl: "https://gateway.example/llm",
+        projects: ["proj_a", "proj_b"],
+      }),
+    );
+    const help = await fixture.host.harness.behavior.runCli(["account", "add", "--help"]);
+    expect(help.stdout).toContain("--provider codex --api-key-stdin --base-url <url>");
+  });
+
   it("exposes every account CLI operation", async () => {
     const upstream = await startUpstream(async (request, response) => {
       await readRequestBody(request);

@@ -145,7 +145,8 @@ export const accountSchema = z
     lastUsedAt: z.number().int().nonnegative().nullable().default(null),
     lastUsedHostId: z.string().min(1).nullable().default(null),
     // API-key accounts only: where its requests go instead of anthropicUpstreamBaseUrl (a gateway
-    // that speaks the Anthropic API). OAuth calls never use it.
+    // that speaks the Anthropic API), or, required for Codex, the gateway that speaks the OpenAI
+    // Responses API. OAuth calls never use it.
     baseUrl: httpUrlSchema.optional(),
     // The BB projects whose threads this account serves, and only them; unset, it serves every
     // thread. For a thread of one of them it is preferred over the unscoped accounts.

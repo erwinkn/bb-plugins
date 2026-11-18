@@ -2,6 +2,7 @@ import { z } from "zod";
 import { parseCodexRequestBody } from "./request-body.js";
 import {
   EMPTY_FAMILY_WEEKLY,
+  type Account,
   type AccountQuota,
   type AccountSecret,
   type LimitWindow,
@@ -47,6 +48,17 @@ const ALLOWED_REQUEST_HEADERS = new Set([
   "x-openai-internal-codex-responses-lite",
 ]);
 const ALLOWED_REQUEST_HEADER_PREFIXES = ["x-codex-", "x-stainless-"];
+// Headers only ChatGPT's Codex backend reads (x-openai-internal-codex-responses-lite): never sent
+// to an API-key account's gateway.
+const CHATGPT_INTERNAL_HEADER_PREFIX = "x-openai-internal-";
+
+// A Codex API key always goes to its account's gateway: ChatGPT takes no API key, so there is no
+// default upstream to fall back to (PoolOperations.add refuses a Codex API key without one).
+function apiKeyBaseUrl(account: Account): string {
+  if (account.baseUrl === undefined)
+    throw new Error("Codex API-key accounts require a base URL.");
+  return account.baseUrl;
+}
 
 const refreshResponseSchema = z
   .object({
@@ -289,19 +301,29 @@ export function createCodexAdapter(options: {
         forAccount: () => body,
       };
     },
-    upstreamUrl: (request, settings) =>
-      mountedUpstreamUrl(request, settings.codexUpstreamBaseUrl, "v1/"),
+    // ChatGPT's Codex backend serves its routes without the /v1 prefix Codex CLI sends; an API-key
+    // account's gateway speaks the OpenAI API, so /v1/responses goes to <baseUrl>/v1/responses. An
+    // OAuth token only ever goes to ChatGPT.
+    upstreamUrl: (request, settings, account) =>
+      account.kind === "api-key"
+        ? mountedUpstreamUrl(request, apiKeyBaseUrl(account))
+        : mountedUpstreamUrl(request, settings.codexUpstreamBaseUrl, "v1/"),
     requestHeaders(inbound, account, secret) {
-      if (secret.kind !== "oauth" || account.codexAccountId === undefined) {
-        throw new Error(
-          "Codex accounts require OAuth credentials and a ChatGPT account id.",
-        );
-      }
       const headers = filterRequestHeaders(
         inbound,
         ALLOWED_REQUEST_HEADERS,
         ALLOWED_REQUEST_HEADER_PREFIXES,
       );
+      if (secret.kind === "api-key") {
+        // ChatGPT's own switches stay with ChatGPT; the key is a plain OpenAI-style bearer token.
+        for (const name of [...headers.keys()])
+          if (name.startsWith(CHATGPT_INTERNAL_HEADER_PREFIX)) headers.delete(name);
+        headers.set("authorization", `Bearer ${secret.apiKey}`);
+        return headers;
+      }
+      if (account.codexAccountId === undefined) {
+        throw new Error("Codex OAuth accounts require a ChatGPT account id.");
+      }
       headers.set("authorization", `Bearer ${secret.accessToken}`);
       headers.set("chatgpt-account-id", account.codexAccountId);
       return headers;

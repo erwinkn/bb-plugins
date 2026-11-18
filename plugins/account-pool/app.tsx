@@ -95,7 +95,8 @@ import {
 
 type DialogState =
   | { kind: "account" | "priority" | "remove"; accountId: string }
-  | { kind: "claude-login" | "codex-login" | "api-key" }
+  | { kind: "claude-login" | "codex-login" }
+  | { kind: "api-key"; provider: PoolProvider }
   | null;
 
 type ConfigField = keyof AccountPoolConfig;
@@ -582,23 +583,21 @@ function AddAccountMenu({
             </span>
           </span>
         </DropdownMenuItem>
-        {provider === "claude" ? (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="items-start py-2"
-              onSelect={() => onChoose("api-key")}
-            >
-              <Icon name="Lock" className="mt-0.5" />
-              <span>
-                <span className="block">Add API key…</span>
-                <span className="block text-xs text-muted-foreground">
-                  Metered fallback, never routes first
-                </span>
-              </span>
-            </DropdownMenuItem>
-          </>
-        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="items-start py-2"
+          onSelect={() => onChoose("api-key")}
+        >
+          <Icon name="Lock" className="mt-0.5" />
+          <span>
+            <span className="block">Add API key…</span>
+            <span className="block text-xs text-muted-foreground">
+              {provider === "claude"
+                ? "Metered fallback, never routes first"
+                : "Through a gateway that speaks the OpenAI API"}
+            </span>
+          </span>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1067,7 +1066,7 @@ function AccountPoolSettings() {
       return;
     }
     if (choice === "api-key") {
-      setDialog({ kind: "api-key" });
+      setDialog({ kind: "api-key", provider });
       return;
     }
     await run(`import-${provider}`, async () => {
@@ -1490,7 +1489,11 @@ function AccountPoolSettings() {
         ) : null}
         {dialog?.kind === "api-key" ? (
           <DialogFrame
-            title="Add an Anthropic API key"
+            title={
+              dialog.provider === "claude"
+                ? "Add an Anthropic API key"
+                : "Add a Codex gateway API key"
+            }
             footer={
               <>
                 <span className="flex-1" />
@@ -1498,13 +1501,18 @@ function AccountPoolSettings() {
                   Cancel
                 </Button>
                 <Button
-                  disabled={apiKey.trim().length === 0 || pending !== null}
+                  disabled={
+                    apiKey.trim().length === 0 ||
+                    (dialog.provider === "codex" &&
+                      apiKeyBaseUrl.trim() === "") ||
+                    pending !== null
+                  }
                   onClick={() =>
                     void run("api-key", async () => {
                       const baseUrl = apiKeyBaseUrl.trim();
                       const projects = parseProjects(apiKeyProjects);
                       await rpc.call("account.add", {
-                        provider: "claude",
+                        provider: dialog.provider,
                         source: {
                           kind: "api-key",
                           apiKey: apiKey.trim(),
@@ -1527,21 +1535,28 @@ function AccountPoolSettings() {
             }
           >
             <p className="text-sm text-muted-foreground">
-              Metered fallback stored in the Account Pooler&apos;s protected
-              secret directory.
+              {dialog.provider === "claude"
+                ? "Metered fallback stored in the Account Pooler's protected secret directory."
+                : "For a gateway that serves the OpenAI Responses API, such as a company's LLM gateway. Stored in the Account Pooler's protected secret directory."}
             </p>
             <Input
               type="password"
               autoComplete="off"
-              aria-label="Anthropic API key"
-              placeholder="sk-ant-…"
+              aria-label={
+                dialog.provider === "claude" ? "Anthropic API key" : "Gateway API key"
+              }
+              placeholder={dialog.provider === "claude" ? "sk-ant-…" : "API key"}
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
             />
             <Input
               type="url"
               aria-label="Gateway base URL"
-              placeholder="Base URL (optional): https://api.anthropic.com"
+              placeholder={
+                dialog.provider === "claude"
+                  ? "Base URL (optional): https://api.anthropic.com"
+                  : "Base URL: https://gateway.example/llm"
+              }
               value={apiKeyBaseUrl}
               onChange={(event) => setApiKeyBaseUrl(event.target.value)}
             />
