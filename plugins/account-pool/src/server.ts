@@ -11,6 +11,7 @@ import {
   mergeAdvisorConfig,
   type AdvisorConfigController,
 } from "./advisor-config.js";
+import { callerToken } from "./caller-token.js";
 import { registerPoolCli } from "./cli.js";
 import {
   accountPoolConfigSchema,
@@ -744,7 +745,7 @@ export function createAccountPoolPlugin(
     );
     bb.providers.experimental_contributeEnv("claude-code", async (context) => {
       if (!(await routesThread("claude", context.threadId))) return [];
-      const token = await hubTokens.forHost(context.hostId);
+      const token = callerToken(await hubTokens.forHost(context.hostId), context.projectId);
       await routing.recordRouted(context.threadId, context.hostId);
       return [
         {
@@ -763,7 +764,7 @@ export function createAccountPoolPlugin(
         {
           name: "ANTHROPIC_AUTH_TOKEN",
           value: token,
-          reason: "Account Pooler hub token for this machine",
+          reason: "Account Pooler hub token for this machine, naming the thread's project",
         },
         {
           name: "ENABLE_TOOL_SEARCH",
@@ -778,7 +779,7 @@ export function createAccountPoolPlugin(
     );
     bb.providers.experimental_contributeEnv("codex", async (context) => {
       if (!(await routesThread("codex", context.threadId))) return [];
-      const token = await hubTokens.forHost(context.hostId);
+      const token = callerToken(await hubTokens.forHost(context.hostId), context.projectId);
       return [
         {
           name: "CODEX_OPENAI_BASE_URL",
@@ -790,7 +791,7 @@ export function createAccountPoolPlugin(
         {
           name: "CODEX_POOL_AUTH_TOKEN",
           value: token,
-          reason: "Account Pooler hub token for this machine",
+          reason: "Account Pooler hub token for this machine, naming the thread's project",
         },
       ];
     });

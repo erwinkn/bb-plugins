@@ -431,7 +431,8 @@ async function idle(host: Host, threadId = "thr_coord") {
 }
 
 // What Codex CLI 0.165 sends: a zstd-compressed /responses body, its thread and model in headers.
-async function codexRequest(host: Host, session: string): Promise<number> {
+// `bareToken`: present the host token alone, as a session started before tokens named a project.
+async function codexRequest(host: Host, session: string, bareToken = false): Promise<number> {
   const entries = await host.harness.behavior.resolveProviderEnv("codex", {
     threadId: "thr_codex",
     projectId: "project-one",
@@ -441,7 +442,7 @@ async function codexRequest(host: Host, session: string): Promise<number> {
   if (typeof token !== "string") throw new Error("no Codex token");
   const response = await host.harness.behavior.fetchHttp("POST", "/v1/responses", {
     headers: {
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${bareToken ? token.split(";")[0] : token}`,
       "content-type": "application/json",
       "content-encoding": "zstd",
       "thread-id": session,
@@ -463,16 +464,26 @@ async function env(host: Host, threadId = "thr_coord") {
 
 async function nativeRequest(
   host: Host,
-  options: { ttl?: "5m" | "1h"; path?: string; turn?: string; model?: string; session?: string; body?: string } = {},
+  options: {
+    ttl?: "5m" | "1h";
+    path?: string;
+    turn?: string;
+    model?: string;
+    session?: string;
+    body?: string;
+    // Present the host token alone, as a session started before tokens named a project.
+    bareToken?: boolean;
+  } = {},
 ): Promise<number> {
   const token = (await env(host)).find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN");
   if (token === undefined || typeof token.value !== "string") throw new Error("no token");
+  const bearer = options.bareToken === true ? token.value.split(";")[0] : token.value;
   const response = await host.harness.behavior.fetchHttp(
     "POST",
     options.path ?? "/v1/messages",
     {
       headers: {
-        authorization: `Bearer ${token.value}`,
+        authorization: `Bearer ${bearer}`,
         "content-type": "application/json",
         "anthropic-version": "2023-06-01",
         "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14",
@@ -1652,7 +1663,20 @@ describe("W211 corrections through the hub", () => {
 });
 
 describe("an account scoped to some projects (account.projects), behind its own base URL", () => {
-  it("serves a thread of its project once the thread's project is known, never another project's", async () => {
+  it("serves a thread of its project from its first request, the project named by its token", async () => {
+    const f = await fixture();
+    await f.host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "sk-gateway.example", baseUrl: "https://gateway.example/llm" },
+      label: "gateway",
+      priority: 1,
+      projects: ["project-one"],
+    });
+    expect(await nativeRequest(f.host)).toBe(200);
+    expect(f.upstream.native.map(({ url }) => url)).toEqual(["https://gateway.example/llm/v1/messages"]);
+  });
+
+  it("serves a session started before tokens named a project once its thread's project is known", async () => {
     const f = await fixture();
     const add = async (projects: string[], baseUrl: string) =>
       accountSchema.parse(
@@ -1667,10 +1691,10 @@ describe("an account scoped to some projects (account.projects), behind its own 
     const gateway = await add(["project-one"], "https://gateway.example/llm");
     await add(["project-two"], "https://other.example/llm");
     // The first request comes before the plugin links its session to a thread: a normal account.
-    expect(await nativeRequest(f.host)).toBe(200);
+    expect(await nativeRequest(f.host, { bareToken: true })).toBe(200);
     expect(f.upstream.native[0]?.url).toBe(`${UPSTREAM}/v1/messages`);
     await vi.waitFor(async () => {
-      expect(await nativeRequest(f.host)).toBe(200);
+      expect(await nativeRequest(f.host, { bareToken: true })).toBe(200);
       expect(f.upstream.native.at(-1)?.url).toBe("https://gateway.example/llm/v1/messages");
     });
     expect(f.upstream.native.at(-1)?.headers["x-api-key"]).toBe("sk-gateway.example");
@@ -1685,7 +1709,7 @@ describe("an account scoped to some projects (account.projects), behind its own 
     const rescoped = await f.host.harness.behavior.runCli(["account", "projects", gateway.id, "project-three"]);
     expect(rescoped.stdout).toBe("https://gateway.example/llm serves project-three.\n");
     const before = f.upstream.native.length;
-    expect(await nativeRequest(f.host)).toBe(200);
+    expect(await nativeRequest(f.host, { bareToken: true })).toBe(200);
     expect(f.upstream.native.slice(before).map(({ url }) => url)).toEqual([`${UPSTREAM}/v1/messages`]);
   });
 });

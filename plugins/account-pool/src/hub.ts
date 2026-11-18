@@ -61,6 +61,7 @@ import {
   usableAt,
 } from "./quota.js";
 import { accountRejection } from "./account-rejection.js";
+import { parseCallerToken } from "./caller-token.js";
 import type {
   AccountBinding,
   AccountStore,
@@ -125,6 +126,13 @@ const DROPPED_RESPONSE_HEADERS = new Set([
   "upgrade",
 ]);
 
+// Who sent a request: the machine its hub token belongs to, and the BB project the token names
+// (null: a bare host token).
+interface Caller {
+  hostId: string;
+  projectId: string | null;
+}
+
 interface HubOptions {
   accounts: AccountStore;
   quotas: QuotaStore;
@@ -145,7 +153,8 @@ interface HubOptions {
   // Every reset claim and automatic-claim decision: "info" for a claim sent, "debug" for a decline.
   logReset: (message: string, level: "info" | "debug") => void;
   // The BB project of a session's thread, from what is cached now; null when not known yet. It
-  // never waits: an unknown project goes to the unscoped accounts only.
+  // never waits: an unknown project goes to the unscoped accounts only. Asked only for a request
+  // whose token names no project (caller-token.ts).
   sessionProject: (sessionId: string) => string | null;
   // An API-key account refused a request for a reason about the account (terms to accept, billing)
   // and is held: someone has to act. Called on every such refusal; it must not throw.
@@ -302,11 +311,16 @@ export class AccountPoolHub {
     await this.stop();
   }
 
-  async authenticate(request: Request): Promise<string | null> {
-    const token =
+  // The machine a request comes from, and the BB project its token names (caller-token.ts); null
+  // when the token is not valid.
+  private async authenticate(request: Request): Promise<Caller | null> {
+    const presented =
       request.headers.get("x-bb-account-pool-token") ??
       readBearer(request.headers.get("authorization"));
-    return this.options.hubTokens.authenticate(token);
+    if (presented === null) return null;
+    const { hostToken, projectId } = parseCallerToken(presented);
+    const hostId = await this.options.hubTokens.authenticate(hostToken);
+    return hostId === null ? null : { hostId, projectId };
   }
 
   async importAccount(
@@ -539,8 +553,8 @@ export class AccountPoolHub {
 
   async handle(request: Request, provider: PoolProvider): Promise<Response> {
     const adapter = this.adapter(provider);
-    const hostId = await this.authenticate(request);
-    if (hostId === null) {
+    const caller = await this.authenticate(request);
+    if (caller === null) {
       return adapter.errorResponse(401, "Invalid Account Pooler bearer token.");
     }
     if (!this.accepting)
@@ -552,7 +566,7 @@ export class AccountPoolHub {
       request,
       await readRequestBytes(request),
       adapter,
-      hostId,
+      caller,
     );
   }
 
@@ -1067,10 +1081,10 @@ export class AccountPoolHub {
     request: Request,
     body: Uint8Array,
     adapter: ProviderAdapter,
-    hostId: string,
+    caller: Caller,
   ): Promise<Response> {
     const parsed = adapter.parseRequest(body, request.headers);
-    const response = await this.route(request, adapter, hostId, parsed);
+    const response = await this.route(request, adapter, caller, parsed);
     const sessionId = sessionIdOf(parsed.affinityId);
     if (response.status === 429 && sessionId !== null)
       this.noteSessionRejection(adapter.provider, sessionId, response);
@@ -1123,7 +1137,7 @@ export class AccountPoolHub {
   private async route(
     request: Request,
     adapter: ProviderAdapter,
-    hostId: string,
+    { hostId, projectId }: Caller,
     parsed: ReturnType<ProviderAdapter["parseRequest"]>,
   ): Promise<Response> {
     const attempted = new Set<string>();
@@ -1135,8 +1149,10 @@ export class AccountPoolHub {
     };
     let previousAccountId: string | null = null;
     let failure: FailureSummary | null = null;
+    // The project the token names; for a session started before tokens named one, its thread's.
     const sessionId = sessionIdOf(parsed.affinityId);
-    const project = sessionId === null ? null : this.options.sessionProject(sessionId);
+    const project =
+      projectId ?? (sessionId === null ? null : this.options.sessionProject(sessionId));
     const routeNow = this.options.now();
     const accounts = (await this.options.accounts.list()).filter((account) =>
       this.mayServe(account, adapter.provider, project, parsed.model, routeNow),

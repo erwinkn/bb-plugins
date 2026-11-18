@@ -263,7 +263,7 @@ it("loads handed-off native schemas and credential references through local prov
     );
     expect(
       entries.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN")?.value,
-    ).toBe(token);
+    ).toBe(`${token};project=fixture-project`);
     expect(
       entries.find((entry) => entry.name === "ANTHROPIC_BASE_URL")?.value,
     ).toEqual({ serverPath: "/api/v1/plugins/account-pool-local/http" });
@@ -291,7 +291,7 @@ it("loads handed-off native schemas and credential references through local prov
     expect(
       codexEntries.find((entry) => entry.name === "CODEX_POOL_AUTH_TOKEN")
         ?.value,
-    ).toBe(token);
+    ).toBe(`${token};project=fixture-project`);
     expect(codexEntries.some((entry) => /PROMPT_CACHE/.test(entry.name))).toBe(
       false,
     );

@@ -1596,7 +1596,7 @@ describe("Account Pool plugin", () => {
       {
         name: "ANTHROPIC_AUTH_TOKEN",
         value: fixture.key,
-        reason: "Account Pooler hub token for this machine",
+        reason: "Account Pooler hub token for this machine, naming the thread's project",
       },
       {
         name: "ENABLE_TOOL_SEARCH",

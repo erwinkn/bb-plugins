@@ -107,12 +107,13 @@ async function makePool(gatewayAccount: Account = GATEWAY) {
     db.close();
   });
   // Who served a Messages request: "gateway", or the OAuth account's token.
-  const send = async (session?: string, model: string | null = "claude-opus-5-5") => {
+  // `token` is what the client presents: the bare host token "hub", or one naming its project.
+  const send = async (session?: string, model: string | null = "claude-opus-5-5", token = "hub") => {
     const before = calls.length;
     const response = await hub.handle(
       new Request("https://hub.test/api/v1/plugins/account-pool-local/http/v1/messages", {
         method: "POST",
-        headers: { authorization: "Bearer hub", "content-type": "application/json" },
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify({
           ...(model === null ? {} : { model }),
           ...(session === undefined ? {} : { metadata: { user_id: JSON.stringify({ session_id: session }) } }),
@@ -338,6 +339,51 @@ describe("an account scoped to some projects, behind its own base URL", () => {
     pool.projects.set("s1", EQUISAFE);
     expect(await pool.send("s1")).toEqual({ status: 200, tried: ["gateway"] });
     expect((await pool.send("other")).status).toBe(429);
+  });
+
+  // The 2026-11-18 wall: every subscription out until the next day, and about 25 requests an hour
+  // from Equisafe threads refused, all from sessions the plugin had not linked to their thread yet.
+  describe("a token that names the thread's project (caller-token.ts)", () => {
+    const exhaustOAuth = (pool: Awaited<ReturnType<typeof makePool>>) => {
+      for (const index of [1, 2]) {
+        const id = oauthAccount(index).id;
+        pool.quotas.put({ ...pool.quotas.get(id), heldUntil: NOW + 13 * 3_600_000 });
+      }
+    };
+
+    it("reaches the gateway from a session no thread is linked to, with every unscoped account out", async () => {
+      const pool = await makePool();
+      exhaustOAuth(pool);
+      expect(await pool.send("fresh", "claude-opus-5-5", `hub;project=${EQUISAFE}`)).toEqual({
+        status: 200,
+        tried: ["gateway"],
+      });
+      // So does a request with no session at all.
+      expect(await pool.send(undefined, "claude-opus-5-5", `hub;project=${EQUISAFE}`)).toEqual({
+        status: 200,
+        tried: ["gateway"],
+      });
+      // The bare host token of a session started before: the session's project, unknown here.
+      expect((await pool.send("fresh")).status).toBe(429);
+    });
+
+    it("routes by the token's project over the session's, and never to another project's gateway", async () => {
+      const pool = await makePool();
+      pool.projects.set("s1", "proj_other");
+      expect((await pool.send("s1", "claude-opus-5-5", `hub;project=${EQUISAFE}`)).tried).toEqual(["gateway"]);
+      pool.projects.set("s2", EQUISAFE);
+      expect((await pool.send("s2", "claude-opus-5-5", "hub;project=proj_other")).tried).toEqual(["Bearer tok-1"]);
+      // A bare token still takes the session's project.
+      expect((await pool.send("s2")).tried).toEqual(["gateway"]);
+    });
+
+    it("refuses a token whose host part or project is not valid", async () => {
+      const pool = await makePool();
+      expect((await pool.send("s1", "claude-opus-5-5", `nope;project=${EQUISAFE}`)).status).toBe(401);
+      expect((await pool.send("s1", "claude-opus-5-5", "hub;project=")).status).toBe(401);
+      expect((await pool.send("s1", "claude-opus-5-5", "hub;project=a b")).status).toBe(401);
+      expect(pool.calls.filter(({ url }) => url.endsWith("/v1/messages"))).toEqual([]);
+    });
   });
 
   describe("a refusal about the account (terms to accept), the 01:08Z night of 2026-11-14", () => {

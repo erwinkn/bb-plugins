@@ -47,10 +47,19 @@ OpenAI's Responses API (for Codex):
   account serves every thread, as before.
 
 A scoped account serves a request only when its thread's project is known and
-listed. The project comes from the Pooler's cached thread lookup (the one the
-wait-state read uses) and never delays a request: a request without a session,
-without a linked thread, or whose thread has not been read yet goes to the
-unscoped accounts, and the lookup runs in the background for the next one.
+listed. The hub token the Pooler hands each session names it:
+`ANTHROPIC_AUTH_TOKEN` and `CODEX_POOL_AUTH_TOKEN` read
+`<host token>;project=<project ID>`, from the project BB starts the session in
+(`src/caller-token.ts`; the base URL cannot carry it, since BB matches plugin
+HTTP routes by exact path). So a thread's first request already reaches its
+gateway, with no lookup. A session started before this format presents the bare
+host token; its project then comes from the Pooler's cached thread lookup (the
+one the wait-state read uses), which never delays a request: until its session
+is linked and its thread read, such a request goes to the unscoped accounts, and
+the lookup runs in the background for the next one. On 2026-11-18, with every
+subscription out for the day, that gap failed about 25 Equisafe turns an hour.
+The project in the token is the client's own claim; the host token next to it is
+the only check, as for every other account.
 
 For a thread of its project, a scoped account is preferred over the unscoped
 ones, as a detour like the Fable one: it never takes the session's pin or the
@@ -79,8 +88,7 @@ either side (`invalid_encrypted_content` from ChatGPT,
 reasoning, and the Pooler forwards every turn unchanged to whichever side
 serves it. That includes Codex CLI's zstd-compressed bodies, which the
 gateway decodes (200 on the same day). A switch costs only the prompt cache:
-the first turn on the other side reads none of it. As for Claude, the first one or two requests of a cold
-session go to the subscription while the project lookup runs.
+the first turn on the other side reads none of it.
 
 A refusal about the account rather than the request is another matter. When an
 API-key account, scoped or not, answers a 4xx whose message is about the

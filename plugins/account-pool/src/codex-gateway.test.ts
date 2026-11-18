@@ -232,6 +232,20 @@ describe("a Codex API-key account behind a gateway, scoped to some projects", ()
     });
   });
 
+  // Codex sends the hub token as x-bb-account-pool-token (its ChatGPT login rides as the bearer).
+  it("reaches the gateway from a session no thread is linked to when the token names an Equisafe project", async () => {
+    const pool = await makePool();
+    exhaustChatGpt(pool);
+    const named = { headers: { "x-bb-account-pool-token": `hub;project=${EQUISAFE}` } };
+    expect(await pool.send("fresh", named)).toMatchObject({ status: 200, tried: ["gateway"] });
+    // A bare token: the session's project, unknown here, so no account may serve.
+    expect((await pool.send("fresh", { headers: { "x-bb-account-pool-token": "hub" } })).status).toBe(429);
+    // Another project's token never reaches it.
+    const other = { headers: { "x-bb-account-pool-token": "hub;project=proj_other" } };
+    pool.projects.set("s1", EQUISAFE);
+    expect((await pool.send("s1", other)).status).toBe(429);
+  });
+
   it("serves another project, an unresolved thread and a request without a session from ChatGPT", async () => {
     const pool = await makePool();
     pool.projects.set("other", "proj_other");
