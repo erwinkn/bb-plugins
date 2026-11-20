@@ -13,7 +13,7 @@ type Configure = Parameters<Api["call"]>[1] & { threadId: string };
 /** R3: the mode follows the role, so the panel only says which one this memory has. */
 export const MEMORY_MODES_TEXT: Record<MemoryMode, { label: string; line: string }> = {
   regular: { label: "Regular", line: "One long session, compacted once it gets large." },
-  optchat: { label: "UniiChat", line: "A fresh session per message over the summary view (Claude Code only). Every Adventure coordinator uses it." },
+  optchat: { label: "UniiChat", line: "A fresh session per message over the summary view on providers that support it (Claude Code); other providers log to the shared memory and read it with memory_read / memory_zoom." },
 };
 const text = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));

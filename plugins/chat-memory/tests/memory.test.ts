@@ -8,11 +8,12 @@ const toolNames = async (f: ReturnType<typeof fixture>, threadId: string, option
   (await f.configureAgent(threadId, options)).tools.map((t) => t.name).sort();
 
 describe("T145 scopes", () => {
-  it("gives a scope's threads their memory tools, and the hidden turn hook only in a coordinator's OptChat memory (D490, R3)", async () => {
+  it("gives a scope's threads their memory tools, and the hidden turn hook only in an OptChat memory on a provider that supports it", async () => {
     const f = fixture();
-    await f.attach("initiatives", "prj_1", f.thread("coord"), f.thread("talk", { providerId: "codex" }));
+    await f.attach("initiatives", "prj_1", f.thread("coord"), f.thread("talk", { providerId: "codex" }), f.thread("agy", { providerId: "acp-antigravity" }));
     expect(await toolNames(f, "coord")).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
-    expect(await toolNames(f, "talk", { providerId: "codex" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "talk", { providerId: "codex" })).toEqual(["memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "agy", { providerId: "acp-antigravity" })).toEqual(["memory_read", "memory_zoom"]);
     const config = await f.configureAgent("coord");
     expect(config.instructions).toMatch(/^Memory: every message of this chat is logged/);
     // Any other memory is Regular: tools, no hook.
@@ -187,13 +188,22 @@ describe("T145 turns (one path per mode, D458)", () => {
 });
 
 describe("T145 switching (D452, D458, D460)", () => {
-  it("shows a Codex thread in a coordinator's memory as a problem and refuses its turns, with no way to switch (D460, R3)", async () => {
+  it("enforces UniiChat only on providers that support it; other providers in an OptChat scope keep memory tools and proceed without refusal", async () => {
     const f = fixture();
-    await f.attach("initiatives", "prj_1", f.thread("a"), f.thread("c", { providerId: "codex", title: "Codex talk" }));
-    expect((await f.memory.status("initiatives:prj_1")).problems).toEqual([expect.stringMatching(/UniiChat cannot run in "Codex talk" \(codex\): its turns are refused until it is replaced with a Claude Code thread/)]);
-    // The hook in a Codex thread's tools makes BB refuse each of its turns; the gate says why first.
-    expect(await toolNames(f, "c", { providerId: "codex" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
-    expect(await f.dispatch("c")).toMatchObject({ action: "reject", message: expect.stringMatching(/UniiChat runs on Claude Code only for now \(T146\): "Codex talk" runs on codex, so this message was not sent/) });
+    await f.attach(
+      "initiatives",
+      "prj_1",
+      f.thread("a"),
+      f.thread("c", { providerId: "codex", title: "Codex talk" }),
+      f.thread("g", { providerId: "acp-antigravity", title: "Antigravity coord" }),
+    );
+    expect((await f.memory.status("initiatives:prj_1")).problems).toEqual([]);
+    // Only Claude Code gets the hidden turn hook; other providers get memory_read/memory_zoom and proceed normally.
+    expect(await toolNames(f, "a", { providerId: "claude-code" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "c", { providerId: "codex" })).toEqual(["memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "g", { providerId: "acp-antigravity" })).toEqual(["memory_read", "memory_zoom"]);
+    expect(await f.dispatch("c", { providerId: "codex" })).toEqual({ action: "proceed" });
+    expect(await f.dispatch("g", { providerId: "acp-antigravity" })).toEqual({ action: "proceed" });
     expect(await f.dispatch("c", { attempt: "join-turn" })).toEqual({ action: "proceed" });
     expect(await f.dispatch("a")).toEqual({ action: "proceed" });
     // A Regular memory takes a Codex thread.

@@ -32,7 +32,7 @@ describe("R3 the memory has no switch", () => {
     const s = renderSlot({ component: MemoryPanel }, { threadId: "coord", params: null }, { rpc: { status: async () => status({ mode: "optchat", compactTokens: 0, problems: ["UniiChat cannot run in \"Talk\" (codex)"] }) } });
     expect((await s.findByRole("status")).textContent).toContain("UniiChat cannot run");
     expect(s.getByText("UniiChat")).toBeTruthy();
-    expect(s.container.textContent).toContain("Every Adventure coordinator uses it");
+    expect(s.container.textContent).toContain("providers that support it");
     expect(s.queryByRole("radiogroup")).toBeNull();
     expect(s.queryByRole("radio")).toBeNull();
     expect(s.queryByText("Compaction limit (tokens)")).toBeNull();

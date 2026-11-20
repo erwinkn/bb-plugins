@@ -35,6 +35,10 @@ const PROGRESS_PUBLISH_MS = 30_000;
  * protocol 4); any other provider refuses a turn whose tools include it.
  */
 export const TURN_CONTEXT_TOOL = "claude_code_turn_context";
+/** Providers whose BB bridge implements `turnContext: true` (UniiChat fresh-session turns). */
+export const OPTCHAT_PROVIDERS: ReadonlySet<string> = new Set(["claude-code"]);
+export const supportsOptChat = (providerId: string | null | undefined) =>
+  providerId != null && OPTCHAT_PROVIDERS.has(providerId);
 export const turnAskSchema = z.object({
   protocol: z.literal(4),
   /** The turn's own text. */
@@ -388,11 +392,12 @@ export class ChatMemory {
 
   /**
    * D447: the memory tools a session gets, when BB builds it and again whenever BB resolves a turn:
-   * every thread that writes to a scope. D490: the turn hook only in OptChat, where a
-   * Claude Code thread asks for its view before each turn and BB refuses every turn of a thread on
-   * another provider (FORK.md): OptChat runs on Claude Code only (D460, T146). A thread chat memory
-   * meets for the first time with its owner's MEMORY_SCOPE_KEY is attached to that scope here, in
-   * the same synchronous call, so its first turn already has it (D487).
+   * every thread that writes to a scope. The hidden turn hook is enforced in OptChat scopes only
+   * for providers that support it (`supportsOptChat`, currently Claude Code): other providers
+   * (e.g. Antigravity, Codex) still stay attached to the scope, log turns into the shared memory
+   * tree, and get `memory_read` / `memory_zoom`, without failing on an unsupported turn hook.
+   * A thread chat memory meets for the first time with its owner's MEMORY_SCOPE_KEY is attached to
+   * that scope here, in the same synchronous call, so its first turn already has it (D487).
    */
   sessionTools(t: SessionFacts): string[] | null {
     const named = t.originPluginId && t.originMetadata ? scopeNamed(t.originPluginId, t.originMetadata) : null;
@@ -405,27 +410,23 @@ export class ChatMemory {
     }
     const scope = this.store.scopeOf(t.threadId);
     if (!scope) return null;
-    return ["memory_read", "memory_zoom", ...(scope.mode === "optchat" ? [TURN_CONTEXT_TOOL] : [])];
+    const useOptChat = scope.mode === "optchat" && supportsOptChat(t.providerId);
+    return ["memory_read", "memory_zoom", ...(useOptChat ? [TURN_CONTEXT_TOOL] : [])];
   }
 
   /**
-   * D460: the turn gate, before BB sends a message on (its message.dispatch hook). It refuses, with
-   * the reason and its message kept, a new turn of an OptChat thread on another provider (Codex,
-   * T146). BB would refuse the turn anyway (the hook is in its tools); this only explains it early.
-   * It also refuses a new turn already known to fail (requiredFailure): refused here, the message
-   * never reaches the provider, which records its input as accepted before it asks for the turn's
-   * memory, so a failure then would leave that input in memory (D502).
+   * D460: the turn gate, before BB sends a message on (its message.dispatch hook). For providers
+   * that support OptChat (`supportsOptChat`), it refuses a new turn already known to fail
+   * (`requiredFailure`): refused here, the message never reaches the provider, which records its
+   * input as accepted before it asks for the turn's memory, so a failure then would leave that
+   * input in memory (D502). Providers without OptChat support proceed normally without UniiChat.
    * Every other message goes at once: the turn itself waits for what its memory needs (R12).
    */
   async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn" }): Promise<DispatchDecision> {
     const scope = this.store.scopeOf(d.threadId);
-    if (d.attempt === "join-turn" || scope?.mode !== "optchat") return { action: "proceed" };
-    if (d.providerId === "claude-code") {
-      const failure = this.requiredFailure(scope.id);
-      return failure ? { action: "reject", message: failure } : { action: "proceed" };
-    }
-    const name = await this.threadName(d.threadId);
-    return { action: "reject", message: `UniiChat runs on Claude Code only for now (T146): ${name} runs on ${d.providerId}, so this message was not sent. Adventure coordinators run on Claude Code (rule R3): replace it with a Claude Code coordinator to go on.` };
+    if (d.attempt === "join-turn" || scope?.mode !== "optchat" || !supportsOptChat(d.providerId)) return { action: "proceed" };
+    const failure = this.requiredFailure(scope.id);
+    return failure ? { action: "reject", message: failure } : { action: "proceed" };
   }
 
   /** Whether a turn of the scope would go without its last-resort wait: its log caught up, and its view under the ceiling. */
@@ -758,11 +759,6 @@ export class ChatMemory {
     );
     const problems: string[] = [];
     const name = (t: (typeof threads)[number]) => (t.title ? `"${t.title}"` : t.threadId);
-    if (scope.mode === "optchat") {
-      for (const t of threads) {
-        if (t.providerId !== "claude-code") problems.push(`UniiChat cannot run in ${name(t)} (${t.providerId ?? "unknown provider"}): its turns are refused until it is replaced with a Claude Code thread.`);
-      }
-    }
     // An OptChat scope never compacts: an error recorded while it was Regular is history.
     if (scope.mode !== "optchat") for (const t of threads) if (t.compactError !== null) problems.push(`Compacting ${name(t)} failed: ${t.compactError}. It is tried again after its next turns.`);
     const ready = this.ready(scopeId);

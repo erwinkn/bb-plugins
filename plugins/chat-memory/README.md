@@ -75,30 +75,24 @@ finer identity, so a local caller who knows the method can still reach it
 (accepted). The thread header has no memory entry any more; the panel shows a
 memory's mode, problems, threads, log, tree and cost read-only.
 
-**UniiChat runs on every turn, or the turn fails (D458, D460, A471).** What
+**UniiChat runs on every turn for providers that support it (D458, D460, A471).** What
 enforces the mode is the turn itself, not a gate in front of some of them. BB
 resolves a thread's tools for every turn it starts, whatever started it: a
 message, a queued one, BB's notice to a parent thread (a child finished), Send
 now, a retry. Erwin's fork sends those tools with the turn (FORK.md, "per-turn
 context from a hidden tool", protocol 4), and:
 
-- on Claude Code, a turn whose tools include `claude_code_turn_context` asks it
+- on Claude Code (`supportsOptChat`), a turn whose tools include `claude_code_turn_context` asks it
   how to run, however its session was built;
-- every other provider refuses a turn whose tools include it, with the reason
-  in the thread, and never shows it to its model.
-
-So this plugin selects the hook for every thread of a coordinator's scope, and no
-other (D490). A Claude Code thread's turns then ask for their view; a coordinator
-on another provider has each of its turns refused, visibly (a problem in the panel,
-the turn gate's reason), with no fallback, until it is replaced with a Claude Code
-thread (Codex support is T146).
+- providers that do not support `turnContext` (such as `acp-antigravity` or `codex`) do not receive
+  `claude_code_turn_context`: they stay attached to the scope, log turns into the shared memory
+  tree, and get `memory_read` / `memory_zoom`, without turning on UniiChat.
 
 **The turn gate.** Chat memory also answers BB's `message.dispatch` hook, which
-runs before a message reaches a provider, to refuse early, with the reason, what
-would fail anyway: a new turn of an UniiChat thread on another provider, and one
-whose history view is known to fail (`tree.requiredFailure`, below). BB keeps the
-message. Messages that join a running turn, and every other thread's,
-go on.
+runs before a message reaches a provider, to refuse early, with the reason, a new turn of an
+UniiChat thread on a supporting provider (`claude-code`) whose history view is known to fail
+(`tree.requiredFailure`, below). BB keeps the message. Messages on providers without UniiChat
+support, messages that join a running turn, and every other thread's go on.
 
 ## UniiChat turns (D431 phase 2, R12)
 
