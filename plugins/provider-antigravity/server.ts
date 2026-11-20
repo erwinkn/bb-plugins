@@ -39,7 +39,7 @@ export const ANTIGRAVITY_PROVIDER: PluginProviderDeclaration = {
     acpLaunchSpec: ANTIGRAVITY_LAUNCH_SPEC,
   },
   models: { scope: "host" },
-  maintenance: { health: true, usage: false, installation: false },
+  maintenance: { health: true, usage: true, installation: false },
   capabilities: {
     supportsServiceTier: true,
     supportsNativeUserQuestion: false,

@@ -4,8 +4,9 @@ Run Google's Antigravity CLI (`agy`) as a BB provider (`acp-antigravity`) with
 its own icon, Google sign-in from **Settings → Antigravity**, and on-demand
 usage limits.
 
-`host.ts` re-exports BB's published ACP bridge (`experimental_acpProviderBridge`)
-as is—no bridge wrapper or protocol interception.
+`host.ts` wraps BB's published ACP bridge (`experimental_acpProviderBridge`)
+in `src/bridge.ts`, which answers only `provider/usage`; every other request,
+the ACP session traffic and the lifecycle hooks pass through unchanged.
 
 ## Install / Switch from W628 custom agent
 
@@ -23,10 +24,11 @@ Existing threads on `acp-antigravity` continue working without changes.
 
 ## Notes
 
-- **Usage limits:** BB's global usage popup reads `provider/usage` only from
-  inside a provider bridge. To keep the bridge unwrapped and simple, usage is
-  served by a cached server RPC (`agy -p /usage --output-format json`, 3-minute
-  in-memory cache) and displayed in **Settings → Antigravity**.
+- **Usage limits:** the bridge answers `provider/usage` from
+  `agy -p /usage --output-format json` (3-minute in-memory cache, one probe at a
+  time), so `bb.sdk.system.usageLimits` and the Provider usage plugin list
+  Antigravity next to Claude Code and Codex. **Settings → Antigravity** shows the
+  same numbers through a cached server RPC.
 - **Sign-in:** Spawns `agy acp --login` with `AGY_ACP_FORCE_FILE_STORAGE=1`
   (one process at a time, 5-minute timeout), shows the Google OAuth link, writes
   the pasted code to stdin, and cleans up on completion, cancel, or dispose.

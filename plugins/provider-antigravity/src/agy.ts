@@ -253,8 +253,14 @@ export interface ServiceDeps {
   usageCacheTtlMs?: number;
   resolveAgy?: () => Promise<string | null>;
   spawnLogin?: (command: string, env: NodeJS.ProcessEnv) => ChildProcess;
-  runUsage?: (command: string, env: NodeJS.ProcessEnv) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  runUsage?: UsageRunner;
 }
+
+type UsageRunner = (
+  command: string,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+) => Promise<{ code: number | null; stdout: string; stderr: string }>;
 
 interface ActiveFlow {
   id: string;
@@ -270,8 +276,12 @@ interface ActiveFlow {
   exited: Promise<number | null>;
 }
 
-function defaultRunUsage(command: string, env: NodeJS.ProcessEnv) {
+const defaultRunUsage: UsageRunner = (command, env, signal) => {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+    if (signal.aborted) {
+      resolve({ code: null, stdout: "", stderr: "" });
+      return;
+    }
     const child = spawn(command, ["-p", "/usage", "--output-format", "json"], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -288,14 +298,18 @@ function defaultRunUsage(command: string, env: NodeJS.ProcessEnv) {
       stderr = (stderr + chunk.toString("utf8")).slice(0, 64 * 1024);
       if (SIGN_IN_PROMPT.test(stdout + stderr)) killChild(child);
     });
+    // The probe is detached, so nothing else would end it once the service is gone.
+    const abort = () => killChild(child, "SIGKILL");
+    signal.addEventListener("abort", abort, { once: true });
     const finish = (code: number | null) => {
       clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
       resolve({ code, stdout, stderr });
     };
     child.on("error", () => finish(null));
     child.on("close", (code) => finish(code));
   });
-}
+};
 
 export class AntigravityService {
   private readonly home: string;
@@ -307,7 +321,9 @@ export class AntigravityService {
   private readonly usageCacheTtlMs: number;
   private readonly resolveCmd: () => Promise<string | null>;
   private readonly spawnLogin: (command: string, env: NodeJS.ProcessEnv) => ChildProcess;
-  private readonly runUsage: (command: string, env: NodeJS.ProcessEnv) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  private readonly runUsage: UsageRunner;
+  /** Aborted on dispose: ends every usage probe still running. */
+  private readonly shutdown = new AbortController();
 
   private active: ActiveFlow | null = null;
   private stopping: { flow: ActiveFlow; done: Promise<boolean> } | null = null;
@@ -364,6 +380,7 @@ export class AntigravityService {
 
   async usage(force = false): Promise<UsageState> {
     const [command, account] = await Promise.all([this.resolveCmd(), readAccount(this.home)]);
+    this.assertRunning();
     if (command === null) return { status: "not_installed" };
     if (!account.signedIn || !account.credential) return { status: "unauthenticated" };
     if (
@@ -378,7 +395,9 @@ export class AntigravityService {
     // Only share a request made for the same account: another one's answer must not reach this caller.
     if (!force && this.usageInFlight?.credential === credential) return this.usageInFlight.run;
     const run = (async (): Promise<UsageState> => {
-      const result = await this.runUsage(command, agyEnv());
+      this.assertRunning();
+      const result = await this.runUsage(command, agyEnv(), this.shutdown.signal);
+      this.assertRunning();
       if (SIGN_IN_PROMPT.test(result.stdout + result.stderr)) {
         return { status: "expired" };
       }
@@ -404,6 +423,10 @@ export class AntigravityService {
     } finally {
       if (this.usageInFlight === entry) this.usageInFlight = null;
     }
+  }
+
+  private assertRunning(): void {
+    if (this.disposed) throw new Error("The Antigravity service is shutting down.");
   }
 
   /** Runs lifecycle operations (start, cancel, sign-out, forced stop) one at a time, so none can interleave with another's awaits. */
@@ -620,6 +643,7 @@ export class AntigravityService {
   dispose(): void {
     // Nonthrowing; the escalation timers are unref'd so they never hold the host open.
     this.disposed = true;
+    this.shutdown.abort();
     this.stopFlow();
   }
 }
