@@ -313,6 +313,32 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### ACP: ship Google's Antigravity CLI as a known agent (2026-11-19)
+
+Google's official Antigravity CLI (`agy`, 1.5 and later) serves ACP itself
+through `agy acp`, and T3 Code ships it as a provider. In BB it runs today as a
+`provider-acp` custom agent (W628: `command` set to the binary, `args: ["acp"]`,
+`permissionCli.full: ["--dangerously-skip-permissions"]` after `acp`). BB's
+generic bridge already lists its models with per-model thinking levels (the
+`thought_level` config option), applies the model and level, and answers its
+`default`-mode permission requests from BB's own policy. The CLI rejects
+T3's `yolo` and `auto_edit` mode IDs; it offers only `default`, `accept-edits`
+and `plan`. Sign-in is a terminal flow (`agy acp --login`: open the Google
+link, paste the code from `antigravity.google/oauth-callback`), so it works
+from a remote browser.
+
+Proposed core change: a `KNOWN_ACP_AGENTS` entry `acp-antigravity` (command
+`agy`, visibility `installed`, `signInCommand: "agy acp --login"`, install URL
+`https://antigravity.google/docs/getting-started`, an icon, and skill roots
+`.gemini/skills`, `.agents/skills`, `.agent/skills` per project and
+`~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills` per user). Custom agents can't set `signInCommand`, `installUrl` or an icon today.
+Two dialect quirks to confirm on a signed-in session first: T3 stops
+advertising `fs.writeTextFile` because agy then swaps its diff edits for
+whole-file client writes, and agy advertises
+`_meta.antigravity.systemPrompt.append` on `session/new`, a better channel for
+BB's instructions than the `<system_instructions>` block in the first prompt.
+Status: recorded here; no upstream issue filed.
+
 ### Plugin notifications (2026-11-14)
 
 A plugin server has no way to notify a person: the SDK exposes no
