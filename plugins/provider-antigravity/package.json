@@ -1,0 +1,48 @@
+{
+  "name": "bb-plugin-provider-antigravity",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "bb": ">=0.45",
+    "bbPluginSdk": ">=0.6.15"
+  },
+  "bb": {
+    "name": "Antigravity",
+    "description": "Run Google's Antigravity CLI (agy) in bb, sign in to it from Settings, and view its usage limits.",
+    "branding": {
+      "icon": "./icons/antigravity.svg"
+    },
+    "experimental_providers": [
+      {
+        "kind": "agent",
+        "id": "acp-antigravity",
+        "displayName": "Antigravity"
+      }
+    ],
+    "server": "./server.ts",
+    "host": "./host.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.15",
+    "@tanstack/react-query": "^5.104.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}

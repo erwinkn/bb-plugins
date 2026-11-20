@@ -78,6 +78,12 @@ modes mapped to Muse's profiles with prompts as bb approvals, and per-turn
 token and subscription usage. It runs on the thread's machine, where Muse must
 be signed in. See [Muse provider](plugins/muse/README.md).
 
+`provider-antigravity` runs Google's Antigravity CLI (`agy acp`, its own ACP
+server) as provider `acp-antigravity` by re-exporting bb's published ACP bridge
+as is, with Antigravity's icon, Google sign-in/sign-out, and cached on-demand
+usage limits (`agy -p /usage`) in Settings → Antigravity. See
+[Antigravity provider](plugins/provider-antigravity/README.md).
+
 ## Install
 
 Use BB 0.43.1 or later. The bb server needs Git, npm, and GitHub access to this
@@ -337,7 +343,10 @@ advertising `fs.writeTextFile` because agy then swaps its diff edits for
 whole-file client writes, and agy advertises
 `_meta.antigravity.systemPrompt.append` on `session/new`, a better channel for
 BB's instructions than the `<system_instructions>` block in the first prompt.
-Status: recorded here; no upstream issue filed.
+Status: recorded here; no upstream issue filed. `provider-antigravity` now
+covers the icon, sign-in, and usage limits in Settings without a core change
+(BB's global usage popup still requires a bridge-level `provider/usage`
+handler, which a core built-in entry would cover).
 
 ### Plugin notifications (2026-11-14)
 
