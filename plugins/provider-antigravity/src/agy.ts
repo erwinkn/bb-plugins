@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { access, readFile, rm } from "node:fs/promises";
+import { constants as fsConstants, rmSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -27,6 +27,10 @@ const SUBMIT_WAIT_MS = 20_000;
 const FLOW_TIMEOUT_MS = 5 * 60_000;
 const OUTPUT_CAP = 64 * 1024;
 const MAX_RESPONSE_LENGTH = 16_384;
+// After SIGTERM a login child gets this long to exit before SIGKILL, then this
+// long to be reaped before the service stops waiting for it.
+const KILL_GRACE_MS = 2_500;
+const KILL_WAIT_MS = 1_000;
 
 export function agyEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -102,7 +106,9 @@ export async function readAccount(home: string = os.homedir()): Promise<AgyAccou
 }
 
 export function parseAuthorizationUrl(output: string): { url: string; state: string } | null {
-  for (const match of output.matchAll(/https:\/\/accounts\.google\.com\/\S+/gu)) {
+  // A URL counts only once whitespace follows it: output arrives in chunks, and
+  // a link cut mid-`state=` would otherwise lock in a truncated flow.
+  for (const match of output.matchAll(/https:\/\/accounts\.google\.com\/\S+(?=\s)/gu)) {
     let url: URL;
     try {
       url = new URL(match[0]);
@@ -191,15 +197,26 @@ export function usageWindowsFromAnswer(answer: unknown): UsageWindow[] | null {
   return windows;
 }
 
-function killChild(child: ChildProcess): void {
+function killChild(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): void {
   const pid = child.pid;
-  if (pid === undefined) return;
   try {
-    if (process.platform === "win32") child.kill("SIGTERM");
-    else process.kill(-pid, "SIGTERM");
+    if (pid === undefined || process.platform === "win32") child.kill(signal);
+    else process.kill(-pid, signal);
   } catch {
     // Already exited.
   }
+}
+
+/** Resolves true when `promise` settles within `ms`, false when the wait ran out. The timer never outlives the wait. */
+function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    timer.unref();
+    void promise.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 function lastLine(output: string): string | null {
@@ -230,6 +247,9 @@ export interface ServiceDeps {
   home?: string;
   now?: () => number;
   flowTimeoutMs?: number;
+  killGraceMs?: number;
+  killWaitMs?: number;
+  submitWaitMs?: number;
   usageCacheTtlMs?: number;
   resolveAgy?: () => Promise<string | null>;
   spawnLogin?: (command: string, env: NodeJS.ProcessEnv) => ChildProcess;
@@ -244,6 +264,7 @@ interface ActiveFlow {
   message: string | null;
   child: ChildProcess;
   output: string;
+  streams: { stdout: string; stderr: string };
   timer: NodeJS.Timeout;
   linkReady: Promise<void>;
   exited: Promise<number | null>;
@@ -280,20 +301,31 @@ export class AntigravityService {
   private readonly home: string;
   private readonly now: () => number;
   private readonly flowTimeoutMs: number;
+  private readonly killGraceMs: number;
+  private readonly killWaitMs: number;
+  private readonly submitWaitMs: number;
   private readonly usageCacheTtlMs: number;
   private readonly resolveCmd: () => Promise<string | null>;
   private readonly spawnLogin: (command: string, env: NodeJS.ProcessEnv) => ChildProcess;
   private readonly runUsage: (command: string, env: NodeJS.ProcessEnv) => Promise<{ code: number | null; stdout: string; stderr: string }>;
 
   private active: ActiveFlow | null = null;
+  private stopping: { flow: ActiveFlow; done: Promise<boolean> } | null = null;
+  /** A login child that outlived SIGKILL; nothing may touch the token file until it exits. */
+  private lingering: ActiveFlow | null = null;
+  private lifecycle: Promise<void> = Promise.resolve();
+  private disposed = false;
   private finished: SignInFlow | null = null;
   private usageCache: { credential: string; fetchedAt: number; value: UsageState } | null = null;
-  private usageInFlight: Promise<UsageState> | null = null;
+  private usageInFlight: { credential: string; run: Promise<UsageState> } | null = null;
 
   constructor(deps: ServiceDeps = {}) {
     this.home = deps.home ?? os.homedir();
     this.now = deps.now ?? (() => Date.now());
     this.flowTimeoutMs = deps.flowTimeoutMs ?? FLOW_TIMEOUT_MS;
+    this.killGraceMs = deps.killGraceMs ?? KILL_GRACE_MS;
+    this.killWaitMs = deps.killWaitMs ?? KILL_WAIT_MS;
+    this.submitWaitMs = deps.submitWaitMs ?? SUBMIT_WAIT_MS;
     this.usageCacheTtlMs = deps.usageCacheTtlMs ?? USAGE_CACHE_TTL_MS;
     this.resolveCmd = deps.resolveAgy ?? (() => resolveAgy());
     this.spawnLogin =
@@ -342,8 +374,9 @@ export class AntigravityService {
     ) {
       return this.usageCache.value;
     }
-    if (!force && this.usageInFlight) return this.usageInFlight;
     const credential = account.credential;
+    // Only share a request made for the same account: another one's answer must not reach this caller.
+    if (!force && this.usageInFlight?.credential === credential) return this.usageInFlight.run;
     const run = (async (): Promise<UsageState> => {
       const result = await this.runUsage(command, agyEnv());
       if (SIGN_IN_PROMPT.test(result.stdout + result.stderr)) {
@@ -364,29 +397,88 @@ export class AntigravityService {
       const detail = lastLine(result.stderr) ?? lastLine(result.stdout) ?? "agy /usage returned an unreadable answer.";
       return { status: "error", message: detail };
     })();
-    this.usageInFlight = run;
+    const entry = { credential, run };
+    this.usageInFlight = entry;
     try {
       return await run;
     } finally {
-      if (this.usageInFlight === run) this.usageInFlight = null;
+      if (this.usageInFlight === entry) this.usageInFlight = null;
     }
   }
 
-  private stopActive(outcome: SignInFlow | null = null): void {
+  /** Runs lifecycle operations (start, cancel, sign-out, forced stop) one at a time, so none can interleave with another's awaits. */
+  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lifecycle.then(fn);
+    this.lifecycle = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** SIGTERM, then SIGKILL after a grace period. True when the child's exit was observed. */
+  private async terminate(flow: ActiveFlow): Promise<boolean> {
+    killChild(flow.child);
+    let exited = await settlesWithin(flow.exited, this.killGraceMs);
+    if (!exited) {
+      killChild(flow.child, "SIGKILL");
+      exited = await settlesWithin(flow.exited, this.killWaitMs);
+    }
+    if (!exited) {
+      this.lingering = flow;
+      void flow.exited.then(() => {
+        if (this.lingering === flow) this.lingering = null;
+      });
+    }
+    if (this.stopping?.flow === flow) this.stopping = null;
+    return exited;
+  }
+
+  /** Starts ending the active login child (no-op without one); `stopping` tracks it until the child has exited. */
+  private stopFlow(outcome: SignInFlow | null = null): void {
     const current = this.active;
     if (!current) return;
     this.active = null;
     clearTimeout(current.timer);
-    killChild(current.child);
     if (outcome) this.finished = outcome;
+    this.stopping = { flow: current, done: this.terminate(current) };
+  }
+
+  /**
+   * Resolves once no login child can still write to the token file: the active
+   * flow is stopped, any shutdown already underway is joined, and a child that
+   * outlived SIGKILL is tried once more. Throws if one still has not exited.
+   * With `only`, just that flow is handled, so a late caller cannot end a newer one.
+   */
+  private async quiesce(only?: ActiveFlow): Promise<void> {
+    const failure = new Error("The previous agy sign-in process did not exit. Try again in a moment.");
+    const mine = (flow: ActiveFlow) => !only || flow === only;
+    if (this.active && mine(this.active)) this.stopFlow();
+    let confirmed = true;
+    while (this.stopping && mine(this.stopping.flow)) confirmed = (await this.stopping.done) && confirmed;
+    if (!confirmed) throw failure;
+    const stuck = this.lingering;
+    if (stuck && mine(stuck)) {
+      killChild(stuck.child, "SIGKILL");
+      if (!(await settlesWithin(stuck.exited, this.killWaitMs))) throw failure;
+      if (this.lingering === stuck) this.lingering = null;
+    }
   }
 
   async signInStart(): Promise<Status> {
     const command = await this.resolveCmd();
     if (command === null) throw new Error("agy is not installed on this machine.");
-    this.stopActive();
-    this.finished = null;
+    const flow = await this.exclusive(async () => {
+      await this.quiesce();
+      if (this.disposed) throw new Error("The Antigravity service is shutting down.");
+      this.finished = null;
+      return this.launch(command);
+    });
+    await settlesWithin(flow.linkReady, LINK_WAIT_MS);
+    return this.status();
+  }
 
+  private launch(command: string): ActiveFlow {
     const id = randomUUID();
     const child = this.spawnLogin(command, agyEnv());
     let resolveLink!: () => void;
@@ -402,11 +494,12 @@ export class AntigravityService {
       message: "Starting Google sign-in…",
       child,
       output: "",
+      streams: { stdout: "", stderr: "" },
       linkReady,
       exited,
       timer: setTimeout(() => {
         if (this.active !== flow) return;
-        this.stopActive({
+        this.stopFlow({
           id,
           phase: "failed",
           authorizationUrl: null,
@@ -417,10 +510,14 @@ export class AntigravityService {
     };
     this.active = flow;
 
-    const onOutput = (chunk: Buffer) => {
-      flow.output = (flow.output + chunk.toString("utf8")).slice(0, OUTPUT_CAP);
+    // Each stream is parsed on its own: a newline on stderr says nothing about
+    // whether a URL still arriving on stdout has ended.
+    const onOutput = (stream: "stdout" | "stderr") => (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      flow.output = (flow.output + text).slice(0, OUTPUT_CAP);
+      flow.streams[stream] = (flow.streams[stream] + text).slice(0, OUTPUT_CAP);
       if (flow.authorizationUrl === null) {
-        const parsed = parseAuthorizationUrl(flow.output);
+        const parsed = parseAuthorizationUrl(flow.streams[stream]);
         if (parsed) {
           flow.authorizationUrl = parsed.url;
           flow.state = parsed.state;
@@ -430,8 +527,8 @@ export class AntigravityService {
         }
       }
     };
-    child.stdout?.on("data", onOutput);
-    child.stderr?.on("data", onOutput);
+    child.stdout?.on("data", onOutput("stdout"));
+    child.stderr?.on("data", onOutput("stderr"));
     const onDone = (code: number | null) => {
       resolveLink();
       resolveExit(code);
@@ -459,9 +556,7 @@ export class AntigravityService {
     };
     child.on("error", () => onDone(null));
     child.on("close", (code) => onDone(code));
-
-    await Promise.race([linkReady, new Promise((resolve) => setTimeout(resolve, LINK_WAIT_MS))]);
-    return this.status();
+    return flow;
   }
 
   async signInSubmit(flowId: string, response: string): Promise<Status> {
@@ -477,37 +572,54 @@ export class AntigravityService {
     flow.message = "Verifying authorization code…";
     flow.child.stdin?.write(`${answer}\n`);
     flow.child.stdin?.end();
-    await Promise.race([flow.exited, new Promise((resolve) => setTimeout(resolve, SUBMIT_WAIT_MS))]);
-    if (this.active === flow) {
-      this.stopActive({
-        id: flow.id,
-        phase: "failed",
-        authorizationUrl: null,
-        message: "Timed out waiting for agy to finish sign-in.",
-        active: false,
+    await settlesWithin(flow.exited, this.submitWaitMs);
+    try {
+      await this.exclusive(async () => {
+        if (this.active === flow) {
+          this.stopFlow({
+            id: flow.id,
+            phase: "failed",
+            authorizationUrl: null,
+            message: "Timed out waiting for agy to finish sign-in.",
+            active: false,
+          });
+        }
+        await this.quiesce(flow);
       });
+    } finally {
+      this.usageCache = null;
     }
-    this.usageCache = null;
     return this.status();
   }
 
   async signInCancel(flowId: string): Promise<Status> {
-    if (this.active?.id === flowId) {
-      this.stopActive();
+    await this.exclusive(async () => {
+      const flow = [this.active, this.stopping?.flow, this.lingering].find((candidate) => candidate?.id === flowId);
+      if (!flow) return;
+      await this.quiesce(flow);
       this.finished = null;
-    }
+    });
     return this.status();
   }
 
   async signOut(): Promise<Status> {
-    this.stopActive();
-    this.finished = null;
-    this.usageCache = null;
-    await rm(tokenFilePath(this.home), { force: true });
+    await this.exclusive(async () => {
+      await this.quiesce();
+      // A reload may have replaced this service while we waited; its successor
+      // owns the token file now, so a late sign-out must not touch it.
+      if (this.disposed) throw new Error("The Antigravity service is shutting down.");
+      this.finished = null;
+      this.usageCache = null;
+      // Synchronous on purpose: no await sits between the disposed check above
+      // and the unlink, so a replacement service cannot save credentials in the gap.
+      rmSync(tokenFilePath(this.home), { force: true });
+    });
     return this.status();
   }
 
   dispose(): void {
-    this.stopActive();
+    // Nonthrowing; the escalation timers are unref'd so they never hold the host open.
+    this.disposed = true;
+    this.stopFlow();
   }
 }

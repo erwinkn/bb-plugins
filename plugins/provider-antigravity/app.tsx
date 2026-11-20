@@ -1,4 +1,4 @@
-import { useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { appContract, SignInFlow, Status, UsageState } from "./src/contract";
@@ -6,7 +6,10 @@ import type { appContract, SignInFlow, Status, UsageState } from "./src/contract
 const INSTALL_URL = "https://antigravity.google/docs/getting-started";
 const queryKeys = {
   status: ["antigravity-status"] as const,
+  // One entry per Google account: switching accounts never shows the previous
+  // account's limits, while loading or after a failed read.
   usage: ["antigravity-usage"] as const,
+  usageFor: (email: string | null) => ["antigravity-usage", email ?? ""] as const,
 };
 
 const queryClient = new QueryClient({
@@ -54,21 +57,34 @@ function formatReset(iso: string | null): string {
   return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
+/**
+ * Stores a status the plugin's server just returned from a sign-in or sign-out
+ * call. A status read still in flight was started before that call finished
+ * and may carry the old state, so it is cancelled first: the answer of the
+ * call always wins. With `dropUsage` (a finished sign-in or a sign-out) every
+ * account's cached limits go too, so the next read starts clean (removed, not
+ * refetched, so a read for the old account is cancelled with them).
+ */
+function useApplyStatus() {
+  const client = useQueryClient();
+  return async (next: Status, dropUsage = false) => {
+    await client.cancelQueries({ queryKey: queryKeys.status });
+    client.setQueryData(queryKeys.status, next);
+    if (dropUsage) client.removeQueries({ queryKey: queryKeys.usage });
+  };
+}
+
 function FlowPanel({ flow }: { flow: SignInFlow }) {
   const api = useRpc<typeof appContract>();
-  const client = useQueryClient();
+  const apply = useApplyStatus();
   const [response, setResponse] = useState("");
-  const apply = (next: Status) => {
-    client.setQueryData(queryKeys.status, next);
-    void client.invalidateQueries({ queryKey: queryKeys.usage });
-  };
   const submit = useMutation({
     mutationFn: () => api.call("signInSubmit", { flowId: flow.id, response }),
-    onSuccess: apply,
+    onSuccess: (next) => apply(next, true),
   });
   const cancel = useMutation({
     mutationFn: () => api.call("signInCancel", { flowId: flow.id }),
-    onSuccess: apply,
+    onSuccess: (next) => apply(next),
   });
 
   if (flow.phase !== "waiting" || !flow.authorizationUrl) {
@@ -125,33 +141,57 @@ function FlowPanel({ flow }: { flow: SignInFlow }) {
   );
 }
 
-function UsageBlock({ enabled }: { enabled: boolean }) {
+function UsageBlock({ enabled, email }: { enabled: boolean; email: string | null }) {
   const api = useRpc<typeof appContract>();
   const client = useQueryClient();
+  // Set by Refresh for the one read it starts; read (and cleared) by the query.
+  const forceNext = useRef(false);
+  // One query, one entry per account: a read that started under account A lands
+  // in A's entry, whatever happens to the page meanwhile, so a late answer never
+  // reaches another account's limits. Nothing writes to these entries by hand.
   const usage = useQuery<UsageState>({
-    queryKey: queryKeys.usage,
-    queryFn: () => api.call("usage", {}),
+    queryKey: queryKeys.usageFor(email),
+    queryFn: () => {
+      const force = forceNext.current;
+      forceNext.current = false;
+      return api.call("usage", force ? { force: true } : {});
+    },
     enabled,
   });
-  const refresh = useMutation({
-    mutationFn: () => api.call("usage", { force: true }),
-    onSuccess: (next) => client.setQueryData(queryKeys.usage, next),
-  });
+  const data = usage.data;
+  // Limits are shown only when they name the account the page believes is signed
+  // in. An answer for another account, or "not signed in" while the status says
+  // signed in, means the status is out of date (credentials changed behind the
+  // page's back): read it again. The page then reads usage under the account the
+  // status names. Once per answer, so a mismatch the status does not explain ends
+  // there instead of looping.
+  const staleStatus =
+    enabled && (data?.status === "unauthenticated" || (data?.status === "ok" && data.accountEmail !== email));
+  useEffect(() => {
+    if (staleStatus) void client.invalidateQueries({ queryKey: queryKeys.status });
+  }, [staleStatus, usage.dataUpdatedAt, client]);
+  const refresh = () => {
+    forceNext.current = true;
+    void usage.refetch().finally(() => {
+      forceNext.current = false;
+    });
+  };
 
   if (!enabled) return null;
-  const data = usage.data;
   return (
     <div className="space-y-2 border-t border-border pt-3">
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs font-medium text-foreground">Usage limits</div>
-        <Button disabled={refresh.isPending || usage.isFetching} onClick={() => refresh.mutate()}>
-          {refresh.isPending ? "Refreshing…" : "Refresh"}
+        <Button disabled={usage.isFetching} onClick={refresh}>
+          {usage.isFetching && data ? "Refreshing…" : "Refresh"}
         </Button>
       </div>
       {usage.isPending && !data ? (
         <Note>Reading Antigravity quota…</Note>
       ) : usage.isError ? (
         <Note tone="error">{errorText(usage.error)}</Note>
+      ) : staleStatus ? (
+        <Note>Checking which account these limits belong to…</Note>
       ) : data?.status === "ok" ? (
         <div className="space-y-2">
           {data.windows.map((w) => {
@@ -182,22 +222,22 @@ function UsageBlock({ enabled }: { enabled: boolean }) {
 
 function AntigravitySettings() {
   const api = useRpc<typeof appContract>();
-  const client = useQueryClient();
   const [confirmSignOut, setConfirmSignOut] = useState(false);
   const statusQuery = useQuery({
     queryKey: queryKeys.status,
     queryFn: () => api.call("status", {}),
   });
-  const apply = (next: Status) => {
-    client.setQueryData(queryKeys.status, next);
-    void client.invalidateQueries({ queryKey: queryKeys.usage });
-  };
-  const start = useMutation({ mutationFn: () => api.call("signInStart", {}), onSuccess: apply });
+  const apply = useApplyStatus();
+  // Starting a flow changes nothing about who is signed in: keep the limits.
+  const start = useMutation({
+    mutationFn: () => api.call("signInStart", {}),
+    onSuccess: (next) => apply(next),
+  });
   const signOut = useMutation({
     mutationFn: () => api.call("signOut", {}),
-    onSuccess: (next) => {
+    onSuccess: async (next) => {
       setConfirmSignOut(false);
-      apply(next);
+      await apply(next, true);
     },
   });
 
@@ -257,7 +297,7 @@ function AntigravitySettings() {
       ) : null}
       {start.isError ? <Note tone="error">{errorText(start.error)}</Note> : null}
       {signOut.isError ? <Note tone="error">{errorText(signOut.error)}</Note> : null}
-      <UsageBlock enabled={s.signedIn} />
+      <UsageBlock enabled={s.signedIn} email={s.email} />
     </div>
   );
 }

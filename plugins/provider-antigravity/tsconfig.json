@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["server.ts", "host.ts", "app.tsx", "src/**/*.ts", "tests/**/*.ts"]
+  "include": ["server.ts", "host.ts", "app.tsx", "src/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx", "vitest.config.ts"]
 }

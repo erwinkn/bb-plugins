@@ -63,7 +63,7 @@ export default function antigravityPlugin(bb: BbPluginApi): void {
 
   bb.rpc.register(appContract, {
     status: () => service.status(),
-    usage: ({ force }) => service.usage(force === true),
+    usage: (input) => service.usage(input?.force === true),
     signInStart: () => service.signInStart(),
     signInSubmit: ({ flowId, response }) => service.signInSubmit(flowId, response),
     signInCancel: ({ flowId }) => service.signInCancel(flowId),

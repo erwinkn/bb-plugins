@@ -46,12 +46,14 @@ export const usageSchema = z.discriminatedUnion("status", [
 export type UsageState = z.infer<typeof usageSchema>;
 
 export const appContract = defineRpcContract({
+  // `bb plugin rpc call` sends null when given no input, so the read-only
+  // methods take null as well as an object.
   status: {
-    input: z.object({}).strict(),
+    input: z.object({}).strict().nullable(),
     output: statusSchema,
   },
   usage: {
-    input: z.object({ force: z.boolean().optional() }).strict(),
+    input: z.object({ force: z.boolean().optional() }).strict().nullable(),
     output: usageSchema,
   },
   signInStart: {
