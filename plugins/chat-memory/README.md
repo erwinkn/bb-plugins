@@ -56,7 +56,7 @@ The tree builds either way. One path per mode (D459):
 | Mode    | A turn                                     | Compaction (idle, past)         |
 | ------- | ------------------------------------------ | ------------------------------- |
 | Regular | the thread's session goes on               | `regularCompactTokens`, 300k    |
-| UniiChat | a fresh session over the memory view        | never: a session never grows    |
+| UniiChat | a fresh session over the memory view        | never: a session never grows (a thread on a provider without UniiChat, such as Antigravity or Codex, keeps one and compacts like Regular) |
 
 A Regular scope's own `compactTokens` wins over the setting; 0 is off.
 Compaction runs after an attached thread goes idle with BB's `threads.compact`,
@@ -82,23 +82,25 @@ message, a queued one, BB's notice to a parent thread (a child finished), Send
 now, a retry. Erwin's fork sends those tools with the turn (FORK.md, "per-turn
 context from a hidden tool", protocol 4), and:
 
-- on a provider whose bridge serves the hook (`supportsOptChat`: Claude Code and every ACP agent),
+- on a provider whose bridge serves the hook (`supportsOptChat`: Claude Code and every ACP agent except Antigravity),
   a turn whose tools include `claude_code_turn_context` asks it how to run, however its session was
   built. ACP agents run on this repository's ACP bridge (`lib/acp-bridge`, in
-  `provider-acp-local` and `provider-antigravity`); they are recognized by an `acp-` provider id,
+  `provider-acp-local`); they are recognized by an `acp-` provider id,
   or by family `acp` in BB's provider list for a custom agent registered under another id
   (`server.ts` reads that list in the background, every minute);
-- providers that do not support `turnContext` (such as `codex`) do not receive
+- providers that do not support `turnContext` (such as `codex`), and `acp-antigravity`, which
+  stays in normal persistent-session mode (a fresh `agy` session per turn starts with an empty
+  prompt cache: 51k-65k uncached tokens a turn, measured on agy 1.5.14), do not receive
   `claude_code_turn_context`: they stay attached to the scope, log turns into the shared memory
   tree, and get `memory_read` / `memory_zoom`, without turning on UniiChat.
 
 ACP providers need the OptChat bridge: with BB's built-in `provider-acp` (whose bridge does not
 advertise `turnContext`) still serving them, BB refuses their UniiChat turns. Roll out
-`provider-acp-local` and the updated `provider-antigravity` before this version.
+`provider-acp-local` before this version.
 
 **The turn gate.** Chat memory also answers BB's `message.dispatch` hook, which
 runs before a message reaches a provider, to refuse early, with the reason, a new turn of an
-UniiChat thread on a supporting provider (Claude Code, an ACP agent) whose history view is known to fail
+UniiChat thread on a supporting provider (Claude Code, an ACP agent but Antigravity) whose history view is known to fail
 (`tree.requiredFailure`, below). BB keeps the message. Messages on providers without UniiChat
 support, messages that join a running turn, and every other thread's go on.
 

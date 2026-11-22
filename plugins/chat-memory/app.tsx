@@ -13,7 +13,7 @@ type Configure = Parameters<Api["call"]>[1] & { threadId: string };
 /** R3: the mode follows the role, so the panel only says which one this memory has. */
 export const MEMORY_MODES_TEXT: Record<MemoryMode, { label: string; line: string }> = {
   regular: { label: "Regular", line: "One long session, compacted once it gets large." },
-  optchat: { label: "UniiChat", line: "A fresh session per message over the summary view on providers that support it (Claude Code, ACP agents); other providers log to the shared memory and read it with memory_read / memory_zoom." },
+  optchat: { label: "UniiChat", line: "A fresh session per message over the summary view on providers that support it (Claude Code, ACP agents except Antigravity); other providers log to the shared memory and read it with memory_read / memory_zoom." },
 };
 const text = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
@@ -90,6 +90,14 @@ function MemoryDetails({ status: m, configure }: { status: MemoryStatus; configu
   const t = m.tree;
   const own = m.scope.owner === "chat-memory";
   const threads = m.threads;
+  // A UniiChat session never grows; a thread of an OptChat scope on a provider without UniiChat (Antigravity) keeps one, which compacts.
+  const growing = threads.find((x) => x.compactTokens > 0);
+  const compaction =
+    m.mode !== "optchat"
+      ? `${m.compactTokens ? `past ${kilo(m.compactTokens)} tokens` : "off"}${m.compactTokensOverride === null ? " · the default" : " · this memory's own limit"}`
+      : growing
+        ? `past ${kilo(growing.compactTokens)} tokens for threads that keep a session (providers without UniiChat); UniiChat sessions never grow`
+        : "off (UniiChat sessions never grow)";
   return (
     <div className="cm-details">
       <p className="cm-muted"><strong>{MEMORY_MODES_TEXT[m.mode].label}</strong>: {MEMORY_MODES_TEXT[m.mode].line}</p>
@@ -122,7 +130,7 @@ function MemoryDetails({ status: m, configure }: { status: MemoryStatus; configu
           </>
         ) : null}
         <span>Compaction</span>
-        <span>{m.compactTokens ? `past ${kilo(m.compactTokens)} tokens` : "off"}{m.mode === "optchat" ? " (UniiChat sessions never grow)" : m.compactTokensOverride === null ? " · the default" : " · this memory's own limit"}</span>
+        <span>{compaction}</span>
       </div>
       <div className="cm-actions">
         {m.mode === "regular" ? (

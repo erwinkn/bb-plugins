@@ -230,9 +230,9 @@ export class MemoryStore {
   compactReadRecovered(threadId: string) {
     return this.sql(`UPDATE threads SET compacted_seq = NULL, compact_tries = 0, compact_error = NULL WHERE thread_id = ? AND compacted_seq = ?`).run(threadId, READ_FAILED).changes > 0;
   }
-  /** Threads of a Regular scope whose last compaction failed, fewer than `tries` times: the sweep tries them again (compaction decides when). OptChat never compacts. */
+  /** Attached threads whose last compaction failed, fewer than `tries` times: the sweep tries them again (compaction decides whether and when: a UniiChat thread never compacts). */
   compactFailures(tries: number): string[] {
-    return this.sql(`SELECT t.thread_id FROM threads t JOIN scopes s ON s.id = t.scope WHERE s.owner != ? AND t.compact_error IS NOT NULL AND t.compact_tries < ?`).pluck().all(COORDINATOR_OWNER, tries) as string[];
+    return this.sql(`SELECT t.thread_id FROM threads t JOIN scopes s ON s.id = t.scope WHERE t.compact_error IS NOT NULL AND t.compact_tries < ?`).pluck().all(tries) as string[];
   }
 
   // The log --------------------------------------------------------------------------

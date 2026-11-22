@@ -7,10 +7,15 @@ usage limits.
 `host.ts` wraps this repository's [shared ACP bridge](../../lib/acp-bridge/README.md)
 (BB's ACP bridge plus OptChat) in `src/bridge.ts`, which answers only
 `provider/usage`; every other request, the ACP session traffic and the lifecycle
-hooks pass through unchanged. In a Chat memory UniiChat scope, each turn runs in
-a fresh `agy` session whose system prompt (BB's instructions plus the memory
-view) goes through Antigravity's `_meta.antigravity.systemPrompt.append` on
-`session/new`; the session it leaves is closed (`session/close`).
+hooks pass through unchanged. Antigravity is excluded from Chat memory's
+UniiChat (OptChat): a fresh `agy` session starts with an empty prompt cache
+(51k-65k uncached tokens a turn, measured on agy 1.5.14), so its threads keep
+one persistent multi-turn session, which reuses the cache, while still logging
+to the shared memory and getting `memory_read` / `memory_zoom`. The bridge's
+OptChat path (a fresh session per turn, system prompt through
+`_meta.antigravity.systemPrompt.append` on `session/new`, the old session
+closed with `session/close`) stays available for other uses but chat-memory no
+longer asks for it.
 `npm ci` here also installs `lib/acp-bridge` (`postinstall`).
 
 ## Install / Switch from W628 custom agent

@@ -36,18 +36,21 @@ export function contextUsedTokens(data: unknown): number | null {
 export function createCompaction(deps: {
   sdk: Sdk;
   store: MemoryStore;
-  /** The scope's compaction limit; 0 is off. */
-  limit: (scope: Scope) => number;
+  /** The thread's compaction limit in its scope; 0 is off. */
+  limit: (scope: Scope, threadId: string) => number | Promise<number>;
   log: (message: string) => void;
   /** A compaction failed or recovered: the memory's problems changed. */
   changed?: (scopeId: string) => void;
 }) {
   const compacting = new Set<string>();
   /** The limit when this thread may be compacted now, else null. Rechecked after every await. */
-  const eligible = (threadId: string) => {
+  const eligible = async (threadId: string) => {
     const scope = deps.store.scopeOf(threadId);
-    const limit = scope ? deps.limit(scope) : 0;
+    const limit = scope ? await deps.limit(scope, threadId) : 0;
     if (!scope || limit <= 0 || compacting.has(threadId)) return null;
+    // The thread may have been detached or its scope changed while the limit was read.
+    const current = deps.store.scopeOf(threadId);
+    if (!current || current.id !== scope.id || current.mode !== scope.mode || current.compactTokens !== scope.compactTokens) return null;
     const thread = deps.store.thread(threadId);
     if (!thread || deps.store.now() - (thread.compactedAt ?? -Infinity) < COMPACT_INTERVAL_MS) return null;
     return { scope, thread, limit };
@@ -58,7 +61,7 @@ export function createCompaction(deps: {
   return {
     /** Compact the thread when its last turn left it larger than its scope's limit. */
     async afterIdle(threadId: string, signal: AbortSignal): Promise<boolean> {
-      const before = eligible(threadId);
+      const before = await eligible(threadId);
       if (!before) return false;
       // A failed read is read again RETRY_MS later: by the sweep while it has failed fewer than
       // COMPACT_TRIES times, and after each later turn.
@@ -82,7 +85,8 @@ export function createCompaction(deps: {
       const latest = rows.reduce<(typeof rows)[number] | undefined>((a, b) => (!a || b.seq > a.seq ? b : a), undefined);
       if (latest?.type !== "thread/contextWindowUsage/updated") return false;
       const used = contextUsedTokens(latest.data);
-      const now = eligible(threadId);
+      const now = await eligible(threadId);
+      if (signal.aborted) return false;
       if (!now || used === null || used <= now.limit || !due(now.thread, latest.seq)) return false;
       const { scope } = now;
       deps.store.compactTry(threadId, latest.seq);

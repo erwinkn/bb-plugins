@@ -4,7 +4,7 @@ import { fixture, type Fixture } from "./fixture";
 
 /** A469 8 and A471 6 (W286's and W288's reviews of T145): compaction failures are visible and retried. */
 const compaction = (f: Fixture, sdk: { list: () => Promise<unknown[]>; compact: () => Promise<unknown> }) =>
-  createCompaction({ store: f.store, limit: (s) => f.memory.compactLimit(s), log: () => {}, sdk: { threads: { events: { list: sdk.list }, compact: sdk.compact } } as never });
+  createCompaction({ store: f.store, limit: (s, threadId) => f.memory.threadCompactLimit(s, threadId), log: () => {}, sdk: { threads: { events: { list: sdk.list }, compact: sdk.compact } } as never });
 const usage = (usedTokens: number) => [{ seq: 7, type: "thread/contextWindowUsage/updated", data: { contextWindowUsage: { usedTokens } } }];
 const due = (f: Fixture) => f.store.handle.prepare(`UPDATE threads SET compact_tried_at = 0`).run();
 
@@ -99,5 +99,70 @@ describe("A471 6: a failed read of the context size is a visible, retried compac
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(f.compacts).toEqual(["plain"]);
+  });
+});
+
+describe("W635: eligibility is rechecked after its async lookups", () => {
+  /** A compaction whose limit lookup for the thread waits on `gate`, from its `nth` call on (1-based). */
+  const gated = (f: Fixture, nth: number, compact: () => Promise<unknown>) => {
+    let calls = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const c = createCompaction({
+      store: f.store,
+      limit: async (s, threadId) => {
+        const limit = await f.memory.threadCompactLimit(s, threadId);
+        if (++calls === nth) await gate;
+        return limit;
+      },
+      log: () => {},
+      sdk: { threads: { events: { list: async () => usage(400_000) }, compact } } as never,
+    });
+    return { c, open };
+  };
+  const agy = async () => {
+    const f = fixture();
+    await f.attach("initiatives", "p", f.thread("agy", { providerId: "acp-antigravity" }));
+    return f;
+  };
+
+  it("retries a failed UniiChat compaction of Antigravity from the sweep, not a Claude Code one's", async () => {
+    const f = fixture();
+    await f.attach("initiatives", "p", f.thread("agy", { providerId: "acp-antigravity" }), f.thread("cc"));
+    f.store.handle.prepare(`UPDATE threads SET compact_error = '503', compact_tries = 1`).run();
+    expect(f.store.compactFailures(3).sort()).toEqual(["agy", "cc"]);
+    let compacts = 0;
+    const c = compaction(f, { list: async () => usage(400_000), compact: async () => (compacts++, {}) });
+    const signal = new AbortController().signal;
+    due(f);
+    expect(await c.afterIdle("cc", signal)).toBe(false);
+    expect(await c.afterIdle("agy", signal)).toBe(true);
+    expect(compacts).toBe(1);
+  });
+
+  it("does not compact a thread detached while its limit was being read", async () => {
+    const f = await agy();
+    let compacts = 0;
+    const { c, open } = gated(f, 2, async () => (compacts++, {}));
+    const run = c.afterIdle("agy", new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.store.handle.prepare(`UPDATE threads SET scope = NULL`).run();
+    open();
+    expect(await run).toBe(false);
+    expect(compacts).toBe(0);
+  });
+
+  it("does not compact once aborted during the final eligibility lookup", async () => {
+    const f = await agy();
+    let compacts = 0;
+    const abort = new AbortController();
+    const { c, open } = gated(f, 2, async () => (compacts++, {}));
+    const run = c.afterIdle("agy", abort.signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    abort.abort();
+    open();
+    expect(await run).toBe(false);
+    expect(compacts).toBe(0);
+    expect(f.store.thread("agy")!.compactedSeq).toBeNull();
   });
 });

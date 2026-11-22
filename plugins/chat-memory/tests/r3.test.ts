@@ -88,14 +88,15 @@ describe("R3 the mode follows the role", () => {
     expect(started!.store.handle.prepare(`SELECT mode FROM scopes`).pluck().get()).toBe("optchat");
   });
 
-  it("shows no compaction problem on a converted coordinator, and the sweep skips it", async () => {
+  it("shows no compaction problem on a converted coordinator; the sweep lists it but its limit of 0 keeps it from compacting", async () => {
     const f = fixture();
     await f.attach("initiatives", "prj_1", f.thread("coord", { title: "Coordinator" }));
     await f.attach("chat-memory", "t", f.thread("plain", { title: "Plain" }));
     f.store.handle.prepare(`UPDATE threads SET compact_error = '503', compact_tries = 1`).run();
     expect((await f.memory.status("initiatives:prj_1")).problems).toEqual([]);
     expect((await f.memory.status("chat-memory:t")).problems).toEqual([expect.stringMatching(/Compacting "Plain" failed: 503/)]);
-    expect(f.store.compactFailures(3)).toEqual(["plain"]);
+    expect(f.store.compactFailures(3).sort()).toEqual(["coord", "plain"]);
+    expect(await f.memory.threadCompactLimit(f.store.scopeOf("coord")!, "coord")).toBe(0);
   });
 
   it("offers no Hybrid setting", () => {

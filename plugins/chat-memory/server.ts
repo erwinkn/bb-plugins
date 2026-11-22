@@ -31,7 +31,7 @@ export default function plugin(bb: BbPluginApi) {
   const store = new MemoryStore(db);
   store.alignModes();
   const settings = defineSettings(bb);
-  // OptChat runs on every ACP agent (lib/memory.ts supportsOptChat). One registered under an id
+  // OptChat runs on every ACP agent but Antigravity (lib/memory.ts supportsOptChat). One registered under an id
   // without the `acp-` prefix is known by its family in BB's provider list, read here in the
   // background: `configure` is synchronous and uses the ids as last read.
   let acpProviderIds: ReadonlySet<string> = new Set();
@@ -69,7 +69,7 @@ export default function plugin(bb: BbPluginApi) {
   const compaction = createCompaction({
     sdk: bb.sdk,
     store,
-    limit: (scope) => memory.compactLimit(scope),
+    limit: (scope, threadId) => memory.threadCompactLimit(scope, threadId),
     log: (message) => bb.log.info(message),
     changed: (scope) => bb.realtime.publish(CHANGED_CHANNEL, { scope }),
   });

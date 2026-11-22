@@ -36,12 +36,19 @@ const PROGRESS_PUBLISH_MS = 30_000;
  * (`lib/acp-bridge`). BB refuses a turn whose tools include it on any other provider.
  */
 export const TURN_CONTEXT_TOOL = "claude_code_turn_context";
+/** The ACP provider kept out of UniiChat: see `supportsOptChat`. */
+const OPTCHAT_EXCLUDED = new Set(["acp-antigravity"]);
 /**
- * Whether a provider's bridge serves the turn hook (UniiChat fresh-session turns): Claude Code, and
- * every ACP agent, which runs on this repository's ACP bridge (`provider-acp-local`,
- * `provider-antigravity`). ACP providers are known by their `acp-` id, or, for a custom agent
+ * Whether a provider runs UniiChat (fresh-session turns through the turn hook): Claude Code, and
+ * every ACP agent except Antigravity, which runs on this repository's ACP bridge
+ * (`provider-acp-local`). ACP providers are known by their `acp-` id, or, for a custom agent
  * registered under another id, by family "acp" in BB's provider list (`acpProviderIds`, which
  * server.ts keeps).
+ *
+ * `acp-antigravity` is excluded, whichever way it is recognized: a fresh `agy` session starts with
+ * an empty prompt cache (measured on agy 1.5.14: 51k-65k uncached tokens at step 0 of every fresh
+ * session), while a persistent multi-turn session reuses the cache across turns. It stays in normal
+ * mode, with the shared memory logging and `memory_read` / `memory_zoom`.
  */
 export function supportsOptChat(
   providerId: string | null | undefined,
@@ -49,6 +56,7 @@ export function supportsOptChat(
 ): boolean {
   return (
     providerId != null &&
+    !OPTCHAT_EXCLUDED.has(providerId) &&
     (providerId === "claude-code" || providerId.startsWith("acp-") || acpProviderIds.has(providerId))
   );
 }
@@ -141,6 +149,8 @@ export interface MemoryStatus {
     threadId: string;
     title: string | null;
     providerId: string | null;
+    /** Its compaction limit (0: off): a UniiChat thread's session never grows, so it is 0. */
+    compactTokens: number;
     compactedAt: number | null;
     /** Its last compaction failed, with this error; null once one succeeds. */
     compactError: string | null;
@@ -412,8 +422,8 @@ export class ChatMemory {
   /**
    * D447: the memory tools a session gets, when BB builds it and again whenever BB resolves a turn:
    * every thread that writes to a scope. The hidden turn hook is enforced in OptChat scopes only
-   * for providers that support it (`supportsOptChat`: Claude Code and ACP agents): other providers
-   * (e.g. Codex) still stay attached to the scope, log turns into the shared memory
+   * for providers that support it (`supportsOptChat`: Claude Code and ACP agents except
+   * Antigravity): other providers (e.g. Codex, Antigravity) still stay attached to the scope, log turns into the shared memory
    * tree, and get `memory_read` / `memory_zoom`, without failing on an unsupported turn hook.
    * A thread chat memory meets for the first time with its owner's MEMORY_SCOPE_KEY is attached to
    * that scope here, in the same synchronous call, so its first turn already has it (D487).
@@ -438,7 +448,8 @@ export class ChatMemory {
    * that support OptChat (`supportsOptChat`), it refuses a new turn already known to fail
    * (`requiredFailure`): refused here, the message never reaches the provider, which records its
    * input as accepted before it asks for the turn's memory, so a failure then would leave that
-   * input in memory (D502). Providers without OptChat support proceed normally without UniiChat.
+   * input in memory (D502). Providers without OptChat support (Codex, Antigravity, ...) proceed
+   * normally without UniiChat.
    * Every other message goes at once: the turn itself waits for what its memory needs (R12).
    */
   async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn" }): Promise<DispatchDecision> {
@@ -500,10 +511,21 @@ export class ChatMemory {
     return facts?.title ? `"${facts.title}"` : threadId;
   }
 
-  /** The compaction limit of a scope's threads (0: off): its own, else the setting; OptChat sessions never grow. */
-  compactLimit(scope: Pick<Scope, "mode" | "compactTokens">) {
-    if (scope.mode === "optchat") return 0;
+  /**
+   * The compaction limit of a thread in a scope (0: off): its own, else the setting. A UniiChat
+   * session never grows, so on a provider that runs UniiChat it is 0; a thread of an OptChat scope
+   * on one that does not (Codex, Antigravity) keeps one growing session, which compacts like a
+   * Regular one. `providerId` undefined is a thread whose provider is unknown: off.
+   */
+  compactLimit(scope: Pick<Scope, "mode" | "compactTokens">, providerId?: string | null) {
+    if (scope.mode === "optchat" && (providerId === undefined || this.supportsOptChat(providerId))) return 0;
     return scope.compactTokens ?? this.deps.settings().regularCompactTokens;
+  }
+  /** `compactLimit` of an attached thread, reading its provider (a Regular scope's needs none). */
+  async threadCompactLimit(scope: Scope, threadId: string) {
+    if (scope.mode !== "optchat") return this.compactLimit(scope);
+    const facts = await this.threadFacts(threadId).catch(() => null);
+    return this.compactLimit(scope, facts ? facts.providerId : undefined);
   }
 
   /**
@@ -773,13 +795,13 @@ export class ChatMemory {
     const threads = await Promise.all(
       this.store.threadsOf(scopeId).map(async (t) => {
         const facts = await this.threadFacts(t.threadId).catch(() => null);
-        return { threadId: t.threadId, title: facts?.title ?? null, providerId: facts?.providerId ?? null, compactedAt: t.compactedAt, compactError: t.compactError };
+        return { threadId: t.threadId, title: facts?.title ?? null, providerId: facts?.providerId ?? null, compactTokens: this.compactLimit(scope, facts ? facts.providerId : undefined), compactedAt: t.compactedAt, compactError: t.compactError };
       }),
     );
     const problems: string[] = [];
     const name = (t: (typeof threads)[number]) => (t.title ? `"${t.title}"` : t.threadId);
-    // An OptChat scope never compacts: an error recorded while it was Regular is history.
-    if (scope.mode !== "optchat") for (const t of threads) if (t.compactError !== null) problems.push(`Compacting ${name(t)} failed: ${t.compactError}. It is tried again after its next turns.`);
+    // A thread that no longer compacts (a UniiChat one): an error recorded while it did is history.
+    for (const t of threads) if (t.compactTokens > 0 && t.compactError !== null) problems.push(`Compacting ${name(t)} failed: ${t.compactError}. It is tried again after its next turns.`);
     const ready = this.ready(scopeId);
     const failed = builder?.failedLines() ?? [];
     if (failed.length)

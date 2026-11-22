@@ -12,7 +12,7 @@ const status = (patch: Partial<MemoryStatus> = {}): MemoryStatus => ({
   mode: "optchat",
   compactTokens: 0,
   compactTokensOverride: null,
-  threads: [{ threadId: "coord", title: "bb-plugins · coordinator", providerId: "claude-code", compactedAt: null, compactError: null }],
+  threads: [{ threadId: "coord", title: "bb-plugins · coordinator", providerId: "claude-code", compactTokens: 0, compactedAt: null, compactError: null }],
   log: { messages: 6120, bytes: 3_051_433 },
   tree: { ready: true, ingesting: false, summarized: 6120, nodes: 12_189, total: 12_230, fallbacks: 0, failed: 0, viewBytes: 90_000, memoryViewBytes: 24_000, state: "idle", detail: null, until: null },
   cost: { calls: 3674, tries: 7225, inputTokens: 53_840_761, cachedTokens: 40_000_000, outputTokens: 900_000, usd: 3.46, directUsd: 0, callSeconds: 43_870 },
@@ -36,6 +36,17 @@ describe("R3 the memory has no switch", () => {
     expect(s.queryByRole("radiogroup")).toBeNull();
     expect(s.queryByRole("radio")).toBeNull();
     expect(s.queryByText("Compaction limit (tokens)")).toBeNull();
+  });
+
+  it("says a UniiChat memory's sessions never grow, except threads on a provider without UniiChat, which compact", async () => {
+    const plain = renderSlot({ component: MemoryPanel }, { threadId: "coord", params: null }, { rpc: { status: async () => status() } });
+    expect(await plain.findByText("off (UniiChat sessions never grow)")).toBeTruthy();
+    const threads = [
+      { threadId: "coord", title: "Coordinator", providerId: "claude-code", compactTokens: 0, compactedAt: null, compactError: null },
+      { threadId: "agy", title: "Antigravity", providerId: "acp-antigravity", compactTokens: 300_000, compactedAt: null, compactError: null },
+    ];
+    const agy = renderSlot({ component: MemoryPanel }, { threadId: "coord", params: null }, { rpc: { status: async () => status({ threads }) } });
+    expect(await agy.findByText(/past 300k tokens for threads that keep a session/)).toBeTruthy();
   });
 
   it("a Regular memory keeps its compaction limit, and still no mode switch", async () => {
