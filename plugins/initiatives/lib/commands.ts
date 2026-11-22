@@ -7,6 +7,7 @@ import {
   lightweightDecisionSchema,
   environmentSchema,
   policySchema,
+  PROFILE_KEYS,
   profileSchema,
   projectContextSchema,
   ROLES,
@@ -50,6 +51,8 @@ export const createSchema = z
           kind: z.literal("new"),
           bbProjectId: ref.optional(),
           environment: environmentSchema.optional(),
+          /** The new coordinator's model; omitted, the Initiative's or the settings default applies. */
+          profile: profileSchema.optional(),
         })
         .strict(),
       z.object({ kind: z.literal("adopt"), threadId: ref }).strict(),
@@ -187,6 +190,11 @@ export const manageCommands = [
       objective: text(4000).optional(),
       memberProjectIds: refs.optional(),
       policy: policySchema.optional(),
+      /**
+       * A per-role change applied to the policy as stored now: a profile sets that role, `null` clears
+       * it, other roles are untouched. Unlike `policy` it cannot overwrite a role someone else changed.
+       */
+      profiles: z.partialRecord(z.enum(PROFILE_KEYS), profileSchema.nullable()).optional(),
       context: projectContextSchema.optional(),
       expected: z
         .object({

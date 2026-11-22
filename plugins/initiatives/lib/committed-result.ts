@@ -12,6 +12,15 @@ export function applyCommitted(o: Overview, command: Command, result: unknown): 
     return next;
   }
   const next = { ...o, counts: { ...o.counts } };
+  if (command.action === "edit" && command.profiles) {
+    // A saved per-role model change shows at once, so a second save starts from it.
+    const profiles: Record<string, unknown> = { ...o.project.policy.profiles };
+    for (const [key, value] of Object.entries(command.profiles)) {
+      if (value) profiles[key] = value;
+      else delete profiles[key];
+    }
+    next.project = { ...o.project, policy: { ...o.project.policy, profiles: profiles as typeof o.project.policy.profiles } };
+  }
   if (command.action === "decision-accept-all") {
     const refs = new Set((result as { refs: string[] }).refs);
     next.decisions = next.decisions.map(d => refs.has(d.ref) ? { ...d, review: "okay", reviewMessage: null, notification: null, acceptEligible: false } : d);

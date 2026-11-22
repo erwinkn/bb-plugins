@@ -55,6 +55,7 @@ import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
 import { FALLBACK_ROLE, ReviewerFallback } from "./lib/reviewer-fallback";
 import { CHECKOUT_INSTRUCTIONS, CHECKOUT_READ_MS, MAX_WORKER_ANCESTORS, WORKER_SETTINGS_ENV, workerClaudeSettings } from "./lib/worker-session";
 import { withProfileDefaults } from "./lib/settings";
+import { profileFor } from "./lib/policy";
 import {
   buildOverview,
   buildSummary,
@@ -775,6 +776,7 @@ export default function plugin(bb: BbPluginApi) {
       // A keyed write answers with a WriteAnswer, which sendWrite unwraps.
       return key ? receipts.run(key, { projectId, command }, async () => write()) : write();
     },
+    coordinatorDefault: async () => profileFor({ profiles: (await preferences.read()).profiles }, "coordinator"),
     inventory: async () => {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
       return Promise.all(
@@ -792,6 +794,7 @@ export default function plugin(bb: BbPluginApi) {
           return {
             id: p.id,
             name: p.name,
+            defaultSourceHostId: source?.hostId || null,
             environments: (
               await bb.sdk.environments.list({ projectId: p.id })
             ).map((e) => ({

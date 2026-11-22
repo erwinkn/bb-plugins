@@ -696,6 +696,7 @@ export function Dashboard({
     {
       id: string;
       name: string;
+      defaultSourceHostId?: string | null;
       environments: {
         id: string;
         path: string | null;
@@ -929,6 +930,12 @@ function CreateProject({
 }) {
   const api = useRpc<typeof projectsContract>();
   const inventory = useData("inventory", () => api.call("inventory", null));
+  // The settings default shows at once from the built-in one and is corrected when it loads. The
+  // picker only appears after the user opts in to another model, and a model is sent only then, so
+  // an untouched form always starts the coordinator the server's way.
+  const coordinatorDefault = useData("coordinator-default", () => api.call("coordinatorDefault", null));
+  const [picked, setPicked] = useState<Profile | null>(null);
+  const [customModel, setCustomModel] = useState(false);
   const [name, setName] = useState("");
   const [objective, setObjective] = useState("");
   const [members, setMembers] = useState<string[]>([]);
@@ -936,6 +943,15 @@ function CreateProject({
   const [adopt, setAdopt] = useState(Boolean(threadId));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The coordinator starts on the chosen checkout, else the first repository's default one, else on
+  // its default source's host: the model catalog is read there, not on BB's primary machine.
+  const firstRepo = inventory.data?.find((p) => p.id === members[0]);
+  const routedEnvironmentId = environmentId || firstRepo?.environments.find((e) => e.isDefaultHome)?.id || null;
+  const routing = routedEnvironmentId
+    ? ({ kind: "environment", environmentId: routedEnvironmentId } as const)
+    : firstRepo?.defaultSourceHostId
+      ? ({ kind: "host", hostId: firstRepo.defaultSourceHostId } as const)
+      : undefined;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -955,6 +971,7 @@ function CreateProject({
                 environment: environmentId
                   ? { type: "reuse", environmentId }
                   : { type: "project-default" },
+                ...(customModel && picked ? { profile: picked } : {}),
               },
       };
       const result = (await sendWrite({ command }, (keyed) => api.call("command", { command, ...keyed }))) as { project: { id: string }; note: string | null };
@@ -1033,9 +1050,40 @@ function CreateProject({
       )}
       {!adopt && (
         <>
-          <p className="project-muted">
-            The coordinator will use Opus 5.5 High.
-          </p>
+          <label className="project-option">
+            <input
+              type="checkbox"
+              checked={customModel}
+              disabled={busy}
+              onChange={(e) => {
+                setCustomModel(e.target.checked);
+                setPicked(null);
+              }}
+            />
+            <span>Choose a different coordinator model</span>
+          </label>
+          {customModel ? (
+            <div className="project-field">
+              Coordinator model
+              <ProviderModelPicker
+                value={picked ?? coordinatorDefault.data ?? DEFAULT_PROFILES.coordinator}
+                disabled={busy}
+                routing={routing}
+                onChange={(value) =>
+                  setPicked({
+                    providerId: value.providerId,
+                    model: value.model,
+                    reasoningLevel: value.reasoningLevel,
+                    ...(value.serviceTier ? { serviceTier: value.serviceTier } : {}),
+                  })
+                }
+              />
+            </div>
+          ) : (
+            <p className="project-muted">
+              The coordinator starts with your default model, set in Settings.
+            </p>
+          )}
           <label className="project-field">
             Coordinator checkout
             <select

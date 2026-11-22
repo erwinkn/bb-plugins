@@ -21,7 +21,7 @@ export function useData<T>(key: string, fetchData: (seed: (key: string, data: un
   const schedule = () => cache.schedule(key, fetchData);
   useRealtime("initiatives-changed", payload => {
     const id = (payload as { projectId?: string } | null)?.projectId;
-    if (!enabled || passive || key === "inventory") return;
+    if (!enabled || passive || key === "inventory" || key === "coordinator-default") return;
     const scoped = ["overview:", "details:", "compose:", "children:"].some(prefix => key.startsWith(prefix));
     const data = cache.entry(key).data as { projectId?: string; membership?: { projectId?: string } | null } | null;
     const membershipId = data?.projectId ?? data?.membership?.projectId;

@@ -9,7 +9,8 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
-import { Markdown, useRealtime } from "@get-bb/plugin-sdk/app";
+import { Markdown, useRealtime, experimental_ProviderModelPicker as ProviderModelPicker } from "@get-bb/plugin-sdk/app";
+import { DEFAULT_PROFILES, PROFILE_KEYS, PROFILE_ROLE_LABELS, type Profile, type ProfileKey } from "./lib/schema";
 import type { Overview, OpinionItem, TaskItem, WorkerChild, WorkerItem, WorkerWaiting } from "./lib/overview";
 import { BUSY_THREAD, PR_WAIT_MAX_MS, workerKind, KIND_GROUP, type WorkerGroup as LiveGroup } from "./lib/worker-group";
 import type { Command } from "./lib/commands";
@@ -773,6 +774,7 @@ export function ControlRoom({
               <section ref={repositories} className="cr-repositories">
                 <Repositories o={o} inventory={inventory} run={run} />
               </section>
+              <Models o={o} inventory={inventory} run={run} />
             </>
           </KeepTab>
           <KeepTab current={tab} id="usage">
@@ -2156,6 +2158,99 @@ function Repositories({
       ) : null}
       <p className="project-meta">
         Open files through the Editor's project picker.
+      </p>
+    </section>
+  );
+}
+/** Which model each role starts on for this Initiative: the global default unless overridden here. */
+function Models({ o, inventory, run }: { o: Overview; inventory: Inventory; run: Run }) {
+  const { policy, profileDefaults } = o.project;
+  // Models are listed where the coordinator runs (its repository's default checkout, else that
+  // repository's default source host), not on BB's primary machine.
+  const home = inventory.find((p) => p.id === o.project.memberProjectIds[0]);
+  const homeEnvironment = home?.environments.find((e) => e.isDefaultHome);
+  const routing = homeEnvironment
+    ? ({ kind: "environment", environmentId: homeEnvironment.id } as const)
+    : home?.defaultSourceHostId
+      ? ({ kind: "host", hostId: home.defaultSourceHostId } as const)
+      : undefined;
+  const write = useWrite();
+  const [editing, setEditing] = useState<ProfileKey | null>(null);
+  const [draft, setDraft] = useState<Profile | null>(null);
+  const custom = PROFILE_KEYS.filter((key) => policy.profiles[key]);
+  const label = (profile: Profile) => modelLabel(`${profile.providerId} / ${profile.model} / ${profile.reasoningLevel}`);
+  // Each save names only the roles it changes (a profile sets, null clears); the server applies it to
+  // the stored policy, so a stale view or another tab cannot bring back or erase another role's override.
+  const save = async (profiles: Partial<Record<ProfileKey, Profile | null>>) => {
+    const done = await write.run(() => run({ action: "edit", profiles }));
+    if (done.ok) setEditing(null);
+  };
+  return (
+    <section aria-label="Models">
+      <h2 className="cr-section-heading">Models</h2>
+      {PROFILE_KEYS.map((key) => {
+        const own = policy.profiles[key];
+        const effective = own ?? profileDefaults?.[key] ?? DEFAULT_PROFILES[key];
+        const name = PROFILE_ROLE_LABELS[key];
+        return (
+          <div key={key}>
+            <div className="cr-repository">
+              <div>
+                <strong>{name}</strong>
+                <span className="cr-gen">{own ? "Custom" : "Default"}</span>
+                <p className="project-meta">{label(effective)}</p>
+              </div>
+              <div className="project-actions">
+                <button
+                  aria-label={`${own ? "Change" : "Customize"} ${name}`}
+                  disabled={write.busy}
+                  onClick={() => {
+                    setDraft(effective);
+                    setEditing(editing === key ? null : key);
+                  }}
+                >
+                  {own ? "Change" : "Customize"}
+                </button>
+                {own ? (
+                  <button aria-label={`Use the default for ${name}`} disabled={write.busy} onClick={() => void save({ [key]: null })}>
+                    Use default
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            {editing === key && draft ? (
+              <div className="project-field">
+                <ProviderModelPicker
+                  value={draft}
+                  routing={routing}
+                  disabled={write.busy}
+                  onChange={(value) =>
+                    setDraft({
+                      providerId: value.providerId,
+                      model: value.model,
+                      reasoningLevel: value.reasoningLevel,
+                      ...(value.serviceTier ? { serviceTier: value.serviceTier } : {}),
+                    })
+                  }
+                />
+                <div className="project-actions">
+                  <button disabled={write.busy} onClick={() => void save({ [key]: draft })}>
+                    {write.busy ? "Saving…" : `Save ${name}`}
+                  </button>
+                  <button disabled={write.busy} onClick={() => setEditing(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+      {custom.length ? (
+        <button disabled={write.busy} onClick={() => void save(Object.fromEntries(custom.map((key) => [key, null])))}>Reset all to defaults</button>
+      ) : null}
+      {write.slow ? <p role="status" className="project-muted">{WRITE_SLOW_MESSAGE}</p> : null}
+      {write.error ? <p role="alert" className="project-error">{write.error}</p> : null}
+      <p className="project-meta">
+        Changes apply to future workers, reviewers and handovers; running threads keep their model.
       </p>
     </section>
   );

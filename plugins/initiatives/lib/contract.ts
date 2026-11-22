@@ -10,6 +10,7 @@ import type { Overview, WorkerChild } from "./overview";
 import { UPLOAD_MAX_BYTES, type DriveFile, type DriveList, type DriveSave } from "./drive-types";
 import type { Cached } from "./live-threads";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
+import { profileSchema } from "./schema";
 import { readOptionsSchema, READ_VIEWS } from "./read";
 export type { ProjectSummary, ProjectTree } from "./tree-schema";
 
@@ -171,12 +172,19 @@ export const projectsContract = defineRpcContract({
     input: readTimeoutReportSchema.extend({ read: z.string().min(1).max(40) }),
     output: z.object({ ok: z.literal(true) }),
   },
+  /** The coordinator model a new Initiative starts with: the settings default (or the built-in one). */
+  coordinatorDefault: {
+    input: z.null(),
+    output: profileSchema,
+  },
   inventory: {
     input: z.null(),
     output: z.array(
       z.object({
         id,
         name: z.string(),
+        /** The host of the project's default source, where a new coordinator starts; null when unknown. */
+        defaultSourceHostId: z.string().nullable().optional(),
         environments: z.array(
           z.object({
             id,
