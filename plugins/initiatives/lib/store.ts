@@ -1963,7 +1963,8 @@ export class Store {
       if (start.thread_id && start.thread_id !== threadId)
         return "superseded";
       const current = this.project(projectId);
-      if (!current || current.memberProjectIds[0] !== expectedPrimary)
+      // W636: an archived Initiative takes no new coordinator, whatever a sweep or spawn proved.
+      if (!current || current.archivedAt !== null || current.memberProjectIds[0] !== expectedPrimary)
         return "superseded";
       if (current.coordinatorThreadId !== threadId)
         this.setCoordinator(projectId, threadId, reason);

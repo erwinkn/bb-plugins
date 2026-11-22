@@ -57,6 +57,8 @@
 .cr .project-dot--attention { background: var(--destructive); box-shadow: 0 0 0 3px color-mix(in srgb, var(--destructive) 15%, transparent); }
 .cr .project-dot--muted { background: var(--cr-faint); }
 .cr-menu-wrap { position: relative; }
+.cr-archived { display: grid; gap: 6px; padding: 18px 14px; font-size: 13px; }
+.cr-archived p { margin: 0; }
 .cr-menu { position: absolute; right: 0; top: calc(100% + 4px); width: min(260px, calc(100cqw - 28px)); display: grid; gap: 4px; padding: 8px; border: 1px solid var(--border); background: var(--cr-surface); border-radius: 9px; box-shadow: 0 6px 18px #0003; z-index: 5; }
 .cr-menu--start { left: 0; right: auto; }
 .cr-menu button { text-align: left; width: 100%; }

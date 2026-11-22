@@ -40,7 +40,7 @@ import "./app.css";
 import { ProjectsSettings } from "./settings-view";
 import { AnswerChoices, AutoTextarea, ControlRoom, pickByKey, pickedLabel, SplitButton, toTab, type Pick, type Tab } from "./control-room";
 import { useRemembered } from "./ui-memory";
-import { sendWrite } from "./lib/write-timeout";
+import { WriteUnconfirmedError, sendWrite } from "./lib/write-timeout";
 import { MergeQueueView } from "./merge-queue-view";
 import { PrWatch } from "./pr-watch-view";
 import type { MergeQueue } from "./lib/merge-queue";
@@ -637,14 +637,23 @@ function ProjectEditor({
   );
 }
 
+/** What archiving an Initiative ended: the stopped work's lines (archiveProject). */
+type Archived = { stopped: string[] };
+
 export function Dashboard({
   projectId,
   creationNote,
   variant = "page",
   seeded = false,
   routeTab,
+  archived: archivedBefore = null,
+  onArchived,
 }: {
   projectId: string;
+  /** An archive this dashboard's panel saw saved before it mounted again. */
+  archived?: Archived | null;
+  /** Heard once the archive is saved: the panel keeps showing this Initiative's archived state. */
+  onArchived?: (archived: Archived) => void;
   creationNote?: string | null;
   variant?: "page" | "panel";
   /** The page route's tab segment (`<id>/prs`); the panel has no route and remembers its tab. */
@@ -653,6 +662,11 @@ export function Dashboard({
   seeded?: boolean;
 }) {
   const { mode } = useCodeTheme();
+  // Set once this Initiative is archived from here: every read stops (the server no longer
+  // knows it) and the dashboard says so instead of an "Unknown Initiative" error.
+  const [archivedHere, setArchived] = useState<Archived | null>(null);
+  const archived = archivedHere ?? archivedBefore;
+  const live = !archived;
   const [answerNotice, setAnswerNotice] = useState<{ projectId: string; text: string; urgent: boolean } | null>(null);
   // First paint is the small summary; tabs that list history or telemetry
   // load the larger tiers on first open and keep them current from then on.
@@ -673,14 +687,14 @@ export function Dashboard({
   // In a thread's panel the panel read supplies (and refreshes) this summary.
   const state = useData(`overview:${projectId}`, () =>
     api.call("overview", { projectId, detail: "summary" }),
-  true, seeded && appReads.entry(`overview:${projectId}`).loaded);
-  const history = useData(`history:${projectId}`, () => api.call("overview", { projectId, detail: "history" }), historyNeeded && !detailsNeeded);
-  const details = useData(`details:${projectId}`, () => api.call("overview", { projectId, detail: "full" }), detailsNeeded);
+  live, seeded && appReads.entry(`overview:${projectId}`).loaded);
+  const history = useData(`history:${projectId}`, () => api.call("overview", { projectId, detail: "history" }), live && historyNeeded && !detailsNeeded);
+  const details = useData(`details:${projectId}`, () => api.call("overview", { projectId, detail: "full" }), live && detailsNeeded);
   // The server answers from its cache at once and re-reads GitHub behind it
   // every two minutes (D441); these reads follow the dashboard's polling, and
   // read again as soon as a fetch ends.
-  const queue = useData<MergeQueue>(`merge-queue:${projectId}`, () => api.call("mergeQueue", { projectId }));
-  useRealtime("merge-queue-changed", () => queue.schedule());
+  const queue = useData<MergeQueue>(`merge-queue:${projectId}`, () => api.call("mergeQueue", { projectId }), live);
+  useRealtime("merge-queue-changed", () => { if (live) queue.schedule(); });
   const [queueRefresh, setQueueRefresh] = useState<{ projectId: string; error: string | null; running: boolean } | null>(null);
   const refreshQueue = async () => {
     setQueueRefresh({ projectId, error: null, running: true });
@@ -741,14 +755,29 @@ export function Dashboard({
   const refresh = async () => {
     await Promise.all([state.refresh(), ...(detailsNeeded ? [details.refresh()] : historyNeeded ? [history.refresh()] : []), ...(inventoryLoaded.current ? [loadInventory(true)] : [])]);
   };
+  // A saved archive ends every read of this Initiative, including one a signal queued during the
+  // save: the server no longer knows it, and the dashboard shows the archived state instead.
+  const settleArchive = (result: unknown) => {
+    for (const read of [state, history, details, queue]) read.drop();
+    const done = { stopped: (result as { stopped?: string[] } | null)?.stopped ?? [] };
+    setArchived(done);
+    onArchived?.(done);
+  };
   const command = async (command: Command) => {
     const end = state.begin();
     const endHistory = history.begin();
     const endDetails = details.begin();
+    let archivedNow = false;
+    const sent: { write?: Promise<unknown> } = {};
     try {
       // A write the relay never answers fails as unconfirmed after 30 s (W239), so neither its
       // button nor the dashboard's held reads wait forever; a late answer is left to the next read.
-      const result = await sendWrite({ projectId, command }, (keyed) => callCommand(api, projectId, command, keyed));
+      const result = await sendWrite({ projectId, command }, (keyed) => (sent.write = callCommand(api, projectId, command, keyed)));
+      if (command.action === "archive") {
+        archivedNow = true;
+        settleArchive(result);
+        return result;
+      }
       end(data => applyCommitted(data as Overview, command, result));
       endHistory(data => applyCommitted(data as Overview, command, result));
       endDetails(data => applyCommitted(data as Overview, command, result));
@@ -757,11 +786,18 @@ export function Dashboard({
       const meaningful = !!notification || command.action === "decision-accept-all" || command.action === "answer" || command.action === "question-close" || !!record && command.action !== "decision-review" && command.action !== "acknowledge";
       setAnswerNotice(command.action === "inbox-dismiss-all" ? { projectId, ...dismissAllNotice(result as DismissAllResult) } : meaningful ? { projectId, urgent: !!notification && ["failed", "uncertain", "pending"].includes(notification.state), text: `${record ? `${record}: ` : ""}${command.action === "decision-accept-all" ? `${(result as { accepted: number }).accepted} agent decision${(result as { accepted: number }).accepted === 1 ? "" : "s"} accepted` : command.action === "answer" ? "answer saved" : command.action === "decision-review" ? "review saved" : command.action === "question-close" ? "closed quietly; no answer recorded" : "saved"}.${notification ? ` Coordinator notification ${notification.state === "pending" ? "unconfirmed" : notification.state}${notification.detail ? `: ${notification.detail}` : "."}` : ""}` } : null);
       return result;
+    } catch (error) {
+      // Archive stops running work one thread at a time, which can outlast that deadline. Its late
+      // answer still ends here: no read would show it, since the archived Initiative reads as unknown.
+      if (command.action === "archive" && error instanceof WriteUnconfirmedError) void sent.write?.then(settleArchive, () => {});
+      throw error;
     } finally {
       end(); endHistory(); endDetails();
-      state.schedule();
-      history.schedule();
-      details.schedule();
+      if (!archivedNow) {
+        state.schedule();
+        history.schedule();
+        details.schedule();
+      }
     }
   };
   const full = detailsNeeded ? details.data : null;
@@ -771,12 +807,19 @@ export function Dashboard({
   const liveThreads = useSidebarThreads().threads;
   const merged = state.data ? mergeOverview(state.data, past, full) : null;
   const o = useMemo(() => merged ? withLiveRuntime(merged, liveThreads) : null, [merged, liveThreads]);
+  const className = `bb-projects bb-projects--control${variant === "panel" ? " bb-projects--panel" : ""}`;
+  if (archived)
+    return (
+      <main className={className} data-project-id={projectId} data-appearance={mode}>
+        <section className="cr-archived" role="status">
+          <p><strong>{state.data?.project.name ?? "This Initiative"}</strong> is archived.</p>
+          <p className="project-muted">Its coordinator and worker threads stay in BB as they are.</p>
+          {archived.stopped.length ? <p className="project-muted">Work ended: {archived.stopped.join("; ")}.</p> : null}
+        </section>
+      </main>
+    );
   return (
-    <main
-      className={`bb-projects bb-projects--control${variant === "panel" ? " bb-projects--panel" : ""}`}
-      data-project-id={projectId}
-      data-appearance={mode}
-    >
+    <main className={className} data-project-id={projectId} data-appearance={mode}>
       <ErrorNotice message={state.error} retry={() => void state.refresh()} />
       {o ? (
         <ControlRoom
@@ -1183,8 +1226,12 @@ function usePanel(threadId: string) {
 export function ProjectPanel({ threadId }: PluginThreadPanelProps) {
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [creationNote, setCreationNote] = useState<string | null>(null);
+  // An Initiative archived from this panel: the thread's membership ends with it, and the panel
+  // keeps showing its archived state instead of the create form.
+  const [archived, setArchived] = useState<{ threadId: string; projectId: string; archived: Archived } | null>(null);
   const state = usePanel(threadId);
-  const id = createdId ?? state.data?.membership?.projectId;
+  const archivedHere = archived?.threadId === threadId ? archived : null;
+  const id = archivedHere?.projectId ?? createdId ?? state.data?.membership?.projectId;
   return (
     <div className="project-page">
       <ErrorNotice message={state.error} retry={() => void state.refresh()} />
@@ -1195,6 +1242,8 @@ export function ProjectPanel({ threadId }: PluginThreadPanelProps) {
           creationNote={creationNote}
           variant="panel"
           seeded={!createdId}
+          archived={archivedHere?.archived}
+          onArchived={(done) => setArchived({ threadId, projectId: id, archived: done })}
         />
       ) : state.error ? null : !state.loaded ? (
         <p className="bb-projects bb-projects--panel project-muted">

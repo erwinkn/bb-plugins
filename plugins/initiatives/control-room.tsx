@@ -198,12 +198,15 @@ function ReasonAction({
   make,
   run,
   needsReason = true,
+  confirm,
   refusal,
 }: {
   label: string;
   make: (reason: string) => Command;
   run: Run;
   needsReason?: boolean;
+  /** The question a reasonless action asks before it runs. */
+  confirm?: string;
   refusal?: (result: unknown) => string | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -222,7 +225,7 @@ function ReasonAction({
               />
             </label>
           ) : (
-            <p>Confirm {label.toLowerCase()}?</p>
+            <p>{confirm ?? `Confirm ${label.toLowerCase()}?`}</p>
           )}
           <div className="project-actions">
             {!needsReason || reason.trim() ? (
@@ -520,7 +523,13 @@ export function ControlRoom({
                 </button>
                 <button onClick={() => { void refresh(); close(); }}>Refresh</button>
                 <ReasonAction label="Stop initiative work" make={(reason) => ({ action: "stop-work", reason })} run={run} />
-                <ReasonAction label="Archive initiative" needsReason={false} make={() => ({ action: "archive" })} run={run} />
+                <ReasonAction
+                  label="Archive initiative"
+                  needsReason={false}
+                  confirm="Archive this Initiative? Its running work is stopped first; its threads stay in BB."
+                  make={() => ({ action: "archive" })}
+                  run={run}
+                />
               </>
             )}
           </Menu>

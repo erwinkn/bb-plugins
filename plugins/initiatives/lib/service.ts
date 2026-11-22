@@ -834,13 +834,11 @@ export class ProjectsService {
         },
       });
     } catch (error) {
-      const receipt = this.store.db
-        .prepare("SELECT state FROM coordinator_starts WHERE project_id = ?")
-        .get(project.id) as { state: string };
-      if (receipt.state !== "done")
-        this.store.db
-          .prepare("UPDATE coordinator_starts SET state=? WHERE project_id=?")
-          .run(isDefiniteRejection(error) ? "failed" : "uncertain", project.id);
+      // Only this start, while still open: a confirmation or an archive that closed it
+      // meanwhile keeps its outcome.
+      this.store.db
+        .prepare("UPDATE coordinator_starts SET state=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain')")
+        .run(isDefiniteRejection(error) ? "failed" : "uncertain", project.id, op);
       throw error;
     }
     // The exact default source was requested before the spawn, but it is
@@ -3372,24 +3370,45 @@ export class ProjectsService {
     });
   }
 
-  archiveProject(projectId: string) {
+  /**
+   * Archiving is never blocked: it ends what still runs and archives. Open work is stopped as
+   * Stop all work does (best-effort: a Stop BB refuses is reported, not fatal), and work that is
+   * still open after that (delegated meanwhile, or a Stop that threw) is cancelled in the store.
+   * A pending handover is withdrawn and an unconfirmed coordinator start closed as failed, so
+   * neither runs for an archived Initiative. Archiving is final: the coordinator, worker and
+   * receipt threads stay in BB as they are, unarchived, for the user to read or archive.
+   */
+  async archiveProject(projectId: string) {
     this.requireProject(projectId);
-    const start = this.coordinatorStart(projectId);
-    if (start && ["pending", "uncertain"].includes(start.state))
-      throw new ProjectError(
-        "Settle unconfirmed native operations before archiving.",
-      );
-    if (this.store.pendingHandover(projectId))
-      throw new ProjectError(
-        "A coordinator handover is pending; cancel it or let it finish before archiving.",
-      );
-    // Reported, stopped, failed and cancelled work is finished: only live work blocks archiving.
-    if (this.store.assignmentsIn(projectId, OPEN_WORK).length)
-      throw new ProjectError(
-        "Stop the running work (Stop all work) before archiving this Initiative.",
-      );
-    const archived = this.store.updateProject(projectId, { archivedAt: this.now() });
-    return archived;
+    const stopped = await this.stopRunningWork(projectId);
+    return this.store.tx(() => {
+      // Another archive may have landed while the Stops ran.
+      this.requireProject(projectId);
+      for (const left of this.store.assignmentsIn(projectId, OPEN_WORK)) {
+        this.store.updateAssignment(projectId, left.num, {
+          state: "cancelled",
+          cancelRequested: true,
+          stopReason: "Stopped: the Initiative was archived",
+        });
+        stopped.push(`${left.ref} cancelled; its thread was not stopped`);
+      }
+      if (this.store.clearHandover(projectId))
+        this.store.log(projectId, "coordinator", "Coordinator handover cancelled: the Initiative was archived");
+      const start = this.coordinatorStart(projectId);
+      if (start && ["pending", "uncertain"].includes(start.state)) {
+        this.store.db
+          .prepare("UPDATE coordinator_starts SET state='failed' WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain')")
+          .run(projectId, start.op_id);
+        this.store.log(
+          projectId,
+          "coordinator",
+          "Unconfirmed coordinator start closed: the Initiative was archived. A thread it may have started stays in BB.",
+        );
+      }
+      const archived = this.store.updateProject(projectId, { archivedAt: this.now() });
+      this.store.log(projectId, "project", stopped.length ? `Archived; open work ended: ${stopped.join("; ")}` : "Archived");
+      return { ...archived, stopped };
+    });
   }
 
   /**
@@ -5033,7 +5052,9 @@ export class ProjectsService {
     const settled: string[] = [];
     const coordinatorStarts = this.store.db
       .prepare(
-        "SELECT project_id, op_id, reason, thread_id, created_at FROM coordinator_starts WHERE state IN ('pending', 'uncertain')",
+        // An archived Initiative's start was closed on archive; one an in-flight spawn
+        // reopened afterwards has nothing left to coordinate.
+        "SELECT project_id, op_id, reason, thread_id, created_at FROM coordinator_starts WHERE state IN ('pending', 'uncertain') AND project_id NOT IN (SELECT id FROM projects WHERE archived_at IS NOT NULL)",
       )
       .all() as PendingCoordinatorStart[];
     // A start that retained its native receipt is read directly, so its cost

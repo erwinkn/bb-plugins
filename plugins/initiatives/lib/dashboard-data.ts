@@ -107,6 +107,12 @@ export class SharedReads {
     entry.data = data; entry.error = null; entry.loaded = true; entry.at = ++this.clock;
     this.publish(key);
   }
+  /** Drop the read a timer or a save holds back for key: what it reads is gone (an archived Initiative). */
+  drop(key: string) {
+    const entry = this.entry(key);
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = undefined; }
+    entry.again = undefined;
+  }
   /** Forget every entry (tests). */
   clear() {
     for (const entry of this.entries.values()) if (entry.timer) clearTimeout(entry.timer);

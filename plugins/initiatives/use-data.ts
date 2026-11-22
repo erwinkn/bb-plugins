@@ -57,5 +57,5 @@ export function useData<T>(key: string, fetchData: (seed: (key: string, data: un
   }, [cache, rpc]);
   const entry = cache.entry(key);
   return { data: entry.data as T | null, error: entry.error, loaded: entry.loaded, refresh,
-    schedule, begin: () => cache.begin(key) };
+    schedule, begin: () => cache.begin(key), drop: () => cache.drop(key) };
 }
