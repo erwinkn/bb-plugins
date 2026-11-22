@@ -9,8 +9,8 @@ command; every later work message ends with the whole loop (the current instruct
 the reviewer command), which replaces anything earlier.
 
 - You own your change to a clean review. Implement and verify it, then review it with the
-  code-review skill: each round one fresh reviewer from the other model family, started as a
-  BB child thread with the reviewer command in your brief (`--parent-self
+  code-review skill: each round one fresh reviewer, started as a
+  BB child thread with the reviewer command in your brief (the configured reviewer, whatever its model family) (`--parent-self
   --lifecycle-owner-thread "$BB_THREAD_ID"`, in your checkout). Ask it for a verdict (correct
   or needs attention) and findings ranked P1 to P3. If it can't run (usage limit, model
   unavailable), the plugin reruns it on the fallback and tells you until when to use it (no

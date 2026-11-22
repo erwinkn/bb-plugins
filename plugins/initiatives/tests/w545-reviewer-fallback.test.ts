@@ -23,7 +23,7 @@ async function setup(options: {
   finishedTurn?: boolean;
   parent?: "worker" | "coordinator";
 } = {}) {
-  const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewOfClaude: muse }) });
+  const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewer: muse }) });
   const [w] = await tool(f, "initiative_spawn", { label: "Retention", purpose: "retention", text: "Build it." });
   // Each test owns its reviewer's history; the fixture's shared finished turn would read as R8.
   f.history.splice(0);
@@ -289,7 +289,7 @@ describe("W545 review round 1 fixes", () => {
   });
 
   it("the brief shows a fallback command exactly when the plugin can switch to it", async () => {
-    const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewOfClaude: muse, reviewFallback: { ...muse, reasoningLevel: "high" } }) });
+    const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewer: muse, reviewFallback: { ...muse, reasoningLevel: "high" } }) });
     void project;
     await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     expect(f.spawn.mock.calls.at(-1)![0].prompt as string).not.toContain("Fallback reviewer command:");

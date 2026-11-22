@@ -40,7 +40,6 @@ import {
   describeProfile,
   profileFor,
   sameProfile,
-  seriesOf,
 } from "./policy";
 import { reportVersion } from "./write-holds";
 import { mayShareCheckout, placementOf, resolveHost, resolvePlacement, type AskedPlacement, type EnvironmentFacts, type Placement, type Workspace } from "./placement";
@@ -3944,7 +3943,7 @@ export class ProjectsService {
    * included. W560: while the reviewer is marked out, the fallback first.
    */
   private workAppendix(policy: Policy, profile: Profile, guidance: string, route: "fresh" | "continue") {
-    const usual = reviewerProfileFor(policy, profile);
+    const usual = reviewerProfileFor(policy);
     const reviewer = reviewerCommand(usual, profileFor(policy, "reviewFallback"), reviewerOutUntil(this.store, usual));
     const memory = profile.providerId === "claude-code" ? "UniiChat keeps private history; turns queue during preparation. Use memory_zoom." : null;
     return route === "fresh" ? briefAppendix(reviewer, memory) : workLoopBlock(guidance, reviewer, memory);
@@ -4262,14 +4261,13 @@ export class ProjectsService {
     const sources = () => [...(reviewed ? [latestReport(this.store, project.id, reviewed.ref)] : []), ...resolveHandoffs(this.store, project.id, handoffRefs)];
     const initialSources = sources().map(handoffSource);
 
-    // Profile: a review defaults to the reviewer configured for the reviewed worker's model
-    // family; work follows the explicit choice, then a user-chosen task profile, then the
-    // profile of its kind (worker by default). A continuation keeps the worker's native model
-    // (read below).
+    // Profile: a review defaults to the reviewer role (one for every worker model); work follows
+    // the explicit choice, then a user-chosen task profile, then the profile of its kind (worker
+    // by default). A continuation keeps the worker's native model (read below).
     const kind: WorkerKind = input.kind ?? DEFAULT_WORKER_KIND;
     let profile: Profile;
     if (reviewed)
-      profile = input.profile ?? profileFor(policy, seriesOf(reviewed.actualProfile ?? reviewed.profile) === "claude" ? "reviewOfClaude" : "reviewOfGpt");
+      profile = input.profile ?? profileFor(policy, "reviewer");
     else {
       profile = input.profile ?? workerKindProfile(policy, kind);
       for (const task of tasks) {
@@ -4457,7 +4455,7 @@ export class ProjectsService {
           : null,
         writeScope: input.role === "work" ? paths : null,
         handoffSources,
-        reviewKey: null,
+        reviewKey: input.role === "review" ? "reviewer" : null,
         rationale,
         // v9: who gets this work's reports; a value here marks the work as given out by this build.
         replyTo: input.replyTo ?? this.store.project(project.id)?.coordinatorThreadId ?? "coordinator",

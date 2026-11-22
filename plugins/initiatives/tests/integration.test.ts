@@ -529,7 +529,7 @@ describe("review independence", () => {
     expect(r.state).toBe("running");
     const spawned = f.spawn.mock.calls.at(-1)![0];
     // Claude did the work (implementation default), so the reviewer is GPT.
-    expect(spawned.model).toBe(DEFAULT_PROFILES.reviewOfClaude.model);
+    expect(spawned.model).toBe(DEFAULT_PROFILES.reviewer.model);
     // A different family is a recommendation; an explicit same-family
     // reviewer still starts as a fresh read-only review.
     const [same] = await f.service.delegate(project.id, {

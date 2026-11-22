@@ -35,7 +35,7 @@ describe("W534 review stop rule", () => {
     expect(worker).toContain("list the rest in your PR notes and report done; don't re-review to confirm P3 fixes.");
     expect(worker).toContain("If your brief asks for an expert second reviewer (Fable 5.2, or Muse Wonder Full: muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head.");
     const coordinator = skill("initiative-coordinator");
-    expect(coordinator).toContain("one fresh reviewer from the other model family per round");
+    expect(coordinator).toContain("one fresh reviewer per round, on the configured reviewer profile");
     expect(coordinator).toContain("Never require both clean on the same head.");
     expect(flat(readFileSync("README.md", "utf8"))).toContain("means the reviewer's verdict is correct with no P1 or P2");
   });

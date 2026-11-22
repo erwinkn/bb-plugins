@@ -17,7 +17,7 @@ const haiku: Profile = { providerId: "claude-code", model: "claude-haiku-5-5", r
 const luna: Profile = { providerId: "codex", model: "gpt-6-luna", reasoningLevel: "xhigh" };
 const sol: Profile = { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "xhigh" };
 // The retired experiment and investigation keys stay in the settings: they must be ignored, not error.
-const settings = { executionProfiles: JSON.stringify({ implementation: opus, straightforward: sonnet, experiment: exp, investigation: luna, reviewOfClaude: sol, reviewOfGpt: sol }) };
+const settings = { executionProfiles: JSON.stringify({ implementation: opus, straightforward: sonnet, experiment: exp, investigation: luna, reviewer: sol }) };
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool = async (f: Fx, name: string, input: unknown) => JSON.parse(await f.harness.callAgentTool(name, input, { threadId: "coordinator" }) as string);
@@ -170,7 +170,7 @@ describe("W206 spawn by role", () => {
     expect(delegateSchema.safeParse({ ...base, route: "continue", worker: "W1", kind: "fast" }).success).toBe(false);
   });
 
-  it("a review keeps its profile by the reviewed worker's family and records no kind", async () => {
+  it("a review runs on the reviewer profile and records no kind", async () => {
     const { f, project } = await projectFixture(settings);
     available(f);
     const [impl] = await tool(f, "initiative_spawn", spawnInput("impl", { kind: "fast" }));

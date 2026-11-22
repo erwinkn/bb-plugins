@@ -24,7 +24,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 async function setup() {
-  const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewOfClaude: muse, reviewFallback: sol }) });
+  const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewer: muse, reviewFallback: sol }) });
   const [w] = await tool(f, "initiative_spawn", { label: "Demo", purpose: "demo", text: "Build it." });
   f.history.splice(0);
   let seq = 100;

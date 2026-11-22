@@ -1,6 +1,6 @@
 import { BUSY_STATUSES, errorMessage, textInput, type Sdk, type ThreadDto } from "./bb";
 import { utcTime } from "./brief";
-import { fallbackDiffers, profileFor, seriesOf } from "./policy";
+import { fallbackDiffers, profileFor } from "./policy";
 import type { Policy, Profile } from "./schema";
 import type { Store } from "./store";
 
@@ -120,9 +120,8 @@ function markOut(store: Store, profile: Pick<Profile, "providerId" | "model">, u
   return end;
 }
 
-/** The profile a worker's brief names as its reviewer, by the worker's model family. */
-export const reviewerProfileFor = (policy: Policy, worker: Pick<Profile, "providerId" | "model"> | null) =>
-  profileFor(policy, seriesOf(worker) === "gpt" ? "reviewOfGpt" : "reviewOfClaude");
+/** The profile a worker's brief names as its reviewer: one role for every worker model. */
+export const reviewerProfileFor = (policy: Policy) => profileFor(policy, "reviewer");
 
 const profileName = (profile: Profile) => `${profile.model} ${profile.reasoningLevel}`;
 const REASONS = { quota: "out of quota (usage limit)", unavailable: "its model is unavailable", out: "out (an earlier round hit a usage limit or an unavailable model)" } as const;
@@ -283,8 +282,7 @@ export class ReviewerFallback {
     if (!membership) return null;
     const { project, worker } = membership;
     const policy = await this.deps.policy(project.id);
-    const assignment = store.openAssignment(project.id, worker.num);
-    const reviewer = reviewerProfileFor(policy, assignment?.profile ?? (worker.providerId && worker.model ? { providerId: worker.providerId, model: worker.model } : null));
+    const reviewer = reviewerProfileFor(policy);
     const fallback = profileFor(policy, "reviewFallback");
     // The reviewer command titles it "Review r<N> …"; a worker's own helper on that model is no reviewer.
     if (!fallbackDiffers(reviewer, fallback) || thread.providerId !== reviewer.providerId || !/\breview/iu.test(thread.title ?? "")) return null;
@@ -395,7 +393,7 @@ export class ReviewerFallback {
       }
       // A worker on an older brief replaces it by hand; one fallback per round.
       // An unreadable listing is no proof that it started none: the outer catch hands the round over.
-      // The fallback's model too: by default the reviewer of GPT work shares its provider.
+      // Matched on the fallback's provider and a review title; the reviewer may share that provider..
       const candidates = (await sdk.threads.list({ parentThreadId: thread.parentThreadId!, includeHidden: true } as never)).filter(
         (child) => child.id !== threadId && child.archivedAt === null && child.providerId === fallback.providerId && child.createdAt >= thread.createdAt && /\breview/iu.test(child.title ?? ""),
       );

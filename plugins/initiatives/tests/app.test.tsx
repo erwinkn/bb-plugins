@@ -198,6 +198,21 @@ describe("project dashboard", () => {
     } else expect(within(row).queryByRole("button", { name: "Retry coordinator notification" })).toBeNull();
   });
 
+  it("W634 Settings lists six roles, and a saved legacy reviewOfClaude shows as the Reviewer", () => {
+    const section = app.settingsSections.find((section) => section.id === "initiatives-guidance")!;
+    const slot = renderSlot(section, {}, {
+      settings: { executionProfiles: JSON.stringify({ reviewOfClaude: { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high" } }) },
+      rpc: { resetSetting: vi.fn() },
+    });
+    mounted.push(slot);
+    const table = slot.getByRole("table", { name: "Global default profiles" });
+    expect(Array.from(table.querySelectorAll("th")).map((th) => th.textContent)).toEqual([
+      "Coordinator coordinator", "Worker implementation", "Fast worker straightforward", "Very fast worker mechanical", "Reviewer reviewer", "Fallback reviewer reviewFallback",
+    ]);
+    expect(table.textContent).not.toContain("Reviewer (of");
+    expect(within(table.querySelectorAll("tr")[4] as HTMLElement).getByText(/gpt-6\.1-sol/)).toBeTruthy();
+  });
+
   it("A94 Settings section shows saved fallback profiles and resets the chosen field", async () => {
     const resetSetting = vi.fn().mockResolvedValue({ ok: true });
     const section = app.settingsSections.find((section) => section.id === "initiatives-guidance")!;

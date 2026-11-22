@@ -770,7 +770,8 @@ export interface AssignmentRecord {
   checkpoint: CheckpointRecord | null;
   reportNotice: NativeNotice | null;
   rationale: string | null;
-  reviewKey: "reviewOfClaude" | "reviewOfGpt" | null;
+  /** Written as "reviewer"; rows from before one reviewer role still read as "reviewOfClaude" or "reviewOfGpt". */
+  reviewKey: "reviewer" | "reviewOfClaude" | "reviewOfGpt" | null;
   /** A continue rename staged until its brief is proven delivered. */
   pendingIdentity: { label?: string; area?: string } | null;
   /** The label this assignment's brief named, fixed at creation; null on rows from before T143. */

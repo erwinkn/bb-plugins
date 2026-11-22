@@ -19,8 +19,8 @@ An example, in the Equisafe Initiative:
 1. Erwin, in the coordinator tab: "The human-steps query double-counts KYB steps. Fix it."
    The coordinator spawns W1420: `initiative_spawn {label, purpose, text, tasks:["T163"]}`.
    Its assignment A1641 records `reply_to` = the coordinator tab. The brief ends with the
-   **reviewer command** (a `bb thread spawn` of the other model family, from the
-   `reviewOfClaude`/`reviewOfGpt` profile). When the
+   **reviewer command** (a `bb thread spawn`, from the single `reviewer` profile, the same
+   for a Claude, GPT or Gemini worker). When the
    `reviewFallback` profile runs another provider or model than that reviewer (the same model
    at another effort hits the same quota), a second command follows it. If a usage limit or an
    unavailable model stops the reviewer before its verdict, the plugin switches it (W545,
@@ -408,19 +408,16 @@ records that upstream candidate; no issue was filed.
 | Coordination, worker (everything else)    | Opus 5.5 High          |
 | Fast worker (small, well-specified)       | Sonnet 5.5 High        |
 | Very fast worker (mechanical)             | Haiku 5.5 High         |
-| Review of Claude work                     | GPT-6 Astra Extra High |
-| Review of GPT work                        | Opus 5.5 High          |
+| Reviewer (any worker model)               | GPT-6 Astra Extra High |
+| Fallback reviewer                         | Opus 5.5 High          |
 
 Review substantial milestones. A reviewer remains a reviewer across messages and
 adoption. Each review starts as a fresh, read-only thread with the reviewed
 worker's latest report embedded, never a continuation of an implementer's
-context. A reviewer from a different model family is the default
-recommendation, not a requirement: the "Review of Claude/GPT work" profiles are
-used as configured, even when they share the implementer's family, and an
-explicit reviewer profile wins. Without a chosen profile, mixed Claude/GPT
-authorship gets one default reviewer per implementing family, or a single one
-when both families' profiles are identical; with one, a single reviewer covers
-the whole requested scope. Reviewers are archived explicitly
+context. The single `reviewer` profile is used as configured, whatever the
+implementer's family (a different family is the recommended pairing, not a
+requirement), and an explicit reviewer profile wins. One reviewer covers the
+whole requested scope. Reviewers are archived explicitly
 after their result lands — never reused, never auto-archived. Explicit
 Initiative/task model overrides remain available.
 
@@ -943,11 +940,14 @@ briefs never repeat them.
 Profiles are stored under their original JSON keys but named by role in
 Settings: `coordinator` (coordinator), `implementation` (worker),
 `straightforward` (fast worker), `mechanical` (very fast worker),
-`reviewOfClaude` and `reviewOfGpt` (the reviewer for work done by that
-model family, so a different family reviews by default) and `reviewFallback`
-(the fallback reviewer, for either family; default Claude Opus 5.5 high). The old
-`experiment` and `investigation` keys are ignored wherever they still appear (Settings,
-per-Initiative policies). A coordinator picks a role on spawn with `kind`: `worker`
+`reviewer` (the reviewer, one for every worker model; default GPT-6 Astra xhigh, so a
+Claude worker is reviewed by another family; pick a complementary one per Initiative in
+its Models section) and `reviewFallback` (the fallback reviewer, for any reviewer; default Claude Opus 5.5
+high). The old `experiment` and `investigation` keys are ignored wherever they still
+appear (Settings, per-Initiative policies). The old `reviewOfClaude` and `reviewOfGpt`
+keys read as `reviewer` (`reviewOfClaude` wins when both are set and `reviewer` is not)
+and are dropped; stored per-Initiative policies are rewritten without them on their next
+edit, and old review assignment rows keep their `review_key` as stored. A coordinator picks a role on spawn with `kind`: `worker`
 (default, `implementation`, Opus 5.5 high: everything else, including investigations,
 read-only exploration and prototypes; the brief says that a job is read-only or a
 prototype), `fast` (`straightforward`, Sonnet 5.5 high: small, well-specified changes) or
@@ -957,7 +957,7 @@ refused with an error naming the valid kinds; a worker stored with one shows as 
 recorded on the worker and shown beside its W# in the dashboard. An explicit
 `profile` on spawn wins over `kind`; a user-chosen task profile still wins over
 the coordinator's; a work message keeps the worker's native model; a review
-follows the reviewed worker's model family. Per-Initiative `policy.profiles`
+uses the `reviewer` profile. Per-Initiative `policy.profiles`
 override the same keys. Settings never rewrite stored Initiative policies.
 
 ## Execution choices and native details

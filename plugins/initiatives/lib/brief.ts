@@ -83,12 +83,14 @@ export function renderAssignment(input: {
 }
 
 const FINISH_WORK = "Finish by calling initiative_report with your full report.";
-const REVIEWER_HEADING = "Reviewer command (code-review skill, other model family):";
+const REVIEWER_HEADING = "Reviewer command (code-review skill):";
+/** Briefs stored before W634 headed the reviewer command with this. */
+const LEGACY_REVIEWER_HEADING = "Reviewer command (code-review skill, other model family):";
 const LOOP_HEADING = "How you work in this Initiative (current; replaces anything earlier):";
 
 /**
  * v9: the command a worker starts each round's reviewer with: a BB child thread in its own
- * checkout, from the other model family, archived with the worker. The prompt file lives in the
+ * checkout, on the configured reviewer profile, archived with the worker. The prompt file lives in the
  * worker's thread storage, so the checkout stays clean. W537: a fallback that differs from the
  * reviewer follows it, to rerun a round the reviewer couldn't run; it is never a second reviewer.
  * W545: the plugin runs it itself when a usage limit or an unavailable model stops the reviewer
@@ -149,7 +151,7 @@ export const workLoopBlock = (guidance: string, reviewer: string, note: string |
  * gain the appendix.
  */
 export function ownBriefText(text: string): string {
-  const starts = [LOOP_HEADING, REVIEWER_HEADING].map((heading) => text.indexOf(`\n\n${FINISH_WORK}\n\n${heading}\n`)).filter((at) => at >= 0);
+  const starts = [LOOP_HEADING, REVIEWER_HEADING, LEGACY_REVIEWER_HEADING].map((heading) => text.indexOf(`\n\n${FINISH_WORK}\n\n${heading}\n`)).filter((at) => at >= 0);
   return starts.length ? text.slice(0, Math.min(...starts) + 2 + FINISH_WORK.length) : text;
 }
 

@@ -66,7 +66,7 @@ describe("v9 §6.1 the instruction budget", () => {
 
 describe("v9 §3 the worker owns its review loop", () => {
   it("guidance: fresh reviewer each round from the other family, no round cap while findings converge (R5), blocked on whack-a-mole or scope creep; leads send it back only on the user's word", () => {
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("one fresh reviewer each round, from the other model family, started with the reviewer command in your brief");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("one fresh reviewer each round, started with the reviewer command in your brief");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Keep reviewing while P1s and P2s converge; no round cap. Once only P3s remain, fix the cheap ones, list the rest in your PR notes (initiative_pr) and report done: no re-review to confirm P3 fixes. If your brief asks for an expert second reviewer (Fable 5.2, or Muse Wonder Full: muse-wonder-full-1.0, xhigh), consult it once, after the first has passed the head. Its prompt is the question your brief names. Never pick Fable or another expert yourself, for any round or fallback. Done when the last verdict is clean. Blocked (each open finding, your view, the options) on whack-a-mole (P1s, or P2s reappearing in the same area round after round) or scope creep.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("While a child, background job or watched PR is pending, end your turn; it wakes you. Ending a turn reports nothing. End one without a report only to wait like that.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Blocked: if the user's explicit instruction settles it, answer the worker and let it keep reviewing");
@@ -79,8 +79,8 @@ describe("v9 §3 the worker owns its review loop", () => {
     const { f, project } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
-    // A Claude worker's reviewer is the reviewOfClaude profile (GPT by default).
-    expect(brief).toContain('Reviewer command (code-review skill, other model family):\nbb thread spawn --project "$BB_PROJECT_ID" --parent-self \\\n  --lifecycle-owner-thread "$BB_THREAD_ID" --environment "$BB_ENVIRONMENT_ID" \\\n  --provider codex --model gpt-6-astra --reasoning-level xhigh');
+    // Every worker's reviewer is the reviewer profile (GPT by default).
+    expect(brief).toContain('Reviewer command (code-review skill):\nbb thread spawn --project "$BB_PROJECT_ID" --parent-self \\\n  --lifecycle-owner-thread "$BB_THREAD_ID" --environment "$BB_ENVIRONMENT_ID" \\\n  --provider codex --model gpt-6-astra --reasoning-level xhigh');
     expect(brief).toMatch(/--prompt-file "\$BB_THREAD_STORAGE\/review-r<N>\.md"\n\nUniiChat keeps private history; turns queue during preparation\. Use memory_zoom\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
     expect(brief).not.toContain("How you work in this Initiative");
     await tool(f, "initiative_report", { outcome: "blocked", summary: "Still rejected after 4 review rounds.", question: "Move the backfill?", report: "r4: P1 open." }, w.threadId);

@@ -32,15 +32,18 @@ const row = (slot: ReturnType<typeof renderSlot>, role: string) => slot.getByTex
 
 describe("W632 Models section", () => {
   it("lists every role with its effective model, Default or Custom", async () => {
-    const { slot } = await open({ implementation: sonnet }, { reviewOfGpt: sol });
-    for (const role of ["Coordinator", "Worker", "Fast worker", "Very fast worker", "Reviewer (of Claude work)", "Reviewer (of GPT work)", "Fallback reviewer"])
+    const { slot } = await open({ implementation: sonnet }, { reviewer: sol });
+    for (const role of ["Coordinator", "Worker", "Fast worker", "Very fast worker", "Reviewer", "Fallback reviewer"])
       expect(row(slot, role)).toBeTruthy();
+    expect(Array.from(slot.getByRole("region", { name: "Models" }).querySelectorAll(".cr-repository strong")).map((el) => el.textContent)).toEqual(["Coordinator", "Worker", "Fast worker", "Very fast worker", "Reviewer", "Fallback reviewer"]);
+    expect(slot.queryByText("Reviewer (of Claude work)")).toBeNull();
+    expect(slot.queryByText("Reviewer (of GPT work)")).toBeNull();
     // An override of this Initiative.
     expect(within(row(slot, "Worker")).getByText("Custom")).toBeTruthy();
     expect(within(row(slot, "Worker")).getByText("Sonnet 5.5 · low")).toBeTruthy();
     // A global default from Settings, then the built-in one.
-    expect(within(row(slot, "Reviewer (of GPT work)")).getByText("Default")).toBeTruthy();
-    expect(within(row(slot, "Reviewer (of GPT work)")).getByText("Sol 6.1 · xhigh")).toBeTruthy();
+    expect(within(row(slot, "Reviewer")).getByText("Default")).toBeTruthy();
+    expect(within(row(slot, "Reviewer")).getByText("Sol 6.1 · xhigh")).toBeTruthy();
     expect(within(row(slot, "Coordinator")).getByText("Default")).toBeTruthy();
     expect(within(row(slot, "Coordinator")).getByText("Opus 5.5 · high")).toBeTruthy();
     expect(slot.getByText(/running threads keep their model/)).toBeTruthy();
@@ -48,38 +51,38 @@ describe("W632 Models section", () => {
 
   it("saves a role override through the edit command, keeping the others", async () => {
     const { slot, command } = await open({ implementation: sonnet });
-    fireEvent.click(slot.getByRole("button", { name: "Customize Reviewer (of GPT work)" }));
+    fireEvent.click(slot.getByRole("button", { name: "Customize Reviewer" }));
     const picker = slot.getByTestId("bb-provider-model-picker");
     fireEvent.change(within(picker).getByLabelText("Provider ID"), { target: { value: "codex" } });
     fireEvent.change(within(picker).getByLabelText("Model"), { target: { value: "gpt-6.1-sol" } });
     fireEvent.click(within(picker).getByRole("button", { name: "Apply execution selection" }));
-    fireEvent.click(slot.getByRole("button", { name: "Save Reviewer (of GPT work)" }));
+    fireEvent.click(slot.getByRole("button", { name: "Save Reviewer" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0].command).toEqual({
       action: "edit",
-      profiles: { reviewOfGpt: { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high" } },
+      profiles: { reviewer: { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "xhigh" } },
     });
   });
 
   it("clears one override, or all, back to the default by leaving the key out", async () => {
-    const { slot, command } = await open({ implementation: sonnet, reviewOfGpt: sol });
+    const { slot, command } = await open({ implementation: sonnet, reviewer: sol });
     expect(slot.queryByRole("button", { name: "Use the default for Coordinator" })).toBeNull();
     fireEvent.click(slot.getByRole("button", { name: "Use the default for Worker" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0].command).toEqual({ action: "edit", profiles: { implementation: null } });
     fireEvent.click(slot.getByRole("button", { name: "Reset all to defaults" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
-    expect(command.mock.calls[1][0].command).toEqual({ action: "edit", profiles: { reviewOfGpt: null } });
+    expect(command.mock.calls[1][0].command).toEqual({ action: "edit", profiles: { reviewer: null } });
   });
 
   it("a second save before the refresh names only its own role and keeps the first one cleared", async () => {
-    const { slot, command } = await open({ implementation: sonnet, reviewOfGpt: sol });
+    const { slot, command } = await open({ implementation: sonnet, reviewer: sol });
     fireEvent.click(slot.getByRole("button", { name: "Use the default for Worker" }));
     await waitFor(() => expect(within(row(slot, "Worker")).getByText("Default")).toBeTruthy());
-    fireEvent.click(slot.getByRole("button", { name: "Use the default for Reviewer (of GPT work)" }));
+    fireEvent.click(slot.getByRole("button", { name: "Use the default for Reviewer" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
-    expect(command.mock.calls[1][0].command).toEqual({ action: "edit", profiles: { reviewOfGpt: null } });
-    await waitFor(() => expect(within(row(slot, "Reviewer (of GPT work)")).getByText("Default")).toBeTruthy());
+    expect(command.mock.calls[1][0].command).toEqual({ action: "edit", profiles: { reviewer: null } });
+    await waitFor(() => expect(within(row(slot, "Reviewer")).getByText("Default")).toBeTruthy());
     expect(within(row(slot, "Worker")).getByText("Default")).toBeTruthy();
   });
 

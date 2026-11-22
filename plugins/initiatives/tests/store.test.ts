@@ -335,7 +335,7 @@ describe("assignment access migration", () => {
         VALUES ('p1', ?, ?, '[1]', 'fresh', ?, 1, ?, 'proj_a', ?, ?, ?, 'legacy audit brief', 1, 1)`);
       insert.run(1, 1, "work", JSON.stringify(DEFAULT_PROFILES.implementation), "queued", "op_legacy_work", "done");
       insert.run(2, 2, "work", JSON.stringify(DEFAULT_PROFILES.implementation), "cancelled", "op_legacy_uncertain", "uncertain");
-      insert.run(3, 3, "review", JSON.stringify(DEFAULT_PROFILES.reviewOfGpt), "running", "op_legacy_review", "done");
+      insert.run(3, 3, "review", JSON.stringify(DEFAULT_PROFILES.reviewFallback), "running", "op_legacy_review", "done");
       for (const statement of MIGRATIONS.slice(firstNew)) db.exec(statement);
       const reopened = new Store(db);
       expect(reopened.assignments("p1").map((a) => [a.role, a.state, a.opState, a.access])).toEqual([

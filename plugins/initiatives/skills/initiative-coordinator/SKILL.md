@@ -14,7 +14,7 @@ lead: workers report back to it. This skill only sums up the tools.
   the brief), `fast` (small, well-specified changes) or `very-fast` (mechanical: lookups,
   scans, renames, simple scripted checks). Settings map each kind to a
   model, and an explicit `profile` overrides it. Don't start reviewers: each worker runs its
-  own review loop (one fresh reviewer from the other model family per round, for as long as the
+  own review loop (one fresh reviewer per round, on the configured reviewer profile, for as long as the
   P1s and P2s converge; clean means verdict correct, no P1 or P2) and reports once. An expert
   second reviewer (Fable 5.2 or Muse Wonder Full) is rare: only for a complex change that truly
   needs a senior engineer, one where you can name the hard question a careful first reviewer

@@ -58,11 +58,12 @@ export type AssignmentAccess = (typeof ASSIGNMENT_ACCESS)[number];
 export const PROFILE_KEYS = [
   "coordinator",
   ...WORK_KINDS,
-  "reviewOfClaude",
-  "reviewOfGpt",
+  "reviewer",
   "reviewFallback",
 ] as const;
 export type ProfileKey = (typeof PROFILE_KEYS)[number];
+/** Reviewer keys from before one reviewer role served every worker model: read as `reviewer` (the Claude one wins), never errors. */
+export const LEGACY_REVIEWER_KEYS = ["reviewOfClaude", "reviewOfGpt"] as const;
 
 /** The stored profile key behind each worker kind (the JSON keys predate the roles). */
 export const WORKER_KIND_PROFILE: Record<WorkerKind, WorkKind> = {
@@ -77,8 +78,7 @@ export const PROFILE_ROLE_LABELS: Record<ProfileKey, string> = {
   implementation: "Worker",
   straightforward: "Fast worker",
   mechanical: "Very fast worker",
-  reviewOfClaude: "Reviewer (of Claude work)",
-  reviewOfGpt: "Reviewer (of GPT work)",
+  reviewer: "Reviewer",
   reviewFallback: "Fallback reviewer",
 };
 
@@ -106,18 +106,13 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
     model: "claude-haiku-5-5",
     reasoningLevel: "high",
   },
-  reviewOfClaude: {
+  // One reviewer for every worker model; pair a complementary one per Initiative in its Models section.
+  reviewer: {
     providerId: "codex",
     model: "gpt-6-astra",
     reasoningLevel: "xhigh",
   },
-  // Opus, not Fable: an ordinary review round is general work (Erwin, 2026-11-13).
-  reviewOfGpt: {
-    providerId: "claude-code",
-    model: "claude-opus-5-5",
-    reasoningLevel: "high",
-  },
-  // When the reviewer above can't run (usage limit, model unavailable), for either family (W537).
+  // Opus, not Fable: an ordinary review round is general work (Erwin, 2026-11-13). Runs a round the reviewer above can't (usage limit, model unavailable, W537).
   reviewFallback: {
     providerId: "claude-code",
     model: "claude-opus-5-5",
@@ -125,12 +120,25 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
   },
 };
 
-/** Profiles by key; the `experiment` and `investigation` keys of older settings and policies are ignored (R9). */
+/**
+ * Profiles by key. Older settings and policies read cleanly: the `experiment` and `investigation`
+ * keys are ignored (R9), and `reviewOfClaude`, else `reviewOfGpt`, becomes `reviewer` unless that
+ * is set. Every supplied legacy value is validated first, even when another one wins: a malformed one is carried over as `reviewer`, so editing the JSON still rejects it.
+ */
 const profilesSchema = z.preprocess(
-  (value) =>
-    value && typeof value === "object" && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).filter(([key]) => !(LEGACY_WORK_KINDS as readonly string[]).includes(key)))
-      : value,
+  (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const stored = value as Record<string, unknown>;
+    const retired: readonly string[] = [...LEGACY_WORK_KINDS, ...LEGACY_REVIEWER_KEYS];
+    const profiles = Object.fromEntries(Object.entries(stored).filter(([key]) => !retired.includes(key)));
+    const supplied = LEGACY_REVIEWER_KEYS.map((key) => stored[key]).filter((entry) => entry !== undefined && entry !== null);
+    const malformed = supplied.find((entry) => !profileSchema.safeParse(entry).success);
+    if (malformed !== undefined) profiles.reviewer = malformed;
+    else if (profiles.reviewer === undefined || profiles.reviewer === null) {
+      if (supplied.length) profiles.reviewer = supplied[0];
+    }
+    return profiles;
+  },
   z.partialRecord(z.enum(PROFILE_KEYS), profileSchema).default({}),
 );
 

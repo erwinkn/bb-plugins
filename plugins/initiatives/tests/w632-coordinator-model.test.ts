@@ -84,12 +84,12 @@ describe("W632 per-Initiative models: persistence", () => {
   it("a per-role patch applies to the stored policy: two clients changing different roles both stick", async () => {
     const f = fixture();
     const other = { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "xhigh" } as const;
-    const { project } = await f.service.createProject({ ...base, policy: { profiles: { implementation: sonnet, reviewOfGpt: other } }, coordinator: { kind: "new" } });
+    const { project } = await f.service.createProject({ ...base, policy: { profiles: { implementation: sonnet, reviewer: other } }, coordinator: { kind: "new" } });
     // Two clients read the same snapshot, then each changes its own role.
     f.service.editProject(project.id, { profiles: { coordinator: neon } });
     f.service.editProject(project.id, { profiles: { implementation: null } });
-    expect(f.store.project(project.id)!.policy.profiles).toEqual({ coordinator: neon, reviewOfGpt: other });
-    f.service.editProject(project.id, { profiles: { coordinator: null, reviewOfGpt: null } });
+    expect(f.store.project(project.id)!.policy.profiles).toEqual({ coordinator: neon, reviewer: other });
+    f.service.editProject(project.id, { profiles: { coordinator: null, reviewer: null } });
     expect(f.store.project(project.id)!.policy.profiles).toEqual({});
   });
   it("the command schema takes a per-role patch and rejects an unknown role", () => {

@@ -88,12 +88,14 @@ describe("profiles", () => {
       model: "claude-sonnet-5-5",
       reasoningLevel: "high",
     });
-    expect(DEFAULT_PROFILES.reviewOfClaude).toEqual({
+    expect(DEFAULT_PROFILES.reviewer).toEqual({
       providerId: "codex",
       model: "gpt-6-astra",
       reasoningLevel: "xhigh",
     });
-    expect(DEFAULT_PROFILES.reviewOfGpt).toEqual({
+    expect(DEFAULT_PROFILES).not.toHaveProperty("reviewOfClaude");
+    expect(DEFAULT_PROFILES).not.toHaveProperty("reviewOfGpt");
+    expect(DEFAULT_PROFILES.reviewFallback).toEqual({
       providerId: "claude-code",
       model: "claude-opus-5-5",
       reasoningLevel: "high",

@@ -30,10 +30,10 @@ describe("W581 Fable 5.2 reviewer", () => {
 
 // Oracle for Erwin (2026-11-13): "Fable is only when you have a complex change that truly
 // needs a senior engineer on it". The expert is rare and named by its question; an ordinary
-// review of GPT work runs on Opus.
+// review that falls back runs on Opus.
 describe("expert reviewer is rare", () => {
-  it("the GPT-work reviewer profile is Opus 5.5 at high", () => {
-    expect(DEFAULT_PROFILES.reviewOfGpt).toEqual({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" });
+  it("the fallback reviewer profile is Opus 5.5 at high", () => {
+    expect(DEFAULT_PROFILES.reviewFallback).toEqual({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" });
   });
 
   it("the coordinator text no longer lists topics as triggers and asks for the hard question", () => {

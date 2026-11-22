@@ -30,7 +30,7 @@ describe("W537 fallback reviewer", () => {
 
   it("renders the fallback command after the reviewer's only when it differs", () => {
     const both = reviewerCommand(muse, opus);
-    expect(both.startsWith("Reviewer command (code-review skill, other model family):\nbb thread spawn")).toBe(true);
+    expect(both.startsWith("Reviewer command (code-review skill):\nbb thread spawn")).toBe(true);
     expect(both.indexOf(spawnOf(muse))).toBeLessThan(both.indexOf(FALLBACK));
     expect(both.indexOf(FALLBACK)).toBeLessThan(both.indexOf(spawnOf(opus)));
     // W545: the plugin reruns the round itself; the worker runs the command only when the reviewer command is refused.
@@ -45,7 +45,7 @@ describe("W537 fallback reviewer", () => {
   });
 
   it("a brief and a work message carry the global fallback; the default one when unset", async () => {
-    const { f } = await projectFixture({ executionProfiles: JSON.stringify({ reviewOfClaude: muse, reviewFallback: sonnet }) });
+    const { f } = await projectFixture({ executionProfiles: JSON.stringify({ reviewer: muse, reviewFallback: sonnet }) });
     const [w] = await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
     expect(brief).toContain(spawnOf(muse));
@@ -55,14 +55,14 @@ describe("W537 fallback reviewer", () => {
     const work = (f.send.mock.calls.at(-1)![0] as { input: { text: string }[] }).input.map((part) => part.text).join("");
     expect(work.slice(work.indexOf(FALLBACK))).toContain(spawnOf(sonnet));
 
-    const plain = await projectFixture({ executionProfiles: JSON.stringify({ reviewOfClaude: muse }) });
+    const plain = await projectFixture({ executionProfiles: JSON.stringify({ reviewer: muse }) });
     await tool(plain.f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     const defaulted = plain.f.spawn.mock.calls.at(-1)![0].prompt as string;
     expect(defaulted.slice(defaulted.indexOf(FALLBACK))).toContain(spawnOf(opus));
   });
 
   it("an Adventure's own fallback overrides the global one; one equal to the reviewer is left out", async () => {
-    const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewOfClaude: muse, reviewFallback: sonnet }) });
+    const { f, project } = await projectFixture({ executionProfiles: JSON.stringify({ reviewer: muse, reviewFallback: sonnet }) });
     f.store.updateProject(project.id, { policy: { profiles: { reviewFallback: opus } } });
     await tool(f, "initiative_spawn", { label: "Fix", purpose: "fix", text: "Fix it." });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
@@ -84,7 +84,7 @@ describe("W537 fallback reviewer", () => {
     const readme = flat(readFileSync("README.md", "utf8"));
     expect(readme).toContain("deletes the retries queued on it");
     expect(readme).toContain("a review that gave a verdict or findings is never redone on the fallback.");
-    expect(readme).toContain("`reviewFallback` (the fallback reviewer, for either family; default Claude Opus 5.5 high)");
+    expect(readme).toContain("`reviewFallback` (the fallback reviewer, for any reviewer; default Claude Opus 5.5 high)");
   });
 
   it("the worker default from before the fallback is kept as a legacy text and upgrades to the current one", async () => {
