@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { TURN_CONTEXT_TOOL, type MemoryStatus } from "../lib/memory";
+import { describe, expect, it, vi } from "vitest";
+import { TURN_CONTEXT_TOOL, supportsOptChat, type MemoryStatus } from "../lib/memory";
 import { TURN_PROMPT } from "../lib/prompt";
 import { fakeLuna, fixture, stuckLuna } from "./fixture";
 
@@ -13,7 +13,7 @@ describe("T145 scopes", () => {
     await f.attach("initiatives", "prj_1", f.thread("coord"), f.thread("talk", { providerId: "codex" }), f.thread("agy", { providerId: "acp-antigravity" }));
     expect(await toolNames(f, "coord")).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
     expect(await toolNames(f, "talk", { providerId: "codex" })).toEqual(["memory_read", "memory_zoom"]);
-    expect(await toolNames(f, "agy", { providerId: "acp-antigravity" })).toEqual(["memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "agy", { providerId: "acp-antigravity" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
     const config = await f.configureAgent("coord");
     expect(config.instructions).toMatch(/^Memory: every message of this chat is logged/);
     // Any other memory is Regular: tools, no hook.
@@ -166,8 +166,8 @@ describe("T145 turns (one path per mode, D458)", () => {
     };
     await expect(f.ask("a", f.say("a", "hi"), "hi")).rejects.toThrow(/OptChat memory unavailable for this turn: tree store unreadable/);
     memory.tree = tree;
-    await expect(f.ask("a", f.say("a", "go"), "go", { protocol: 3 })).rejects.toThrow(/called by BB's Claude Code provider only/);
-    await expect(f.harness.behavior.callAgentTool(TURN_CONTEXT_TOOL, { input: "hi" }, { threadId: "a" })).rejects.toThrow(/called by BB's Claude Code provider only/);
+    await expect(f.ask("a", f.say("a", "go"), "go", { protocol: 3 })).rejects.toThrow(/called by BB's provider bridges only/);
+    await expect(f.harness.behavior.callAgentTool(TURN_CONTEXT_TOOL, { input: "hi" }, { threadId: "a" })).rejects.toThrow(/called by BB's provider bridges only/);
   });
 
   it("waits for summaries only once more than 32 KB has none (D487), then answers", async () => {
@@ -196,12 +196,14 @@ describe("T145 switching (D452, D458, D460)", () => {
       f.thread("a"),
       f.thread("c", { providerId: "codex", title: "Codex talk" }),
       f.thread("g", { providerId: "acp-antigravity", title: "Antigravity coord" }),
+      f.thread("u", { providerId: "acp-cursor", title: "Cursor coord" }),
     );
     expect((await f.memory.status("initiatives:prj_1")).problems).toEqual([]);
-    // Only Claude Code gets the hidden turn hook; other providers get memory_read/memory_zoom and proceed normally.
+    // Claude Code and ACP agents get the hidden turn hook; other providers get memory_read/memory_zoom and proceed normally.
     expect(await toolNames(f, "a", { providerId: "claude-code" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "g", { providerId: "acp-antigravity" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
+    expect(await toolNames(f, "u", { providerId: "acp-cursor" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]);
     expect(await toolNames(f, "c", { providerId: "codex" })).toEqual(["memory_read", "memory_zoom"]);
-    expect(await toolNames(f, "g", { providerId: "acp-antigravity" })).toEqual(["memory_read", "memory_zoom"]);
     expect(await f.dispatch("c", { providerId: "codex" })).toEqual({ action: "proceed" });
     expect(await f.dispatch("g", { providerId: "acp-antigravity" })).toEqual({ action: "proceed" });
     expect(await f.dispatch("c", { attempt: "join-turn" })).toEqual({ action: "proceed" });
@@ -273,5 +275,31 @@ describe("T145 reads", () => {
     expect(await f.harness.behavior.callRpc("read", { threadId: "a" }, { experimental_caller: { kind: "plugin", pluginId: "initiatives" } })).toEqual(read);
     await expect(f.harness.behavior.callAgentTool("memory_zoom", { id: 0, n: 1 }, { threadId: "elsewhere" })).rejects.toThrow(/has no chat memory/);
     expect((await f.harness.behavior.runCli(["zoom", "0", "1"], { threadId: "a" })).stdout).toContain("first");
+  });
+});
+
+describe("OptChat on ACP providers", () => {
+  it("supports Claude Code and every ACP agent, by its acp- id or its family in BB's provider list", () => {
+    expect(supportsOptChat("claude-code")).toBe(true);
+    expect(supportsOptChat("acp-cursor")).toBe(true);
+    expect(supportsOptChat("acp-antigravity")).toBe(true);
+    expect(supportsOptChat("my-agent")).toBe(false);
+    expect(supportsOptChat("my-agent", new Set(["my-agent"]))).toBe(true);
+    expect(supportsOptChat("codex", new Set(["my-agent"]))).toBe(false);
+    expect(supportsOptChat(null)).toBe(false);
+  });
+
+  it("gives a custom ACP agent registered under another id the hook once BB's provider list names it", async () => {
+    const f = fixture();
+    await f.attach("initiatives", "prj_1", f.thread("custom", { providerId: "my-agent" }), f.thread("talk", { providerId: "codex" }));
+    expect(await toolNames(f, "custom", { providerId: "my-agent" })).toEqual(["memory_read", "memory_zoom"]);
+    expect(await f.dispatch("custom", { providerId: "my-agent" })).toEqual({ action: "proceed" });
+
+    f.providers.push({ id: "my-agent", family: "acp" }, { id: "codex", family: "codex" });
+    const service = f.harness.behavior.runService("chat-memory-acp-providers");
+    await vi.waitFor(async () => expect(await toolNames(f, "custom", { providerId: "my-agent" })).toEqual([TURN_CONTEXT_TOOL, "memory_read", "memory_zoom"]));
+    expect(await toolNames(f, "talk", { providerId: "codex" })).toEqual(["memory_read", "memory_zoom"]);
+    service.controller.abort();
+    await service.done;
   });
 });

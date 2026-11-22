@@ -35,7 +35,7 @@ A memory's mode follows its role and nobody switches it (R3): an Adventure coord
 UniiChat, every personal scope stays Regular. Agents never write it, and no tool or command does.
 
 - Regular: one long session, compacted past 300k tokens.
-- UniiChat: each turn is a fresh session over the memory view (Claude Code only). When the view
+- UniiChat: each turn is a fresh session over the memory view (Claude Code and ACP agents). When the view
   lags, the message still goes at once: a summary missing after a few seconds shows as its
   message's start. Past the view's ceiling the turn waits up to 90 s, then fails visibly; a failure
   preserves the message and never runs the old session.

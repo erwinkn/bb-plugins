@@ -15,6 +15,8 @@ import { MIGRATIONS, MemoryStore } from "./lib/store";
 const SWEEP_INTERVAL_MS = 30_000;
 /** ...and turn ends BB never announced are caught this often (D485). */
 const INGEST_SWEEP_MS = 5 * 60_000;
+/** How often BB's ACP provider ids are read again (a custom agent registered meanwhile). */
+const ACP_PROVIDERS_REFRESH_MS = 60_000;
 /**
  * T143: memory_read and memory_zoom load upfront in Claude Code rather than behind ToolSearch,
  * through the fork's alwaysLoad. The SDK types lack the field and an upstream BB ignores it, so it
@@ -29,6 +31,18 @@ export default function plugin(bb: BbPluginApi) {
   const store = new MemoryStore(db);
   store.alignModes();
   const settings = defineSettings(bb);
+  // OptChat runs on every ACP agent (lib/memory.ts supportsOptChat). One registered under an id
+  // without the `acp-` prefix is known by its family in BB's provider list, read here in the
+  // background: `configure` is synchronous and uses the ids as last read.
+  let acpProviderIds: ReadonlySet<string> = new Set();
+  const refreshAcpProviders = async () => {
+    try {
+      const providers = await bb.sdk.providers.list();
+      acpProviderIds = new Set(providers.filter((provider) => provider.family === "acp").map((provider) => provider.id));
+    } catch (error) {
+      bb.log.warn(`Could not list BB's ACP providers: ${errorMessage(error)}`);
+    }
+  };
   const memory = new ChatMemory({
     store,
     list: sdkEvents(bb.sdk),
@@ -50,6 +64,7 @@ export default function plugin(bb: BbPluginApi) {
     summarizer: poolerSummarizer(bb, join(dirname(db.name), "openai.env")),
     log: (message) => bb.log.warn(message),
     changed: (scope) => bb.realtime.publish(CHANGED_CHANNEL, { scope }),
+    acpProviderIds: () => acpProviderIds,
   });
   const compaction = createCompaction({
     sdk: bb.sdk,
@@ -124,17 +139,17 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Sessions built while Initiatives owned memory still call initiative_zoom and initiative_read
   // {view:"memory"}: Initiatives keeps both as aliases over this plugin's read and zoom RPCs.
-  // D431 phase 2: not shown to the model. BB's Claude Code provider calls it before each new turn
-  // (TurnAsk); "{}" lets the session go on. A failure throws, so the provider fails the turn and
+  // D431 phase 2: not shown to the model. A provider that serves it (Claude Code, the ACP bridge)
+  // calls it before each new turn (TurnAsk); "{}" lets the session go on. A failure throws, so the provider fails the turn and
   // keeps its input (D458): never a silent fallback to the old session. A reload mid-wait fails
   // it with TURN_CONTEXT_RESTARTING, which the provider may ask again after (W570).
   bb.agents.registerTool({
     name: TURN_CONTEXT_TOOL,
-    description: "Internal to BB's Claude Code provider: how the next turn of a thread with chat memory runs (UniiChat). Never call it.",
+    description: "Internal to BB's provider bridges: how the next turn of a thread with chat memory runs (UniiChat). Never call it.",
     parameters: z.object({}).passthrough(),
     execute: async (args: Record<string, unknown>, { threadId, signal }: { threadId: string; signal: AbortSignal }) => {
       const ask = turnAskSchema.safeParse(args);
-      if (!ask.success) throw new MemoryError(`${TURN_CONTEXT_TOOL} is called by BB's Claude Code provider only (protocol 4).`);
+      if (!ask.success) throw new MemoryError(`${TURN_CONTEXT_TOOL} is called by BB's provider bridges only (protocol 4).`);
       return JSON.stringify(await memory.turnContext(threadId, ask.data, signal));
     },
   });
@@ -198,6 +213,23 @@ export default function plugin(bb: BbPluginApi) {
         }
       } finally {
         memory.dispose();
+      }
+    },
+  });
+
+  bb.background.service("chat-memory-acp-providers", {
+    async start(signal) {
+      while (!signal.aborted) {
+        await refreshAcpProviders();
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(done, ACP_PROVIDERS_REFRESH_MS);
+          function done() {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", done);
+            resolve();
+          }
+          signal.addEventListener("abort", done, { once: true });
+        });
       }
     },
   });

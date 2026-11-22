@@ -44,6 +44,8 @@ export function fixture() {
   /** Every events.list call, in order. */
   const reads: Array<{ threadId: string; types: string[]; afterSeq?: string; beforeSeq?: string }> = [];
   let failReads = false;
+  /** BB's provider list, as sdk.providers.list answers it (the ACP ids chat memory reads). */
+  const providers: Array<{ id: string; family?: string }> = [];
   let seq = 100;
   let at = Date.UTC(2026, 9, 8, 12, 0);
   const sdk = {
@@ -69,6 +71,7 @@ export function fixture() {
         return {};
       },
     },
+    providers: { list: async () => providers.map((provider) => ({ ...provider })) },
   } as never;
   /** The plugin, loaded on a host: the first one, or the one a reload makes (same storage). */
   const load = (bb: BbPluginApi) => {
@@ -101,6 +104,7 @@ export function fixture() {
     compacts,
     reads,
     dataDir,
+    providers,
     failReads: (on: boolean) => void (failReads = on),
     /** BB's message.dispatch pass, as chat memory's gate answers it. */
     dispatch(threadId: string, options: { providerId?: string; attempt?: "start-turn" | "join-turn" } = {}) {

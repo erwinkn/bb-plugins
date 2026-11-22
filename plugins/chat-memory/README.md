@@ -82,21 +82,29 @@ message, a queued one, BB's notice to a parent thread (a child finished), Send
 now, a retry. Erwin's fork sends those tools with the turn (FORK.md, "per-turn
 context from a hidden tool", protocol 4), and:
 
-- on Claude Code (`supportsOptChat`), a turn whose tools include `claude_code_turn_context` asks it
-  how to run, however its session was built;
-- providers that do not support `turnContext` (such as `acp-antigravity` or `codex`) do not receive
+- on a provider whose bridge serves the hook (`supportsOptChat`: Claude Code and every ACP agent),
+  a turn whose tools include `claude_code_turn_context` asks it how to run, however its session was
+  built. ACP agents run on this repository's ACP bridge (`lib/acp-bridge`, in
+  `provider-acp-local` and `provider-antigravity`); they are recognized by an `acp-` provider id,
+  or by family `acp` in BB's provider list for a custom agent registered under another id
+  (`server.ts` reads that list in the background, every minute);
+- providers that do not support `turnContext` (such as `codex`) do not receive
   `claude_code_turn_context`: they stay attached to the scope, log turns into the shared memory
   tree, and get `memory_read` / `memory_zoom`, without turning on UniiChat.
 
+ACP providers need the OptChat bridge: with BB's built-in `provider-acp` (whose bridge does not
+advertise `turnContext`) still serving them, BB refuses their UniiChat turns. Roll out
+`provider-acp-local` and the updated `provider-antigravity` before this version.
+
 **The turn gate.** Chat memory also answers BB's `message.dispatch` hook, which
 runs before a message reaches a provider, to refuse early, with the reason, a new turn of an
-UniiChat thread on a supporting provider (`claude-code`) whose history view is known to fail
+UniiChat thread on a supporting provider (Claude Code, an ACP agent) whose history view is known to fail
 (`tree.requiredFailure`, below). BB keeps the message. Messages on providers without UniiChat
 support, messages that join a running turn, and every other thread's go on.
 
 ## UniiChat turns (D431 phase 2, R12)
 
-BB's Claude Code provider (Erwin's fork) calls the hidden tool
+BB's Claude Code provider (Erwin's fork) and this repository's ACP bridge call the hidden tool
 `claude_code_turn_context` before each new turn whose tools include it
 (protocol 4: `{input, requestId, sessionId, elapsedMs?}`). The answer is `{}` (the session
 goes on) or `{session: "fresh", sessionId, systemPrompt, input}`. An UniiChat
@@ -149,7 +157,7 @@ error, as before. Both errors start with "OptChat memory unavailable", so the
 unsent message stays out of memory (D502).
 
 **No hold before sending.** The dispatch hook lets every message go at once; it
-refuses only an UniiChat turn on another provider than Claude Code (D460), or one
+refuses only an UniiChat turn on a provider without the hook (D460), or one
 whose view is already known to fail (`tree.requiredFailure`). Claude Code records
 a message as accepted before it asks for the turn's memory, so a failure found
 only then leaves that message in memory, and a resend logs it twice; refused at

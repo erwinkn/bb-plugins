@@ -30,15 +30,28 @@ const INGEST_PAGES = 20;
 const PROGRESS_PUBLISH_MS = 30_000;
 
 /**
- * The hidden tool BB's Claude Code provider (Erwin's fork) calls before each new turn whose tools,
- * as BB resolves them for that turn, include it (FORK.md, "per-turn context from a hidden tool",
- * protocol 4); any other provider refuses a turn whose tools include it.
+ * The hidden tool a provider bridge that advertises `turnContext: true` calls before each new turn
+ * whose tools, as BB resolves them for that turn, include it (FORK.md, "per-turn context from a
+ * hidden tool", protocol 4): Claude Code (Erwin's fork) and this repository's ACP bridge
+ * (`lib/acp-bridge`). BB refuses a turn whose tools include it on any other provider.
  */
 export const TURN_CONTEXT_TOOL = "claude_code_turn_context";
-/** Providers whose BB bridge implements `turnContext: true` (UniiChat fresh-session turns). */
-export const OPTCHAT_PROVIDERS: ReadonlySet<string> = new Set(["claude-code"]);
-export const supportsOptChat = (providerId: string | null | undefined) =>
-  providerId != null && OPTCHAT_PROVIDERS.has(providerId);
+/**
+ * Whether a provider's bridge serves the turn hook (UniiChat fresh-session turns): Claude Code, and
+ * every ACP agent, which runs on this repository's ACP bridge (`provider-acp-local`,
+ * `provider-antigravity`). ACP providers are known by their `acp-` id, or, for a custom agent
+ * registered under another id, by family "acp" in BB's provider list (`acpProviderIds`, which
+ * server.ts keeps).
+ */
+export function supportsOptChat(
+  providerId: string | null | undefined,
+  acpProviderIds: ReadonlySet<string> = new Set(),
+): boolean {
+  return (
+    providerId != null &&
+    (providerId === "claude-code" || providerId.startsWith("acp-") || acpProviderIds.has(providerId))
+  );
+}
 export const turnAskSchema = z.object({
   protocol: z.literal(4),
   /** The turn's own text. */
@@ -233,10 +246,16 @@ export class ChatMemory {
       log: (message: string) => void;
       /** Something the UI shows for the scope changed. */
       changed?: (scopeId: string) => void;
+      /** The ids of BB's ACP providers as last read (family "acp"), for `supportsOptChat`. */
+      acpProviderIds?: () => ReadonlySet<string>;
     },
   ) {
     this.store = deps.store;
     this.permits = new FairPermits(() => deps.settings().summarizerConcurrency, (scopeId) => this.priority(scopeId));
+  }
+
+  private supportsOptChat(providerId: string | null | undefined) {
+    return supportsOptChat(providerId, this.deps.acpProviderIds?.());
   }
 
   /** Test seam: the summarizer later calls use. */
@@ -393,8 +412,8 @@ export class ChatMemory {
   /**
    * D447: the memory tools a session gets, when BB builds it and again whenever BB resolves a turn:
    * every thread that writes to a scope. The hidden turn hook is enforced in OptChat scopes only
-   * for providers that support it (`supportsOptChat`, currently Claude Code): other providers
-   * (e.g. Antigravity, Codex) still stay attached to the scope, log turns into the shared memory
+   * for providers that support it (`supportsOptChat`: Claude Code and ACP agents): other providers
+   * (e.g. Codex) still stay attached to the scope, log turns into the shared memory
    * tree, and get `memory_read` / `memory_zoom`, without failing on an unsupported turn hook.
    * A thread chat memory meets for the first time with its owner's MEMORY_SCOPE_KEY is attached to
    * that scope here, in the same synchronous call, so its first turn already has it (D487).
@@ -410,7 +429,7 @@ export class ChatMemory {
     }
     const scope = this.store.scopeOf(t.threadId);
     if (!scope) return null;
-    const useOptChat = scope.mode === "optchat" && supportsOptChat(t.providerId);
+    const useOptChat = scope.mode === "optchat" && this.supportsOptChat(t.providerId);
     return ["memory_read", "memory_zoom", ...(useOptChat ? [TURN_CONTEXT_TOOL] : [])];
   }
 
@@ -424,7 +443,7 @@ export class ChatMemory {
    */
   async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn" }): Promise<DispatchDecision> {
     const scope = this.store.scopeOf(d.threadId);
-    if (d.attempt === "join-turn" || scope?.mode !== "optchat" || !supportsOptChat(d.providerId)) return { action: "proceed" };
+    if (d.attempt === "join-turn" || scope?.mode !== "optchat" || !this.supportsOptChat(d.providerId)) return { action: "proceed" };
     const failure = this.requiredFailure(scope.id);
     return failure ? { action: "reject", message: failure } : { action: "proceed" };
   }
