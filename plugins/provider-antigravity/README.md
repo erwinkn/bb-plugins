@@ -4,13 +4,19 @@ Run Google's Antigravity CLI (`agy`) as a BB provider (`acp-antigravity`) with
 its own icon, Google sign-in from **Settings → Antigravity**, and on-demand
 usage limits.
 
-`host.ts` wraps BB's published ACP bridge (`experimental_acpProviderBridge`)
-in `src/bridge.ts`, which answers only `provider/usage`; every other request,
-the ACP session traffic and the lifecycle hooks pass through unchanged.
+`host.ts` wraps this repository's [shared ACP bridge](../../lib/acp-bridge/README.md)
+(BB's ACP bridge plus OptChat) in `src/bridge.ts`, which answers only
+`provider/usage`; every other request, the ACP session traffic and the lifecycle
+hooks pass through unchanged. In a Chat memory UniiChat scope, each turn runs in
+a fresh `agy` session whose system prompt (BB's instructions plus the memory
+view) goes through Antigravity's `_meta.antigravity.systemPrompt.append` on
+`session/new`; the session it leaves is closed (`session/close`).
+`npm ci` here also installs `lib/acp-bridge` (`postinstall`).
 
 ## Install / Switch from W628 custom agent
 
-Remove the W628 `antigravity` custom agent entry from `provider-acp` first so
+Remove the W628 `antigravity` custom agent entry from the ACP providers plugin
+(`provider-acp`, or `provider-acp-local` once it replaces it) first so
 the `acp-antigravity` provider ID does not collide, then install this plugin:
 
 ```sh

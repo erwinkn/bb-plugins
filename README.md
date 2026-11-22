@@ -79,10 +79,22 @@ token and subscription usage. It runs on the thread's machine, where Muse must
 be signed in. See [Muse provider](plugins/muse/README.md).
 
 `provider-antigravity` runs Google's Antigravity CLI (`agy acp`, its own ACP
-server) as provider `acp-antigravity` by re-exporting bb's published ACP bridge
-as is, with Antigravity's icon, Google sign-in/sign-out, and cached on-demand
-usage limits (`agy -p /usage`) in Settings → Antigravity. See
+server) as provider `acp-antigravity` on the shared ACP bridge below, with
+Antigravity's icon, Google sign-in/sign-out, and cached on-demand usage limits
+(`agy -p /usage`) in Settings → Antigravity. See
 [Antigravity provider](plugins/provider-antigravity/README.md).
+
+`provider-acp` (plugin id `provider-acp-local`) replaces BB's built-in ACP
+providers plugin (Cursor, OpenCode, omp, Grok, Hermes, custom agents) with a
+fork that runs on the shared ACP bridge, so Chat memory's UniiChat turns work on
+every ACP agent. Disable the built-in `provider-acp` before installing it: the
+two register the same provider ids. See
+[ACP providers (OptChat)](plugins/provider-acp/README.md).
+
+`lib/acp-bridge` is not a plugin: it is BB's ACP provider bridge ported onto the
+public SDK, plus OptChat's per-turn context hook (`turnContext`, protocol 4).
+`provider-acp` and `provider-antigravity` bundle it; their `npm ci` installs it.
+See [Shared ACP bridge](lib/acp-bridge/README.md).
 
 ## Install
 
@@ -318,6 +330,33 @@ Record potential BB issues here for later review and filing. Never open
 issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
+
+### ACP: serve OptChat's per-turn context in the published ACP kit (2026-11-22)
+
+The fork's per-turn context hook (`turnContext`, FORK.md "per-turn context from
+a hidden tool") is served only by the Claude Code bridge, so ACP agents need
+this repository's port of the ACP bridge (`lib/acp-bridge`, W633) to run
+UniiChat turns. Proposed change in the BB fork: the same `turnContext` support
+in `packages/provider-bridge-acp` (it is a few hundred lines on top of the kit:
+see `lib/acp-bridge/src/bridge/turn-context.ts` and `prepareTurn`,
+`fetchTurnContext`, `startFreshSession` in its `bridge.ts`), so the built-in
+`provider-acp` and the SDK's `experimental_acpProviderBridge` serve it and the
+fork here can go. Upstream proper would first need the hidden tool itself.
+Status: recorded here; nothing filed.
+
+Related, in the fork's Claude Code bridge: it answers `turn/start` only once
+the turn's context has come and its session is ready, but the runtime waits 30 s
+for that answer (`sendJsonRpcRequest`'s default; `runtime.ts` passes no
+`timeoutMs` for `turn/start`) while the context may take 120 s. A context that
+arrives after 30 s then runs a turn BB has already reported failed, and a resend
+runs it twice. Steers sent meanwhile have the same problem: the bridge holds
+their `turn/steer` answer until the context comes, and `steerTurn` waits 30 s
+too. The ACP port answers both at once (`turn/start` once the input is
+accepted, a steer as it is queued behind it) and reports a failed preparation
+as the turn's provider error. Proposed fix in the fork: the same in the Claude
+Code bridge, or `turn/start` and `turn/steer` deadlines covering the context
+budget for threads whose tools hold the hook. Status: recorded here;
+nothing filed.
 
 ### ACP: ship Google's Antigravity CLI as a known agent (2026-11-19)
 

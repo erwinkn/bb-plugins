@@ -1,0 +1,26 @@
+{
+  "name": "bb-plugins-acp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BB's ACP provider bridge, ported onto the public plugin SDK, with OptChat per-turn context (turnContext protocol 4).",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.15",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}

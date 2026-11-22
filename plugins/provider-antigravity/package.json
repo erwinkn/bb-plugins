@@ -43,6 +43,7 @@
     "vitest": "^3.2.0"
   },
   "scripts": {
+    "postinstall": "npm ci --prefix ../../lib/acp-bridge --no-audit --no-fund",
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
