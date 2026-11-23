@@ -146,6 +146,13 @@ import {
   type AcpMcpServerConfig,
 } from "./tool-proxy-mcp.js";
 import {
+  AntigravityBackgroundWork,
+  antigravityFollowUpInput,
+  antigravityHoldLimits,
+  isAntigravityAgent,
+  withAntigravityRuntimeInstructions,
+} from "./antigravity.js";
+import {
   FRESH_SESSION_TIMEOUT_MS,
   TURN_CONTEXT_PROTOCOL,
   TURN_CONTEXT_RETRY_GRACE_MS,
@@ -193,6 +200,18 @@ interface AcpTurnPreparation {
   steers: AcpPendingTurnInput[];
 }
 
+/** A turn held open for Antigravity's background work (see `holdForBackgroundWork`). */
+interface AcpBackgroundHold {
+  /** Looks again: agy showed activity (`true`), or a steer, a stop or an exit changed the turn. */
+  wake(activity: boolean): void;
+}
+
+/** What the holds of one turn have used of `antigravityHoldLimits`. */
+interface AcpHoldBudget {
+  followUps: number;
+  startedAt: number | null;
+}
+
 interface AcpThreadSession {
   bbThreadId: string;
   construction: AcpSessionParams;
@@ -230,6 +249,10 @@ interface AcpThreadSession {
   supportsSystemPromptAppend: boolean;
   /** The agent advertises `session/close`. */
   supportsSessionClose: boolean;
+  /** Antigravity's background work in the open turn; null for every other agent. */
+  backgroundWork: AntigravityBackgroundWork | null;
+  /** Set while the turn is held open for that work. */
+  backgroundHold: AcpBackgroundHold | null;
 }
 
 type AcpDeferredStartEmitter = (
@@ -388,6 +411,7 @@ function settleTurnWithError(session: AcpThreadSession, message: string): void {
     message,
   });
   session.activePromptKind = null;
+  session.backgroundHold?.wake(false);
 }
 
 /**
@@ -1674,6 +1698,7 @@ function liveSessionForThread(
 function removeSession(session: AcpThreadSession): void {
   for (const controller of session.pendingToolCalls) controller.abort();
   session.turnPreparation?.controller.abort();
+  session.backgroundHold?.wake(false);
   if (sessionsByBbThreadId.get(session.bbThreadId) === session) {
     sessionsByBbThreadId.delete(session.bbThreadId);
   }
@@ -1855,6 +1880,8 @@ async function startAgentSession(
     turnPreparationFailure: null,
     supportsSystemPromptAppend: false,
     supportsSessionClose: false,
+    backgroundWork: null,
+    backgroundHold: null,
   };
   sessionsByBbThreadId.set(bbThreadId, session);
 
@@ -1875,6 +1902,10 @@ async function startAgentSession(
     );
     session.supportsSessionClose =
       initializeResult.agentCapabilities?.sessionCapabilities?.close != null;
+    if (isAntigravityAgent(initializeResult.agentCapabilities)) {
+      session.backgroundWork = new AntigravityBackgroundWork();
+      session.pendingInstructions = threadInstructions(session);
+    }
     const supportsLoadSession =
       initializeResult.agentCapabilities?.loadSession ?? false;
     const supportsFork =
@@ -2044,6 +2075,7 @@ async function stopSession(session: AcpThreadSession): Promise<void> {
   }
   session.stopping = true;
   session.turnPreparation?.controller.abort();
+  session.backgroundHold?.wake(false);
   dropQueuedTurnInputs(
     session,
     "ACP session stopped before the steer was sent",
@@ -2089,6 +2121,7 @@ async function releaseSession(session: AcpThreadSession): Promise<void> {
   }
   session.stopping = true;
   session.turnPreparation?.controller.abort();
+  session.backgroundHold?.wake(false);
   dropQueuedTurnInputs(
     session,
     "ACP session released before the steer was sent",
@@ -2180,12 +2213,14 @@ function runTurn(
   turnTools: DynamicTool[] | null = null,
 ): void {
   session.activePromptKind = "turn";
+  session.backgroundWork?.clear();
   emitForSession(session, ACP_TURN_STARTED_METHOD, {
     threadId: session.bbThreadId,
   });
 
   session.turnSettled = (async () => {
     let pending = firstInput;
+    const holdBudget: AcpHoldBudget = { followUps: 0, startedAt: null };
     if (
       turnTools !== null &&
       !(await prepareTurn(session, pending, turnTools))
@@ -2203,6 +2238,8 @@ function runTurn(
       session.cancelRequested = false;
       try {
         session.promptRequestPending = true;
+        const work = session.backgroundWork;
+        work?.promptSent();
         const promptResult = session.connection.request({
           method: "session/prompt",
           params: {
@@ -2210,12 +2247,29 @@ function runTurn(
             prompt: buildPromptContentBlocks(session, pending.input),
           },
           resultSchema: acpPromptResultSchema,
+          ...(work !== null && { onAnswer: () => work.promptAnswered() }),
         });
         acceptTurnInput(session, pending);
         if (session.queuedInputs.length > 0) {
           requestSteerCancel(session);
         }
-        const result = await promptResult;
+        const result = await awaitHeldPrompt(session, promptResult, holdBudget);
+        if (result === null) {
+          session.promptRequestPending = false;
+          session.cancelRequested = false;
+          // agy may still run the cancelled prompt: the next turn starts on a fresh process.
+          session.restartAfterCancelError = true;
+          dropQueuedTurnInputs(
+            session,
+            "ACP turn ended before the steer was sent",
+          );
+          failActivePrompt(
+            session,
+            `Antigravity held this turn ${antigravityHoldLimits.maxMs / 1000} s for background work and did not answer its cancel; its session restarts with the next turn.`,
+          );
+          session.activePromptKind = null;
+          return;
+        }
         stopReason = result.stopReason;
         const grokUsage = grokContextUsageFromPromptResult(result);
         if (grokUsage !== undefined) {
@@ -2249,10 +2303,169 @@ function runTurn(
         }
       }
 
+      if (stopReason === "end_turn" && !session.stopping) {
+        const next = await holdForBackgroundWork(session, holdBudget);
+        if (next !== null) {
+          pending = next;
+          continue;
+        }
+        if (session.stopping) {
+          finishTurn(session, "cancelled");
+          return;
+        }
+      }
+
       finishTurn(session, stopReason);
       return;
     }
   })();
+}
+
+/** Whether the session's open turn may still be held: nothing stopped, ended or replaced it. */
+function isTurnHoldable(session: AcpThreadSession): boolean {
+  return (
+    !session.stopping &&
+    !session.connection.exited &&
+    session.activePromptKind === "turn" &&
+    sessionsByBbThreadId.get(session.bbThreadId) === session
+  );
+}
+
+function logHeldTurn(session: AcpThreadSession, message: string): void {
+  process.stderr.write(
+    `acp bridge: turn of thread "${session.bbThreadId}" ${message}\n`,
+  );
+}
+
+const TIMED_OUT = Symbol("timed out");
+
+function within<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof TIMED_OUT>((resolveTimeout) => {
+    timer = setTimeout(() => resolveTimeout(TIMED_OUT), Math.max(0, ms));
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Awaits a prompt's answer. In a turn already held for background work, it waits only until the
+ * hold's `maxMs`: agy answers a follow-up when its wake ends, and a wake on a hung subagent may
+ * never end. Then it cancels the prompt and gives agy `THREAD_STOP_CANCEL_TIMEOUT_MS` to answer;
+ * resolves with null when it does not.
+ */
+async function awaitHeldPrompt<T>(
+  session: AcpThreadSession,
+  prompt: Promise<T>,
+  budget: AcpHoldBudget,
+): Promise<T | null> {
+  if (budget.startedAt === null) return prompt;
+  const { maxMs } = antigravityHoldLimits;
+  const answer = await within(
+    prompt,
+    budget.startedAt + maxMs - performance.now(),
+  );
+  if (answer !== TIMED_OUT) return answer;
+  logHeldTurn(
+    session,
+    `cancels its prompt: held ${maxMs / 1000} s for background work`,
+  );
+  requestSteerCancel(session);
+  const late = await within(prompt, THREAD_STOP_CANCEL_TIMEOUT_MS);
+  if (late !== TIMED_OUT) return late;
+  prompt.catch(() => undefined);
+  return null;
+}
+
+/**
+ * Keeps an Antigravity turn open after an `end_turn` that left background work outstanding
+ * (antigravity.ts): agy wakes on its own when the work reports, and its updates reach BB only
+ * while the turn is open. Resolves with the next input to send in the turn: a steer at once, or,
+ * when agy shows activity, a follow-up prompt, which joins agy's wake (or starts a turn of a
+ * silent agy) so it ends with a `stopReason` the turn loop judges again. Resolves with null to
+ * end the turn: no work left, a stop, an exit, or no update from agy within the hold's limits.
+ */
+function holdForBackgroundWork(
+  session: AcpThreadSession,
+  budget: AcpHoldBudget,
+): Promise<AcpPendingTurnInput | null> {
+  const work = session.backgroundWork;
+  if (work === null || !isTurnHoldable(session)) {
+    return Promise.resolve(null);
+  }
+  const { outstanding, woke } = work.takeAfterAnswer();
+  if (!outstanding) {
+    return Promise.resolve(null);
+  }
+  const limits = antigravityHoldLimits;
+  const startedAt = (budget.startedAt ??= performance.now());
+  const remainingMs = limits.maxMs - (performance.now() - startedAt);
+  const log = (message: string): void => logHeldTurn(session, message);
+  const heldTooLong = `ends: held ${limits.maxMs / 1000} s for background work`;
+  if (remainingMs <= 0) {
+    log(`${heldTooLong} (${work.describe()})`);
+    return Promise.resolve(null);
+  }
+  log(`is held open for background work: ${work.describe()}`);
+  return new Promise((resolveHold) => {
+    let settled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (
+      next: AcpPendingTurnInput | null,
+      reason?: string,
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idleTimer);
+      clearTimeout(maxTimer);
+      if (session.backgroundHold === hold) session.backgroundHold = null;
+      if (reason !== undefined) log(`${reason} (${work.describe()})`);
+      resolveHold(next);
+    };
+    const armIdle = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () =>
+          settle(
+            null,
+            `ends: no update from the agent in ${limits.idleMs / 1000} s`,
+          ),
+        limits.idleMs,
+      );
+    };
+    const maxTimer = setTimeout(() => settle(null, heldTooLong), remainingMs);
+    const hold: AcpBackgroundHold = {
+      wake(activity) {
+        if (!isTurnHoldable(session)) {
+          settle(null);
+          return;
+        }
+        const steer = session.queuedInputs.shift();
+        if (steer !== undefined) {
+          settle(steer);
+          return;
+        }
+        if (!activity) return;
+        armIdle();
+        if (budget.followUps < limits.maxFollowUps) {
+          budget.followUps += 1;
+          // BB's own prompt: no client request to accept or answer.
+          settle({
+            clientRequestId: "",
+            input: antigravityFollowUpInput(),
+            requestId: null,
+            accepted: true,
+          });
+        }
+      },
+    };
+    session.backgroundHold = hold;
+    armIdle();
+    // agy may have woken already, in the stdout chunk that carried its answer.
+    hold.wake(woke);
+  });
 }
 
 // OptChat per-turn context (turnContext protocol 4) ----------------------------------------
@@ -2471,7 +2684,7 @@ async function startFreshSession(
     delete construction.dynamicTools;
   }
   const systemPrompt = combineSystemPrompt(
-    session.construction.instructions,
+    threadInstructions(session),
     context.systemPrompt,
   );
   const previousApproval = session.cursorMcpApproval;
@@ -2637,6 +2850,13 @@ function freshSessionDeadline(signal: AbortSignal): {
       signal.removeEventListener("abort", onAbort);
     },
   };
+}
+
+/** The thread's instructions, plus BB's runtime instructions for Antigravity. */
+function threadInstructions(session: AcpThreadSession): string | undefined {
+  return session.backgroundWork === null
+    ? session.construction.instructions
+    : withAntigravityRuntimeInstructions(session.construction.instructions);
 }
 
 /** Best effort: frees a session the thread left, where the agent can close sessions. */
@@ -2814,6 +3034,9 @@ function handleAgentNotification(
     }
   }
   emitForSession(session, ACP_UPDATE_METHOD, update);
+  if (session.backgroundWork?.observe(parsed.data.update) === true) {
+    session.backgroundHold?.wake(true);
+  }
 }
 
 type DecodedAcpBridgeRequest =
@@ -3249,6 +3472,8 @@ async function handleRequest(
         requestId: null,
       });
       requestSteerCancel(session);
+      // A turn held for background work sends the steer now.
+      session.backgroundHold?.wake(false);
       sendResult(request.id, { threadId: params.threadId });
       return;
     }

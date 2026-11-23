@@ -25,6 +25,7 @@ import {
   type BridgeJsonRpcOutputMessage,
   type CapturedBridgeJsonRpcOutput,
 } from "../test-support.js";
+import { ANTIGRAVITY_RUNTIME_INSTRUCTIONS } from "./antigravity.js";
 import { handleLine } from "./bridge.js";
 import {
   TURN_CONTEXT_RESTARTING,
@@ -444,7 +445,9 @@ describe("OptChat turn context on ACP", () => {
 
     expect(agentRequests("session/new")[1]?.params?._meta).toEqual({
       antigravity: {
-        systemPrompt: { append: "BASE INSTRUCTIONS\n\nMEMORY VIEW" },
+        systemPrompt: {
+          append: `BASE INSTRUCTIONS\n\n${ANTIGRAVITY_RUNTIME_INSTRUCTIONS}\n\nMEMORY VIEW`,
+        },
       },
     });
     expect(promptBlocks(0)).toEqual([

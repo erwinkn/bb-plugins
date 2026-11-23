@@ -1,7 +1,4 @@
-import {
-  spawnManagedProcess,
-  isClosedProcessStdinError,
-} from "../process.js";
+import { spawnManagedProcess, isClosedProcessStdinError } from "../process.js";
 import { createInterface } from "node:readline";
 import { experimental_recordProviderChildIo } from "../bb.js";
 import type { z } from "zod";
@@ -38,6 +35,8 @@ interface AcpAgentRequestArgs<TResult> {
   method: string;
   params: unknown;
   resultSchema: z.ZodType<TResult>;
+  /** Called as the agent's answer is read, before the lines read with it are handled. */
+  onAnswer?: () => void;
 }
 
 export interface AcpAgentConnection {
@@ -342,7 +341,7 @@ export function createAcpAgentConnection(
       return stopping || exited;
     },
 
-    request({ method, params, resultSchema }) {
+    request({ method, params, resultSchema, onAnswer }) {
       if (stopping || exited) {
         return Promise.reject(
           new AcpAgentExitedError(
@@ -355,6 +354,7 @@ export function createAcpAgentConnection(
       return new Promise((resolve, reject) => {
         pending.set(id, {
           resolve: (value) => {
+            onAnswer?.();
             const parsed = resultSchema.safeParse(value);
             if (parsed.success) {
               resolve(parsed.data);
@@ -366,7 +366,10 @@ export function createAcpAgentConnection(
               );
             }
           },
-          reject,
+          reject: (error) => {
+            onAnswer?.();
+            reject(error);
+          },
         });
         writeLine({ jsonrpc: "2.0", id, method, params });
       });

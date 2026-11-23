@@ -18,6 +18,11 @@ closed with `session/close`) stays available for other uses but chat-memory no
 longer asks for it.
 `npm ci` here also installs `lib/acp-bridge` (`postinstall`).
 
+When `agy` ends its turn while a command, a subagent or a timer it started still runs, the bridge
+keeps the BB turn open until that work reports and `agy` finishes, instead of leaving the thread
+idle while `agy` works on unseen; see
+[Antigravity background work](../../lib/acp-bridge/README.md#antigravity-background-work).
+
 ## Install / Switch from W628 custom agent
 
 Remove the W628 `antigravity` custom agent entry from the ACP providers plugin

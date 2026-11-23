@@ -55,6 +55,49 @@ The protocol constants and answer parsing are in `src/bridge/turn-context.ts`; t
 ACP agent). A live check against `agy acp` 1.5.14 ran a fresh turn whose system prompt the agent
 followed.
 
+## Antigravity background work
+
+Antigravity (`agy acp`, recognized by `_meta.antigravity` in its `initialize` capabilities, however
+it is launched) runs work in the background across its turns: a `run_command` that outlives its
+`WaitMsBeforeAsync` (10 s at most), an `invoke_subagent`, a `schedule` timer. Its own system prompt
+tells the model to end its turn and wait. `session/prompt` then answers `end_turn`, and when the
+work reports, agy wakes on its own and streams the rest of the task. BB closed the turn at the
+`end_turn` and drops those updates (`provider/unhandled`), so the thread looked idle while agy
+worked on unseen (threads thr_uhyuqx7pmk, thr_kwzicttiva, thr_74w4tcdvdy, thr_5t2nmdec5s).
+
+For Antigravity only, the bridge (`src/bridge/antigravity.ts`, `holdForBackgroundWork` in
+`src/bridge/bridge.ts`):
+
+1. Tracks the work the open turn started: each `run_command` until its `completed`, `failed` or
+   `cancelled` update, and each `invoke_subagent` or `schedule` launch (agy reports neither their
+   end nor their ids, so they stay outstanding until `manage_subagents` `kill_all`, or the turn
+   ends).
+2. On an `end_turn` with work outstanding, keeps the BB turn open. agy's updates keep flowing into
+   it. On agy's first activity (a message, a thought, a tool call), the bridge sends a short
+   follow-up prompt: agy folds a prompt sent during a wake into that wake (measured on 1.5.14),
+   and a silent agy runs it as a turn of its own, so either way it ends with a `stopReason`, judged
+   like the first. Example: agy backgrounds `pnpm typecheck`, says "waiting", `end_turn`; the
+   turn stays open; two minutes later the command's `completed` update arrives, the bridge sends
+   the follow-up, agy reports the result, `end_turn` with nothing outstanding: the turn ends.
+   The bridge notes agy's answer as it reads it (the connection's `onAnswer`), before the lines
+   read with it: one stdout chunk can carry the `end_turn`, the command's `completed` and the
+   start of the wake, and the turn is still held.
+3. A steer is sent at once; a stop, a release or the agent's exit ends the hold at once
+   (`session/cancel` cannot stop a wake: agy ignores it with no prompt pending).
+4. Bounds (`antigravityHoldLimits`): the turn ends after 10 min without an update from agy, after
+   10 follow-ups it stays open without sending more, and it ends after 2 h held in all. The 2 h
+   include prompts sent in the hold: agy answers a follow-up only when its wake ends, and a wake
+   on a hung subagent may never end. Past it the bridge cancels the prompt; if agy does not
+   answer within 4 s, the turn fails and the next turn starts a fresh agy process on the same
+   session. A subagent's end is invisible, so a turn that used subagents stays open up to the
+   idle limit after agy's last word.
+
+Its sessions also get BB's runtime instructions (`ANTIGRAVITY_RUNTIME_INSTRUCTIONS`) after the
+thread's own, wherever those go (the first prompt, or a fresh session's appended system prompt):
+don't end a turn while waiting on such work, run long commands with `~/.bb/bin/bgjob`, schedule
+wake-ups with `bb thread tell --send-at`, and settle subagents before ending. Every other ACP
+agent keeps its turns as before.
+
 ## Relation to upstream
 
 Ported from `~/Code/bb/packages/provider-bridge-acp/src` at `8d6347c0e6` (2026-10-08). The ported
@@ -87,7 +130,9 @@ files keep upstream's code; the differences are:
 - A few index reads carry `!` so the code also type-checks under the consuming plugins'
   `noUncheckedIndexedAccess`.
 - The fake ACP agent gained `FAKE_ACP_SYSTEM_PROMPT_APPEND`, `FAKE_ACP_CLOSE_SESSION`,
-  `FAKE_ACP_SESSION_NEW_ERROR_AFTER`, and an id per `session/new` after the first.
+  `FAKE_ACP_SESSION_NEW_ERROR_AFTER`, an id per `session/new` after the first, and agy's
+  background work (`FAKE_ACP_ANTIGRAVITY`, `FAKE_ACP_BG_DELAY_MS`, the `bg-` prompts).
+- Antigravity's background work (above) is this repository's.
 
 To take a newer upstream, copy its `src` over this one, rerun the import rewrite (`@bb/...` to
 `./bb.js` or `../bb.js`, `@bb/process-utils` to `process.js`), and keep the differences above.

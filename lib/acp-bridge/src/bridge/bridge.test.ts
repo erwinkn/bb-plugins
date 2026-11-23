@@ -28,6 +28,11 @@ import type {
   CapturedBridgeJsonRpcOutput,
 } from "../test-support.js";
 
+import {
+  ANTIGRAVITY_FOLLOW_UP_TEXT,
+  ANTIGRAVITY_RUNTIME_INSTRUCTIONS,
+  antigravityHoldLimits,
+} from "./antigravity.js";
 import { handleLine } from "./bridge.js";
 import { ACP_BRIDGE_MCP_SERVER_NAME } from "./tool-proxy-mcp.js";
 
@@ -106,8 +111,7 @@ function threadEvents(): Record<string, unknown>[] {
 function emittedDeltaKinds(): string[] {
   return notifications(THREAD_DELTA_NOTIFICATION_METHOD).flatMap((message) => {
     const params = message.params as
-      | { deltas?: { kind?: string }[] }
-      | undefined;
+      { deltas?: { kind?: string }[] } | undefined;
     return (params?.deltas ?? []).map((delta) => delta.kind ?? "");
   });
 }
@@ -3459,5 +3463,243 @@ describe("acp bridge", () => {
       code: -32602,
       message: expect.stringContaining("acpLaunchSpec"),
     });
+  });
+});
+
+describe("Antigravity background work", () => {
+  const defaultLimits = { ...antigravityHoldLimits };
+
+  afterEach(() => {
+    Object.assign(antigravityHoldLimits, defaultLimits);
+  });
+
+  const sleep = (ms: number) =>
+    new Promise((resolveSleep) => realSetTimeout(resolveSleep, ms));
+
+  async function startAgy(
+    envVars: Record<string, string> = {},
+    args: StartThreadArgs = {},
+  ) {
+    const promptLog = join(workspaceDir, "prompts.jsonl");
+    const thread = await startThread({
+      ...args,
+      envVars: {
+        FAKE_ACP_ANTIGRAVITY: "1",
+        FAKE_ACP_PROMPT_LOG: promptLog,
+        ...envVars,
+      },
+    });
+    return { ...thread, promptLog };
+  }
+
+  function startTurn(providerThreadId: string, text: string): Promise<unknown> {
+    return waitForResponse(
+      sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text, mentions: [] }],
+      }),
+    );
+  }
+
+  const followUps = (promptLog: string) =>
+    loggedPrompts(promptLog).filter(
+      (text) => text === ANTIGRAVITY_FOLLOW_UP_TEXT,
+    ).length;
+  const indexOfText = (text: string) =>
+    output.messages.findIndex((message) =>
+      JSON.stringify(message).includes(text),
+    );
+  const boundaryIndex = () =>
+    output.messages.findIndex((message) =>
+      deltaKindsOf(message).includes("turn.boundary"),
+    );
+  const waitForText = (text: string) =>
+    waitFor(() => (indexOfText(text) >= 0 ? true : undefined), text);
+
+  it("holds the turn while a backgrounded run_command runs and streams agy's wake into it", async () => {
+    const { promptLog, providerThreadId } = await startAgy({
+      FAKE_ACP_BG_DELAY_MS: "2000",
+    });
+    await startTurn(providerThreadId, "bg-command");
+    await waitForText("waiting:bg-1");
+    await sleep(150);
+    // agy ended its turn, but its command still runs: BB's turn stays open.
+    expect(threadEventsOfType("turn/completed")).toHaveLength(0);
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    expect(indexOfText("woke:bg-1")).toBeGreaterThan(-1);
+    expect(indexOfText("woke:bg-1")).toBeLessThan(boundaryIndex());
+    expect(agentMessageTexts().join("")).toContain("woke:bg-1");
+    expect(followUps(promptLog)).toBe(1);
+    expect(threadEventsOfType("turn/started")).toHaveLength(1);
+    expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+    // The command's item completed in the turn, from agy's own update.
+    const command = threadEventsOfType("item/completed").find(
+      (event) =>
+        (event.item as { type?: string } | undefined)?.type ===
+        "commandExecution",
+    );
+    expect(command?.item).toMatchObject({ status: "completed" });
+  });
+
+  it("prompts a silent agy once its background command ends, then completes", async () => {
+    const { promptLog, providerThreadId } = await startAgy();
+    await startTurn(providerThreadId, "bg-command silent");
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    expect(indexOfText("woke:")).toBe(-1);
+    expect(followUps(promptLog)).toBe(1);
+    expect(agentMessageTexts().join("")).toContain(
+      `echo:${ANTIGRAVITY_FOLLOW_UP_TEXT}`,
+    );
+  });
+
+  it("holds the turn when agy's end_turn, the command's completion and its wake share one stdout chunk", async () => {
+    const { promptLog, providerThreadId } = await startAgy();
+    await startTurn(providerThreadId, "bg-race");
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    expect(indexOfText("waking:bg-1")).toBeGreaterThan(-1);
+    expect(indexOfText("woke:bg-1")).toBeGreaterThan(-1);
+    expect(indexOfText("woke:bg-1")).toBeLessThan(boundaryIndex());
+    expect(followUps(promptLog)).toBe(1);
+    expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+  });
+
+  it("cancels a follow-up agy leaves unanswered past the hold's limit, and restarts agy for the next turn", async () => {
+    Object.assign(antigravityHoldLimits, { idleMs: 10_000, maxMs: 2_000 });
+    const { providerThreadId } = await startAgy({
+      FAKE_ACP_BG_DELAY_MS: "100",
+      FAKE_ACP_IGNORE_CANCEL: "1",
+    });
+    const startedAt = Date.now();
+    await startTurn(providerThreadId, "bg-stuck");
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "failed" });
+    // The hold's 2 s, then the 4 s agy has to answer the cancel.
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    // agy woke and the bridge sent its follow-up, which agy holds behind the wake for good.
+    expect(indexOfText("woke:bg-1")).toBeGreaterThan(-1);
+    expect(notifications("error").at(-1)?.params).toMatchObject({
+      message: expect.stringContaining("did not answer its cancel"),
+    });
+    expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+
+    await startTurn(providerThreadId, "hello");
+    await waitFor(
+      () => threadEventsOfType("turn/completed")[1],
+      "second turn/completed",
+    );
+    expect(threadEventsOfType("turn/completed")[1]).toMatchObject({
+      status: "completed",
+    });
+    expect(notifications("session/replaced")).toHaveLength(1);
+    // The new agy process gets BB's runtime instructions again.
+    expect(agentMessageTexts().join("")).toContain(
+      `${ANTIGRAVITY_RUNTIME_INSTRUCTIONS}\n</system_instructions>\nhello`,
+    );
+  });
+
+  it("ends a turn held for a subagent once agy stays quiet past the idle limit", async () => {
+    antigravityHoldLimits.idleMs = 500;
+    const { promptLog, providerThreadId } = await startAgy();
+    await startTurn(providerThreadId, "bg-subagent");
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    expect(indexOfText("woke:bg-1")).toBeLessThan(boundaryIndex());
+    // One follow-up for the report; the subagent's end is invisible, so the hold idles out.
+    expect(followUps(promptLog)).toBe(1);
+  });
+
+  it("bounds follow-ups and the hold of an agy woken for good by a timer", async () => {
+    Object.assign(antigravityHoldLimits, {
+      idleMs: 10_000,
+      maxMs: 1_500,
+      maxFollowUps: 2,
+    });
+    const { promptLog, providerThreadId } = await startAgy({
+      FAKE_ACP_BG_DELAY_MS: "100",
+    });
+    const startedAt = Date.now();
+    await startTurn(providerThreadId, "bg-cron");
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(followUps(promptLog)).toBe(2);
+    expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+  });
+
+  it("sends a steer at once while the turn is held, and stops the held turn at once", async () => {
+    const { promptLog, providerThreadId } = await startAgy();
+    await startTurn(providerThreadId, "bg-hang");
+    await waitForText("waiting:bg-1");
+    await sleep(100);
+
+    const steeredAt = Date.now();
+    await waitForResponse(
+      sendTurnRequest("turn/steer", providerThreadId, {
+        expectedTurnId: "turn-1",
+        input: [{ type: "text", text: "steered", mentions: [] }],
+      }),
+    );
+    await waitForText("echo:steered");
+    expect(Date.now() - steeredAt).toBeLessThan(1_000);
+    // The hung command still runs: the turn is held again.
+    await sleep(100);
+    expect(threadEventsOfType("turn/completed")).toHaveLength(0);
+    expect(followUps(promptLog)).toBe(0);
+
+    const stoppedAt = Date.now();
+    await stopThread(providerThreadId);
+    expect(Date.now() - stoppedAt).toBeLessThan(1_500);
+    expect(await waitForTurnCompleted()).toMatchObject({
+      status: "interrupted",
+    });
+    startedProviderThreadIds.pop();
+  });
+
+  it("interrupts a held turn without waiting out the agent's cancel timeout", async () => {
+    const { providerThreadId } = await startAgy();
+    await startTurn(providerThreadId, "bg-hang");
+    await waitForText("waiting:bg-1");
+    await sleep(100);
+
+    const stoppedAt = Date.now();
+    await stopThread(providerThreadId);
+    expect(Date.now() - stoppedAt).toBeLessThan(1_500);
+    expect(await waitForTurnCompleted()).toMatchObject({
+      status: "interrupted",
+    });
+    expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+    startedProviderThreadIds.pop();
+  });
+
+  it("gives agy BB's runtime instructions and ends a turn without background work at once", async () => {
+    const { promptLog, providerThreadId } = await startAgy(
+      {},
+      { instructions: "Be terse." },
+    );
+    await startTurn(providerThreadId, "hello");
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    expect(loggedPrompts(promptLog)).toEqual([
+      `<system_instructions>\nBe terse.\n\n${ANTIGRAVITY_RUNTIME_INSTRUCTIONS}\n</system_instructions>\nhello`,
+    ]);
+  });
+
+  it("leaves other ACP agents' turns as they were", async () => {
+    const promptLog = join(workspaceDir, "prompts.jsonl");
+    const { providerThreadId } = await startThread({
+      instructions: "Be terse.",
+      envVars: { FAKE_ACP_PROMPT_LOG: promptLog, FAKE_ACP_BG_DELAY_MS: "300" },
+    });
+    await startTurn(providerThreadId, "bg-command");
+
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    await waitForText("woke:bg-1");
+    // The turn ended at end_turn; the later wake fell outside it, with no follow-up.
+    expect(boundaryIndex()).toBeLessThan(indexOfText("woke:bg-1"));
+    expect(loggedPrompts(promptLog)).toEqual([
+      "<system_instructions>\nBe terse.\n</system_instructions>\nbg-command",
+    ]);
   });
 });
