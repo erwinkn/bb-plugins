@@ -90,7 +90,7 @@ describe("profiles", () => {
     });
     expect(DEFAULT_PROFILES.reviewer).toEqual({
       providerId: "acp-antigravity",
-      model: "gemini-4-hydrogen",
+      model: "gemini-4-neon",
       reasoningLevel: "high",
     });
     expect(DEFAULT_PROFILES).not.toHaveProperty("reviewOfClaude");

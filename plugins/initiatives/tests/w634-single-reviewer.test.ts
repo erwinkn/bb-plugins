@@ -25,7 +25,7 @@ describe("W634 the role set", () => {
   it("has six roles, with one Reviewer and the Fallback reviewer", () => {
     expect([...PROFILE_KEYS]).toEqual(["coordinator", "implementation", "straightforward", "mechanical", "reviewer", "reviewFallback"]);
     expect(Object.values(PROFILE_ROLE_LABELS)).toEqual(["Coordinator", "Worker", "Fast worker", "Very fast worker", "Reviewer", "Fallback reviewer"]);
-    expect(DEFAULT_PROFILES.reviewer).toEqual({ providerId: "acp-antigravity", model: "gemini-4-hydrogen", reasoningLevel: "high" });
+    expect(DEFAULT_PROFILES.reviewer).toEqual({ providerId: "acp-antigravity", model: "gemini-4-neon", reasoningLevel: "high" });
     expect(DEFAULT_PROFILES.reviewFallback).toEqual(opus);
     expect(Object.keys(JSON.parse(settingsDescriptors.executionProfiles.default))).toEqual([...PROFILE_KEYS]);
   });

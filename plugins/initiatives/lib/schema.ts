@@ -109,7 +109,7 @@ export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {
   // One reviewer for every worker model; pair a complementary one per Initiative in its Models section.
   reviewer: {
     providerId: "acp-antigravity",
-    model: "gemini-4-hydrogen",
+    model: "gemini-4-neon",
     reasoningLevel: "high",
   },
   // Opus, not Fable: an ordinary review round is general work (Erwin, 2026-11-13). Runs a round the reviewer above can't (usage limit, model unavailable, W537).
