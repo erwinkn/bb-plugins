@@ -368,8 +368,9 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
           models: [
             // Luna stays out: handover tests rely on it being absent unless a test
             // records it through `execution`. Sol is no default any more (R9) but
-            // many tests pick it as an explicit profile.
-            ...[...Object.values(DEFAULT_PROFILES).map((p) => p.model), "gpt-6.1-sol"].filter((model, i, all) => all.indexOf(model) === i).map((model) => ({
+            // many tests pick it as an explicit profile. GPT-6 Astra is no default either, but
+            // handover tests preserve an incumbent that runs it.
+            ...[...Object.values(DEFAULT_PROFILES).map((p) => p.model), "gpt-6.1-sol", "gpt-6-astra"].filter((model, i, all) => all.indexOf(model) === i).map((model) => ({
               id: model,
               model,
               supportedReasoningEfforts: [
@@ -388,6 +389,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
                 (model) =>
                   model !== undefined &&
                   model !== "gpt-6.1-sol" &&
+                  model !== "gpt-6-astra" &&
                   !Object.values(DEFAULT_PROFILES).some((p) => p.model === model),
               )
               .map((model) => ({

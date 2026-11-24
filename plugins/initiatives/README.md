@@ -408,7 +408,7 @@ records that upstream candidate; no issue was filed.
 | Coordination, worker (everything else)    | Opus 5.5 High          |
 | Fast worker (small, well-specified)       | Sonnet 5.5 High        |
 | Very fast worker (mechanical)             | Haiku 5.5 High         |
-| Reviewer (any worker model)               | GPT-6 Astra Extra High |
+| Reviewer (any worker model)               | Gemini 4 Hydrogen High |
 | Fallback reviewer                         | Opus 5.5 High          |
 
 Review substantial milestones. A reviewer remains a reviewer across messages and
@@ -940,7 +940,7 @@ briefs never repeat them.
 Profiles are stored under their original JSON keys but named by role in
 Settings: `coordinator` (coordinator), `implementation` (worker),
 `straightforward` (fast worker), `mechanical` (very fast worker),
-`reviewer` (the reviewer, one for every worker model; default GPT-6 Astra xhigh, so a
+`reviewer` (the reviewer, one for every worker model; default Gemini 4 Hydrogen high, so a
 Claude worker is reviewed by another family; pick a complementary one per Initiative in
 its Models section) and `reviewFallback` (the fallback reviewer, for any reviewer; default Claude Opus 5.5
 high). The old `experiment` and `investigation` keys are ignored wherever they still

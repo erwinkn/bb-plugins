@@ -60,7 +60,7 @@ describe("W632 Models section", () => {
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0].command).toEqual({
       action: "edit",
-      profiles: { reviewer: { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "xhigh" } },
+      profiles: { reviewer: { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high" } },
     });
   });
 

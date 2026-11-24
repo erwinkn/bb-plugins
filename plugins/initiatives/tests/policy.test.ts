@@ -89,9 +89,9 @@ describe("profiles", () => {
       reasoningLevel: "high",
     });
     expect(DEFAULT_PROFILES.reviewer).toEqual({
-      providerId: "codex",
-      model: "gpt-6-astra",
-      reasoningLevel: "xhigh",
+      providerId: "acp-antigravity",
+      model: "gemini-4-hydrogen",
+      reasoningLevel: "high",
     });
     expect(DEFAULT_PROFILES).not.toHaveProperty("reviewOfClaude");
     expect(DEFAULT_PROFILES).not.toHaveProperty("reviewOfGpt");

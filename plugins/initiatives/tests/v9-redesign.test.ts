@@ -80,7 +80,7 @@ describe("v9 §3 the worker owns its review loop", () => {
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
     // Every worker's reviewer is the reviewer profile (GPT by default).
-    expect(brief).toContain('Reviewer command (code-review skill):\nbb thread spawn --project "$BB_PROJECT_ID" --parent-self \\\n  --lifecycle-owner-thread "$BB_THREAD_ID" --environment "$BB_ENVIRONMENT_ID" \\\n  --provider codex --model gpt-6-astra --reasoning-level xhigh');
+    expect(brief).toContain('Reviewer command (code-review skill):\nbb thread spawn --project "$BB_PROJECT_ID" --parent-self \\\n  --lifecycle-owner-thread "$BB_THREAD_ID" --environment "$BB_ENVIRONMENT_ID" \\\n  --provider acp-antigravity --model gemini-4-hydrogen --reasoning-level high');
     expect(brief).toMatch(/--prompt-file "\$BB_THREAD_STORAGE\/review-r<N>\.md"\n\nUniiChat keeps private history; turns queue during preparation\. Use memory_zoom\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
     expect(brief).not.toContain("How you work in this Initiative");
     await tool(f, "initiative_report", { outcome: "blocked", summary: "Still rejected after 4 review rounds.", question: "Move the backfill?", report: "r4: P1 open." }, w.threadId);
