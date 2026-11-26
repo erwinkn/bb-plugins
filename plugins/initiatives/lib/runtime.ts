@@ -407,7 +407,7 @@ export class Runtime {
       types: ["turn/started", "turn/completed"],
       order: cursor ? "asc" : "desc", limit: "50",
     });
-    this.store.observeTurns(membership.project.id, threadId, turns);
+    this.store.observeTurns(this.store.membership(threadId, true)?.project.id ?? membership.project.id, threadId, turns);
   }
 
   private async sampleTokens(membership: Membership, threadId: string) {
@@ -544,7 +544,16 @@ export class Runtime {
           (known.model !== null && profile.model !== null && known.model !== profile.model)),
     };
     record.model = profile.model ?? record.model;
-    if ((this.store.usage(threadId)?.lastSeq ?? -1) >= record.lastSeq) return;
+    const stored = this.store.usage(threadId);
+    if ((stored?.lastSeq ?? -1) >= record.lastSeq) return;
+    // A promotion may have moved the row while this sample was reading: keep where it lives now.
+    const home = stored ?? this.store.membership(threadId, true);
+    if (home)
+      record = {
+        ...record,
+        projectId: "projectId" in home ? home.projectId : home.project.id,
+        workerNum: home.workerNum,
+      };
     this.store.saveUsage(record);
   }
 }

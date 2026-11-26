@@ -562,8 +562,14 @@ export class ProjectsService {
         threadId: input.coordinator.threadId,
       });
       await this.assertAdoptionRole(thread, "coordinator");
+      // An adhoc thread of another Initiative may be promoted; former coordinators may be adopted
+      // again; every other claim (active coordinator, current or former worker) stays refused.
       const existing = this.store.membership(thread.id);
-      if (existing && (existing.workerNum !== 0 || !existing.former))
+      if (
+        existing &&
+        existing.kind !== "adhoc" &&
+        (existing.workerNum !== 0 || !existing.former)
+      )
         throw new ProjectError(
           `That thread already belongs to ${existing.project.name}.`,
         );
@@ -578,29 +584,98 @@ export class ProjectsService {
         members[0]!,
         thread.environmentId,
       );
-      const project = this.store.tx(() => {
+      // Promoting an adhoc thread: its native descendants that the old Initiative claims move
+      // with it (claims and usage together), so they never sit unclaimed or under the old one.
+      const adhocBefore = this.store.membership(thread.id, true);
+      const below =
+        adhocBefore?.kind === "adhoc"
+          ? await this.claimedBelow(adhocBefore.project.id, thread.id)
+          : [];
+      const projectId = newProjectId();
+      const { project, departed, carriedEntries } = this.store.tx(() => {
+        let departed: string | null = null;
+        // The awaits above took real time: another claim may have landed since the first check.
+        const current = this.store.membership(thread.id);
+        if (
+          current &&
+          current.kind !== "adhoc" &&
+          (current.workerNum !== 0 || !current.former)
+        )
+          throw new ProjectError(
+            `That thread already belongs to ${current.project.name}.`,
+          );
+        const promoted = this.store.membership(thread.id, true);
+        const carried: { threadId: string; direct: boolean; opId: string }[] = [];
+        const carriedEntries: typeof below = [];
+        if (promoted?.kind === "adhoc") {
+          departed = promoted.project.id;
+          // The walk awaited: a descendant is kept only while it is still a plain adhoc claim of
+          // the old Initiative under a kept parent, so one upgraded meanwhile takes its subtree
+          // out of the move.
+          const kept = new Set([thread.id]);
+          for (const entry of below) {
+            const now = this.store.membership(entry.id, true);
+            if (
+              !kept.has(entry.parentId) ||
+              now?.kind !== "adhoc" ||
+              now.project.id !== departed
+            )
+              continue;
+            kept.add(entry.id);
+            carriedEntries.push(entry);
+            carried.push({
+              threadId: entry.id,
+              direct: entry.parentId === thread.id && entry.live,
+              opId: newOpId(),
+            });
+          }
+          this.store.detachAdhocThread(thread.id);
+          this.store.log(
+            departed,
+            "project",
+            `Promoted ${thread.title ?? thread.id} to coordinator of ${input.name}`,
+          );
+        }
         const created = this.store.createProject({
-          id: newProjectId(),
+          id: projectId,
           name: input.name,
           objective: input.objective,
           memberProjectIds: members,
           coordinatorThreadId: thread.id,
           policy,
         });
+        if (departed) {
+          this.store.moveUsage(thread.id, departed, created.id, 0);
+          for (const id of this.store.moveAdhocClaims(departed, created.id, carried))
+            this.store.moveUsage(id, departed, created.id, -1);
+        }
         this.store.log(
           created.id,
           "project",
           `Created with ${thread.title ?? thread.id} as coordinator`,
         );
-        return created;
+        return { project: created, departed, carriedEntries };
       });
+      if (departed) this.announce(departed);
+      // The thread is now this Initiative's coordinator, so a sweep of the old one no longer
+      // touches it; only then is its native parent cleared, from a fresh read of that parent.
+      // A reparent the old Initiative issued before the commit may still be in flight: let it
+      // land first, or it would nest the new coordinator again after it left.
+      if (departed)
+        for (const parentId of [...(this.parentOps.get(departed)?.keys() ?? [])])
+          await this.parentOpsIdle(departed, parentId);
+      const parting = await this.leaveNativeParent(thread.id);
+      if (departed) await this.reclaimLiveUnderArchived(departed, thread.id, carriedEntries);
       await this.tagThread(thread.id, {
         role: "coordinator",
         projectId: project.id,
         [MEMORY_SCOPE_KEY]: project.id,
       });
       const memory = await attachMemory(this.sdk, thread.id, project.id);
-      const note = [await this.reloadToolsIfIdle(thread), memory].filter(Boolean).join(" ") || null;
+      const note =
+        [parting, await this.reloadToolsIfIdle(thread), memory]
+          .filter(Boolean)
+          .join(" ") || null;
       return { project, note };
     }
     const project = this.store.tx(() => {
@@ -657,6 +732,92 @@ export class ProjectsService {
       };
     }
     return { project: this.store.project(project.id)!, note: null };
+  }
+
+  /**
+   * The native descendants of `rootId` that `projectId` may claim as adhoc threads, breadth first
+   * with each one's parent, so a caller can drop a whole subtree by dropping its parent. A child
+   * is a candidate while it is an adhoc claim of `projectId` or unclaimed (a sweep may claim it
+   * before the caller's transaction, which re-checks); threads of other members and Initiatives
+   * stay out, with their subtrees. `live` is false for an archived or deleted thread. Membership
+   * is read as the walk goes, and an unreadable level throws, so a caller never commits on a
+   * partial view of the subtree.
+   */
+  private async claimedBelow(
+    projectId: string,
+    rootId: string,
+  ): Promise<{ id: string; parentId: string; live: boolean }[]> {
+    const found: { id: string; parentId: string; live: boolean }[] = [];
+    const seen = new Set([rootId]);
+    const queue = [rootId];
+    for (let parentId = queue.shift(); parentId; parentId = queue.shift()) {
+      for (let offset = 0; ; offset += 50) {
+        const page = await this.sdk.threads.list({ parentThreadId: parentId, includeHidden: true, limit: 50, offset });
+        for (const child of page) {
+          if (seen.has(child.id)) continue;
+          const member = this.store.membership(child.id, true);
+          if (member && (member.kind !== "adhoc" || member.project.id !== projectId)) continue;
+          seen.add(child.id);
+          found.push({
+            id: child.id,
+            parentId,
+            live: child.archivedAt === null && child.deletedAt === null,
+          });
+          queue.push(child.id);
+        }
+        if (page.length < 50) break;
+      }
+    }
+    return found;
+  }
+
+  /**
+   * A carried live thread whose carried parent is archived can be reparented by the old
+   * Initiative's sweep (to its coordinator) just before the move commits. Once those reparents
+   * have drained, one that landed under a member of the old Initiative goes to the new coordinator.
+   */
+  private async reclaimLiveUnderArchived(
+    departed: string,
+    coordinatorId: string,
+    entries: { id: string; parentId: string; live: boolean }[],
+  ): Promise<void> {
+    const archived = new Set(entries.filter((entry) => !entry.live).map((entry) => entry.id));
+    for (const entry of entries) {
+      if (!entry.live || !archived.has(entry.parentId)) continue;
+      try {
+        const parentId = (await this.sdk.threads.get({ threadId: entry.id })).parentThreadId;
+        if (!parentId || this.store.membership(parentId, true)?.project.id !== departed) continue;
+        this.parentOpBegin(departed, parentId);
+        try {
+          await this.sdk.threads.update({ threadId: entry.id, parentThreadId: coordinatorId });
+        } finally {
+          this.parentOpEnd(departed, parentId);
+        }
+      } catch {
+        // The new Initiative's next sweep nests it under its coordinator.
+      }
+    }
+  }
+
+  /**
+   * Clears a promoted thread's native parent when that parent is an Initiative member (a
+   * coordinator would otherwise keep a child it no longer owns). Returns a note on failure.
+   */
+  private async leaveNativeParent(threadId: string): Promise<string | null> {
+    try {
+      const parentId = (await this.sdk.threads.get({ threadId })).parentThreadId;
+      const parent = parentId ? this.store.membership(parentId, true) : null;
+      if (!parentId || !parent) return null;
+      this.parentOpBegin(parent.project.id, parentId);
+      try {
+        await this.sdk.threads.update({ threadId, parentThreadId: null });
+      } finally {
+        this.parentOpEnd(parent.project.id, parentId);
+      }
+      return null;
+    } catch (error) {
+      return `It stays nested under its former parent: ${errorMessage(error)}`;
+    }
   }
 
   private async spawnCoordinator(
@@ -1417,6 +1578,9 @@ export class ProjectsService {
         this.store.project(projectId)?.coordinatorThreadId ?? null;
       if (!target || target === thread.parentThreadId || signal?.aborted)
         continue;
+      // The reads above may have straddled a promotion: only a still-adhoc member is attached.
+      const still = this.store.membership(record.threadId, true);
+      if (still?.kind !== "adhoc" || still.project.id !== projectId) continue;
       this.parentOpBegin(projectId, target);
       try {
         await this.sdk.threads
@@ -2230,6 +2394,8 @@ export class ProjectsService {
               parentMember.worker?.state !== "retired")
           )
             continue;
+          const still = this.store.membership(record.threadId, true);
+          if (still?.kind !== "adhoc" || still.project.id !== projectId) continue;
           if (await reparent(record.threadId, target, target)) continue;
           unresolved.add(ref);
           this.store.log(

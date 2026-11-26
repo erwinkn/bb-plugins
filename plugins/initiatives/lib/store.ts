@@ -1998,6 +1998,77 @@ export class Store {
     return this.project(id)!;
   }
 
+  /**
+   * Drop a thread's adhoc claim (a `project_threads` or `project_nested_threads` row) so it can
+   * become something else, e.g. the coordinator of a new Initiative. Returns the Initiative that
+   * held it, or null when the thread had no claim.
+   */
+  detachAdhocThread(threadId: string): string | null {
+    let affected: string | null = null;
+    for (const table of ["project_threads", "project_nested_threads"]) {
+      const rows = this.db
+        .prepare(`SELECT project_id FROM ${table} WHERE thread_id = ?`)
+        .all(threadId) as { project_id: string }[];
+      if (!rows.length) continue;
+      affected ??= rows[0]!.project_id;
+      this.db.prepare(`DELETE FROM ${table} WHERE thread_id = ?`).run(threadId);
+    }
+    if (affected) this.touchProject(affected);
+    return affected;
+  }
+
+  /**
+   * Hand adhoc claims of `fromProjectId` to `toProjectId` in place, so a thread is never unclaimed.
+   * A live `direct` child of the new coordinator becomes a `project_threads` row, as the sweep
+   * would make it; every other claim (deeper, or archived) is a nested claim, keeping its end fact.
+   * A claim that is no longer held by `fromProjectId` is skipped. Returns the thread IDs moved.
+   */
+  moveAdhocClaims(
+    fromProjectId: string,
+    toProjectId: string,
+    claims: readonly { threadId: string; direct: boolean; opId: string }[],
+  ): string[] {
+    const moved: string[] = [];
+    for (const { threadId, direct, opId } of claims) {
+      const nested = this.db
+        .prepare(`SELECT * FROM project_nested_threads WHERE thread_id = ? AND project_id = ?`)
+        .get(threadId, fromProjectId) as Row | undefined;
+      const listed = this.db
+        .prepare(`SELECT * FROM project_threads WHERE thread_id = ? AND project_id = ?`)
+        .get(threadId, fromProjectId) as Row | undefined;
+      const row = nested ?? listed;
+      if (!row) continue;
+      this.db.prepare(`DELETE FROM project_nested_threads WHERE thread_id = ?`).run(threadId);
+      this.db.prepare(`DELETE FROM project_threads WHERE thread_id = ?`).run(threadId);
+      const ended = nested ? (nested.ended as string | null) : null;
+      if (direct && ended === null)
+        this.db
+          .prepare(
+            `INSERT INTO project_threads (project_id, op_id, thread_id, label, bb_project_id, state, created_at, confirmed_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+          )
+          .run(toProjectId, opId, threadId, row.label, row.bb_project_id, row.created_at, this.now());
+      else
+        this.db
+          .prepare(
+            `INSERT INTO project_nested_threads (project_id, thread_id, label, bb_project_id, created_at, ended) VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(toProjectId, threadId, row.label, row.bb_project_id, row.created_at, ended);
+      moved.push(threadId);
+    }
+    if (moved.length) this.touchProject(fromProjectId);
+    return moved;
+  }
+
+  /** A promoted thread's token usage follows it to its new Initiative. */
+  moveUsage(threadId: string, fromProjectId: string, projectId: string, workerNum: number) {
+    this.db
+      .prepare(`UPDATE usage SET project_id = ?, worker_num = ? WHERE thread_id = ? AND project_id = ?`)
+      .run(projectId, workerNum, threadId, fromProjectId);
+    this.db
+      .prepare(`UPDATE usage_turn_cursors SET project_id = ? WHERE thread_id = ? AND project_id = ?`)
+      .run(projectId, threadId, fromProjectId);
+  }
+
   touchProject(id: string) {
     this.db
       .prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`)
