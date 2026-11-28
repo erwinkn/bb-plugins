@@ -93,7 +93,7 @@ plugins from that checkout on every reload or restart.
   checkout), always with `--permission-mode full`.
   Use one Claude Opus 5.5 work child (high reasoning) per substantial batch,
   combining related features, plus one independent review child, preferably
-  from another model family such as Codex GPT-6.1 Sol. Small fixes get no
+  from another model family such as Codex GPT-6.2 Sol. Small fixes get no
   separate review, and more work children need the user's explicit yes.
   Exception (Erwin, 2026-11-12): tooling gaps that other coordinators route
   here (bb-plugins or the BB fork) need no approval. The orchestrator spawns
